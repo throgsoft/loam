@@ -132,10 +132,11 @@ fn solve_full_rank(mut matrix: [[f64; 4]; 4], mut rhs: [f64; 4], scale: f64) -> 
         }
         matrix.swap(col, pivot);
         rhs.swap(col, pivot);
+        let pivot_row = matrix[col];
         for row in (col + 1)..4 {
-            let factor = matrix[row][col] / matrix[col][col];
-            for lane in col..4 {
-                matrix[row][lane] -= factor * matrix[col][lane];
+            let factor = matrix[row][col] / pivot_row[col];
+            for (value, &pivot_value) in matrix[row][col..].iter_mut().zip(&pivot_row[col..]) {
+                *value -= factor * pivot_value;
             }
             rhs[row] -= factor * rhs[col];
         }

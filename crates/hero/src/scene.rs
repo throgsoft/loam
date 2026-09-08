@@ -893,7 +893,7 @@ impl loam_app::shell::Scene for HeroScene {
         if let Some(seed) = self.pending_seed.take() {
             self.replay(seed);
         }
-        if !self.paused && !(self.hold_at_end && self.sequence.finished()) {
+        if !(self.paused || self.hold_at_end && self.sequence.finished()) {
             self.sequence.tick();
         }
     }
@@ -1116,7 +1116,7 @@ mod tests {
         let mut mesh = TriangleMesh::<3>::default();
         assert!(
             loam_text::glyph::append_field_prism(
-                &field,
+                field,
                 0.5 * GlyphParams::default().depth,
                 LETTER_COLOR,
                 &mut mesh,

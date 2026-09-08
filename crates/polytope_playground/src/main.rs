@@ -97,7 +97,6 @@ static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 use active::combo_name;
 use catalog::{parse_row, SHAPE_CATALOG};
 use color::{unique_edge_palette, w_depth_color};
-#[cfg(test)]
 use consts::SPACE_TESSELLATION_SAMPLES;
 use consts::{
     BODY_SIZE, BODY_Y, HYPERSLICE_MIN_THICKNESS, T_SCRUB_RATE, T_SLIDER_INITIAL, W_SCRUB_RATE,
@@ -105,7 +104,6 @@ use consts::{
 use director::Playback;
 #[cfg(test)]
 use loam_math::Bivector;
-#[cfg(test)]
 use loam_time::Director;
 use physics::PlaygroundPhysics;
 use state::{
