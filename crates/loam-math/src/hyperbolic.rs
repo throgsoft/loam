@@ -186,7 +186,12 @@ fn loam_clamp_to_ball(p: vec3<f32>) -> vec3<f32> {
     if (r2 <= LOAM_H3_R2_MAX) {
         return p;
     }
-    return p * (sqrt(LOAM_H3_R2_MAX) / sqrt(r2));
+    var q = p * (sqrt(LOAM_H3_R2_MAX) / sqrt(r2));
+    // Normalization can round back onto the singular unit sphere.
+    while (dot(q, q) > LOAM_H3_R2_MAX) {
+        q *= 1.0 - 1.1920929e-7;
+    }
+    return q;
 }
 
 fn loam_mobius_add(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
