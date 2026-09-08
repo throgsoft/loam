@@ -2,7 +2,7 @@ use crate::verbs::WireframeControls;
 use loam_app::egui;
 use loam_app::shell::SceneRegistry;
 use loam_egui::{
-    media::{chevron_button, play_pause_button, refresh_button},
+    media::{chevron_button, play_pause_button, rate_toggle, refresh_button},
     slider_with_edit,
 };
 
@@ -473,45 +473,32 @@ impl Demo {
     }
 
     pub(crate) fn render_rate_row(&mut self, ui: &mut egui::Ui, runtime: &loam_app::Runtime) {
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
+        let mut rate = self.rate_scale;
+        ui.horizontal(|ui| {
+            const PLAY_GROUP_W: f32 = 215.0;
+            let total_w = ui.available_width();
+            let leading = ((total_w - PLAY_GROUP_W) / 2.0).max(8.0);
+
+            ui.add_space(leading);
             let ctrl_size = egui::vec2(CONTROL_W, CONTROL_H);
             let play_size = egui::vec2(PLAY_PAUSE_W, CONTROL_H);
+            rate_toggle(ui, ctrl_size, &mut rate, 0.25, true, false);
+            rate_toggle(ui, ctrl_size, &mut rate, 0.5, false, false);
             if play_pause_button(ui, play_size, self.rotate)
                 .on_hover_text("Play or pause rotation (Space)")
                 .clicked()
             {
                 runtime.submit_line("spin");
             }
+            rate_toggle(ui, ctrl_size, &mut rate, 2.0, false, true);
+            rate_toggle(ui, ctrl_size, &mut rate, 4.0, true, true);
             if refresh_button(ui, ctrl_size)
-                .on_hover_text("Reset rotation and slice")
+                .on_hover_text("Reset slice, rate, active set, orientation, time")
                 .clicked()
             {
                 runtime.submit_line("reset");
             }
-            ui.label("Speed");
-            for (rate, label, command) in [
-                (0.25, "0.25x", "rate 0.25"),
-                (0.5, "0.5x", "rate 0.5"),
-                (1.0, "1x", "rate 1"),
-                (2.0, "2x", "rate 2"),
-                (4.0, "4x", "rate 4"),
-            ] {
-                if ui
-                    .selectable_label(self.rate_scale == rate, label)
-                    .clicked()
-                {
-                    runtime.submit_line(command);
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Help").clicked() {
-                self.show_help = true;
-            }
-            if ui.button("Render settings").clicked() {
-                self.show_render_panel = !self.show_render_panel;
-            }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if chevron_button(
                     ui,
@@ -527,7 +514,25 @@ impl Demo {
                 {
                     self.expanded = !self.expanded;
                 }
+                let util_size = egui::vec2(CONTROL_W, CONTROL_H);
+                if ui
+                    .add(egui::Button::new(egui::RichText::new("⚙").strong()).min_size(util_size))
+                    .on_hover_text("Render settings")
+                    .clicked()
+                {
+                    self.show_render_panel = !self.show_render_panel;
+                }
+                if ui
+                    .add(egui::Button::new(egui::RichText::new("?").strong()).min_size(util_size))
+                    .on_hover_text("Help")
+                    .clicked()
+                {
+                    self.show_help = true;
+                }
             });
         });
+        if rate != self.rate_scale {
+            runtime.submit_line(&format!("rate {rate}"));
+        }
     }
 }
