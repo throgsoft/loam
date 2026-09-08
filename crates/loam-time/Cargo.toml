@@ -6,41 +6,23 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam time: fixed-timestep accumulator, frame trace, job pool, and frame-indexed playback."
+description = "Fixed ticks, replay tapes, presentation timelines, and frame timing."
 keywords = ["fixed-timestep", "determinism", "timing", "gamedev"]
 categories = ["game-development", "date-and-time"]
 
 [features]
-# Frame-timing instrumentation. Default-on for dev builds; disable with
-# `--no-default-features` for lean / embedded builds. When OFF, `scope` returns a
-# zero-sized type whose `Drop` is empty, so instrumented code paths pay zero cost.
-# When ON, every `scope` call records an `Instant::now()` snapshot and pushes a
-# `Section` onto the current frame's vec; the cost is ~50ns per scope on native.
 default = ["frame-trace"]
-frame-trace = []
+frame-trace = ["dep:tracing"]
 
 [dependencies]
-# `web-time` is a drop-in for `std::time::Instant` / `Duration`: on native it re-exports
-# the std types verbatim; on wasm32 it backs `Instant` with `performance.now()`. Keeping
-# `FixedTimestep` usable in the browser is the only thing that pulls this in.
+# `std::time::Instant::now` is unavailable on wasm32.
 web-time = { workspace = true }
-# Only used by the `frame-trace` feature path to emit `tracing::warn!` when a
-# section exceeds the spike threshold. Brought in unconditionally because gating
-# the dep behind the feature would force every downstream consumer to also gate
-# the feature; the crate itself is tiny so the prebuilt-with-tracing footprint
-# is negligible.
-tracing = { workspace = true }
-# `TapeError` is matched at a real callsite: a loader distinguishes "written by
-# another build, re-record it" from "corrupt" and reports differently.
+tracing = { workspace = true, optional = true }
 thiserror = { workspace = true }
-# The director's three channel types. `Rotor4` brings the geodesic and the
-# isoclinic-half-turn guard the authoring path refuses on; `Vec4` is glam's.
 loam-math = { path = "../loam-math", version = "0.1.0" }
 glam = { workspace = true }
-# Timelines are authored as files, so the channel types round-trip through RON.
 serde = { workspace = true }
 ron = { workspace = true }
 
-[[bench]]
-name = "jobs"
-harness = false
+[lints]
+workspace = true

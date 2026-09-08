@@ -40,12 +40,10 @@ impl SectionLayer {
     }
 }
 
-const CROSS_SECTION_DEFAULT_ALPHA: f32 = 1.0;
-
 impl SectionLayer {
     pub(crate) const CROSS_SECTION_DEFAULT: SectionLayer = SectionLayer {
         perimeter: true,
-        surface_alpha: CROSS_SECTION_DEFAULT_ALPHA,
+        surface_alpha: 1.0,
     };
     pub(crate) const PROJECTED_CAP_DEFAULT: SectionLayer = SectionLayer {
         perimeter: false,
@@ -53,7 +51,7 @@ impl SectionLayer {
     };
 }
 
-// The honest cross-section is always drop-w, matching the SDF raymarch.
+// The physical slice uses drop-w even when the wireframe projection changes.
 pub(crate) fn section_layer_projection(
     is_cross_section: bool,
     projection: Projection<4>,
@@ -65,7 +63,7 @@ pub(crate) fn section_layer_projection(
     }
 }
 
-// Their SDFs crash the browser tab and their face planes are wrong: not a perf gate.
+// The extended kernels remain disabled until browser rendering is verified.
 pub(crate) fn row_blocks_sdf(row: &[ShapeEntry]) -> bool {
     row.iter().any(|e| {
         matches!(

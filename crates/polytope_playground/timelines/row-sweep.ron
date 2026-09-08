@@ -1,14 +1,4 @@
-// Four seconds at 60 fps: the slice sweeps out and back while slot 0 turns
-// two quarter-turns in the xw plane. Every other slot is left unnamed, so the
-// row keeps its UI spin and the two clocks are visible side by side.
-//
-// Rotor keys are (cos(theta/2), sin(theta/2)) on the xw component: theta = 0,
-// pi/2, pi. Run it with
-//   cargo run -p polytope_playground --
-//     --director=crates/polytope_playground/timelines/row-sweep.ron
-//
-// The path is resolved against the working directory, not the crate, so
-// the crate-relative form only works from inside crates/polytope_playground.
+// Paths passed to --director are relative to the working directory.
 (
     fps: 60,
     frames: 241,

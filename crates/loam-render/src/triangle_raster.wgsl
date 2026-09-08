@@ -1,4 +1,3 @@
-// Entry points fs_flat and fs_lambert are selected by the host's FragmentShading.
 
 struct CameraUniform {
     view_projection: mat4x4<f32>,
@@ -29,7 +28,6 @@ fn fs_flat(in: VsOut) -> @location(0) vec4<f32> {
     return in.color;
 }
 
-// cross(dpdx, dpdy) of world position is the exact face normal of a flat triangle.
 @fragment
 fn fs_lambert(in: VsOut) -> @location(0) vec4<f32> {
     let dpdx_p = dpdx(in.world_pos);
@@ -38,7 +36,6 @@ fn fs_lambert(in: VsOut) -> @location(0) vec4<f32> {
 
     let key_dir = normalize(vec3<f32>(0.55, 0.85, 0.45));
 
-    // Two-sided: cross-section winding is arbitrary.
     let intensity = abs(dot(n, key_dir));
 
     let ambient = 0.30;

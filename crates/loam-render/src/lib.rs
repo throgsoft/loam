@@ -3,13 +3,13 @@ pub mod depth;
 pub mod device;
 pub mod gizmo;
 pub mod gpu_timer;
-pub mod graph;
 pub mod hypergimbal;
 pub mod lattice;
 pub mod line_raster;
 pub mod line_raster_static_r4;
 pub mod point_raster;
 pub mod raymarch;
+pub mod shader;
 pub mod sky_ground;
 pub mod triangle_raster;
 
@@ -18,7 +18,7 @@ pub use lattice::Viewport;
 pub use line_raster::{LineRasterNode, LineRasterUniforms};
 pub use line_raster_static_r4::{LineRasterStaticR4Node, LineRasterStaticR4Uniforms};
 pub use point_raster::{PointRasterNode, PointRasterUniforms};
-pub use raymarch::{GeodesicRayMarchNode, RayMarchNode, RayMarchUniforms};
+pub use raymarch::{RayMarchNode, RayMarchUniforms};
 pub use sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
 pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,

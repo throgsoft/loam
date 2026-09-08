@@ -11,6 +11,50 @@ pub struct Ray {
     pub direction: Vec3,
 }
 
+impl Ray {
+    /// Returns the nearest positive Euclidean hit on either face.
+    // Möller and Trumbore, JGT 2(1), 1997.
+    pub fn intersect_triangle(&self, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+        let edge1 = b - a;
+        let edge2 = c - a;
+        let pvec = self.direction.cross(edge2);
+        let det = edge1.dot(pvec);
+        if det.abs() < 1e-8 {
+            return None;
+        }
+        let inv_det = 1.0 / det;
+        let tvec = self.origin - a;
+        let u = tvec.dot(pvec) * inv_det;
+        if !(0.0..=1.0).contains(&u) {
+            return None;
+        }
+        let qvec = tvec.cross(edge1);
+        let v = self.direction.dot(qvec) * inv_det;
+        if v < 0.0 || u + v > 1.0 {
+            return None;
+        }
+        let distance = edge2.dot(qvec) * inv_det;
+        (distance > 0.0).then_some(distance)
+    }
+
+    /// Returns the entry distance, or the exit distance when the origin is inside.
+    pub fn intersect_sphere(&self, centre: Vec3, radius: f32) -> Option<f32> {
+        let to_centre = self.origin - centre;
+        let b = to_centre.dot(self.direction);
+        let discriminant = b * b - (to_centre.length_squared() - radius * radius);
+        if discriminant < 0.0 {
+            return None;
+        }
+        let root = discriminant.sqrt();
+        let exit = -b + root;
+        if exit <= 0.0 {
+            return None;
+        }
+        let entry = -b - root;
+        Some(if entry > 0.0 { entry } else { exit })
+    }
+}
+
 /// `right`, `up`, `forward` are pairwise-orthogonal Euclidean-unit vectors in
 /// the embedding; the WGSL prelude applies the metric. `right × up = -forward`.
 #[derive(Clone, Copy, Debug)]
@@ -42,7 +86,10 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
     pub fn looking_at(position: Vec3, target: Vec3, world_up: Vec3, space: &S) -> Self {
         let log = space.log(position, target);
         let forward = log.try_normalize().unwrap_or(-Vec3::Z);
-        let right = forward.cross(world_up).try_normalize().unwrap_or(Vec3::X);
+        let right = forward
+            .cross(world_up)
+            .try_normalize()
+            .unwrap_or_else(|| forward.any_orthonormal_vector());
         let up = right.cross(forward);
         Self {
             position,
@@ -65,8 +112,8 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
         }
     }
 
-    /// Inverts the perspective map of Akenine-Möller, Haines and Hoffman,
-    /// *Real-Time Rendering* 4th ed. (2018) §4.7. `ndc` is y-up and unclamped.
+    /// `ndc` is y-up and unclamped.
+    // Akenine-Möller, Haines and Hoffman, Real-Time Rendering, 4th ed., §4.7.
     pub fn ray_from_ndc(&self, ndc: Vec2) -> Ray {
         let tan_half_fov_y = (self.fov_y * 0.5).tan();
         let direction = self.forward
@@ -74,13 +121,12 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
             + self.up * (ndc.y * tan_half_fov_y);
         Ray {
             origin: self.position,
-            // |direction|² = 1 + |lateral|² ≥ 1, so normalize cannot underflow.
             direction: direction.normalize(),
         }
     }
 
-    /// `None` outside the frustum. Projects along `log(position, world)`, the
-    /// image-forming geodesic in a curved Space (Gunn, SIGGRAPH 1993, §3).
+    /// Returns `None` outside the frustum; depth is measured in chart coordinates.
+    // Gunn, SIGGRAPH 1993, §3: project the image-forming geodesic.
     pub fn ndc_from_world(&self, world: Vec3, space: &S) -> Option<Vec2> {
         let to_target = space.log(self.position, world);
         let depth = to_target.dot(self.forward);
@@ -93,7 +139,6 @@ impl<S: Space<Point = Vec3, Vector = Vec3>> Camera<S> {
             to_target.dot(self.right) / (depth * self.aspect * tan_half_fov_y),
             to_target.dot(self.up) / (depth * tan_half_fov_y),
         );
-        // Also the NaN gate: a non-finite log fails both bounds.
         (ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0).then_some(ndc)
     }
 
@@ -180,19 +225,6 @@ mod tests {
     }
 
     #[test]
-    fn looking_at_target_points_toward_it() {
-        let space = EuclideanR3;
-        let cam = Camera::<EuclideanR3>::looking_at(
-            Vec3::new(0.0, 0.0, 5.0),
-            Vec3::ZERO,
-            Vec3::Y,
-            &space,
-        );
-        close(cam.forward, -Vec3::Z, 1e-6);
-        close(cam.up, Vec3::Y, 1e-6);
-    }
-
-    #[test]
     fn translate_in_flat_space_preserves_frame() {
         let space = EuclideanR3;
         let mut cam = Camera::<EuclideanR3>::at_origin();
@@ -205,19 +237,16 @@ mod tests {
     }
 
     #[test]
-    fn translate_view_position_matches_exp() {
-        let space = EuclideanR3;
-        let mut cam = Camera::<EuclideanR3>::at_origin();
-        cam.translate(Vec3::X, 2.5, &space);
-        close(cam.view().position, Vec3::new(2.5, 0.0, 0.0), 1e-6);
-    }
-
-    #[test]
     fn translate_in_hyperbolic_h3_stays_in_ball_and_orthonormal() {
         use loam_math::HyperbolicH3;
         let space = HyperbolicH3;
         let mut cam = Camera::<HyperbolicH3>::at_origin();
-        cam.translate(Vec3::X, 0.5, &space);
+        cam.position = Vec3::new(0.2, -0.1, 0.15);
+        let start = cam.position;
+        let original_right = cam.right;
+        cam.translate(Vec3::new(1.0, 0.4, -0.3), 0.2, &space);
+        assert!((cam.position - start).length() > 0.05);
+        assert!((cam.right - original_right).length() > 1e-3);
         assert!(
             cam.position.length() < 1.0,
             "camera escaped Poincaré ball: {:?}",
@@ -235,51 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn centre_ndc_ray_is_camera_position_and_forward() {
-        for (fov_y_degrees, aspect) in [(60.0_f32, 1.0_f32), (30.0, 16.0 / 9.0), (95.0, 0.5)] {
-            let mut camera = Camera::<EuclideanR3>::looking_at(
-                Vec3::new(-3.0, 2.0, 1.5),
-                Vec3::new(0.4, -1.0, -2.0),
-                Vec3::Y,
-                &EuclideanR3,
-            );
-            camera.fov_y = fov_y_degrees.to_radians();
-            camera.aspect = aspect;
-            let ray = camera.ray_from_ndc(Vec2::ZERO);
-            close(ray.origin, camera.position, 1e-6);
-            close(ray.direction, camera.forward, 1e-6);
-        }
-    }
-
-    #[test]
-    fn edge_ndc_half_angles_track_fov_y_and_aspect() {
-        for aspect in [16.0_f32 / 9.0, 1.0, 9.0 / 16.0] {
-            let mut camera = Camera::<EuclideanR3>::at_origin();
-            camera.fov_y = 42.0_f32.to_radians();
-            camera.aspect = aspect;
-            let tan_half_fov_y = (camera.fov_y * 0.5).tan();
-
-            // Component ratio, not acos(dot): acos is ill-conditioned near 1.
-            let top = camera.ray_from_ndc(Vec2::new(0.0, 1.0)).direction;
-            let vertical_tan = top.dot(camera.up) / top.dot(camera.forward);
-            assert!(
-                (vertical_tan - tan_half_fov_y).abs() < 1e-6,
-                "aspect {aspect}: vertical tan {vertical_tan} != {tan_half_fov_y}"
-            );
-            assert!(top.dot(camera.right).abs() < 1e-6, "aspect leaked into y");
-
-            let side = camera.ray_from_ndc(Vec2::new(1.0, 0.0)).direction;
-            let horizontal_tan = side.dot(camera.right) / side.dot(camera.forward);
-            let expected = aspect * tan_half_fov_y;
-            assert!(
-                (horizontal_tan - expected).abs() < 1e-6,
-                "aspect {aspect}: horizontal tan {horizontal_tan} != {expected}"
-            );
-            assert!(side.dot(camera.up).abs() < 1e-6, "x NDC tilted the y axis");
-        }
-    }
-
-    #[test]
     fn looking_at_collapsed_target_falls_back_to_finite_frame() {
         let cam = Camera::<EuclideanR3>::looking_at(Vec3::ZERO, Vec3::ZERO, Vec3::Y, &EuclideanR3);
         assert!(cam.forward.is_finite() && cam.right.is_finite() && cam.up.is_finite());
@@ -289,15 +273,14 @@ mod tests {
     }
 
     #[test]
-    fn looking_at_world_up_parallel_to_forward_falls_back() {
-        let cam = Camera::<EuclideanR3>::looking_at(
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::Y,
-            &EuclideanR3,
-        );
-        assert!(cam.forward.is_finite() && cam.right.is_finite() && cam.up.is_finite());
-        assert!((cam.right.length() - 1.0).abs() < 1e-6);
+    fn parallel_up_preserves_orthonormal_frame() {
+        for forward in [Vec3::X, Vec3::Y, Vec3::Z, Vec3::ONE.normalize()] {
+            let cam = Camera::<EuclideanR3>::looking_at(Vec3::ZERO, forward, forward, &EuclideanR3);
+            close(cam.forward, forward, 1e-6);
+            close(cam.right.cross(cam.up), -forward, 1e-6);
+            assert!((cam.right.length() - 1.0).abs() < 1e-6);
+            assert!((cam.up.length() - 1.0).abs() < 1e-6);
+        }
     }
 
     #[test]

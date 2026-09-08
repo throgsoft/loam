@@ -29,10 +29,11 @@ impl Demo {
                 (false, false) => (1, 1, true),
             };
             let col_vps = viewport.split_horizontal(cols as u32);
-            let mut grid_cells: Vec<(Viewport, f32, BodyUniform)> = Vec::with_capacity(cols * rows);
-            for (col_idx, col_vp) in col_vps.into_iter().enumerate() {
+            let mut grid_cells = std::mem::take(&mut self.strip_cells_scratch);
+            grid_cells.clear();
+            for (col_idx, col_vp) in col_vps.enumerate() {
                 let row_vps = col_vp.split_vertical(rows as u32);
-                for (row_idx, cell_vp) in row_vps.into_iter().enumerate() {
+                for (row_idx, cell_vp) in row_vps.enumerate() {
                     let (w_idx, w_n, t_idx, t_n) = if w_on_cols {
                         (col_idx, cols, row_idx, rows)
                     } else {
@@ -66,11 +67,10 @@ impl Demo {
                     grid_cells.push((cell_vp, cell_w_slice, body));
                 }
             }
-            // `execute_strip` submits its own encoder, which lands before the runner's.
             let result = self
                 .node
-                .execute_strip(&rd.device, &rd.queue, view, &grid_cells);
-            self.rebuild_bodies();
+                .record_strip(&rd.device, &rd.queue, encoder, view, &grid_cells);
+            self.strip_cells_scratch = grid_cells;
             result
         } else {
             {
@@ -89,14 +89,12 @@ impl Demo {
                     );
                     self.sdf_upload_pending |= changed;
                 }
-                // The only flush: `update` leaves the flag set rather than uploading twice.
                 if self.sdf_upload_pending {
                     self.node.flush_uniforms(&rd.queue);
                     self.sdf_upload_pending = false;
                 }
                 self.node.record_in_viewport(encoder, view, viewport);
             }
-            // Order matters: background clears, section faces write depth, later passes test it.
             if matches!(self.surface_mode, SurfaceMode::Raster) {
                 let _scope = loam_time::frame_trace::scope("pp-section-faces");
                 self.record_section_faces(rd, encoder, view);
@@ -117,7 +115,6 @@ impl Demo {
         }
     }
 
-    // Clears both attachments and writes the ground's depth with the raster nodes' matrix.
     fn record_sky_ground(
         &mut self,
         rd: &RenderDevice,
@@ -147,7 +144,6 @@ impl Demo {
             &SkyGroundUniforms::new(
                 proj_mat * view_mat,
                 viewport,
-                // Must follow the `floor` verb's `u.params.x` gate or the checkerboard outlives the leaf.
                 self.environment
                     .ground(FLOOR_Y, self.environment.floor_visible),
             ),
@@ -317,7 +313,6 @@ impl Demo {
         let cross = self.cross_section;
         let cap = self.projected_cap;
         let mut palette_cache = std::mem::take(&mut self.unique_edge_palette_cache);
-        let mut slerp_scratch = std::mem::take(&mut self.slerp_scratch);
         let mut local_vertices = std::mem::take(&mut self.overlay_local_vertices_scratch);
         let mut cell_strengths = std::mem::take(&mut self.overlay_cell_strengths_scratch);
         let mut section_scratch = std::mem::take(&mut self.section_cap_scratch);
@@ -330,7 +325,6 @@ impl Demo {
             cross,
             cap,
             &mut palette_cache,
-            &mut slerp_scratch,
             &mut local_vertices,
             &mut cell_strengths,
             &mut section_scratch,
@@ -339,7 +333,6 @@ impl Demo {
             &mut parent_lines,
         );
         self.unique_edge_palette_cache = palette_cache;
-        self.slerp_scratch = slerp_scratch;
         self.overlay_local_vertices_scratch = local_vertices;
         self.overlay_cell_strengths_scratch = cell_strengths;
         self.section_cap_scratch = section_scratch;
@@ -442,7 +435,7 @@ pub(crate) fn build_points_mesh(
         };
         let points_clip_radius = stereographic_clip_radius(
             &frame.projection,
-            stereographic_view_radius(polytope, frame.camera_distance),
+            stereographic_view_radius(frame.camera_distance),
         );
         let topo = polytope.topology();
 
@@ -473,11 +466,7 @@ pub(crate) fn build_points_mesh(
         if style.show_vertices {
             for (vi, v) in topo.vertices.iter().enumerate() {
                 let v_local = local_vertices[vi];
-                let v3_local =
-                    <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(
-                        v_local,
-                        &frame.projection,
-                    );
+                let v3_local = stereographic_view_point(v_local, &frame.projection);
                 if !sample_in_radius(v3_local, points_clip_radius) {
                     continue;
                 }
@@ -501,7 +490,6 @@ pub(crate) fn build_points_mesh(
             }
         }
         if style.show_cell_centers {
-            // `cell_centers()` sits at the inradius, so inset inside the cap.
             const CELL_CENTER_INSET: f32 = 0.5;
             let centers: &[Vec4] = centers_cache
                 .entry(polytope)
@@ -514,11 +502,7 @@ pub(crate) fn build_points_mesh(
             );
             for (ci, c) in centers.iter().enumerate() {
                 let c_local = center_locals[ci];
-                let c3_local =
-                    <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(
-                        c_local,
-                        &frame.projection,
-                    );
+                let c3_local = stereographic_view_point(c_local, &frame.projection);
                 if !sample_in_radius(c3_local, points_clip_radius) {
                     continue;
                 }
@@ -583,7 +567,7 @@ pub(crate) fn build_section_layer_meshes(
         let Some(polytope) = entry.shape.polytope4() else {
             continue;
         };
-        let view_radius = stereographic_view_radius(polytope, frame.camera_distance);
+        let view_radius = stereographic_view_radius(frame.camera_distance);
         let cross_clip = stereographic_clip_radius(&cross_projection, view_radius);
         let cap_clip = stereographic_clip_radius(&cap_projection, view_radius);
         let topo = polytope.topology();
@@ -669,7 +653,6 @@ pub(crate) fn build_wireframe_meshes(
     cross: state::SectionLayer,
     cap: state::SectionLayer,
     palette_cache: &mut std::collections::HashMap<loam_shape::polytope::Polytope4, Vec<[f32; 4]>>,
-    slerp_scratch: &mut Vec<Vec4>,
     local_vertices: &mut Vec<Vec4>,
     cell_strengths: &mut Vec<f32>,
     section_scratch: &mut SectionScratch,
@@ -694,7 +677,7 @@ pub(crate) fn build_wireframe_meshes(
         let Some(polytope) = entry.shape.polytope4() else {
             continue;
         };
-        let view_radius = stereographic_view_radius(polytope, frame.camera_distance);
+        let view_radius = stereographic_view_radius(frame.camera_distance);
         let topo = polytope.topology();
         let body_pos_r3 = frame.body_local(slot, topo.vertices, frame.body_size, local_vertices);
         let arc_center = frame.pose(slot).body_local(Vec4::ZERO, frame.body_size);
@@ -769,7 +752,6 @@ pub(crate) fn build_wireframe_meshes(
                 .any(|(cell, &s)| s > 0.0 && cell.contains(&i) && cell.contains(&j))
         };
 
-        // Cell-level to match `edge_is_active`.
         let edge_in_slab_cell = |i: u32, j: u32, thickness: f32| -> bool {
             topo.cells.iter().any(|cell| {
                 if !(cell.contains(&i) && cell.contains(&j)) {
@@ -788,7 +770,6 @@ pub(crate) fn build_wireframe_meshes(
             } else {
                 &[]
             };
-        // Canonical max |w|, not the rotated one, so the color is stable over a spin.
         let w_extent_local: f32 = if matches!(style.color_mode, WireframeColorMode::WDepth) {
             let canonical_max_w = topo
                 .vertices
@@ -852,7 +833,7 @@ pub(crate) fn build_wireframe_meshes(
                 style.space_blend,
                 &frame.projection,
                 body_pos_r3,
-                slerp_scratch,
+                SPACE_TESSELLATION_SAMPLES,
                 view_radius,
             );
         }
@@ -894,8 +875,8 @@ mod tests {
 
     #[test]
     fn a_merged_opaque_frame_draws_both_layers_triangles() {
-        let physics = PlaygroundPhysics::new(1, BODY_SIZE);
-        let frame = frame_of(
+        let physics = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
+        let fixture = frame_of(
             &physics,
             ROW_16,
             Rotor4::IDENTITY,
@@ -905,6 +886,7 @@ mod tests {
             SLICE_W,
             CAMERA_DISTANCE,
         );
+        let frame = fixture.frame();
         let opaque = SectionLayer {
             perimeter: false,
             surface_alpha: 1.0,
@@ -962,7 +944,7 @@ mod tests {
 
     fn translated_pair() -> TranslatedPair {
         let spin = rotor_at(Plane4::Xy, 0.7);
-        let mut thrown = PlaygroundPhysics::new(1, BODY_SIZE);
+        let mut thrown = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
         let layout = Vec4::from_array(body_position(0, 1));
         thrown.world.bodies[0].apply_impulse_at_point(
             &EuclideanR4,
@@ -987,7 +969,7 @@ mod tests {
             "throw produced no visible rotation, so the rotor half of the pins is vacuous"
         );
         TranslatedPair {
-            at_rest: PlaygroundPhysics::new(1, BODY_SIZE),
+            at_rest: PlaygroundPhysics::new(1, BODY_SIZE).unwrap(),
             composed: pose.rotor,
             thrown,
             spin,
@@ -995,7 +977,7 @@ mod tests {
         }
     }
 
-    fn frame(physics: &PlaygroundPhysics, spin: Rotor4) -> RowFrame<'_> {
+    fn frame(physics: &PlaygroundPhysics, spin: Rotor4) -> FrameFixture<'_> {
         frame_of(
             physics,
             ROW,
@@ -1006,8 +988,27 @@ mod tests {
         )
     }
 
-    fn uniform_spins(slots: usize, rotor: Rotor4) -> &'static SlotSpins {
-        Box::leak(Box::new(SlotSpins::uniform(slots, rotor)))
+    struct FrameFixture<'a> {
+        physics: &'a PlaygroundPhysics,
+        row: &'a [ShapeEntry],
+        spins: SlotSpins,
+        projection: Projection<4>,
+        w_slice: f32,
+        camera_distance: f32,
+    }
+
+    impl FrameFixture<'_> {
+        fn frame(&self) -> RowFrame<'_> {
+            RowFrame {
+                physics: self.physics,
+                row: self.row,
+                spins: &self.spins,
+                body_size: BODY_SIZE,
+                projection: self.projection,
+                w_slice: self.w_slice,
+                camera_distance: self.camera_distance,
+            }
+        }
     }
 
     fn frame_of<'a>(
@@ -1017,12 +1018,11 @@ mod tests {
         projection: Projection<4>,
         w_slice: f32,
         camera_distance: f32,
-    ) -> RowFrame<'a> {
-        RowFrame {
+    ) -> FrameFixture<'a> {
+        FrameFixture {
             physics,
             row,
-            spins: uniform_spins(row.len(), spin),
-            body_size: BODY_SIZE,
+            spins: SlotSpins::uniform(row.len(), spin),
             projection,
             w_slice,
             camera_distance,
@@ -1059,7 +1059,6 @@ mod tests {
     struct OverlayBuffers {
         palette_cache: std::collections::HashMap<Polytope4, Vec<[f32; 4]>>,
         centers_cache: std::collections::HashMap<Polytope4, Vec<Vec4>>,
-        slerp: Vec<Vec4>,
         local_vertices: Vec<Vec4>,
         center_locals: Vec<Vec4>,
         cell_strengths: Vec<f32>,
@@ -1087,7 +1086,6 @@ mod tests {
                 cross,
                 cap,
                 &mut self.palette_cache,
-                &mut self.slerp,
                 &mut self.local_vertices,
                 &mut self.cell_strengths,
                 &mut self.section_scratch,
@@ -1250,8 +1248,13 @@ mod tests {
         let mut live = OverlayBuffers::default();
         let mut rest = OverlayBuffers::default();
 
-        live.wireframe(&frame(&pair.thrown, pair.spin), &style, cross, cap);
-        rest.wireframe(&frame(&pair.at_rest, pair.composed), &style, cross, cap);
+        live.wireframe(&frame(&pair.thrown, pair.spin).frame(), &style, cross, cap);
+        rest.wireframe(
+            &frame(&pair.at_rest, pair.composed).frame(),
+            &style,
+            cross,
+            cap,
+        );
 
         assert_translated(
             &segment_points(&live.parent_lines),
@@ -1279,8 +1282,8 @@ mod tests {
         let mut live = OverlayBuffers::default();
         let mut rest = OverlayBuffers::default();
 
-        live.points(&frame(&pair.thrown, pair.spin), &style);
-        rest.points(&frame(&pair.at_rest, pair.composed), &style);
+        live.points(&frame(&pair.thrown, pair.spin).frame(), &style);
+        rest.points(&frame(&pair.at_rest, pair.composed).frame(), &style);
 
         assert_translated(
             &live.sprites.positions,
@@ -1306,7 +1309,7 @@ mod tests {
         let mut rest_cap = loam_shape::TriangleMesh::<3>::default();
 
         build_section_layer_meshes(
-            &frame(&pair.thrown, pair.spin),
+            &frame(&pair.thrown, pair.spin).frame(),
             cross,
             cap,
             SectionBuffers {
@@ -1318,7 +1321,7 @@ mod tests {
             },
         );
         build_section_layer_meshes(
-            &frame(&pair.at_rest, pair.composed),
+            &frame(&pair.at_rest, pair.composed).frame(),
             cross,
             cap,
             SectionBuffers {
@@ -1350,8 +1353,8 @@ mod tests {
 
     #[test]
     fn each_slot_renders_at_its_own_body() {
-        let physics = PlaygroundPhysics::new(2, BODY_SIZE);
-        let frame = frame_of(
+        let physics = PlaygroundPhysics::new(2, BODY_SIZE).unwrap();
+        let fixture = frame_of(
             &physics,
             ROW_16_PAIR,
             rotor_at(Plane4::Xz, 0.5),
@@ -1359,6 +1362,7 @@ mod tests {
             SLICE_W,
             CAMERA_DISTANCE,
         );
+        let frame = fixture.frame();
         let built = build_row(&frame, &slice_colored_style());
 
         let layout = Vec4::from_array(body_position(1, 2)).truncate()
@@ -1376,7 +1380,7 @@ mod tests {
     fn a_body_lifted_off_the_slice_is_cut_where_physics_put_it() {
         let (lifted, lift) = thrown_along_w();
         let spin = rotor_at(Plane4::Xz, 0.5);
-        let at_rest = PlaygroundPhysics::new(1, BODY_SIZE);
+        let at_rest = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
         let style = slice_colored_style();
         let build_at = |physics, w_slice| {
             build_row(
@@ -1387,7 +1391,8 @@ mod tests {
                     Projection::Identity,
                     w_slice,
                     CAMERA_DISTANCE,
-                ),
+                )
+                .frame(),
                 &style,
             )
         };
@@ -1407,7 +1412,7 @@ mod tests {
     fn arcs_bow_onto_the_circumsphere_of_a_body_off_the_slice() {
         let (lifted, lift) = thrown_along_w();
         let spin = rotor_at(Plane4::Xz, 0.5);
-        let at_rest = PlaygroundPhysics::new(1, BODY_SIZE);
+        let at_rest = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
         let mut style = slice_colored_style();
         style.space_blend = 1.0;
         let build_at = |physics, w_slice| {
@@ -1419,7 +1424,8 @@ mod tests {
                     Projection::Identity,
                     w_slice,
                     CAMERA_DISTANCE,
-                ),
+                )
+                .frame(),
                 &style,
             )
         };
@@ -1444,8 +1450,8 @@ mod tests {
     #[test]
     fn the_honest_layer_ignores_the_projection_the_cap_scales_by_it() {
         const FOCAL: f32 = 2.0;
-        let physics = PlaygroundPhysics::new(1, BODY_SIZE);
-        let frame = frame_of(
+        let physics = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
+        let fixture = frame_of(
             &physics,
             ROW_16,
             rotor_at(Plane4::Xz, 0.5),
@@ -1455,6 +1461,7 @@ mod tests {
             SLICE_W,
             CAMERA_DISTANCE,
         );
+        let frame = fixture.frame();
         let built = build_row(&frame, &slice_colored_style());
 
         let scale = FOCAL / (FOCAL - SLICE_W);
@@ -1478,10 +1485,9 @@ mod tests {
     fn hyperslice_keeps_the_edges_whose_cells_cross_the_slab() {
         const THICKNESS: f32 = 0.2;
         const TILT: f32 = 0.5;
-        // Slab `[0.4, 0.6]` sits between the tilted `e_z` and `e_w` w-extents (0.34, 0.61).
         const SLAB_CENTRE_W: f32 = 0.5;
-        let physics = PlaygroundPhysics::new(1, BODY_SIZE);
-        let frame = frame_of(
+        let physics = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
+        let fixture = frame_of(
             &physics,
             ROW_16,
             rotor_at(Plane4::Zw, TILT),
@@ -1489,6 +1495,7 @@ mod tests {
             SLAB_CENTRE_W,
             CAMERA_DISTANCE,
         );
+        let frame = fixture.frame();
         let mut style = slice_colored_style();
         style.hyperslice = Some(THICKNESS);
 
@@ -1543,8 +1550,8 @@ mod tests {
 
     #[test]
     fn space_blend_one_bows_edges_onto_the_circumsphere() {
-        let physics = PlaygroundPhysics::new(1, BODY_SIZE);
-        let frame = frame_of(
+        let physics = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
+        let fixture = frame_of(
             &physics,
             ROW_16,
             Rotor4::IDENTITY,
@@ -1552,6 +1559,7 @@ mod tests {
             SLICE_W,
             CAMERA_DISTANCE,
         );
+        let frame = fixture.frame();
         let topo = Polytope4::Cell16.topology();
         let centre = Vec4::from_array(body_position(0, 1)).truncate();
 
@@ -1600,14 +1608,14 @@ mod tests {
     fn a_nearer_camera_clips_the_16cell_harder() {
         const NEAR: f32 = 4.0;
         const FAR: f32 = 12.0;
-        let near_radius = stereographic_view_radius(Polytope4::Cell16, NEAR);
-        let far_radius = stereographic_view_radius(Polytope4::Cell16, FAR);
+        let near_radius = stereographic_view_radius(NEAR);
+        let far_radius = stereographic_view_radius(FAR);
         assert!(
             near_radius < far_radius,
             "both distances resolve to the same clip radius"
         );
 
-        let physics = PlaygroundPhysics::new(1, BODY_SIZE);
+        let physics = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
         let spin = rotor_at(Plane4::Zw, 1.1);
         let built_at = |camera_distance| {
             build_row(
@@ -1618,7 +1626,8 @@ mod tests {
                     Projection::Stereographic { pole: Vec4::W },
                     0.45,
                     camera_distance,
-                ),
+                )
+                .frame(),
                 &slice_colored_style(),
             )
         };
@@ -1656,7 +1665,7 @@ mod tests {
     }
 
     fn thrown_along_w() -> (PlaygroundPhysics, f32) {
-        let mut physics = PlaygroundPhysics::new(1, BODY_SIZE);
+        let mut physics = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
         physics.world.bodies[0].apply_impulse(Vec4::W);
         physics.step(15);
         let pose = physics.pose(0, 1, Rotor4::IDENTITY);
@@ -1674,8 +1683,8 @@ mod tests {
 
     #[test]
     fn a_warm_overlay_frame_reaches_the_allocator_zero_times() {
-        let physics = PlaygroundPhysics::new(2, BODY_SIZE);
-        let frame = frame_of(
+        let physics = PlaygroundPhysics::new(2, BODY_SIZE).unwrap();
+        let fixture = frame_of(
             &physics,
             ROW_16_PAIR,
             rotor_at(Plane4::Zw, 0.4),
@@ -1683,6 +1692,7 @@ mod tests {
             SLICE_W,
             CAMERA_DISTANCE,
         );
+        let frame = fixture.frame();
         let mut style = slice_colored_style();
         style.space_blend = 1.0;
         let points_style = points_style_for(&style);
@@ -1711,8 +1721,8 @@ mod tests {
 
     #[test]
     fn the_perimeter_path_reaches_the_allocator_zero_times() {
-        let physics = PlaygroundPhysics::new(1, BODY_SIZE);
-        let frame = frame_of(
+        let physics = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
+        let fixture = frame_of(
             &physics,
             ROW_16,
             rotor_at(Plane4::Xz, 0.5),
@@ -1720,6 +1730,7 @@ mod tests {
             SLICE_W,
             CAMERA_DISTANCE,
         );
+        let frame = fixture.frame();
         let style = slice_colored_style();
         let cross = SectionLayer::CROSS_SECTION_DEFAULT;
         let cap = SectionLayer {
@@ -1744,8 +1755,8 @@ mod tests {
 
     #[test]
     fn cell_centre_sprites_come_from_each_slots_own_polytope() {
-        let physics = PlaygroundPhysics::new(2, BODY_SIZE);
-        let frame = frame_of(
+        let physics = PlaygroundPhysics::new(2, BODY_SIZE).unwrap();
+        let fixture = frame_of(
             &physics,
             ROW_MIXED,
             rotor_at(Plane4::Xz, 0.5),
@@ -1753,6 +1764,7 @@ mod tests {
             SLICE_W,
             CAMERA_DISTANCE,
         );
+        let frame = fixture.frame();
         let mut style = points_style_for(&slice_colored_style());
         style.show_vertices = false;
         style.show_cell_centers = true;
@@ -1776,8 +1788,8 @@ mod tests {
 
     #[test]
     fn the_fill_path_reaches_the_allocator_zero_times() {
-        let physics = PlaygroundPhysics::new(1, BODY_SIZE);
-        let frame = frame_of(
+        let physics = PlaygroundPhysics::new(1, BODY_SIZE).unwrap();
+        let fixture = frame_of(
             &physics,
             ROW_16,
             rotor_at(Plane4::Xz, 0.5),
@@ -1785,6 +1797,7 @@ mod tests {
             SLICE_W,
             CAMERA_DISTANCE,
         );
+        let frame = fixture.frame();
         let cross = SectionLayer::CROSS_SECTION_DEFAULT;
         let cap = SectionLayer {
             perimeter: true,

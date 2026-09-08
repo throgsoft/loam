@@ -1,4 +1,4 @@
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 pub trait SupportFn {
     fn support(&self, direction: Vec3) -> Vec3;
@@ -20,6 +20,23 @@ impl<'a> SupportFn for ConvexHull<'a> {
             }
         }
         best
+    }
+}
+
+/// `rotation` must be a unit quaternion.
+pub struct PosedHull<'a> {
+    pub local: &'a [Vec3],
+    pub position: Vec3,
+    pub rotation: Quat,
+}
+
+impl SupportFn for PosedHull<'_> {
+    fn support(&self, direction: Vec3) -> Vec3 {
+        let local_direction = self.rotation.conjugate() * direction;
+        let hull = ConvexHull {
+            vertices: self.local,
+        };
+        self.rotation * hull.support(local_direction) + self.position
     }
 }
 
@@ -143,7 +160,6 @@ fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     }
 }
 
-// The axis `v` is least aligned with keeps the cross product away from zero.
 fn any_perpendicular(v: Vec3) -> Vec3 {
     if v.x.abs() <= v.y.abs() && v.x.abs() <= v.z.abs() {
         v.cross(Vec3::X)
@@ -192,8 +208,7 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     }
 }
 
-// [d, c, b, a] with `a` newest; face normals orient away from the opposite
-// vertex, not by winding, since `do_triangle`'s swap branch breaks it.
+// Face normals use the opposite vertex; simplex pruning can change winding.
 fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[3].point;
     let b = simplex[2].point;
@@ -258,6 +273,29 @@ mod tests {
             center + Vec3::new(half.x, half.y, half.z),
             center + Vec3::new(-half.x, half.y, half.z),
         ]
+    }
+
+    #[test]
+    fn posed_support_uses_the_inverse_rotation() {
+        let local = [
+            Vec3::new(0.6, 0.1, -0.2),
+            Vec3::new(-0.4, 0.7, 0.15),
+            Vec3::new(0.05, -0.8, 0.45),
+        ];
+        let position = Vec3::new(1.0, -2.0, 0.5);
+        let rotation = Quat::from_rotation_z(0.7) * Quat::from_rotation_x(-0.3);
+        let vertices = local.map(|v| rotation * v + position);
+        let posed = PosedHull {
+            local: &local,
+            position,
+            rotation,
+        };
+        let world = ConvexHull {
+            vertices: &vertices,
+        };
+        for direction in [Vec3::X, -Vec3::Y, Vec3::Z, Vec3::new(0.3, -0.7, 0.9)] {
+            assert!((posed.support(direction) - world.support(direction)).length() < 1e-6);
+        }
     }
 
     #[test]
@@ -334,7 +372,6 @@ mod tests {
 
     #[test]
     fn box_vs_sphere_corner_contact() {
-        // The corner (1,1,1) is reached when `d·√3 ≤ 0.5`, i.e. d ≤ 0.2887.
         let vb = box_vertices(Vec3::ZERO, Vec3::ONE);
         let b = ConvexHull { vertices: &vb };
 
@@ -359,7 +396,6 @@ mod tests {
 
     #[test]
     fn rotated_boxes_separate_as_axes_allow() {
-        // The 45° box spans ±√2 on x, so the pair separates at 2.5, overlaps at 2.2.
         use glam::Quat;
         let va = box_vertices(Vec3::ZERO, Vec3::ONE);
         let rot = Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);

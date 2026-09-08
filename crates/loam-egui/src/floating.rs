@@ -1,70 +1,5 @@
 use egui::{Context, Id, Painter, Pos2, Rect, Stroke, Ui, Window};
 
-#[must_use = "FloatingPanelBuilder does nothing until `.show()` is called"]
-pub struct FloatingPanelBuilder<'a> {
-    ctx: &'a Context,
-    id: &'a str,
-    title: &'a str,
-    open: &'a mut bool,
-    resizable: bool,
-    collapsible: bool,
-    default_size: Option<(f32, f32)>,
-    default_width: f32,
-    default_pos: Option<Pos2>,
-}
-
-impl<'a> FloatingPanelBuilder<'a> {
-    pub fn resizable(mut self, on: bool) -> Self {
-        self.resizable = on;
-        self
-    }
-
-    pub fn collapsible(mut self, on: bool) -> Self {
-        self.collapsible = on;
-        self
-    }
-
-    pub fn default_size(mut self, width: f32, height: f32) -> Self {
-        self.default_size = Some((width, height));
-        self
-    }
-
-    pub fn default_width(mut self, width: f32) -> Self {
-        self.default_width = width;
-        self
-    }
-
-    /// First display only.
-    pub fn default_pos(mut self, pos: Pos2) -> Self {
-        self.default_pos = Some(pos);
-        self
-    }
-
-    pub fn show<R>(self, content: impl FnOnce(&mut Ui) -> R) -> Option<R> {
-        if !*self.open {
-            return None;
-        }
-        let mut local_open = *self.open;
-        let mut window = Window::new(self.title)
-            .id(Id::new(self.id))
-            .open(&mut local_open)
-            .collapsible(self.collapsible)
-            .resizable(self.resizable);
-        if let Some((w, h)) = self.default_size {
-            window = window.default_size(egui::vec2(w, h));
-        } else {
-            window = window.default_width(self.default_width);
-        }
-        if let Some(pos) = self.default_pos {
-            window = window.default_pos(pos);
-        }
-        let result = window.show(self.ctx, content).and_then(|r| r.inner);
-        *self.open = local_open;
-        result
-    }
-}
-
-/// `None` while closed; the close-X clears `open`.
 pub fn floating_panel<R>(
     ctx: &Context,
     id: &str,
@@ -72,26 +7,13 @@ pub fn floating_panel<R>(
     open: &mut bool,
     content: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
-    floating_panel_builder(ctx, id, title, open).show(content)
-}
-
-pub fn floating_panel_builder<'a>(
-    ctx: &'a Context,
-    id: &'a str,
-    title: &'a str,
-    open: &'a mut bool,
-) -> FloatingPanelBuilder<'a> {
-    FloatingPanelBuilder {
-        ctx,
-        id,
-        title,
-        open,
-        resizable: false,
-        collapsible: true,
-        default_size: None,
-        default_width: 260.0,
-        default_pos: None,
-    }
+    Window::new(title)
+        .id(Id::new(id))
+        .open(open)
+        .resizable(false)
+        .default_width(260.0)
+        .show(ctx, content)
+        .and_then(|response| response.inner)
 }
 
 /// Closes only on click-outside or Esc, not on a click inside.
@@ -142,16 +64,14 @@ pub fn callout(
     let anchor_outline = ctx.style().visuals.window_stroke.color;
 
     // Window first so the leader line can attach to its captured frame rect.
-    let mut local_open = state.open;
     let window_response = Window::new(title)
         .id(Id::new(id))
-        .open(&mut local_open)
+        .open(&mut state.open)
         .collapsible(true)
         .resizable(false)
         .default_width(PANEL_DEFAULT_WIDTH)
         .current_pos(state.window_pos)
         .show(ctx, content);
-    state.open = local_open;
 
     let window_rect: Option<Rect> = window_response.as_ref().map(|r| r.response.rect);
     if let Some(rect) = window_rect {
@@ -159,10 +79,8 @@ pub fn callout(
     }
 
     // Background order: under the window, over the scene.
-    let painter_layer = egui::LayerId::new(
-        egui::Order::Background,
-        Id::new(format!("{id}-callout-overlay")),
-    );
+    let painter_layer =
+        egui::LayerId::new(egui::Order::Background, Id::new(id).with("callout-overlay"));
     let painter = Painter::new(ctx.clone(), painter_layer, ctx.content_rect());
     if let Some(rect) = window_rect {
         painter.line_segment(

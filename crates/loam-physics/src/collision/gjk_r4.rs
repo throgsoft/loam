@@ -1,7 +1,7 @@
 use glam::Vec4;
 use loam_math::{Rotor, Rotor4};
 
-use super::simplex_r4::{closest_to_origin, Closest};
+use super::simplex_r4::{closest_to_origin, project_origin_onto_affine_hull};
 
 pub trait SupportFn4 {
     fn support(&self, direction: Vec4) -> Vec4;
@@ -26,8 +26,7 @@ impl<'a> SupportFn4 for ConvexHull4<'a> {
     }
 }
 
-/// Body-local vertices supported in the body frame via `<R v, d> = <v, R⁻¹ d>`,
-/// so the world vertices are never materialized.
+/// Support queries transform the direction into the body frame.
 pub struct PosedHull4<'a> {
     pub local: &'a [Vec4],
     pub position: Vec4,
@@ -110,119 +109,88 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
     } else {
         Vec4::X
     };
-    let mut simplex: Vec<MinkowskiPoint4> = Vec::with_capacity(5);
-    simplex.push(minkowski_support_r4(a, b, dir));
+    let mut simplex = [minkowski_support_r4(a, b, dir); 5];
+    let mut len = 1;
     dir = -simplex[0].point;
 
     for _ in 0..GJK_MAX_ITERATIONS {
         if dir.length_squared() < GJK_EPS {
-            break;
+            if let Some(seed) = complete_simplex(a, b, simplex, len) {
+                return GjkResult4::Intersecting { simplex: seed };
+            }
         }
-        let new_point = minkowski_support_r4(a, b, dir);
-        if new_point.point.dot(dir) < 0.0 {
+        let direction = dir.try_normalize().unwrap_or(Vec4::X);
+        let new_point = minkowski_support_r4(a, b, direction);
+        if new_point.point.dot(direction) < 0.0 {
             return GjkResult4::Separated;
         }
-        // A duplicate support confirms enclosure.
-        if simplex
-            .iter()
-            .any(|p| (p.point - new_point.point).length_squared() < 1e-10)
-        {
-            break;
+        if simplex[..len].iter().any(|p| p.point == new_point.point) {
+            return GjkResult4::Separated;
         }
-        simplex.push(new_point);
-
-        let points: Vec<Vec4> = simplex.iter().map(|p| p.point).collect();
-        let Closest {
-            point: closest,
-            kept,
-            ..
-        } = closest_to_origin(&points);
-        if closest.length_squared() < GJK_EPS {
-            let pruned: Vec<MinkowskiPoint4> = kept.iter().map(|&i| simplex[i]).collect();
-            simplex = pruned;
-            break;
+        simplex[len] = new_point;
+        len += 1;
+        let points = simplex.map(|p| p.point);
+        let closest = closest_to_origin(&points[..len]);
+        let previous = simplex;
+        for (slot, &i) in closest.kept().iter().enumerate() {
+            simplex[slot] = previous[i];
         }
-        let pruned: Vec<MinkowskiPoint4> = kept.iter().map(|&i| simplex[i]).collect();
-        simplex = pruned;
-        dir = -closest;
+        len = closest.kept().len();
+        if len == 5 {
+            return GjkResult4::Intersecting { simplex };
+        }
+        dir = -closest.point;
     }
-
-    let mut tried: Vec<Vec4> = Vec::new();
-    while simplex.len() < 5 {
-        let Some(probe) = orthogonal_to_hull(&simplex, &tried) else {
-            break;
-        };
-        tried.push(probe);
-
-        let sup = minkowski_support_r4(a, b, probe);
-        if simplex
-            .iter()
-            .all(|p| (p.point - sup.point).length_squared() >= 1e-10)
-        {
-            simplex.push(sup);
-            continue;
-        }
-        let sup_neg = minkowski_support_r4(a, b, -probe);
-        if simplex
-            .iter()
-            .all(|p| (p.point - sup_neg.point).length_squared() >= 1e-10)
-        {
-            simplex.push(sup_neg);
-            continue;
-        }
-    }
-
-    if simplex.len() == 5 {
-        finalize_intersecting(simplex)
-    } else {
-        GjkResult4::Separated
-    }
+    GjkResult4::Separated
 }
 
-fn finalize_intersecting(simplex: Vec<MinkowskiPoint4>) -> GjkResult4 {
-    if simplex.len() == 5 {
-        let arr: [MinkowskiPoint4; 5] =
-            [simplex[0], simplex[1], simplex[2], simplex[3], simplex[4]];
-        GjkResult4::Intersecting { simplex: arr }
-    } else {
-        GjkResult4::Separated
+fn complete_simplex<A: SupportFn4, B: SupportFn4>(
+    a: &A,
+    b: &B,
+    mut simplex: [MinkowskiPoint4; 5],
+    len: usize,
+) -> Option<[MinkowskiPoint4; 5]> {
+    if len == 5 {
+        let points = simplex.map(|p| p.point);
+        let (_, weights) = project_origin_onto_affine_hull(&[0, 1, 2, 3, 4], &points)?;
+        return weights
+            .iter()
+            .all(|&w| w.is_finite() && w >= 0.0)
+            .then_some(simplex);
     }
+    let probe = orthogonal_to_hull(&simplex[..len])?;
+    for direction in [probe, -probe] {
+        let support = minkowski_support_r4(a, b, direction);
+        if simplex[..len].iter().any(|p| p.point == support.point) {
+            continue;
+        }
+        simplex[len] = support;
+        if let Some(seed) = complete_simplex(a, b, simplex, len + 1) {
+            return Some(seed);
+        }
+    }
+    None
 }
 
-// `tried` directions are projected out so a probe is never re-picked.
-fn orthogonal_to_hull(simplex: &[MinkowskiPoint4], tried: &[Vec4]) -> Option<Vec4> {
-    let points: Vec<Vec4> = simplex.iter().map(|p| p.point).collect();
-    let basis: Vec<Vec4> = if points.len() <= 1 {
-        Vec::new()
-    } else {
-        let v0 = points[0];
-        points[1..].iter().map(|&p| p - v0).collect()
-    };
-
-    let mut onb: Vec<Vec4> = Vec::with_capacity(basis.len());
-    for &b in &basis {
-        let mut r = b;
-        for o in &onb {
+fn orthogonal_to_hull(simplex: &[MinkowskiPoint4]) -> Option<Vec4> {
+    let mut onb = [Vec4::ZERO; 4];
+    let mut rank = 0;
+    for p in &simplex[1..] {
+        let mut r = p.point - simplex[0].point;
+        for o in &onb[..rank] {
             r -= *o * r.dot(*o);
         }
         let m = r.length_squared();
         if m > 1e-10 {
-            onb.push(r / m.sqrt());
+            onb[rank] = r / m.sqrt();
+            rank += 1;
         }
     }
-
-    let axes = [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W];
     let mut best: Option<(f32, Vec4)> = None;
-    for &axis in &axes {
+    for axis in [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W] {
         let mut r = axis;
-        for o in &onb {
+        for o in &onb[..rank] {
             r -= *o * r.dot(*o);
-        }
-        for t in tried {
-            let tl = t.length_squared();
-            if tl > 1e-12 {
-                r -= *t * (r.dot(*t) / tl);
-            }
         }
         let mag_sq = r.length_squared();
         if mag_sq > 1e-8 && best.is_none_or(|(m, _)| mag_sq > m) {
@@ -247,7 +215,6 @@ mod tests {
             Vec4::new(0.25, 0.4, 0.5, 0.6),
         ];
         let position = Vec4::new(3.0, -1.5, 0.75, -2.25);
-        // The double rotation mixes all four axes, which an un-inverted rotor gets wrong.
         let simple = (Plane4::Xw.unit_bivector() * 0.8).exp().normalize();
         let double = (Bivector4::new(0.5, 0.0, 0.0, 0.0, 0.0, -0.9).exp()).normalize();
 
@@ -279,6 +246,63 @@ mod tests {
     }
 
     #[test]
+    fn a_small_positive_gap_is_not_an_intersection() {
+        for gap in [1e-5, 1e-4, 5e-4, 1e-3] {
+            let a = Sphere4 {
+                center: Vec4::ZERO,
+                radius: 1.0,
+            };
+            let b = Sphere4 {
+                center: Vec4::X * (2.0 + gap),
+                radius: 1.0,
+            };
+            for direction in [Vec4::X, -Vec4::X, Vec4::Y] {
+                assert!(
+                    matches!(gjk_intersect_r4(&a, &b, direction), GjkResult4::Separated),
+                    "gap={gap}, direction={direction:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rotated_hulls_with_disjoint_x_intervals_are_separated() {
+        use crate::euclidean_r4::tesseract_vertices;
+        let rotor = Bivector4::new(0.37, -0.21, 0.43, 0.17, -0.29, 0.13).exp();
+        for scale in [0.1, 1.0, 100.0] {
+            let a_vertices = tesseract_vertices(scale);
+            let rotated: Vec<_> = a_vertices.iter().map(|&v| rotor.apply(v)).collect();
+            let right_a = a_vertices
+                .iter()
+                .map(|v| v.x)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let left_b = rotated.iter().map(|v| v.x).fold(f32::INFINITY, f32::min);
+            for relative_gap in [1e-5, 1e-3, 0.1] {
+                let translation = Vec4::new(
+                    right_a - left_b + relative_gap * scale,
+                    0.2 * scale,
+                    -0.15 * scale,
+                    0.1 * scale,
+                );
+                let b_vertices: Vec<_> = rotated.iter().map(|&v| v + translation).collect();
+                assert!(b_vertices.iter().all(|v| v.x > right_a));
+                let a = ConvexHull4 {
+                    vertices: &a_vertices,
+                };
+                let b = ConvexHull4 {
+                    vertices: &b_vertices,
+                };
+                for direction in [Vec4::Y, Vec4::Z, Vec4::new(0.31, -0.7, 0.5, 0.2)] {
+                    assert!(
+                        matches!(gjk_intersect_r4(&a, &b, direction), GjkResult4::Separated),
+                        "scale={scale}, gap={relative_gap}, direction={direction:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn separated_spheres() {
         let a = Sphere4 {
             center: Vec4::new(-5.0, 0.0, 0.0, 0.0),
@@ -295,19 +319,31 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_spheres() {
-        let a = Sphere4 {
-            center: Vec4::new(0.0, 0.0, 0.0, 0.0),
-            radius: 2.0,
-        };
-        let b = Sphere4 {
-            center: Vec4::new(1.0, 0.0, 0.0, 0.0),
-            radius: 2.0,
-        };
-        assert!(matches!(
-            gjk_intersect_r4(&a, &b, Vec4::X),
-            GjkResult4::Intersecting { .. }
-        ));
+    fn overlapping_spheres_complete_lower_dimensional_searches() {
+        for center in [
+            Vec4::X,
+            Vec4::new(1.1, 0.7, 0.0, 0.0),
+            Vec4::new(1.1, 0.7, 0.3, 0.2),
+        ] {
+            let a = Sphere4 {
+                center: Vec4::ZERO,
+                radius: 2.0,
+            };
+            let b = Sphere4 {
+                center,
+                radius: 2.0,
+            };
+            assert!(center.length() < a.radius + b.radius);
+            for direction in [Vec4::X, Vec4::Y, Vec4::W] {
+                assert!(
+                    matches!(
+                        gjk_intersect_r4(&a, &b, direction),
+                        GjkResult4::Intersecting { .. }
+                    ),
+                    "center={center:?}, direction={direction:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -365,7 +401,6 @@ mod tests {
 
         let va: Vec<Vec4> = tesseract_vertices(1.0);
         let a = ConvexHull4 { vertices: &va };
-        // `tesseract_vertices(1.0)` has half extent 0.5, so the faces meet at shift 1.
         for (shift, expect_overlap) in [
             (1.0 - 1e-1, true),
             (1.0 - 1e-2, true),
@@ -380,7 +415,6 @@ mod tests {
             let b = ConvexHull4 { vertices: &vb };
             let depth = match gjk_intersect_r4(&a, &b, Vec4::X) {
                 GjkResult4::Intersecting { simplex } => {
-                    // Both circumradius 1, so the difference body's scale is 2.
                     epa_r4(&a, &b, simplex, 2.0).map_or(0.0, |c| c.penetration)
                 }
                 GjkResult4::Separated => 0.0,

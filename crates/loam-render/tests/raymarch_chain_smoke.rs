@@ -3,10 +3,10 @@
 //! except the `gpu_probe`.
 
 use glam::Vec3;
-use loam_math::{EuclideanR3, WgslSpace};
-use loam_render::{GeodesicRayMarchNode, RayMarchNode, RayMarchUniforms};
+use loam_math::EuclideanR3;
+use loam_render::shader::ShaderDb;
+use loam_render::{RayMarchNode, RayMarchUniforms};
 use loam_scene::{Scene, SceneNode};
-use loam_shader::{validate_wgsl, ShaderDb, GEODESIC_MARCH_KERNEL};
 use wgpu::{Device, TextureFormat};
 
 fn probe_scene() -> Scene {
@@ -43,7 +43,6 @@ fn ray_direction(pos: vec4<f32>) -> vec3<f32> {
 }
 "#;
 
-// Calls every symbol `GEODESIC_MARCH_KERNEL` exports.
 const GEODESIC_SHADING_WGSL: &str = r#"
 @fragment
 fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
@@ -74,35 +73,12 @@ fn scene_user_shader() -> String {
     format!("{UNIFORMS_WGSL}{SCENE_SHADING_WGSL}")
 }
 
-// `ShaderDb`'s assembler is crate-private; this repeats its ordering.
-fn assemble(space_wgsl: &str, scene_wgsl: &str, user_wgsl: &str) -> String {
-    format!("{space_wgsl}\n{scene_wgsl}\n{user_wgsl}")
-}
-
-#[test]
-fn geodesic_chain_assembles_into_valid_wgsl() {
-    let scene_wgsl = probe_scene().to_wgsl(&EuclideanR3);
-    let source = assemble(
-        &EuclideanR3.wgsl_impl(),
-        &format!("{scene_wgsl}{GEODESIC_MARCH_KERNEL}"),
-        &geodesic_user_shader(),
-    );
-    validate_wgsl(&source).expect("geodesic raymarch chain should validate");
-}
-
-#[test]
-fn scene_chain_assembles_into_valid_wgsl() {
-    let scene_wgsl = probe_scene().to_wgsl(&EuclideanR3);
-    let source = assemble(&EuclideanR3.wgsl_impl(), &scene_wgsl, &scene_user_shader());
-    validate_wgsl(&source).expect("scene raymarch chain should validate");
-}
-
 fn build_geodesic_node(
     device: &Device,
     surface_format: TextureFormat,
     shader_path: &std::path::Path,
     scene: &Scene,
-) -> anyhow::Result<GeodesicRayMarchNode> {
+) -> anyhow::Result<RayMarchNode> {
     let mut db = ShaderDb::new(device.clone());
     let id = db.load_geodesic_scene(
         ShaderDb::ROOT_OWNER,
@@ -110,12 +86,7 @@ fn build_geodesic_node(
         &scene.to_wgsl(&EuclideanR3),
         &EuclideanR3,
     )?;
-    Ok(GeodesicRayMarchNode::from_module(
-        device,
-        surface_format,
-        db.module(id),
-        1,
-    ))
+    Ok(RayMarchNode::new(device, surface_format, db.module(id), 1))
 }
 
 fn build_raymarch_node(
@@ -136,7 +107,8 @@ fn build_raymarch_node(
 
 fn frame_uniforms() -> RayMarchUniforms {
     RayMarchUniforms {
-        resolution: [640.0, 360.0],
+        resolution: [64.0, 64.0],
+        camera_pos: [0.0, 0.0, 1.0],
         ..Default::default()
     }
 }
@@ -166,7 +138,7 @@ async fn request_device() -> Result<(wgpu::Device, wgpu::Queue), String> {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn both_nodes_build_from_a_real_shader_db_gpu_probe() {
+fn scene_and_geodesic_shaders_draw_through_shader_db_gpu_probe() {
     let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
     let surface_format = TextureFormat::Rgba8UnormSrgb;
     let scene = probe_scene();
@@ -178,10 +150,70 @@ fn both_nodes_build_from_a_real_shader_db_gpu_probe() {
     let mut geodesic = build_geodesic_node(&device, surface_format, &geodesic_path, &scene)
         .expect("geodesic chain should build a pipeline");
     geodesic.set_uniforms(&queue, frame_uniforms());
+    let pixel = center_pixel(&device, &queue, &mut geodesic);
+    assert!(
+        pixel[2] > 200 && pixel[2] > pixel[0],
+        "sphere normal pixel: {pixel:?}"
+    );
 
     let scene_path = dir.path().join("scene.wgsl");
     std::fs::write(&scene_path, scene_user_shader()).expect("write scene shader");
     let mut plain = build_raymarch_node(&device, surface_format, &scene_path, &scene)
         .expect("scene chain should build a pipeline");
     plain.set_uniforms(&queue, frame_uniforms());
+    assert_eq!(center_pixel(&device, &queue, &mut plain), [255; 4]);
+}
+
+fn center_pixel(device: &Device, queue: &wgpu::Queue, node: &mut RayMarchNode) -> [u8; 4] {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("raymarch output"),
+        size: wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("raymarch readback"),
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    node.record_in_viewport(&mut encoder, &view, loam_render::Viewport::full([64, 64]));
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x: 32, y: 32, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: None,
+            },
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(Some(encoder.finish()));
+    readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("readback");
+    let bytes = readback.slice(..).get_mapped_range();
+    [bytes[0], bytes[1], bytes[2], bytes[3]]
 }

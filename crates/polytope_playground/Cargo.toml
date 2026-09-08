@@ -1,4 +1,5 @@
 [package]
+build = "../loam-app/build_info.rs"
 name = "polytope_playground"
 version.workspace = true
 edition.workspace = true
@@ -10,11 +11,8 @@ description = "Polytope Playground: rotate the regular 4-polytopes, cut exact cr
 keywords = ["4d", "polytope", "rotation", "demo", "wgpu"]
 categories = ["game-development", "graphics", "visualization"]
 
-# A workspace member crate rather than a cargo example, because Trunk's wasm
-# pipeline can only target `[[bin]]`. Run with `cargo run -p polytope_playground`;
-# `crates/polytope_playground/index.html` is the Trunk entry point.
-
 [dependencies]
+tracing.workspace = true
 anyhow.workspace = true
 glam.workspace = true
 winit.workspace = true
@@ -31,20 +29,11 @@ loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
 loam-text    = { path = "../loam-text",    version = "0.1.0" }
 loam-time    = { path = "../loam-time",    version = "0.1.0" }
 
-# Raw TTF bytes for the loam-text HUD atlas. Pure asset crate (no egui code),
-# already in the tree under egui's `default_fonts`, so this adds a dependency
-# edge rather than a committed font.
 epaint_default_fonts = "0.33"
 
-[dev-dependencies]
-# Headless device request in the `build_cost` measurement. Dev-only: the demo
-# itself gets its device from the runner.
-pollster.workspace = true
-
 [features]
-# Default to capture-on for native dev (matches the previous `cargo run --example`
-# behavior, which inherited loam-app's default features). The wasm build at
-# `index.html` opts out via `data-cargo-no-default-features`, dropping the native-only
-# encoder crates and routing console commands through `capture_stub.rs`.
 default = ["capture"]
 capture = ["loam-app/capture"]
+
+[lints]
+workspace = true

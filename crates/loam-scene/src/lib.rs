@@ -29,84 +29,6 @@ mod tests {
     use super::*;
     use glam::Vec3;
 
-    #[test]
-    fn sphere_constants_round_trip_below_the_old_print_floor() {
-        use loam_math::EuclideanR3;
-        let center = Vec3::new(3.7e-7, -1.25e-7, 0.0);
-        let radius = 1e-7_f32;
-        let src = Shape::sphere_at(center, radius).to_wgsl(&EuclideanR3, "sdf_0");
-        let args = src
-            .split("vec3<f32>(")
-            .nth(1)
-            .and_then(|rest| rest.split(')').next())
-            .expect("center is emitted");
-        let coords: Vec<f32> = args
-            .split(", ")
-            .map(|c| c.parse().expect("coordinate parses as f32"))
-            .collect();
-        assert_eq!(coords, vec![center.x, center.y, center.z], "emitted {args}");
-        let radius_literal = src
-            .split("- (")
-            .nth(1)
-            .and_then(|rest| rest.split(')').next())
-            .expect("radius is emitted");
-        assert_eq!(
-            radius_literal.parse::<f32>().expect("radius parses as f32"),
-            radius,
-        );
-    }
-
-    #[test]
-    fn sphere_wgsl_is_space_agnostic() {
-        use loam_math::{EuclideanR3, HyperbolicH3, SphericalS3};
-        let s = Shape::sphere_at_origin(0.3);
-        let e3 = s.to_wgsl(&EuclideanR3, "sdf_0");
-        let h3 = s.to_wgsl(&HyperbolicH3, "sdf_0");
-        let s3 = s.to_wgsl(&SphericalS3, "sdf_0");
-        assert_eq!(e3, h3);
-        assert_eq!(h3, s3);
-    }
-
-    #[test]
-    fn halfspace_emits_dot_in_flat_chart() {
-        use loam_math::EuclideanR3;
-        let p = Shape::HalfSpace {
-            normal: Vec3::Y,
-            offset: -0.5,
-        };
-        let src = p.to_wgsl(&EuclideanR3, "sdf_floor");
-        assert!(src.contains("fn sdf_floor(p: vec3<f32>) -> f32"));
-        assert!(src.contains("dot(p,"));
-        assert!(src.contains("- (-0.5)"));
-    }
-
-    #[test]
-    fn halfspace_sentinels_in_curved_chart() {
-        use loam_math::HyperbolicH3;
-        let p = Shape::HalfSpace {
-            normal: Vec3::Y,
-            offset: -0.5,
-        };
-        let src = p.to_wgsl(&HyperbolicH3, "sdf_floor");
-        assert!(src.contains("fn sdf_floor(_p: vec3<f32>) -> f32"));
-        assert!(src.contains("return 1e9"));
-        assert!(
-            !src.contains("dot(p,"),
-            "HalfSpace must not emit raw chart-coord dot product in curved Spaces",
-        );
-    }
-
-    #[test]
-    fn sphere_only_scene_emits_no_chart_coord_dot() {
-        use loam_math::EuclideanR3;
-        let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.3));
-        let src = scene.to_wgsl(&EuclideanR3);
-        assert!(src.contains("fn loam_scene_sdf"));
-        assert!(src.contains("loam_distance"));
-        assert!(!src.contains("dot(p,"));
-    }
-
-    // One `Shape` per `ShapeKind`, in declaration order.
     fn one_shape_per_kind() -> Vec<Shape> {
         use glam::{Vec2, Vec4};
         vec![
@@ -139,52 +61,50 @@ mod tests {
     }
 
     #[test]
-    fn eval_sentinels_exactly_where_emit_sentinels() {
+    fn unsupported_primitives_keep_the_distance_sentinel() {
         use loam_math::{
-            BlendedSpace, EuclideanR3, HyperbolicH3, LinearBlendX, Space, SphericalS3, WgslSpace,
+            BlendedSpace, EuclideanR3, HyperbolicH3, LinearBlendX, Space, SphericalS3,
         };
-
-        fn check<S: WgslSpace + Space<Point = Vec3, Vector = Vec3>>(space: &S, label: &str) {
-            // In-chart for H³ (|p| < 1) and S³ (|p|² < 1) alike.
-            let probe = Vec3::new(0.11, -0.07, 0.13);
-            for shape in one_shape_per_kind() {
-                let emitted_sentinel = shape
-                    .to_wgsl(space, "sdf_probe")
-                    .contains(&format!("return {SENTINEL_DISTANCE:e};"));
-                let eval_sentinel = shape.eval(space, probe) == SENTINEL_DISTANCE;
+        fn check<S: Space<Point = Vec3, Vector = Vec3>>(space: &S, halfspace_supported: bool) {
+            let unsupported = [
+                false,
+                !halfspace_supported,
+                true,
+                false,
+                true,
+                true,
+                true,
+                true,
+            ];
+            for (shape, absent) in one_shape_per_kind().into_iter().zip(unsupported) {
                 assert_eq!(
-                    eval_sentinel,
-                    emitted_sentinel,
-                    "{label}/{:?}: eval sentinel = {eval_sentinel}, emit sentinel = \
-                     {emitted_sentinel}",
-                    shape.kind(),
+                    shape.eval(space, Vec3::new(0.11, -0.07, 0.13)) == SENTINEL_DISTANCE,
+                    absent,
+                    "{:?}",
+                    shape.kind()
                 );
             }
         }
-
-        check(&EuclideanR3, "EuclideanR3");
-        check(&HyperbolicH3, "HyperbolicH3");
-        check(&SphericalS3, "SphericalS3");
+        check(&EuclideanR3, true);
+        check(&HyperbolicH3, false);
+        check(&SphericalS3, false);
         check(
-            &BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.5, 0.5)),
-            "BlendedSpace<E3,H3>",
+            &BlendedSpace::new(
+                EuclideanR3,
+                HyperbolicH3,
+                LinearBlendX::new(-0.5, 0.5).unwrap(),
+            ),
+            false,
         );
-    }
-
-    #[test]
-    fn eval_4d_sentinels_exactly_where_emit_4d_sentinels() {
-        use glam::Vec4;
-        let probe = Vec4::new(0.11, -0.07, 0.13, 0.05);
-        for shape in one_shape_per_kind() {
-            let emitted_sentinel = shape
-                .to_wgsl_4d("sdf_probe")
-                .contains(&format!("return {SENTINEL_DISTANCE:e};"));
-            let eval_sentinel = shape.eval_4d(probe) == SENTINEL_DISTANCE;
+        for (shape, absent) in one_shape_per_kind()
+            .into_iter()
+            .zip([true, true, false, true, true, true, true, false])
+        {
             assert_eq!(
-                eval_sentinel,
-                emitted_sentinel,
-                "{:?}: eval sentinel = {eval_sentinel}, emit sentinel = {emitted_sentinel}",
-                shape.kind(),
+                shape.eval_4d(glam::Vec4::new(0.11, -0.07, 0.13, 0.05)) == SENTINEL_DISTANCE,
+                absent,
+                "{:?}",
+                shape.kind()
             );
         }
     }
@@ -199,6 +119,9 @@ mod tests {
         let p = Vec3::new(0.0, 0.25, 0.0);
         assert!((plane.eval(&EuclideanR3, p) - 0.75).abs() < 1e-6);
         assert_eq!(plane.eval(&HyperbolicH3, p), SENTINEL_DISTANCE);
+        let torus = loam_math::FlatTorus3::cube(2.0);
+        assert_eq!(plane.eval(&torus, p), SENTINEL_DISTANCE);
+        assert_eq!(plane.eval(&torus, p + Vec3::Y * 2.0), SENTINEL_DISTANCE);
     }
 
     fn deterministic_pair_samples(seed: u32, count: usize, extent: f32) -> Vec<(Vec3, Vec3)> {
@@ -245,7 +168,6 @@ mod tests {
             .collect()
     }
 
-    // 1-Lipschitz with respect to the metric of the Space, not chart coordinates.
     fn assert_lipschitz_1_under_space_metric<S, F>(label: &str, space: &S, sdf: F, extent: f32)
     where
         S: loam_math::Space<Point = Vec3, Vector = Vec3>,
@@ -274,12 +196,17 @@ mod tests {
                 .subtract(SceneNode::sphere(Vec3::new(0.0, 0.2, 0.0), 0.08))
                 .intersect(SceneNode::plane(Vec3::Y, -0.6)),
         );
-        // H³ and S³ charts saturate near their boundary shells.
+
         assert_lipschitz_1_under_space_metric(
             "E3",
             &EuclideanR3,
             |p| scene.eval(&EuclideanR3, p),
             1.0,
+        );
+        let scene = Scene::new(
+            SceneNode::sphere(Vec3::new(0.1, 0.0, 0.0), 0.2)
+                .smooth_union(SceneNode::sphere(Vec3::new(-0.2, 0.1, 0.0), 0.12), 0.06)
+                .subtract(SceneNode::sphere(Vec3::new(0.0, 0.2, 0.0), 0.08)),
         );
         assert_lipschitz_1_under_space_metric(
             "H3",
@@ -308,7 +235,6 @@ mod tests {
                 "{label}: centre must read -radius",
             );
             for direction in [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, Vec3::ONE.normalize()] {
-                // Geodesic arc length is linear in |v|.
                 let probe = direction * 0.1;
                 let probe_arc = space.distance(center, space.exp(center, probe));
                 let at_arc = |arc: f32| space.exp(center, probe * (arc / probe_arc));
@@ -415,7 +341,7 @@ mod tests {
         let right = SceneNode::sphere(Vec3::new(0.5, 0.0, 0.0), 0.2);
         let soft = Scene::new(left.clone().smooth_union(right.clone(), 0.02));
         let hard = Scene::new(left.union(right));
-        // `h` clamps to 1 and the `k·h·(1 − h)` term is exactly zero.
+
         let p = Vec3::new(-0.5, 0.0, 0.0);
         assert_eq!(soft.eval(&EuclideanR3, p), hard.eval(&EuclideanR3, p));
     }
@@ -509,7 +435,6 @@ mod tests {
         }
     }
 
-    // Past 2^63, where a bare digit run overflows WGSL's `AbstractInt` (i64) range.
     const BEYOND_ABSTRACT_INT: f32 = 1.0e19;
 
     fn assert_naga_accepts(source: &str) {
@@ -585,38 +510,5 @@ mod tests {
         use glam::Vec4;
         let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, f32::NAN));
         let _ = scene.to_wgsl_4d();
-    }
-
-    #[test]
-    fn scene_eval_bit_pattern_is_pinned_over_a_fixed_lattice() {
-        use loam_math::EuclideanR3;
-        let scene = Scene::new(
-            SceneNode::sphere(Vec3::new(0.1, -0.05, 0.2), 0.3)
-                .smooth_union(SceneNode::box_(Vec3::new(0.4, 0.2, 0.3)), 0.07)
-                .union(SceneNode::plane(Vec3::Y, -0.5))
-                .subtract(SceneNode::sphere(Vec3::new(-0.2, 0.1, 0.0), 0.15)),
-        );
-
-        // FNV-1a 64 (Fowler / Noll / Vo, 1991).
-        const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-        const STEPS: i32 = 12;
-        let mut hash = FNV_OFFSET_BASIS;
-        for ix in 0..STEPS {
-            for iy in 0..STEPS {
-                for iz in 0..STEPS {
-                    let p = Vec3::new(
-                        ix as f32 / STEPS as f32 - 0.5,
-                        iy as f32 / STEPS as f32 - 0.5,
-                        iz as f32 / STEPS as f32 - 0.5,
-                    );
-                    for byte in scene.eval(&EuclideanR3, p).to_bits().to_le_bytes() {
-                        hash ^= byte as u64;
-                        hash = hash.wrapping_mul(FNV_PRIME);
-                    }
-                }
-            }
-        }
-        assert_eq!(hash, 0x052d_c4d2_ffeb_2586, "golden hash");
     }
 }

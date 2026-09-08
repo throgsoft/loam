@@ -2,7 +2,7 @@ use crate::verbs::WireframeControls;
 use loam_app::egui;
 use loam_app::shell::SceneRegistry;
 use loam_egui::{
-    media::{chevron_button, play_pause_button, refresh_button},
+    media::{chevron_button, play_pause_button, rate_toggle, refresh_button},
     slider_with_edit,
 };
 
@@ -159,8 +159,7 @@ impl Demo {
                     let resp = ui.radio_value(surface_mode, SurfaceMode::Sdf, "SDF raymarch");
                     if sdf_disabled {
                         resp.on_disabled_hover_text(
-                            "Disabled: 120-cell/600-cell SDFs crash the browser tab. \
-                             Remove the heavy polychora to re-enable.",
+                            "SDF rendering for the 120-cell and 600-cell is not yet verified in the browser.",
                         );
                     }
                 });
@@ -170,7 +169,7 @@ impl Demo {
                 ui.label(egui::RichText::new("Cross-section").strong());
                 section_layer_controls(
                     ui,
-                    "Honest (drop-w)",
+                    "Physical slice (drop-w)",
                     "The drop-w slice, never reprojected: the geometry the SDF \
                      shows. On by default so a projection change never distorts \
                      the slice.",
@@ -280,17 +279,14 @@ impl Demo {
     }
 
     pub(crate) fn render_help_window(&mut self, ctx: &egui::Context) {
-        loam_egui::floating_panel_builder(
-            ctx,
-            "polytope-playground-about",
-            "About Polytope Playground",
-            &mut self.show_help,
-        )
+        egui::Window::new("About Polytope Playground")
+        .id(egui::Id::new("polytope-playground-about"))
+        .open(&mut self.show_help)
         .resizable(true)
         .collapsible(false)
-        .default_size(560.0, 460.0)
+        .default_size([560.0, 460.0])
         .default_pos(egui::pos2(80.0, 80.0))
-        .show(|ui| {
+        .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Polytope Playground");
                 ui.label("Rotate 4D shapes and explore their 3D cross-sections.");
@@ -315,7 +311,7 @@ impl Demo {
                         }
                     });
                 ui.add_space(8.0);
-                ui.label("Drag in the viewport to orbit. Right-click a slider value to type it.");
+                ui.label("Right-drag in the viewport to orbit. Right-click a slider value to type it.");
                 ui.label("Drag the controls panel or formula window to move it.");
                 ui.separator();
                 ui.collapsing("Views and rotation", |ui| {
@@ -360,7 +356,7 @@ impl Demo {
         });
     }
 
-    pub(crate) fn render_overlay(&mut self, ctx: &egui::Context) {
+    pub(crate) fn render_overlay(&mut self, ctx: &egui::Context, runtime: &loam_app::Runtime) {
         let screen = ctx.content_rect();
         const OVERLAY_MAX_WIDTH: f32 = 768.0;
         const OVERLAY_MIN_WIDTH: f32 = 220.0;
@@ -397,8 +393,8 @@ impl Demo {
                         .show(ui, |ui| self.render_expanded_body(ui));
                     ui.separator();
                 }
-                self.render_slider_strip(ui);
-                self.render_rate_row(ui);
+                self.render_slider_strip(ui, runtime);
+                self.render_rate_row(ui, runtime);
             });
 
         // Drained after the overlay closure returns, not mid-render.
@@ -410,16 +406,15 @@ impl Demo {
             self.rebuild_bodies();
             self.resolve_schlegel_cache();
         }
-        for action in std::mem::take(&mut self.pending_actions) {
+        for action in self.pending_actions.drain(..) {
             match action {
                 DeferredAction::DraftPush(plane) => self.draft.push(plane),
                 DeferredAction::SeqCommitDraft => {
                     if !self.draft.is_empty() {
                         self.seq.push(RotorTerm {
-                            planes: self.draft.clone(),
+                            planes: std::mem::take(&mut self.draft),
                             scalar: None,
                         });
-                        self.draft.clear();
                     }
                 }
                 DeferredAction::DraftClear => self.draft.clear(),
@@ -432,7 +427,7 @@ impl Demo {
         }
     }
 
-    pub(crate) fn render_slider_strip(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn render_slider_strip(&mut self, ui: &mut egui::Ui, runtime: &loam_app::Runtime) {
         const VALUE_CELL_W: f32 = 72.0;
         let avail = ui.available_width();
         let spacing = ui.spacing().item_spacing.x;
@@ -455,7 +450,7 @@ impl Demo {
                 VALUE_CELL_W,
             );
             if interaction.changed {
-                loam_app::command::submit_line(&format!("slice {slice}"));
+                runtime.submit_line(&format!("slice {slice}"));
             }
         });
         let t_max = self.t_slider_max;
@@ -472,51 +467,38 @@ impl Demo {
                 VALUE_CELL_W,
             );
             if interaction.changed {
-                loam_app::command::submit_line(&format!("seek {seconds}"));
+                runtime.submit_line(&format!("seek {seconds}"));
             }
         });
     }
 
-    pub(crate) fn render_rate_row(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
+    pub(crate) fn render_rate_row(&mut self, ui: &mut egui::Ui, runtime: &loam_app::Runtime) {
+        let mut rate = self.rate_scale;
+        ui.horizontal(|ui| {
+            const PLAY_GROUP_W: f32 = 215.0;
+            let total_w = ui.available_width();
+            let leading = ((total_w - PLAY_GROUP_W) / 2.0).max(8.0);
+
+            ui.add_space(leading);
             let ctrl_size = egui::vec2(CONTROL_W, CONTROL_H);
             let play_size = egui::vec2(PLAY_PAUSE_W, CONTROL_H);
+            rate_toggle(ui, ctrl_size, &mut rate, 0.25, true, false);
+            rate_toggle(ui, ctrl_size, &mut rate, 0.5, false, false);
             if play_pause_button(ui, play_size, self.rotate)
                 .on_hover_text("Play or pause rotation (Space)")
                 .clicked()
             {
-                loam_app::command::submit_line("spin");
+                runtime.submit_line("spin");
             }
+            rate_toggle(ui, ctrl_size, &mut rate, 2.0, false, true);
+            rate_toggle(ui, ctrl_size, &mut rate, 4.0, true, true);
             if refresh_button(ui, ctrl_size)
-                .on_hover_text("Reset rotation and slice")
+                .on_hover_text("Reset slice, rate, active set, orientation, time")
                 .clicked()
             {
-                loam_app::command::submit_line("reset");
+                runtime.submit_line("reset");
             }
-            ui.label("Speed");
-            for (rate, label, command) in [
-                (0.25, "0.25x", "rate 0.25"),
-                (0.5, "0.5x", "rate 0.5"),
-                (1.0, "1x", "rate 1"),
-                (2.0, "2x", "rate 2"),
-                (4.0, "4x", "rate 4"),
-            ] {
-                if ui
-                    .selectable_label(self.rate_scale == rate, label)
-                    .clicked()
-                {
-                    loam_app::command::submit_line(command);
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Help").clicked() {
-                self.show_help = true;
-            }
-            if ui.button("Render settings").clicked() {
-                self.show_render_panel = !self.show_render_panel;
-            }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if chevron_button(
                     ui,
@@ -532,7 +514,25 @@ impl Demo {
                 {
                     self.expanded = !self.expanded;
                 }
+                let util_size = egui::vec2(CONTROL_W, CONTROL_H);
+                if ui
+                    .add(egui::Button::new(egui::RichText::new("⚙").strong()).min_size(util_size))
+                    .on_hover_text("Render settings")
+                    .clicked()
+                {
+                    self.show_render_panel = !self.show_render_panel;
+                }
+                if ui
+                    .add(egui::Button::new(egui::RichText::new("?").strong()).min_size(util_size))
+                    .on_hover_text("Help")
+                    .clicked()
+                {
+                    self.show_help = true;
+                }
             });
         });
+        if rate != self.rate_scale {
+            runtime.submit_line(&format!("rate {rate}"));
+        }
     }
 }

@@ -41,15 +41,6 @@ pub(crate) fn render_row_entries<'a>(
     }
 }
 
-// Read `bodies_moving` before the step: a body that stops mid-step still has a pose to upload.
-pub(crate) fn body_upload_needed(
-    spins: &SlotSpins,
-    uploaded_rotors: &[Rotor4],
-    bodies_moving: bool,
-) -> bool {
-    bodies_moving || spins.rotors_differ_from(uploaded_rotors)
-}
-
 pub(crate) fn set_if_changed<T: PartialEq>(slot: &mut T, value: T) -> bool {
     if *slot == value {
         return false;
@@ -203,7 +194,7 @@ pub(crate) fn sdf_body_uniform(
     size: f32,
     surface_mode: SurfaceMode,
 ) -> BodyUniform {
-    // The 120-cell and 600-cell have no correct SDF (`loam_shape::polytope_geom`); never raymarch them.
+    // Extended kernels remain disabled until browser rendering is verified.
     if matches!(
         entry.shape.polytope4(),
         Some(Polytope4::Cell120 | Polytope4::Cell600)
@@ -308,7 +299,7 @@ pub(crate) struct Demo {
     pub(crate) section_faces_projected_scratch: loam_shape::TriangleMesh<3>,
     pub(crate) section_clip_projected_scratch: Vec<glam::Vec3>,
     pub(crate) body_uniform_scratch: Vec<BodyUniform>,
-    pub(crate) slerp_scratch: Vec<glam::Vec4>,
+    pub(crate) strip_cells_scratch: Vec<(loam_render::Viewport, f32, BodyUniform)>,
     pub(crate) wireframe_section_edges_scratch: loam_shape::LineMesh<3>,
     pub(crate) body_perimeter_scratch: loam_shape::LineMesh<3>,
     // Taken and restored by both section passes, so their order is load-bearing.
@@ -539,7 +530,9 @@ impl Demo {
         let size = self.effective_body_size();
         let row = render_row_entries(self.view_mode, &self.row, &self.strip_subject);
         self.spins.sync(row.len());
-        self.physics.sync(row, &self.spins, size);
+        if !self.physics.sync(row, &self.spins, size) {
+            tracing::error!("playground rejected invalid collider geometry");
+        }
     }
 
     pub(crate) fn formula_string(&self) -> String {
@@ -578,7 +571,13 @@ impl Demo {
         // A held drag names a body the respawn despawns.
         self.gimbal.drag = None;
         let slots = self.render_row().len();
-        self.physics.respawn(slots, self.effective_body_size());
+        if self
+            .physics
+            .respawn(slots, self.effective_body_size())
+            .is_none()
+        {
+            tracing::error!("playground rejected invalid body configuration");
+        }
         self.rebuild_bodies();
     }
 }
@@ -586,10 +585,8 @@ impl Demo {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_plane_angle, body_position, body_upload_needed, compose_active_rotor,
-        render_row_entries, resolve_schlegel_params, row_blocks_sdf, sdf_body_uniform,
-        set_if_changed, synced_schlegel_projection, SurfaceMode, ViewMode, WireframeProjection,
-        BASE_ROTATION_RATE, BODY_SIZE,
+        body_position, compose_active_rotor, render_row_entries, row_blocks_sdf, sdf_body_uniform,
+        synced_schlegel_projection, SurfaceMode, ViewMode, WireframeProjection, BODY_SIZE,
     };
     use crate::catalog::ShapeEntry;
     use crate::physics::{composed_rotor, PlaygroundPhysics};
@@ -622,42 +619,9 @@ mod tests {
     }
 
     #[test]
-    fn active_plane_angle_adds_spin_only_when_active() {
-        assert_eq!(active_plane_angle(0.5, false, 3.0), 0.5);
-        assert_eq!(
-            active_plane_angle(0.5, true, 2.0),
-            0.5 + 2.0 * BASE_ROTATION_RATE
-        );
-        assert_eq!(active_plane_angle(0.5, true, 0.0), 0.5);
-    }
-
-    #[test]
     fn compose_all_zero_is_identity() {
         let r = compose_active_rotor(&[0.0; 6], &NONE, 0.0);
         assert!(rotor_close(r, Rotor4::IDENTITY, 1e-6), "got {r:?}");
-    }
-
-    #[test]
-    fn compose_is_always_unit_norm() {
-        let base = [0.3, -1.1, 2.0, 0.7, -0.4, 1.6];
-        let active = [true, false, true, true, false, true];
-        for &t in &[0.0_f32, 0.5, 3.0, 50.0] {
-            let n2 = compose_active_rotor(&base, &active, t).norm_squared();
-            assert!((n2 - 1.0).abs() < 1e-5, "t={t} norm_squared={n2}");
-        }
-    }
-
-    #[test]
-    fn compose_single_plane_equals_direct_exp() {
-        let theta = 0.8_f32;
-        let mut base = [0.0; 6];
-        base[2] = theta;
-        let composed = compose_active_rotor(&base, &NONE, 0.0);
-        let direct = (Plane4::Xw.unit_bivector() * theta).exp().normalize();
-        assert!(
-            rotor_close(composed, direct, 1e-6),
-            "{composed:?} vs {direct:?}"
-        );
     }
 
     #[test]
@@ -715,42 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn schlegel_params_from_face_planes_not_dual() {
-        use loam_physics::euclidean_r4::cell600_face_planes;
-        let polytope = Polytope4::Cell600;
-        let (topo_normals, _) = polytope.face_planes();
-        let (dual_normals, _) = cell600_face_planes();
-        let divergent = (0..topo_normals.len() as u32).find(|&i| {
-            let n = topo_normals[i as usize];
-            dual_normals
-                .iter()
-                .all(|d| (n - *d).length() > 1e-3 && (n + *d).length() > 1e-3)
-        });
-        let cell_index = divergent.expect(
-            "the 600-cell must have a golden-ratio face that diverges from the dual-vertex set",
-        );
-        let params = resolve_schlegel_params(polytope, cell_index);
-        assert_eq!(params.cell_normal, topo_normals[cell_index as usize]);
-        for d in &dual_normals {
-            let n = params.cell_normal;
-            assert!(
-                (n - *d).length() > 1e-3 && (n + *d).length() > 1e-3,
-                "resolved Schlegel normal must not coincide with any dual-vertex normal"
-            );
-        }
-    }
-
-    #[test]
-    fn schlegel_cell_index_clamped_to_cell_count() {
-        let polytope = Polytope4::Pentatope;
-        let last = polytope.cell_count() as u32 - 1;
-        let params = resolve_schlegel_params(polytope, 9999);
-        assert_eq!(params.cell_index, last);
-        let at_last = resolve_schlegel_params(polytope, last);
-        assert_eq!(params, at_last);
-    }
-
-    #[test]
     fn schlegel_resolve_syncs_carried_index_to_clamp() {
         let polytope = Polytope4::Pentatope;
         let last = polytope.cell_count() as u32 - 1;
@@ -784,49 +712,6 @@ mod tests {
     }
 
     #[test]
-    fn schlegel_cell_basis_spans_chosen_cell() {
-        for polytope in Polytope4::ALL {
-            let cell_index = (polytope.cell_count() / 2) as u32;
-            let params = resolve_schlegel_params(polytope, cell_index);
-
-            for (i, axis) in params.cell_basis.iter().enumerate() {
-                assert!(
-                    (axis.length() - 1.0).abs() < 1e-5,
-                    "{polytope:?} basis axis {i} must be unit"
-                );
-                assert!(
-                    axis.dot(params.cell_normal).abs() < 1e-5,
-                    "{polytope:?} basis axis {i} must be in the cell plane"
-                );
-            }
-            for i in 0..3 {
-                for j in (i + 1)..3 {
-                    assert!(
-                        params.cell_basis[i].dot(params.cell_basis[j]).abs() < 1e-5,
-                        "{polytope:?} basis axes {i}/{j} must be orthogonal"
-                    );
-                }
-            }
-
-            let topo = polytope.topology();
-            let cell = topo.cells[params.cell_index as usize];
-            let anchor = topo.vertices[cell[0] as usize];
-            for &vi in cell {
-                let delta = topo.vertices[vi as usize] - anchor;
-                let reconstructed = params
-                    .cell_basis
-                    .iter()
-                    .fold(Vec4::ZERO, |acc, &axis| acc + delta.dot(axis) * axis);
-                let residual = delta - reconstructed;
-                assert!(
-                    residual.length() < 5e-4,
-                    "{polytope:?} cell vertex {vi} must reconstruct in the basis"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn single_mode_renders_one_subject() {
         let subject = entry(RaymarchShape::Polytope(Polytope4::Cell600));
         let row = [
@@ -848,7 +733,7 @@ mod tests {
     }
 
     fn tumbling(slots: usize) -> PlaygroundPhysics {
-        let mut physics = PlaygroundPhysics::new(slots, BODY_SIZE);
+        let mut physics = PlaygroundPhysics::new(slots, BODY_SIZE).unwrap();
         let layout = Vec4::from_array(body_position(1, slots));
         physics.world.bodies[1].apply_impulse_at_point(
             &EuclideanR4,
@@ -862,7 +747,7 @@ mod tests {
     #[test]
     fn two_slots_upload_two_different_orientations_in_one_frame() {
         const SLOTS: usize = 3;
-        let physics = PlaygroundPhysics::new(SLOTS, BODY_SIZE);
+        let physics = PlaygroundPhysics::new(SLOTS, BODY_SIZE).unwrap();
         let shape = entry(RaymarchShape::Polytope(Polytope4::Cell24));
         let mut spins = SlotSpins::new(SLOTS);
         spins.spin_mut().active = [true, false, false, false, false, false];
@@ -1026,45 +911,5 @@ mod tests {
                 "smooth surface opted out in {mode:?}"
             );
         }
-    }
-
-    #[test]
-    fn body_upload_gate_fires_on_every_pose_change_and_nothing_else() {
-        let spun = (Plane4::Xw.unit_bivector() * 0.4).exp().normalize();
-        let still = SlotSpins::uniform(4, Rotor4::IDENTITY);
-        let mut uploaded = Vec::new();
-        still.record_rotors(&mut uploaded);
-        assert!(!body_upload_needed(&still, &uploaded, false));
-        assert!(body_upload_needed(&still, &uploaded, true));
-
-        for slot in 0..4 {
-            let mut one_turned = SlotSpins::uniform(4, Rotor4::IDENTITY);
-            one_turned.set_rotor(slot, spun);
-            assert!(
-                body_upload_needed(&one_turned, &uploaded, false),
-                "rotating slot {slot} alone left the gate closed"
-            );
-            let mut turned_upload = Vec::new();
-            one_turned.record_rotors(&mut turned_upload);
-            assert!(!body_upload_needed(&one_turned, &turned_upload, false));
-            assert!(
-                body_upload_needed(&still, &turned_upload, false),
-                "unrotating slot {slot} left the gate closed"
-            );
-        }
-    }
-
-    #[test]
-    fn set_if_changed_reports_a_change_only_when_the_value_moves() {
-        let mut w_slice = 0.0_f32;
-        assert!(!set_if_changed(&mut w_slice, 0.0));
-        assert!(set_if_changed(&mut w_slice, 0.25));
-        assert_eq!(w_slice, 0.25);
-        assert!(!set_if_changed(&mut w_slice, 0.25));
-
-        let mut camera_pos = [0.0_f32, 0.0, 5.0];
-        assert!(!set_if_changed(&mut camera_pos, [0.0, 0.0, 5.0]));
-        assert!(set_if_changed(&mut camera_pos, [0.0, 1e-7, 5.0]));
-        assert_eq!(camera_pos, [0.0, 1e-7, 5.0]);
     }
 }

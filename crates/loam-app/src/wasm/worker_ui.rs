@@ -1,6 +1,4 @@
-//! Parallel to [`loam_egui::UiIntegration`] but without `egui_winit`: winit's
-//! web backend assumes a `web_sys::Window`, which panics in
-//! `WorkerGlobalScope`.
+//! egui-winit requires a Window; workers receive DOM input through messages.
 
 use loam_egui::egui;
 
@@ -47,7 +45,7 @@ impl WorkerUi {
     pub fn record_input(&mut self, msg: &InputMessage) {
         match msg {
             InputMessage::MouseMove { x, y, .. } => {
-                let pos = self.point(*x, *y);
+                let pos = egui::pos2(*x, *y) / self.ctx.zoom_factor();
                 self.raw_events.push(egui::Event::PointerMoved(pos));
             }
             InputMessage::MouseButton {
@@ -56,7 +54,7 @@ impl WorkerUi {
                 button,
                 pressed,
             } => {
-                let pos = self.point(*x, *y);
+                let pos = egui::pos2(*x, *y) / self.ctx.zoom_factor();
                 if let Some(b) = crate::keymap::mouse_button_egui(*button) {
                     self.raw_events.push(egui::Event::PointerButton {
                         pos,
@@ -90,8 +88,6 @@ impl WorkerUi {
                     mac_cmd: *meta,
                     command: *ctrl || *meta,
                 };
-                // Unknown codes drop here; the App's hotkey routing covers them
-                // via InputState.
                 if let Some(egui_key) = crate::keymap::keycode_egui(code) {
                     self.raw_events.push(egui::Event::Key {
                         key: egui_key,
@@ -101,8 +97,6 @@ impl WorkerUi {
                         modifiers: self.modifiers,
                     });
                 }
-                // Text event for printable keys only: skip modifier chords
-                // (Ctrl+C) and multi-codepoint logical keys ("ArrowUp").
                 if *pressed
                     && !*ctrl
                     && !*alt
@@ -114,6 +108,9 @@ impl WorkerUi {
                 }
             }
             InputMessage::Focus(focused) => {
+                if !focused {
+                    self.modifiers = egui::Modifiers::default();
+                }
                 self.raw_events.push(egui::Event::WindowFocused(*focused));
             }
             // Handled outside egui: runner, cursor mirror, frame-loop entry.
@@ -124,19 +121,13 @@ impl WorkerUi {
         }
     }
 
-    // The InputMessage already carries CSS pixels, which egui treats as points,
-    // so this passes through.
-    fn point(&self, x: f32, y: f32) -> egui::Pos2 {
-        egui::pos2(x, y)
-    }
-
     pub fn begin_frame(&mut self) -> &egui::Context {
-        let raw_input = egui::RawInput {
+        let mut raw_input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(
-                    self.width_px as f32 / self.pixels_per_point,
-                    self.height_px as f32 / self.pixels_per_point,
+                    self.width_px as f32 / (self.pixels_per_point * self.ctx.zoom_factor()),
+                    self.height_px as f32 / (self.pixels_per_point * self.ctx.zoom_factor()),
                 ),
             )),
             events: std::mem::take(&mut self.raw_events),
@@ -145,33 +136,39 @@ impl WorkerUi {
             time: None,
             ..egui::RawInput::default()
         };
+        raw_input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .native_pixels_per_point = Some(self.pixels_per_point);
         self.ctx.begin_pass(raw_input);
         &self.ctx
     }
 
-    /// `view` is single-sampled on every path (see `crate::UI_PASS_SAMPLE_COUNT`).
+    /// Loads a single-sample view; submit returned callback buffers before the finished encoder.
     pub fn paint(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-    ) {
+    ) -> Vec<wgpu::CommandBuffer> {
         let full_output = self.ctx.end_pass();
 
         let primitives = self
             .ctx
-            .tessellate(full_output.shapes, self.pixels_per_point);
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.width_px, self.height_px],
-            pixels_per_point: self.pixels_per_point,
+            pixels_per_point: full_output.pixels_per_point,
         };
 
         for (id, image_delta) in &full_output.textures_delta.set {
             self.renderer
                 .update_texture(device, queue, *id, image_delta);
         }
-        self.renderer
+        let callbacks = self
+            .renderer
             .update_buffers(device, queue, encoder, &primitives, &screen);
 
         {
@@ -190,7 +187,7 @@ impl WorkerUi {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            // egui-wgpu requires a `'static` pass; standard idiom.
+            // egui-wgpu requires a static render pass.
             self.renderer
                 .render(&mut pass.forget_lifetime(), &primitives, &screen);
         }
@@ -198,6 +195,7 @@ impl WorkerUi {
         for id in &full_output.textures_delta.free {
             self.renderer.free_texture(id);
         }
+        callbacks
     }
 
     pub fn resize(&mut self, width: u32, height: u32, dpr: f32) {

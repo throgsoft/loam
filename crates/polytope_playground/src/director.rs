@@ -1,6 +1,4 @@
-//! The director's playhead is a frame index and the UI spin's `rot_time` a
-//! wall-clock accumulator; [`step_row_rotation`] is the single place either
-//! writes a rotor. A timeline addresses a body by row slot index.
+//! Timelines address row slots and sample their authored frame rate from simulation elapsed time.
 
 use anyhow::{anyhow, Result};
 use loam_math::{Bivector, Bivector4};
@@ -14,8 +12,9 @@ const SLOT_PREFIX: &str = "slot";
 #[derive(Debug)]
 pub(crate) struct Playback {
     director: Director,
+    elapsed: f64,
     slots: Vec<usize>,
-    /// Slots the director owns for the whole run; ownership never lapses.
+    /// Timeline ownership lasts through pauses and the final sample.
     directed: Vec<bool>,
 }
 
@@ -26,9 +25,7 @@ impl Playback {
         for body in &director.timeline().bodies {
             if body.position.is_some() {
                 return Err(anyhow!(
-                    "timeline body `{}` has a position track, and nothing here writes a slot's \
-                     place: it belongs to the rigid body, so a track writing it would race the \
-                     solver",
+                    "timeline body `{}` has an unsupported position track",
                     body.name
                 ));
             }
@@ -47,8 +44,10 @@ impl Playback {
             bound.push(slot);
             directed[slot] = body.orientation.is_some();
         }
+        let elapsed = f64::from(director.frame()) / f64::from(director.timeline().fps);
         Ok(Self {
             director,
+            elapsed,
             slots: bound,
             directed,
         })
@@ -64,6 +63,15 @@ impl Playback {
 
     pub(crate) fn rewind(&mut self) {
         self.director.seek(0);
+        self.elapsed = 0.0;
+    }
+
+    fn advance(&mut self, dt: f32) {
+        if self.director.playhead().playing() {
+            self.elapsed += f64::from(dt);
+            let frame = (self.elapsed * f64::from(self.director.timeline().fps)).floor() as u32;
+            self.director.seek(frame);
+        }
     }
 
     fn write_orientations(&self, spins: &mut SlotSpins) {
@@ -76,10 +84,16 @@ impl Playback {
 }
 
 fn slot_index(name: &str) -> Option<usize> {
-    name.strip_prefix(SLOT_PREFIX)?.parse().ok()
+    let index = name.strip_prefix(SLOT_PREFIX)?;
+    if index.is_empty()
+        || !index.bytes().all(|b| b.is_ascii_digit())
+        || (index.len() > 1 && index.starts_with('0'))
+    {
+        return None;
+    }
+    index.parse().ok()
 }
 
-// Exactly one writer per slot; `rot_time` stops once no slot reads it.
 pub(crate) fn step_row_rotation(
     playback: Option<&mut Playback>,
     spins: &mut SlotSpins,
@@ -91,7 +105,7 @@ pub(crate) fn step_row_rotation(
 ) {
     let directed: &[bool] = match playback {
         Some(playback) => {
-            playback.director.advance();
+            playback.advance(dt_animation);
             if let Drive::Directed(w) = playback.director.w_slice() {
                 *w_slice = w;
             }
@@ -150,6 +164,26 @@ mod tests {
 
     fn playback_over(slots: usize, timeline: Timeline) -> Playback {
         Playback::new(Director::new(timeline).unwrap(), slots).unwrap()
+    }
+
+    #[test]
+    fn playback_uses_authored_rate_and_stops_when_paused() {
+        let mut timeline = turn_slots(&[0]);
+        timeline.fps = 24;
+        let mut playback = playback_over(1, timeline);
+        for _ in 0..30 {
+            playback.advance(1.0 / 60.0);
+        }
+        assert_eq!(playback.director.frame(), 12);
+        playback.advance(0.0);
+        assert_eq!(playback.director.frame(), 12);
+        playback.director.set_playing(false);
+        playback.advance(1.0);
+        assert_eq!(playback.director.frame(), 12);
+        playback.rewind();
+        playback.director.set_playing(true);
+        playback.advance(0.125);
+        assert_eq!(playback.director.frame(), 3);
     }
 
     #[test]
@@ -304,7 +338,7 @@ mod tests {
                 orientation: Some(Track::new().key(0.0, Rotor4::IDENTITY, Ease::Linear)),
             }],
         };
-        for name in ["tesseract", "slot", "slotx", "0"] {
+        for name in ["tesseract", "slot", "slotx", "0", "slot01", "slot+1"] {
             let director = Director::new(named(name)).unwrap();
             let error = Playback::new(director, 4).expect_err("not a slot name");
             assert!(
@@ -336,22 +370,5 @@ mod tests {
         .unwrap();
         let error = Playback::new(director, 4).expect_err("no writer for a position track");
         assert!(format!("{error:#}").contains("position track"), "{error:#}");
-    }
-
-    #[test]
-    fn naming_a_slot_without_an_orientation_track_leaves_its_rotor_alone() {
-        let director = Director::new(Timeline {
-            fps: FPS,
-            frames: 61,
-            w_slice: Some(Track::new().key(0.0, 0.0, Ease::Linear)),
-            bodies: vec![BodyTrack {
-                name: "slot1".to_owned(),
-                position: None,
-                orientation: None,
-            }],
-        })
-        .unwrap();
-        let playback = Playback::new(director, 3).unwrap();
-        assert_eq!(playback.directed(), [false, false, false]);
     }
 }

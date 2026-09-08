@@ -10,9 +10,7 @@ use web_sys::{HtmlCanvasElement, MessageEvent, Worker, WorkerOptions, WorkerType
 pub fn launch_on_click(host_id: &str, button_id: &str, canvas_id: &str) -> Result<()> {
     super::worker::install_logging_idempotent();
 
-    // Spawn on page load, not on click: the worker inits wgpu and renders the
-    // preview frame for the overlay, then idles until the click posts `Start`.
-    let _ = spawn_worker_for_preview(canvas_id, host_id, button_id)?;
+    spawn_worker_for_preview(canvas_id, host_id, button_id)?;
     Ok(())
 }
 
@@ -36,8 +34,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
         .map_err(|_| anyhow!("element '{canvas_id}' is not a canvas"))?;
     let launch_overlay = super::launch::inject_launch_overlay(host_id, button_id)?;
 
-    // Size the backing store to displayed size x DPR: CSS may stretch the canvas
-    // to fill its container, so the HTML width/height alone render squashed.
     let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
     let dpr = window.device_pixel_ratio() as f32;
     let css_w = canvas.client_width().max(1) as f32;
@@ -61,15 +57,11 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
         .map_err(|e| anyhow!("transfer_control_to_offscreen: {e:?}"))?;
 
     let js_url = read_wasm_bundle_url()?;
-    // The wasm URL must reach `init()` explicitly: the worker imports the JS via
-    // a Blob URL, which has no document base, so the relative fallback 404s.
     let wasm_url = js_url.strip_suffix(".js").unwrap_or(&js_url).to_string() + "_bg.wasm";
     tracing::info!("loam_app::wasm::worker: spawning worker (js={js_url}, wasm={wasm_url})");
 
-    // wasm-bindgen `--target web` exports `init` but does not auto-run on import,
-    // so the bootstrap is built inline as a Blob URL.
     let bootstrap_js =
-        format!("import init from '{js_url}';\nawait init({{ module_or_path: '{wasm_url}' }});\n");
+        format!("import init from {js_url:?};\nawait init({{ module_or_path: {wasm_url:?} }});\n");
     let blob_parts = js_sys::Array::new();
     blob_parts.push(&JsValue::from_str(&bootstrap_js));
     let blob_options = web_sys::BlobPropertyBag::new();
@@ -84,15 +76,9 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
     let worker =
         Worker::new_with_options(&blob_url, &opts).map_err(|e| anyhow!("Worker::new: {e:?}"))?;
 
-    let worker_ready: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
-    let pending_start: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
-
-    // Wait for `ready` before posting Init: Firefox drops messages posted to a
-    // worker before its listener installs.
     let worker_for_ready = worker.clone();
     let offscreen_for_ready = offscreen.clone();
-    let worker_ready_for_ready = worker_ready.clone();
-    let pending_start_for_ready = pending_start.clone();
+    let bootstrap_url = blob_url;
     let on_ready = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
         let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
@@ -101,7 +87,7 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
         if kind.as_deref() != Some("ready") {
             return;
         }
-        tracing::info!("loam_app::wasm::worker: worker signalled ready, posting init");
+        let _ = web_sys::Url::revoke_object_url(&bootstrap_url);
 
         let msg = js_sys::Object::new();
         let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("kind"), &JsValue::from_str("init"));
@@ -116,15 +102,11 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
             &JsValue::from_str("height"),
             &JsValue::from_f64(height as f64),
         );
-        // Workers have no `window.devicePixelRatio`, and the width/height above
-        // are already multiplied by it, so the pair cannot recover it.
         let _ = js_sys::Reflect::set(
             &msg,
             &JsValue::from_str("dpr"),
             &JsValue::from_f64(dpr as f64),
         );
-        // Workers have no `window.location`; forward the page query so
-        // `Args::current` works inside `App::setup`.
         let (search, hash) = web_sys::window()
             .map(|w| {
                 let loc = w.location();
@@ -148,25 +130,12 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
             tracing::error!("loam_app::wasm::worker: postMessage init failed: {e:?}");
             return;
         }
-
-        worker_ready_for_ready.set(true);
-        if pending_start_for_ready.replace(false) {
-            tracing::info!(
-                "loam_app::wasm::worker: click occurred before ready; posting queued Start"
-            );
-            let start_msg = build_msg("start");
-            if let Err(e) = worker_for_ready.post_message(&start_msg) {
-                tracing::error!("loam_app::wasm::worker: postMessage queued Start failed: {e:?}");
-            }
-        }
     }) as Box<dyn FnMut(MessageEvent)>);
     worker
         .add_event_listener_with_callback("message", on_ready.as_ref().unchecked_ref())
         .map_err(|e| anyhow!("worker.addEventListener('message'): {e:?}"))?;
     on_ready.forget();
 
-    // Installed before the worker is ready, so setup-window events queue and
-    // apply on the first frame.
     install_dom_input_forwarders(&worker, &canvas).context("install_dom_input_forwarders")?;
 
     install_host_action_handler(&worker, &canvas).context("install_host_action_handler")?;
@@ -176,13 +145,9 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
 
     install_embed_lifecycle(&worker, host_id, button_id).context("install_embed_lifecycle")?;
 
-    // Post Start before removing the overlay, so a failed post leaves the overlay
-    // up for retry; the `fired` Cell makes repeat clicks no-ops.
     {
         let worker_for_click = worker.clone();
         let overlay_for_click = launch_overlay.clone();
-        let worker_ready_for_click = worker_ready.clone();
-        let pending_start_for_click = pending_start.clone();
         let host_for_click = host_id.to_string();
         let fired: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
         let on_click = Closure::wrap(Box::new(move || {
@@ -190,8 +155,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
                 tracing::debug!("loam_app::wasm::worker: launch click ignored (already fired)");
                 return;
             }
-            // Gate on `.ready` so a spam-click before `preview_ready` cannot
-            // queue an early Start.
             if !overlay_for_click.class_name().contains("ready") {
                 tracing::debug!(
                     "loam_app::wasm::worker: launch click ignored (not yet ready, overlay state = {})",
@@ -201,24 +164,11 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
             }
             fired.set(true);
 
-            // Posting now would hit the Firefox drop-before-listener window.
-            if !worker_ready_for_click.get() {
-                pending_start_for_click.set(true);
-                tracing::info!(
-                    "loam_app::wasm::worker: launch click before worker ready; \
-                     queued Start for on_ready handler"
-                );
-            } else {
-                tracing::info!("loam_app::wasm::worker: launch click; posting Start");
-                let msg = build_msg("start");
-                if let Err(e) = worker_for_click.post_message(&msg) {
-                    fired.set(false);
-                    tracing::error!(
-                        "loam_app::wasm::worker: postMessage Start failed: {e:?}; \
-                         overlay retained for retry"
-                    );
-                    return;
-                }
+            let msg = build_msg("start");
+            if let Err(e) = worker_for_click.post_message(&msg) {
+                fired.set(false);
+                tracing::error!("post start failed: {e:?}");
+                return;
             }
 
             overlay_for_click.remove();
@@ -229,9 +179,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
             .map_err(|e| anyhow!("launch overlay click listener: {e:?}"))?;
         on_click.forget();
     }
-
-    // Keep the Worker alive: dropping it terminates the worker.
-    Box::leak(Box::new(worker));
 
     Ok(())
 }
@@ -263,14 +210,10 @@ fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> R
         .ok_or_else(|| anyhow!("no host element with id '{host_id}'"))?;
     let active: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
 
-    // One closure shared across pause cycles; the button is recreated each time,
-    // so it re-attaches rather than leaking a closure per cycle.
     let worker_for_resume = worker.clone();
     let host_for_resume = host_id.to_string();
     let button_for_resume = button_id.to_string();
     let on_resume_click: Rc<Closure<dyn FnMut()>> = Rc::new(Closure::wrap(Box::new(move || {
-        // Post before removing the overlay: on failure the demo stays paused and
-        // the untouched button, listener still attached, is the retry affordance.
         let msg = build_msg("resume");
         if let Err(e) = worker_for_resume.post_message(&msg) {
             tracing::error!(
@@ -332,8 +275,6 @@ fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> R
         .map_err(|e| anyhow!("addEventListener('{EMBED_ACTIVATED_EVENT}'): {e:?}"))?;
     on_activated.forget();
 
-    // Capture phase: page UI that stops propagation must not wedge the demo
-    // active.
     let active_for_ptr = active.clone();
     let deactivate_for_ptr = deactivate.clone();
     let on_pointerdown = Closure::wrap(Box::new(move |event: web_sys::Event| {
@@ -361,21 +302,14 @@ fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> R
     Ok(())
 }
 
-// Keydown and keyup go on `document` so keys arrive regardless of focus, by game
-// convention. All listeners leak via `forget()` for the page's lifetime.
 fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
     let document = window
         .document()
         .ok_or_else(|| anyhow!("no document on window"))?;
 
-    // Resize is debounced, not rate-limited: each event triggers a worker-side
-    // `surface.configure()` (swap chain, scene texture, composite bind group),
-    // which mid-drag freezes and crashes the tab.
     const RESIZE_DEBOUNCE_FRAMES: u32 = 6;
     {
-        // `dpr` is carried rather than re-read at commit time, so it matches the
-        // w/h it was computed with.
         let pending: Rc<RefCell<Option<(u32, u32, f32, u32)>>> = Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
         let canvas_for_listener = canvas.clone();
@@ -431,15 +365,9 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
                     .map_err(|e| anyhow!("resize rAF init: {e:?}"))?;
             }
         }
-        Box::leak(Box::new(raf_cb));
     }
 
-    // rAF-coalesced: a DOM mouse-move fires hundreds of times per second, and one
-    // JS-object alloc plus postMessage each overwhelms the heap and crashes the
-    // tab under a sustained drag.
     {
-        // Absolute position drives the egui cursor; the summed `movementX/Y`
-        // since the last tick drives mouse-look, so sub-frame motion is not lost.
         let pending: Rc<RefCell<Option<(f32, f32, u32, f32, f32)>>> = Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
         let cb = Closure::wrap(Box::new(move |ev: web_sys::MouseEvent| {
@@ -489,14 +417,11 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
                     .map_err(|e| anyhow!("mousemove rAF init: {e:?}"))?;
             }
         }
-        Box::leak(Box::new(raf_cb));
     }
 
     for (event_name, pressed) in [("mousedown", true), ("mouseup", false)] {
         let worker = worker.clone();
         let cb = Closure::wrap(Box::new(move |ev: web_sys::MouseEvent| {
-            // Suppress context menu (right) and autoscroll (middle); leave left
-            // alone for demos that pointer-lock on left-click.
             if ev.button() != 0 {
                 ev.prevent_default();
             }
@@ -513,8 +438,6 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         cb.forget();
     }
 
-    // Separate from `mousedown` because `contextmenu` also fires for keyboard
-    // triggers (Shift+F10, the menu key) that `mousedown` never sees.
     {
         let cb = Closure::wrap(Box::new(move |ev: web_sys::Event| {
             ev.prevent_default();
@@ -545,17 +468,11 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         cb.forget();
     }
 
-    // `preventDefault` is selective: reload, devtools, tab management and
-    // fullscreen stay as an escape hatch; the demo claims Tab (else focus walks
-    // off-canvas), Space and arrows (scroll, button activation), slash and quote
-    // (Firefox quick-find), and Alt (lone-Alt menu-bar activation, both edges).
     for (event_name, pressed) in [("keydown", true), ("keyup", false)] {
         let worker = worker.clone();
         let cb = Closure::wrap(Box::new(move |ev: web_sys::KeyboardEvent| {
             let code = ev.code();
             let no_modifier = !ev.ctrl_key() && !ev.alt_key() && !ev.meta_key();
-            // Alt-as-key falls outside `no_modifier` (`ev.alt_key` is set while
-            // Alt is down); skip under Ctrl/Cmd so those combos still work.
             let is_alt_self = matches!(code.as_str(), "AltLeft" | "AltRight");
             let suppress_alt = is_alt_self && !ev.ctrl_key() && !ev.meta_key();
             let owned_unmodified = matches!(
@@ -682,8 +599,6 @@ fn install_preview_progress_handler(worker: &Worker) -> Result<()> {
     Ok(())
 }
 
-// Removes the page-loader bar and adds `.ready` to the launch overlay, so the
-// click affordance appears only after the preview frame has rendered.
 fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()> {
     let button_id_owned: String = button_id.to_string();
     let cb = Closure::wrap(Box::new(move |event: MessageEvent| {
@@ -711,9 +626,6 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
     Ok(())
 }
 
-// `requestPointerLock` needs transient activation (~5 s from the user's last key
-// or click); the key-event to worker to request round-trip stays inside that
-// window.
 fn install_host_action_handler(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
     let document = window
@@ -750,8 +662,6 @@ fn install_host_action_handler(worker: &Worker, canvas: &HtmlCanvasElement) -> R
                 match action_kind.as_deref() {
                     Some("pointer_lock_request") => {
                         *want_locked_for_dispatch.borrow_mut() = true;
-                        // Resolves async; the `pointerlockchange` listener relays
-                        // success or failure back to the worker.
                         canvas_for_dispatch.request_pointer_lock();
                     }
                     Some("pointer_lock_release") => {
@@ -775,8 +685,6 @@ fn install_host_action_handler(worker: &Worker, canvas: &HtmlCanvasElement) -> R
         cb.forget();
     }
 
-    // The browser's true lock state, whoever triggered it. Forward it so
-    // `cursor::mark_applied` reflects reality.
     {
         let worker_for_change = worker.clone();
         let document_for_change = document.clone();

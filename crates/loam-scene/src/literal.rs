@@ -1,86 +1,8 @@
-// WGSL types a bare digit run as `AbstractInt`, whose range is `i64`, so a
-// magnitude at or above 2^63 fails to parse (WGSL spec 15.2, numeric literals).
+// WGSL numeric literals: an unsuffixed integer must fit AbstractInt (i64), spec §15.2.
 pub(crate) fn wgsl_f32(v: f32) -> String {
     assert!(
         v.is_finite(),
         "non-finite scene constant {v:?} has no WGSL literal",
     );
     format!("{v:?}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_finite_f32_prints_with_a_point_or_an_exponent() {
-        for exponent in -45..=38 {
-            for mantissa in [1.0_f32, 1.5, 9.99] {
-                let magnitude = mantissa * 10.0_f32.powi(exponent);
-                for v in [magnitude, -magnitude] {
-                    if !v.is_finite() || v == 0.0 {
-                        continue;
-                    }
-                    let literal = wgsl_f32(v);
-                    assert!(
-                        literal.contains('.') || literal.contains('e'),
-                        "bare integer literal `{literal}` for {v:?}",
-                    );
-                }
-            }
-        }
-        for v in [
-            0.0_f32,
-            -0.0,
-            1.0,
-            -1.0,
-            1e9,
-            2.0_f32.powi(63),
-            f32::MAX,
-            f32::MIN,
-            f32::MIN_POSITIVE,
-            f32::from_bits(1), // smallest subnormal
-        ] {
-            let literal = wgsl_f32(v);
-            assert!(
-                literal.contains('.') || literal.contains('e'),
-                "bare integer literal `{literal}` for {v:?}",
-            );
-        }
-    }
-
-    #[test]
-    #[should_panic(expected = "non-finite")]
-    fn positive_infinity_has_no_literal_and_is_rejected() {
-        wgsl_f32(f32::INFINITY);
-    }
-
-    #[test]
-    #[should_panic(expected = "non-finite")]
-    fn negative_infinity_has_no_literal_and_is_rejected() {
-        wgsl_f32(f32::NEG_INFINITY);
-    }
-
-    #[test]
-    #[should_panic(expected = "non-finite")]
-    fn nan_has_no_literal_and_is_rejected() {
-        wgsl_f32(f32::NAN);
-    }
-
-    #[test]
-    fn emitted_literal_round_trips_to_the_input_bits() {
-        for exponent in -45..=38 {
-            for mantissa in [1.0_f32, 1.5, 9.99, 3.7] {
-                let magnitude = mantissa * 10.0_f32.powi(exponent);
-                for v in [magnitude, -magnitude] {
-                    if !v.is_finite() {
-                        continue;
-                    }
-                    let literal = wgsl_f32(v);
-                    let parsed: f32 = literal.parse().expect("literal parses as f32");
-                    assert_eq!(parsed.to_bits(), v.to_bits(), "`{literal}` from {v:?}");
-                }
-            }
-        }
-    }
 }

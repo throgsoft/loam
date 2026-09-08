@@ -3,8 +3,10 @@
 use anyhow::Result;
 use glam::{Mat4, Vec2, Vec3};
 use loam_app::{
-    egui, freecam::Freecam, App, Camera, CameraController, FrameCtx, OrbitController, RenderCtx,
-    RunConfig, SetupCtx,
+    camera_rig::{CameraMode, CameraRig},
+    egui,
+    freecam::Freecam,
+    App, Camera, FrameCtx, OrbitController, RenderCtx, RunConfig, SetupCtx,
 };
 
 // Allocation counts for `frame_trace` and PerfOverlay.
@@ -30,19 +32,12 @@ const POLYTOPE_SCALE: f32 = 1.5;
 const EDGE_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.95];
 const EDGE_WIDTH_PX: f32 = 1.6;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum CameraMode {
-    Orbit,
-    FreeRoam,
-}
-
 struct TesseractApp {
     /// `DepthMode::Off`: nothing else writes depth.
     lines: LineRasterStaticR4Node,
     camera: Camera<EuclideanR3>,
     orbit: OrbitController<EuclideanR3>,
-    freecam: Freecam,
-    mode: CameraMode,
+    rig: CameraRig,
     rotor: Rotor4,
     omega: Bivector4,
     paused: bool,
@@ -61,7 +56,7 @@ impl TesseractApp {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: rd.sample_count(),
             dimension: wgpu::TextureDimension::D2,
             // Must match the pipeline's target format.
             format: rd.target_format(),
@@ -129,8 +124,8 @@ impl App for TesseractApp {
 
         let mut console = Console::<()>::new();
         loam_app::trace::register_command(&mut console);
-        loam_app::fps::register_command(&mut console);
-        loam_app::vsync::register_command(&mut console);
+        loam_app::fps::register_command(&mut console, ctx.runtime);
+        loam_app::vsync::register_command(&mut console, ctx.runtime);
         loam_app::version::register_command(
             &mut console,
             env!("CARGO_PKG_NAME"),
@@ -145,8 +140,10 @@ impl App for TesseractApp {
             lines,
             camera,
             orbit,
-            freecam,
-            mode: CameraMode::Orbit,
+            rig: CameraRig {
+                freecam,
+                ..Default::default()
+            },
             rotor: Rotor4::IDENTITY,
             // basis(2) is the xw plane in Plane4 order.
             omega: Bivector4::basis(2) * spin_rate,
@@ -155,7 +152,7 @@ impl App for TesseractApp {
             perf,
         };
 
-        // Otherwise the first real draw stalls 100-500 ms.
+        // Submit before showing the window so the first draw can compile its pipelines.
         app.warm_pipelines(ctx.rd);
 
         Ok(app)
@@ -170,24 +167,25 @@ impl App for TesseractApp {
         Ok(())
     }
 
-    fn update(&mut self, ctx: &mut FrameCtx<'_>) {
-        // Clamped so a stall does not catapult the rotor on catch-up.
-        let dt = ctx.dt.min(0.1);
-
+    fn tick(&mut self, dt: f32, _ctx: &mut loam_app::TickCtx) {
         if !self.paused {
             let step = (self.omega * dt).exp();
             self.rotor = (step * self.rotor).normalize();
         }
+    }
 
-        match self.mode {
-            CameraMode::Orbit => {
-                self.orbit
-                    .advance(ctx.input, &mut self.camera, &EuclideanR3, dt);
-            }
-            CameraMode::FreeRoam => {
-                self.freecam.advance(ctx.input, &mut self.camera, dt);
-            }
-        }
+    fn update(&mut self, ctx: &mut FrameCtx<'_>) {
+        // Bound camera travel after a stalled frame.
+        let dt = ctx.dt.min(0.1);
+
+        self.rig.advance(
+            ctx.input,
+            ctx.ui_capture,
+            &mut self.camera,
+            &mut self.orbit,
+            dt,
+            ctx.runtime,
+        );
     }
 
     fn on_key(
@@ -203,9 +201,11 @@ impl App for TesseractApp {
         }
         // Alt needs both edges for the freecam's cursor mode.
         if matches!(code, KeyCode::AltLeft | KeyCode::AltRight)
-            && matches!(self.mode, CameraMode::FreeRoam)
+            && matches!(self.rig.mode, CameraMode::FreeRoam)
         {
-            self.freecam.on_alt(matches!(state, ElementState::Pressed));
+            self.rig
+                .freecam
+                .on_alt(matches!(state, ElementState::Pressed), ctx.runtime);
             return;
         }
         if !matches!(state, ElementState::Pressed) {
@@ -213,21 +213,12 @@ impl App for TesseractApp {
         }
         match code {
             KeyCode::KeyF => {
-                self.mode = match self.mode {
-                    CameraMode::Orbit => {
-                        self.freecam.set_active(true, self.camera.position);
-                        CameraMode::FreeRoam
-                    }
-                    CameraMode::FreeRoam => {
-                        self.freecam.set_active(false, self.camera.position);
-                        CameraMode::Orbit
-                    }
-                };
+                self.rig.toggle();
             }
             KeyCode::KeyT => {
                 self.paused = !self.paused;
             }
-            KeyCode::Space if !matches!(self.mode, CameraMode::FreeRoam) => {
+            KeyCode::Space if !matches!(self.rig.mode, CameraMode::FreeRoam) => {
                 self.paused = !self.paused;
             }
             KeyCode::KeyR => {
@@ -281,11 +272,11 @@ impl App for TesseractApp {
         Ok(())
     }
 
-    fn ui(&mut self, ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {
+    fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
         egui::Area::new(egui::Id::new("tesseract-hud"))
             .anchor(egui::Align2::LEFT_TOP, [12.0, 12.0])
             .show(ctx, |ui| {
-                let mode = match self.mode {
+                let mode = match self.rig.mode {
                     CameraMode::Orbit => "orbit",
                     CameraMode::FreeRoam => "free-roam (WASD + mouse drag, space/shift = up/down)",
                 };
@@ -311,9 +302,9 @@ impl App for TesseractApp {
             });
         self.perf.show(ctx);
         loam_app::log::pump_into(&mut self.console);
-        loam_app::command::pump_into(&mut self.console);
+        frame.runtime.pump_console(&mut self.console);
         self.console.ui(ctx);
-        loam_app::command::forward_pending(&mut self.console);
+        frame.runtime.forward_console(&mut self.console);
     }
 
     fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {

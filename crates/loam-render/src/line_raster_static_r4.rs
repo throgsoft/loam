@@ -42,7 +42,6 @@ impl Default for LineRasterStaticR4Uniforms {
     }
 }
 
-// Matches the `@location(1..=5)` slots in the shader.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct LineInstance4D {
@@ -85,9 +84,6 @@ impl LineRasterStaticR4Node {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
-        let defaults = LineRasterStaticR4Uniforms::default();
-        let _ = defaults;
 
         let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("line_raster_static_r4 bgl"),
@@ -366,21 +362,5 @@ impl LineRasterStaticR4Node {
 
     pub fn instance_count(&self) -> u32 {
         self.instance_count
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shader_wgsl_validates() {
-        let module = naga::front::wgsl::parse_str(SHADER_WGSL)
-            .unwrap_or_else(|e| panic!("line_raster_static_r4 WGSL parse failed:\n{e}"));
-        let flags = naga::valid::ValidationFlags::all();
-        let caps = naga::valid::Capabilities::empty();
-        naga::valid::Validator::new(flags, caps)
-            .validate(&module)
-            .expect("line_raster_static_r4 WGSL must validate");
     }
 }

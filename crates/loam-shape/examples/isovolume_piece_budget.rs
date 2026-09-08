@@ -18,12 +18,10 @@ fn torus_4d(p: [f32; 4]) -> f32 {
     (radial * radial + p[3] * p[3]).sqrt() - MINOR
 }
 
-// Pappus: `V = 2π²·R·r²`.
 fn torus_volume_3d() -> f32 {
     2.0 * std::f32::consts::PI.powi(2) * MAJOR * MINOR * MINOR
 }
 
-// Revolving the meridian disk gives `V = 4π²·r²·(R² + r²/4)`.
 fn torus_volume_4d() -> f32 {
     4.0 * std::f32::consts::PI.powi(2) * MINOR * MINOR * (MAJOR * MAJOR + 0.25 * MINOR * MINOR)
 }

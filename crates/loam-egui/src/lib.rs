@@ -1,6 +1,4 @@
-//! Gameplay code gates on [`UiCapture`], reached through
-//! `loam_app::FrameCtx::ui_capture`: mouselook and picking on
-//! `capture.pointer`, hotkeys on `capture.keyboard`.
+//! Gate pointer controls and hotkeys separately with [`UiCapture`].
 
 mod bivector_matrix;
 mod capture;
@@ -18,10 +16,7 @@ pub use console::{
     cmd, console_echo_enabled, parse_line, render_line, set_console_echo, subcommands, Command,
     Console, ConsoleUi, ConsoleWriter, HistoryLine, Key, LineKind, SubcommandSet,
 };
-pub use floating::{
-    callout, floating_panel, floating_panel_builder, sticky_menu, CalloutState,
-    FloatingPanelBuilder,
-};
+pub use floating::{callout, floating_panel, sticky_menu, CalloutState};
 pub use integration::UiIntegration;
 pub use slider_edit::{slider_with_edit, SliderInteraction};
 pub use world::world_to_screen;

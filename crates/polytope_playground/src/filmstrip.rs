@@ -1,9 +1,6 @@
 use loam_app::egui;
-use loam_render::raymarch::RaymarchShape;
-use loam_shape::polytope::Polytope4;
 
 use crate::catalog::render_shape_catalog_menu;
-use crate::consts::BODY_SIZE;
 use crate::state::Demo;
 
 impl Demo {
@@ -26,7 +23,7 @@ impl Demo {
         let screen = ctx.content_rect();
         let cell_w_px = screen.width() / cols as f32;
         let cell_h_px = screen.height() / rows as f32;
-        let strip_w_extent = BODY_SIZE;
+        let strip_w_extent = self.effective_body_size();
 
         let label_color = |is_center: bool| {
             if is_center {
@@ -47,7 +44,7 @@ impl Demo {
                 let t = i as f32 / (n - 1) as f32;
                 -strip_w_extent + t * (2.0 * strip_w_extent)
             };
-            let mid = if n == 0 { 0 } else { n / 2 };
+            let mid = n / 2;
             (format!("w={:>+.3}", self.w_slice + off), i == mid)
         };
         let t_axis_label = |i: usize, n: usize| -> (String, bool) {
@@ -112,16 +109,6 @@ impl Demo {
 
     pub(crate) fn render_single_body(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        let heavy = matches!(
-            self.strip_subject.shape,
-            RaymarchShape::Polytope(Polytope4::Cell120 | Polytope4::Cell600)
-        );
-        if heavy && self.surface_mode.uses_sdf_for_polychora() {
-            ui.colored_label(
-                egui::Color32::from_rgb(242, 130, 70),
-                "120/600-cell SDFs are heavy; expect <60 fps. Try `surface raster`.",
-            );
-        }
         ui.horizontal(|ui| {
             let subject_button = ui
                 .button(format!("subject: {}", self.strip_subject.label))
@@ -137,16 +124,6 @@ impl Demo {
     }
 
     pub(crate) fn render_filmstrip_body(&mut self, ui: &mut egui::Ui) {
-        let heavy = matches!(
-            self.strip_subject.shape,
-            RaymarchShape::Polytope(Polytope4::Cell120 | Polytope4::Cell600)
-        );
-        if heavy {
-            ui.colored_label(
-                egui::Color32::from_rgb(242, 130, 70),
-                "120/600-cell SDFs are heavy; expect <60 fps.",
-            );
-        }
         // At least one axis stays on.
         ui.horizontal(|ui| {
             let mut w_on = self.strip_w;
@@ -161,10 +138,7 @@ impl Demo {
             }
             if ui
                 .checkbox(&mut t_on, "t cells")
-                .on_hover_text(
-                    "Sample across animation time around the t slider; \
-                     fans by ±strip_t_extent seconds",
-                )
+                .on_hover_text("Sample forward from the current rotation time")
                 .changed()
                 && (t_on || self.strip_w)
             {

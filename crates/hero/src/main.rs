@@ -1,7 +1,3 @@
-//! The wordmark alone: one scene, no switcher, no panel. `--record` plays the
-//! 870-tick sequence once into `hero.apng` and exits on the last frame;
-//! `--record=<dir>` names the directory, else the shell's capture directory.
-
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
@@ -22,9 +18,8 @@ fn record_request(args: &Args) -> Result<Option<RecordRequest>> {
             dir: Some(PathBuf::from(dir)),
         })
     };
-    // The capture stub accepts the request and writes nothing.
-    if request.is_some() && !cfg!(feature = "capture") {
-        bail!("--record needs the `capture` feature, and this build has it off");
+    if request.is_some() && !cfg!(all(feature = "capture", not(target_arch = "wasm32"))) {
+        bail!("recording requires a native build with the `capture` feature");
     }
     Ok(request)
 }
@@ -35,9 +30,10 @@ impl SceneRegistry for Hero {
     const SCENES: &'static [SceneEntry] = &[SceneEntry {
         slug: "hero",
         label: "LOAM",
-        build: |ctx| {
+        build: |ctx, control| {
             Ok(Box::new(scene::HeroScene::new(
                 ctx,
+                control,
                 record_request(&Args::current())?,
             )?))
         },
@@ -57,6 +53,14 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(any(not(feature = "capture"), target_arch = "wasm32"))]
+    #[test]
+    fn recording_requires_capture_support() {
+        assert!(record_request(&Args::from_argv(["--record"])).is_err());
+        assert!(record_request(&Args::default()).unwrap().is_none());
+    }
+
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     #[test]
     fn record_takes_a_directory_or_the_shell_default_and_is_off_otherwise() {
         let ask = |argv: [&str; 2]| record_request(&Args::from_argv(argv)).expect("capture is on");
@@ -73,7 +77,6 @@ mod tests {
             Some(PathBuf::from("out/hero"))
         );
 
-        // A detached `out/hero` is a positional the parser drops.
         assert_eq!(
             ask(["--record", "out/hero"]).expect("detached records").dir,
             None

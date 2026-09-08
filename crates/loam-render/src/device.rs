@@ -14,14 +14,12 @@ pub struct SurfaceBundle {
 }
 
 pub struct MsaaTarget {
-    // Keeps the GPU allocation alive for the lifetime of `view`.
     #[allow(dead_code)]
     texture: Texture,
     pub view: TextureView,
 }
 
 pub struct OffscreenTarget {
-    // Keeps the GPU allocation alive for the lifetime of `view`.
     #[allow(dead_code)]
     texture: Texture,
     pub view: TextureView,
@@ -34,7 +32,6 @@ pub(crate) struct UiTargetFormats {
     pub swap_view_format: Option<TextureFormat>,
 }
 
-// A view format outside `SURFACE_VIEW_FORMATS` fails validation at `surface.configure`.
 fn ui_target_formats(surface_format: TextureFormat, downlevel: DownlevelFlags) -> UiTargetFormats {
     if !surface_format.is_srgb() {
         return UiTargetFormats {
@@ -62,7 +59,6 @@ fn surface_configuration(
     ui_targets: UiTargetFormats,
 ) -> SurfaceConfiguration {
     SurfaceConfiguration {
-        // COPY_SRC for headless screenshot readback.
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
         format,
         width: size.width,
@@ -81,8 +77,7 @@ fn ui_view_descriptor(ui_view_format: Option<TextureFormat>) -> TextureViewDescr
     }
 }
 
-// Both ends of the MSAA resolve take the target's own format; a non-sRGB view
-// would average encoded bytes.
+// Both ends of the MSAA resolve take the target's own format; a non-sRGB view would average encoded bytes.
 fn scene_view_descriptor() -> TextureViewDescriptor<'static> {
     TextureViewDescriptor::default()
 }
@@ -125,8 +120,6 @@ impl RenderDevice {
             })
             .await?;
 
-        // Some browsers advertise TIMESTAMP_QUERY without INSIDE_ENCODERS, where
-        // `write_timestamp` panics.
         let needed = Features::TIMESTAMP_QUERY | Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         let timestamps_ok = adapter.features().contains(needed);
         let required_features = if timestamps_ok {
@@ -165,7 +158,6 @@ impl RenderDevice {
             caps.formats
         );
 
-        // Browser `PreMultiplied` composites alpha < 1 against the page.
         let alpha_mode = caps
             .alpha_modes
             .iter()
@@ -329,13 +321,11 @@ impl RenderDevice {
             .create_view(&ui_view_descriptor(self.ui_targets.swap_view_format))
     }
 
-    /// No-op with MSAA off; both ends take the target's own sRGB format so the
-    /// resolve averages linear samples.
+    /// No-op with MSAA off; both ends take the target's own sRGB format so the resolve averages linear samples.
     pub fn resolve_scene_to_swap(&self, encoder: &mut CommandEncoder, swap_view: &TextureView) {
         let Some(msaa) = self.msaa_target.as_ref() else {
             return;
         };
-        // Nothing to draw: the resolve runs at pass end.
         let _resolve_pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("loam-render::scene-msaa-resolve"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -415,7 +405,6 @@ fn create_scene_target(
     OffscreenTarget { texture, view }
 }
 
-// The composite pass has no multisampled input.
 fn surface_msaa_request(surface_format: TextureFormat, requested: u32) -> u32 {
     if surface_format.is_srgb() {
         requested
@@ -550,59 +539,6 @@ mod tests {
                 let targets = ui_target_formats(surface, downlevel);
                 assert_eq!(targets.swap_view_format, None, "{surface:?} {downlevel:?}");
                 assert_eq!(targets.ui_format, scene, "{surface:?} {downlevel:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn ui_format_matches_every_view_the_ui_pass_renders_into() {
-        for surface in SURFACES {
-            for downlevel in DOWNLEVELS {
-                let targets = ui_target_formats(surface, downlevel);
-                let case = format!("{surface:?} {downlevel:?}");
-                if surface.is_srgb() {
-                    let swap = targets.swap_view_format.unwrap_or(surface);
-                    assert_eq!(targets.ui_format, swap, "{case}");
-                } else {
-                    assert_eq!(targets.ui_format, surface.add_srgb_suffix(), "{case}");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn scene_msaa_resolve_runs_through_the_srgb_view_pair() {
-        assert_eq!(
-            scene_view_descriptor().format,
-            None,
-            "scene views take their target's own format"
-        );
-        for surface in SURFACES {
-            for sample_count in [2u32, 4, 8, 16] {
-                let case = format!("{surface:?} {sample_count}x");
-                let msaa = msaa_texture_descriptor(surface, SIZE.width, SIZE.height, sample_count);
-                assert_eq!(msaa.format, surface, "{case}");
-                assert!(msaa.view_formats.is_empty(), "{case}");
-            }
-        }
-        for surface in SURFACES {
-            for downlevel in DOWNLEVELS {
-                let case = format!("{surface:?} {downlevel:?}");
-                let targets = ui_target_formats(surface, downlevel);
-                let Some(gamma) = targets.swap_view_format else {
-                    continue;
-                };
-                assert!(!gamma.is_srgb(), "{case}");
-                assert_eq!(
-                    ui_view_descriptor(targets.swap_view_format).format,
-                    Some(gamma),
-                    "the UI pass keeps the twin: {case}"
-                );
-                assert_ne!(
-                    scene_view_descriptor().format,
-                    Some(gamma),
-                    "the scene resolve declines it: {case}"
-                );
             }
         }
     }

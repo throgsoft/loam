@@ -2,10 +2,8 @@
 //! `fs_main(@builtin(position))`, and binds [`RayMarchUniforms`] at group 0,
 //! binding 0.
 
-mod geodesic;
 mod hyperslice4d;
 mod polytope_data;
-pub use geodesic::GeodesicRayMarchNode;
 pub use hyperslice4d::{
     BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
     MAX_BODIES, SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE, SHAPE_600CELL,
@@ -75,12 +73,8 @@ impl From<RaymarchShape> for u32 {
     }
 }
 
-use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use wgpu::*;
-
-use crate::device::RenderDevice;
-use crate::graph::RenderNode;
 
 /// Bind group 0, binding 0, `std140`: every `vec3` pads to 16 bytes.
 #[repr(C)]
@@ -225,26 +219,14 @@ impl RayMarchNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }
 
-    /// The UBO is undefined until this or [`set_uniforms`](Self::set_uniforms) runs.
+    /// Upload before recording to apply the current CPU uniforms.
     pub fn flush_uniforms(&self, queue: &Queue) {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }
 }
 
 impl RayMarchNode {
-    /// `clear` selects `LoadOp::Clear`; `scissor` is `[x, y, width, height]`.
-    pub fn execute_panel(
-        &mut self,
-        rd: &RenderDevice,
-        view: &wgpu::TextureView,
-        clear: bool,
-        scissor: [u32; 4],
-    ) -> Result<()> {
-        self.execute_impl(rd, view, clear, Some(scissor))
-    }
-
-    /// Records into the caller's encoder without submitting; the clear covers the
-    /// whole attachment.
+    /// Clears the whole attachment before shading the viewport.
     pub fn record_in_viewport(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -270,60 +252,5 @@ impl RayMarchNode {
         rp.set_pipeline(&self.pipeline);
         rp.set_bind_group(0, &self.bind_group, &[]);
         rp.draw(0..3, 0..1);
-    }
-
-    fn execute_impl(
-        &mut self,
-        rd: &RenderDevice,
-        view: &wgpu::TextureView,
-        clear: bool,
-        scissor: Option<[u32; 4]>,
-    ) -> Result<()> {
-        let load = if clear {
-            LoadOp::Clear(self.clear_color)
-        } else {
-            LoadOp::Load
-        };
-        let mut encoder = rd.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("raymarch encoder"),
-        });
-        {
-            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("raymarch pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load,
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            rp.set_pipeline(&self.pipeline);
-            rp.set_bind_group(0, &self.bind_group, &[]);
-            if let Some([x, y, w, h]) = scissor {
-                rp.set_scissor_rect(x, y, w, h);
-            }
-            rp.draw(0..3, 0..1);
-        }
-        rd.queue.submit(Some(encoder.finish()));
-        Ok(())
-    }
-}
-
-const _: fn(&mut RayMarchNode, &RenderDevice, &wgpu::TextureView, bool, [u32; 4]) -> Result<()> =
-    RayMarchNode::execute_panel;
-
-impl RenderNode for RayMarchNode {
-    fn name(&self) -> &'static str {
-        "raymarch"
-    }
-
-    fn execute(&mut self, rd: &RenderDevice, view: &wgpu::TextureView) -> Result<()> {
-        self.execute_impl(rd, view, true, None)
     }
 }

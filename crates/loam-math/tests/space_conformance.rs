@@ -1,6 +1,4 @@
-//! The single hook that separates flat from curved is the metric inner product
-//! [`SpaceFixture::inner`]: every length here is measured with it. Vector
-//! residuals are `|u - v|_metric`, point residuals are `distance`.
+//! Residuals use the fixture metric; point residuals use Space::distance.
 
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use loam_math::{
@@ -9,17 +7,14 @@ use loam_math::{
     LinearBlendX, Space, SphericalS3, SphericalS3Embedded,
 };
 
-// A tolerance is meaningless without the sampling extent it was derived at.
 #[derive(Clone, Copy)]
 struct Tol {
-    /// Geodesic distance between two points that should coincide.
     point: f32,
-    /// Metric norm of a tangent residual that should vanish.
+
     vector: f32,
-    /// Difference of two scalars that should agree (a distance or a norm).
+
     scalar: f32,
-    /// Same as `scalar`, but for inputs the fixture declares degenerate: the
-    /// cut locus and the saturation shells.
+
     degenerate: f32,
 }
 
@@ -28,14 +23,10 @@ trait SpaceFixture {
     type Vector: Copy;
     type S: Space<Point = Self::Point, Vector = Self::Vector>;
 
-    const TRANSPORT_FOLLOWS_THE_GEODESIC: bool = true;
-
     fn space(&self) -> Self::S;
 
     fn points(&self) -> Vec<Self::Point>;
 
-    // Tangents at `at`, short enough that `exp` stays inside the injectivity
-    // radius so the reverse round trip is well posed.
     fn tangents(&self, at: Self::Point) -> Vec<Self::Vector>;
 
     fn inner(&self, at: Self::Point, u: Self::Vector, v: Self::Vector) -> f32;
@@ -53,22 +44,16 @@ trait SpaceFixture {
     fn vector_components(&self, v: Self::Vector) -> [f32; 4];
 }
 
-// The where-clause below is not elaborated into the environment of a generic
-// bounded on this trait, unlike a supertrait, so every group item repeats it.
 trait IsometryFixture: SpaceFixture
 where
     Self::S: IsometryGroup<Iso = Self::Iso>,
 {
     type Iso: Copy;
 
-    // At least three isometries, pairwise non-commuting, chosen so the sampled
-    // points stay in the chart under every one of them.
     fn isos(&self) -> Vec<Self::Iso>;
 }
 
-// Seeded xorshift32 (Marsaglia, *Xorshift RNGs*, J. Stat. Soft. 8(14), 2003,
-// §3). Every fixture's sample set is a pure function of a hardcoded seed, per
-// the Tier 0 determinism contract.
+// Marsaglia, Xorshift RNGs, 2003, §3.
 struct Xorshift32(u32);
 
 impl Xorshift32 {
@@ -84,8 +69,6 @@ impl Xorshift32 {
     }
 }
 
-// Seeded points in a ball of radius `max_radius`, radius bounded away from
-// zero so no sample is accidentally coincident with the chart origin.
 fn ball_samples(seed: u32, count: usize, max_radius: f32) -> Vec<Vec3> {
     let mut rng = Xorshift32::new(seed);
     (0..count)
@@ -97,17 +80,10 @@ fn ball_samples(seed: u32, count: usize, max_radius: f32) -> Vec<Vec3> {
         .collect()
 }
 
-// Absolute below unit magnitude, relative above. Without the switch a single
-// fixture number cannot cover both a residual at the origin and one at the
-// Poincaré saturation shell, where lambda is ~2e7 and every norm carries it.
 fn agrees(got: f32, want: f32, tol: f32) -> bool {
     (got - want).abs() <= tol * want.abs().max(1.0)
 }
 
-// Largest absolute chart coordinate of `p`. Point residuals are compared
-// absolutely below unit magnitude and relatively above: an f32 coordinate's
-// ulp is proportional to its magnitude and the flat charts are unbounded, so a
-// fixed absolute budget would buy a different number of ulps at every sample.
 fn chart_magnitude<F: SpaceFixture>(f: &F, p: F::Point) -> f32 {
     f.point_components(p)
         .iter()
@@ -115,10 +91,12 @@ fn chart_magnitude<F: SpaceFixture>(f: &F, p: F::Point) -> f32 {
 }
 
 fn metric_norm<F: SpaceFixture>(f: &F, at: F::Point, v: F::Vector) -> f32 {
-    // Clamp before the root: a fixture `inner` can round a vanishing norm
-    // negative, and a NaN here would read as a tolerance failure rather than
-    // as the finiteness failure it is.
-    f.inner(at, v, v).max(0.0).sqrt()
+    let squared = f.inner(at, v, v);
+    assert!(
+        squared.is_finite() && squared >= 0.0,
+        "invalid squared norm: {squared}"
+    );
+    squared.sqrt()
 }
 
 fn metric_residual<F: SpaceFixture>(f: &F, at: F::Point, u: F::Vector, v: F::Vector) -> f32 {
@@ -130,13 +108,8 @@ fn metric_angle<F: SpaceFixture>(f: &F, at: F::Point, u: F::Vector, v: F::Vector
     (f.inner(at, u, v) / denom).clamp(-1.0, 1.0).acos()
 }
 
-// Side of the geodesic triangle in `geodesic_triangle_angle_excess_matches_
-// gauss_bonnet`, in metric units. The harness compares against the *flat*
-// equilateral area `(sqrt(3)/4)L^2`, whose relative error is O(K L^2).
 const TRIANGLE_SIDE: f32 = 0.1;
 
-// Fraction of the triangle's area by which the measured angle excess may miss
-// `K * area`. A sign flip in `K` misses by `2 * area`, forty times this.
 const GAUSS_BONNET_RELATIVE_TOL: f32 = 0.05;
 
 mod invariants {
@@ -186,9 +159,7 @@ mod invariants {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
-        // The matrix is built once: `distance` is a Gauss-Newton shooting solve
-        // for `BlendedSpace`, and the naive triple loop would call it n^3 times
-        // for n^2 distinct values.
+
         let n = points.len();
         let mut d = Vec::with_capacity(n * n);
         for &a in &points {
@@ -226,9 +197,6 @@ mod invariants {
         }
     }
 
-    /// `log(a, exp(a, v)) = v`. The direction no impl tested: a pair of
-    /// compensating errors in `exp` and `log` survives the forward round trip
-    /// and dies here.
     pub fn log_inverts_exp_on_sampled_tangents<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
@@ -247,9 +215,6 @@ mod invariants {
         }
     }
 
-    /// `|log(a, b)|_metric = d(a, b)`. The item that fails loudly when a
-    /// conformal factor is dropped, and the reason `inner` and not `norm` is
-    /// the fixture hook.
     pub fn log_magnitude_equals_geodesic_distance<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
@@ -285,8 +250,6 @@ mod invariants {
         }
     }
 
-    /// `d(g.a, g.b) = d(a, b)`. The one item that ties the isometry surface to
-    /// the metric: without it an `Iso` can be any invertible map at all.
     pub fn distance_is_invariant_under_isometry<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
@@ -294,7 +257,7 @@ mod invariants {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
-        for g in sampled_isos(f) {
+        for g in f.isos() {
             for &a in &points {
                 for &b in &points {
                     let before = s.distance(a, b);
@@ -317,7 +280,7 @@ mod invariants {
         let s = f.space();
         let tol = f.tol();
         let id = s.iso_identity();
-        let isos = sampled_isos(f);
+        let isos = f.isos();
         for p in f.points() {
             assert_point_agrees(f, &s, s.iso_apply(id, p), p, tol.point, "id.p");
             for &g in &isos {
@@ -348,7 +311,7 @@ mod invariants {
     {
         let s = f.space();
         let tol = f.tol();
-        for g in sampled_isos(f) {
+        for g in f.isos() {
             let inv = s.iso_inverse(g);
             for p in f.points() {
                 assert_point_agrees(
@@ -377,7 +340,7 @@ mod invariants {
     {
         let s = f.space();
         let tol = f.tol();
-        let isos = sampled_isos(f);
+        let isos = f.isos();
         let points = f.points();
         for &a in &isos {
             for &b in &isos {
@@ -399,15 +362,13 @@ mod invariants {
         }
     }
 
-    /// `(a . b).p = a.(b.p)`, the item that pins the `Quat`-versus-`Rotor4`
-    /// composition-order divergence between the R³ and R⁴ isometries.
     pub fn iso_compose_matches_sequential_apply<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
         let s = f.space();
         let tol = f.tol();
-        let isos = sampled_isos(f);
+        let isos = f.isos();
         for &a in &isos {
             for &b in &isos {
                 for p in f.points() {
@@ -424,16 +385,13 @@ mod invariants {
         }
     }
 
-    /// Degenerates into an `exp`/`log` consistency check for the two impls that
-    /// *define* `iso_transport` as that round trip; the flat impls and the
-    /// ambient S³ use closed forms, and so will every future impl that can.
     pub fn iso_transport_is_the_differential_of_iso_apply<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
         let s = f.space();
         let tol = f.tol();
-        for g in sampled_isos(f) {
+        for g in f.isos() {
             for p in f.points() {
                 for v in f.tangents(p) {
                     let moved = s.iso_apply(g, s.exp(p, v));
@@ -457,7 +415,7 @@ mod invariants {
     {
         let s = f.space();
         let tol = f.tol();
-        for g in sampled_isos(f) {
+        for g in f.isos() {
             for p in f.points() {
                 let moved = s.iso_apply(g, p);
                 for v in f.tangents(p) {
@@ -475,10 +433,6 @@ mod invariants {
         }
     }
 
-    /// Nothing here asserts which path the transport follows: `Space` makes the
-    /// path implementation-defined and `BlendedSpace` follows the chart
-    /// straight line rather than the geodesic, so an invariant that assumed the
-    /// geodesic would fail the oracle for being the oracle.
     pub fn parallel_transport_preserves_the_metric_norm<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
@@ -505,8 +459,7 @@ mod invariants {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
-        // Coefficients of opposite sign and unequal magnitude: equal ones
-        // cannot separate a linear map from one that only respects sums.
+
         let (cu, cw) = (1.5, -0.75);
         for &a in &points {
             let tangents = f.tangents(a);
@@ -536,9 +489,6 @@ mod invariants {
         }
     }
 
-    /// The polyline form agrees with the single-segment form on one segment,
-    /// and is the identity on paths too short to have one. Pins
-    /// `BlendedSpace`'s override against its own segment method.
     pub fn parallel_transport_along_one_segment_matches_parallel_transport<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
@@ -569,21 +519,10 @@ mod invariants {
         }
     }
 
-    /// `PT(a, b, log(a, b))` is the forward tangent at `b`, which points along
-    /// `-log(b, a)`: a geodesic's own velocity field is parallel along it.
     pub fn parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic<F: SpaceFixture>(
         f: &F,
     ) {
         let (ratio, a, b) = worst_geodesic_tangent_ratio(f);
-        if !F::TRANSPORT_FOLLOWS_THE_GEODESIC {
-            assert!(
-                ratio > 1.0,
-                "the fixture declares a non-geodesic transport path but the \
-                 worst sampled pair misses the geodesic tangent by only \
-                 {ratio} of the vector budget: the exemption is stale",
-            );
-            return;
-        }
         assert!(
             ratio <= 1.0,
             "transport of log(a, b) misses the forward tangent at b by \
@@ -593,18 +532,7 @@ mod invariants {
         );
     }
 
-    /// The geodesics determine the transport: the pole ladder rebuilds
-    /// `PT(a, b, .)` from `exp` and `log` alone (Pennec, *Parallel Transport
-    /// with Pole Ladder: a Third Order Scheme in Affine Connection Spaces which
-    /// is Exact in Affine Symmetric Spaces*, arXiv:1805.11436, 2018, §3), so an
-    /// impl whose `exp` and `log` are already pinned has no freedom left in its
-    /// transport. This is the item that sees a twist about the direction of
-    /// travel.
-    ///
-    /// Exact, not asymptotic: in a symmetric space the transvection
-    /// `s_m . s_a` is the transport along the geodesic (Helgason, *Differential
-    /// Geometry, Lie Groups, and Symmetric Spaces*, 1978, Ch. IV, §3), and every
-    /// fixture declaring `TRANSPORT_FOLLOWS_THE_GEODESIC` is one.
+    // Pennec, Parallel Transport with Pole Ladder, 2018, §3; Helgason, Symmetric Spaces, 1978, ch. IV §3.
     pub fn parallel_transport_matches_the_one_its_own_geodesics_imply<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
@@ -616,9 +544,7 @@ mod invariants {
                     let ladder = pole_ladder(f, &s, a, b, v);
                     let residual = metric_residual(f, b, s.parallel_transport(a, b, v), ladder);
                     let ratio = residual / (tol.vector * metric_norm(f, b, ladder).max(1.0));
-                    // The `is_nan` arm is load-bearing: a NaN ratio compares
-                    // false against everything, so tracking the worst by `>`
-                    // alone would report green on a transport that returned NaN.
+
                     if ratio.is_nan() || ratio > worst.0 {
                         worst = (ratio, a, b, v);
                     }
@@ -626,15 +552,6 @@ mod invariants {
             }
         }
         let (ratio, a, b, v) = worst;
-        if !F::TRANSPORT_FOLLOWS_THE_GEODESIC {
-            assert!(
-                ratio > 1.0,
-                "the fixture declares a non-geodesic transport path but its \
-                 transport agrees with the geodesic one to {ratio} of the \
-                 vector budget everywhere sampled: the exemption is stale",
-            );
-            return;
-        }
         assert!(
             ratio <= 1.0,
             "transport misses the map its own geodesics imply by {ratio} of \
@@ -645,18 +562,13 @@ mod invariants {
         );
     }
 
-    /// Gauss-Bonnet on a small geodesic triangle: the angle excess is
-    /// `K * area` (do Carmo, *Differential Geometry of Curves and Surfaces*,
-    /// 1976, §4.5). This is what independently cross-checks a fixture's
-    /// `inner`: a wrong metric produces the wrong angle sum.
+    // do Carmo, Differential Geometry of Curves and Surfaces, 1976, §4.5.
     pub fn geodesic_triangle_angle_excess_matches_gauss_bonnet<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let l = TRIANGLE_SIDE;
         let apex = f.points()[0];
         let (e1, e2) = metric_orthonormal_pair(f, apex);
 
-        // Equilateral in the tangent plane at `apex`: the third vertex sits at
-        // 60 degrees, so all three sides are `l` to O(K l^3).
         let b = s.exp(apex, f.combine(e1, l, e2, 0.0));
         let c = s.exp(apex, f.combine(e1, l * 0.5, e2, l * 3.0_f32.sqrt() * 0.5));
 
@@ -666,14 +578,7 @@ mod invariants {
 
         let area = 3.0_f32.sqrt() / 4.0 * l * l;
         let excess = sum - std::f32::consts::PI;
-        let Some(k) = f.curvature() else {
-            assert!(
-                excess.abs() <= 1.0,
-                "a triangle of side {l} has angle excess {excess}, far past any \
-                 small-triangle regime"
-            );
-            return;
-        };
+        let k = f.curvature().expect("constant-curvature fixture");
         assert!(
             (excess - k * area).abs() <= GAUSS_BONNET_RELATIVE_TOL * area,
             "angle excess {excess} misses K * area = {} at K = {k}",
@@ -681,9 +586,6 @@ mod invariants {
         );
     }
 
-    /// Nothing the fixture declares degenerate produces NaN, infinity or a
-    /// panic, and transport still preserves the metric norm there, at the
-    /// looser tolerance the conditioning class earns.
     pub fn degenerate_inputs_stay_finite<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
@@ -701,8 +603,7 @@ mod invariants {
             for w in f.tangents(a) {
                 let transported = s.parallel_transport(a, b, w);
                 assert_vector_is_finite(f, transported, "parallel_transport");
-                // Norm preservation is a statement about a Riemannian metric,
-                // so it has no content where there is none.
+
                 if !metric_is_defined(f, a, w) || !metric_is_defined(f, b, transported) {
                     continue;
                 }
@@ -719,14 +620,12 @@ mod invariants {
         }
     }
 
-    /// The group half of the item above: no isometry turns a degenerate input
-    /// into a NaN or an infinity.
     pub fn isometries_of_degenerate_inputs_stay_finite<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
         let s = f.space();
-        let isos = sampled_isos(f);
+        let isos = f.isos();
         for (a, _) in f.degenerate_pairs() {
             for &g in &isos {
                 assert_point_is_finite(f, s.iso_apply(g, a), "iso_apply");
@@ -737,96 +636,6 @@ mod invariants {
         }
     }
 
-    /// Same binary, same inputs, same bits. Compared with `to_bits`, not with a
-    /// tolerance; no golden constant, because libm transcendentals are not
-    /// bit-portable across targets.
-    pub fn sampled_calls_are_bit_reproducible<F: SpaceFixture>(f: &F) {
-        let s = f.space();
-        let points = f.points();
-        // Consecutive pairs, not the full product: repeatability is a property
-        // of each call, so coverage of the call graph is what matters and a
-        // quadratic sweep buys nothing.
-        for w in points.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            assert_eq!(
-                s.distance(a, b).to_bits(),
-                s.distance(a, b).to_bits(),
-                "distance is not bit-reproducible at {:?} {:?}",
-                f.point_components(a),
-                f.point_components(b)
-            );
-            assert_eq!(
-                vector_bits(f, s.log(a, b)),
-                vector_bits(f, s.log(a, b)),
-                "log is not bit-reproducible at {:?} {:?}",
-                f.point_components(a),
-                f.point_components(b)
-            );
-            for v in f.tangents(a) {
-                assert_eq!(
-                    point_bits(f, s.exp(a, v)),
-                    point_bits(f, s.exp(a, v)),
-                    "exp is not bit-reproducible at {:?} {:?}",
-                    f.point_components(a),
-                    f.vector_components(v)
-                );
-                assert_eq!(
-                    vector_bits(f, s.parallel_transport(a, b, v)),
-                    vector_bits(f, s.parallel_transport(a, b, v)),
-                    "parallel_transport is not bit-reproducible at {:?} {:?}",
-                    f.point_components(a),
-                    f.vector_components(v)
-                );
-            }
-        }
-    }
-
-    pub fn sampled_isometry_calls_are_bit_reproducible<F: IsometryFixture>(f: &F)
-    where
-        F::S: IsometryGroup<Iso = F::Iso>,
-    {
-        let s = f.space();
-        let isos = sampled_isos(f);
-        for a in f.points() {
-            for v in f.tangents(a) {
-                for &g in &isos {
-                    assert_eq!(
-                        point_bits(f, s.iso_apply(g, a)),
-                        point_bits(f, s.iso_apply(g, a)),
-                        "iso_apply is not bit-reproducible at {:?}",
-                        f.point_components(a)
-                    );
-                    assert_eq!(
-                        vector_bits(f, s.iso_transport(g, a, v)),
-                        vector_bits(f, s.iso_transport(g, a, v)),
-                        "iso_transport is not bit-reproducible at {:?} {:?}",
-                        f.point_components(a),
-                        f.vector_components(v)
-                    );
-                }
-            }
-        }
-    }
-
-    // The fixture's isometries, with the floor of three enforced: two operands
-    // cannot distinguish a composition convention from its transpose in a
-    // group that is nearly abelian on the sample.
-    fn sampled_isos<F: IsometryFixture>(f: &F) -> Vec<F::Iso>
-    where
-        F::S: IsometryGroup<Iso = F::Iso>,
-    {
-        let isos = f.isos();
-        assert!(
-            isos.len() >= 3,
-            "an isometry group needs at least three sampled isometries, got {}",
-            isos.len()
-        );
-        isos
-    }
-
-    // The residual carries the magnitudes rather than comparing unit
-    // directions: normalizing would divide the transport's error by a
-    // separation that goes to zero on the diagonal.
     fn worst_geodesic_tangent_ratio<F: SpaceFixture>(f: &F) -> (f32, F::Point, F::Point) {
         let s = f.space();
         let tol = f.tol();
@@ -839,7 +648,7 @@ mod invariants {
                 let transported = s.parallel_transport(a, b, s.log(a, b));
                 let residual = metric_residual(f, b, transported, forward);
                 let ratio = residual / (tol.vector * metric_norm(f, b, forward).max(1.0));
-                // NaN-safe, for the reason given at the ladder item above.
+
                 if ratio.is_nan() || ratio > worst.0 {
                     worst = (ratio, a, b);
                 }
@@ -848,10 +657,6 @@ mod invariants {
         worst
     }
 
-    // One rung of the pole ladder: parallel transport of `v` from `a` to `b`
-    // along the geodesic, built from `exp` and `log` and nothing else, so it is
-    // independent of the impl's own transport. Mirror `exp(a, v)` through the
-    // geodesic midpoint and read the result off at `b`, negated.
     fn pole_ladder<F: SpaceFixture>(
         f: &F,
         s: &F::S,
@@ -868,9 +673,7 @@ mod invariants {
         f.combine(v, s, v, 0.0)
     }
 
-    // Two metric-orthonormal tangents at `at`, Gram-Schmidt over the fixture's
-    // `inner` (do Carmo, *Differential Geometry of Curves and Surfaces*, 1976,
-    // §1.4).
+    // do Carmo, Differential Geometry of Curves and Surfaces, 1976, §1.4.
     fn metric_orthonormal_pair<F: SpaceFixture>(f: &F, at: F::Point) -> (F::Vector, F::Vector) {
         let tangents = f.tangents(at);
         assert!(
@@ -902,22 +705,11 @@ mod invariants {
     ) {
         let residual = s.distance(got, want);
         assert!(
-            residual <= tol * chart_magnitude(f, want).max(1.0),
+            residual >= 0.0 && residual <= tol * chart_magnitude(f, want).max(1.0),
             "{what} is off by {residual}: {:?} vs {:?}",
             f.point_components(got),
             f.point_components(want)
         );
-    }
-
-    // Raw bits of a point's coordinates. `f32`'s `PartialEq` is the wrong
-    // comparison for a reproducibility claim: it calls two NaNs different and
-    // the two signed zeros the same.
-    fn point_bits<F: SpaceFixture>(f: &F, p: F::Point) -> [u32; 4] {
-        f.point_components(p).map(f32::to_bits)
-    }
-
-    fn vector_bits<F: SpaceFixture>(f: &F, v: F::Vector) -> [u32; 4] {
-        f.vector_components(v).map(f32::to_bits)
     }
 
     fn metric_is_defined<F: SpaceFixture>(f: &F, at: F::Point, v: F::Vector) -> bool {
@@ -948,6 +740,14 @@ macro_rules! conformance_tests {
 
 macro_rules! conformance_suite {
     ($suite:ident, $fixture:expr) => {
+        conformance_suite!($suite, $fixture;
+            log_magnitude_equals_geodesic_distance,
+            parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic,
+            parallel_transport_matches_the_one_its_own_geodesics_imply,
+            geodesic_triangle_angle_excess_matches_gauss_bonnet,
+        );
+    };
+    ($suite:ident, $fixture:expr; $($extra:ident),* $(,)?) => {
         mod $suite {
             use super::*;
 
@@ -957,16 +757,12 @@ macro_rules! conformance_suite {
                 distance_satisfies_the_triangle_inequality,
                 exp_inverts_log_on_sampled_pairs,
                 log_inverts_exp_on_sampled_tangents,
-                log_magnitude_equals_geodesic_distance,
                 exp_advances_by_the_metric_norm_of_its_tangent,
                 parallel_transport_preserves_the_metric_norm,
                 parallel_transport_is_linear_in_the_transported_vector,
                 parallel_transport_along_one_segment_matches_parallel_transport,
-                parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic,
-                parallel_transport_matches_the_one_its_own_geodesics_imply,
-                geodesic_triangle_angle_excess_matches_gauss_bonnet,
                 degenerate_inputs_stay_finite,
-                sampled_calls_are_bit_reproducible,
+                $($extra,)*
             );
         }
     };
@@ -986,14 +782,11 @@ macro_rules! isometry_conformance_suite {
                 iso_transport_is_the_differential_of_iso_apply,
                 iso_transport_preserves_the_metric_norm,
                 isometries_of_degenerate_inputs_stay_finite,
-                sampled_isometry_calls_are_bit_reproducible,
             );
         }
     };
 }
 
-// Euclidean R². Extent: coordinates of order 1. Tolerances are the closed-form
-// ones the inline tests already meet at a wider extent.
 struct EuclideanR2Fixture;
 
 impl SpaceFixture for EuclideanR2Fixture {
@@ -1077,7 +870,6 @@ impl IsometryFixture for EuclideanR2Fixture {
     }
 }
 
-// Euclidean R³. Extent: coordinates of order 1.
 struct EuclideanR3Fixture;
 
 impl SpaceFixture for EuclideanR3Fixture {
@@ -1164,9 +956,6 @@ impl IsometryFixture for EuclideanR3Fixture {
     }
 }
 
-// Euclidean R⁴. Extent: coordinates of order 1. The isometries carry compound
-// (two-plane) rotors, the case where a `Rotor4` composition order error does
-// not cancel.
 struct EuclideanR4Fixture;
 
 impl SpaceFixture for EuclideanR4Fixture {
@@ -1267,9 +1056,6 @@ impl IsometryFixture for EuclideanR4Fixture {
     }
 }
 
-// Hyperbolic H³, Poincaré ball. Extent: `|p| <= 0.4`, where the inline tests'
-// 1e-4 holds; the Möbius chains compound, so it is a decade looser than the
-// flat trio at the same extent.
 struct HyperbolicH3Fixture;
 
 impl SpaceFixture for HyperbolicH3Fixture {
@@ -1302,14 +1088,9 @@ impl SpaceFixture for HyperbolicH3Fixture {
 
     fn degenerate_pairs(&self) -> Vec<(Vec3, Vec3)> {
         let interior = Vec3::new(0.3, 0.0, 0.0);
-        // H³ has no cut locus; its conditioning hazard is the ideal boundary.
-        // The mirrored pair at |p| = 0.85 transports bit-identically: the
-        // gyration's axis vanishes and the conformal ratio is a value over
-        // itself.
+
         let near_boundary = Vec3::new(0.85, 0.0, 0.0);
-        // Off-axis and outside, one of the ~34% of out-of-ball directions
-        // whose naive clamp overshoots and rounds back to `|q|² == 1.0`
-        // exactly, where an unenforced clamp postcondition returns NaN.
+
         let off_axis_outside = Vec3::new(1.2, 0.9, 1.4);
         vec![
             (interior, interior),
@@ -1330,9 +1111,7 @@ impl SpaceFixture for HyperbolicH3Fixture {
             point: 1e-4,
             vector: 1e-4,
             scalar: 1e-4,
-            // Every declared pair on which the metric is defined transports
-            // exactly, per the note on `degenerate_pairs`; 1e-6 matches the
-            // flat fixtures rather than reserving room the impl does not use.
+
             degenerate: 1e-6,
         }
     }
@@ -1358,11 +1137,6 @@ impl IsometryFixture for HyperbolicH3Fixture {
     }
 }
 
-// Spherical S³, upper-hemisphere chart. Extent: `|p| <= 0.4`, matching the
-// inline tests' 1e-5.
-//
-// `inner` is the lifted ambient one the impl uses internally: with
-// `w = sqrt(1 - |p|^2)` and `u4 = (u, -dot(u, p)/w)`, `inner = dot(u4, v4)`.
 struct SphericalS3Fixture;
 
 impl SphericalS3Fixture {
@@ -1402,9 +1176,7 @@ impl SpaceFixture for SphericalS3Fixture {
 
     fn degenerate_pairs(&self) -> Vec<(Vec3, Vec3)> {
         let interior = Vec3::new(0.3, 0.0, 0.0);
-        // The near-equator mirror pair is the closest the chart can drive the
-        // transport denominator to zero, which is the conditioning class the
-        // `degenerate` tolerance names.
+
         let near_equator = Vec3::new((1.0 - 2.0e-6_f32).sqrt(), 1e-3, 0.0);
         vec![
             (interior, interior),
@@ -1443,8 +1215,6 @@ impl IsometryFixture for SphericalS3Fixture {
     type Iso = Iso4;
 
     fn isos(&self) -> Vec<Iso4> {
-        // Small enough that no sampled point crosses the equator, the chart's
-        // documented failure mode.
         vec![
             Iso4::from_translation(Vec3::new(0.15, 0.0, 0.0)),
             Iso4::from_rotation(Quat::from_rotation_z(0.4)),
@@ -1453,9 +1223,6 @@ impl IsometryFixture for SphericalS3Fixture {
     }
 }
 
-// Spherical S³, full ambient embedding. Extent: a cap around `+w` of angular
-// radius ~0.7 rad, so every sampled pair is well inside the injectivity
-// radius `pi`.
 struct SphericalS3EmbeddedFixture;
 
 impl SpaceFixture for SphericalS3EmbeddedFixture {
@@ -1493,8 +1260,7 @@ impl SpaceFixture for SphericalS3EmbeddedFixture {
                     rng.signed_unit(),
                     rng.signed_unit(),
                 );
-                // Ambient tangents are perpendicular to their base point by
-                // this impl's contract.
+
                 (raw - raw.dot(at) * at) * 0.2
             })
             .collect()
@@ -1556,15 +1322,7 @@ impl IsometryFixture for SphericalS3EmbeddedFixture {
     }
 }
 
-// `BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>`, the variable-metric
-// case. Tolerances are the ones the inline integrator tests already meet; they
-// are two to three decades looser than the closed-form impls because `exp` is
-// RK4-of-32 and `log` is Gauss-Newton shooting on top of it.
-//
-// Extent: `|p| <= 0.34`, chart separation `<= 0.66`. `log` is a shooting solve
-// seeded with the chart displacement (Press et al., *Numerical Recipes*, 3rd
-// ed., 2007, §18.1), and past roughly this separation Newton walks the
-// integrator out of the Poincaré ball instead of converging.
+// Press et al., Numerical Recipes, 3rd ed., 2007, §18.1.
 struct BlendedSpaceFixture;
 
 impl SpaceFixture for BlendedSpaceFixture {
@@ -1572,24 +1330,18 @@ impl SpaceFixture for BlendedSpaceFixture {
     type Vector = Vec3;
     type S = BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>;
 
-    // `parallel_transport` integrates the transport ODE along the
-    // chart-coordinate straight line, which is not this Space's geodesic, so
-    // `PT(a, b, log(a, b))` is not the forward tangent at `b` here. The pole
-    // ladder is doubly inapplicable: a blended metric has non-parallel
-    // curvature, which is the ladder's own precondition.
-    const TRANSPORT_FOLLOWS_THE_GEODESIC: bool = false;
-
     fn space(&self) -> Self::S {
-        BlendedSpace::new(EuclideanR3, HyperbolicH3, LinearBlendX::new(-0.15, 0.15))
+        BlendedSpace::new(
+            EuclideanR3,
+            HyperbolicH3,
+            LinearBlendX::new(-0.15, 0.15).unwrap(),
+        )
     }
 
     fn points(&self) -> Vec<Vec3> {
         let mut rng = Xorshift32::new(0x00B1_0F1A);
         (0..6)
             .map(|i| {
-                // x is swept deterministically rather than sampled, so which
-                // branch of the blend each point lands in is a property of the
-                // fixture and not of the seed.
                 let x = -0.32 + 0.128 * i as f32;
                 Vec3::new(x, rng.signed_unit() * 0.08, rng.signed_unit() * 0.08)
             })
@@ -1612,9 +1364,6 @@ impl SpaceFixture for BlendedSpaceFixture {
     }
 
     fn degenerate_pairs(&self) -> Vec<(Vec3, Vec3)> {
-        // Both endpoints stay inside the Poincaré ball: outside it the H³
-        // source's conformal factor is infinite, which `BlendedSpace` treats as
-        // a caller error.
         let interior = Vec3::new(0.1, 0.0, 0.0);
         vec![
             (interior, interior),
@@ -1645,21 +1394,9 @@ impl SpaceFixture for BlendedSpaceFixture {
     }
 }
 
-// The lens space `L(p, q)`, the crate's curved quotient. Extent: lifts within
-// `0.25·π/p` of `Vec4::X`, with tangents under `0.4·π/p`, both read off
-// [`LensSpace::injectivity_radius`]: past that radius `log` is multivalued.
-//
-// Every point item here is a statement about orbits, because the harness
-// compares points with `Space::distance` and this Space's distance is the
-// quotient's.
-//
-// Tolerances are the ambient S³ fixture's, unchanged.
 struct LensSpaceFixture(LensSpace);
 
 impl LensSpaceFixture {
-    // A rotation by `xy` in the `z₁ = (x, y)` plane and by `zw` in the
-    // `z₂ = (z, w)` plane. Commutes with the deck generator, which is one of
-    // these, so it descends to the quotient for every `(p, q)`.
     fn plane_rotations(xy: f32, zw: f32) -> Iso4 {
         let (sin_xy, cos_xy) = xy.sin_cos();
         let (sin_zw, cos_zw) = zw.sin_cos();
@@ -1673,10 +1410,6 @@ impl LensSpaceFixture {
         }
     }
 
-    // Complex conjugation in both planes, `diag(1, -1, 1, -1)`. Determinant
-    // `+1`, and it sends the deck generator to its inverse, so it normalises
-    // the deck group and descends to the quotient without commuting with the
-    // rotations above.
     fn conjugation() -> Iso4 {
         Iso4 {
             matrix: Mat4::from_cols(
@@ -1726,8 +1459,7 @@ impl SpaceFixture for LensSpaceFixture {
                     rng.signed_unit(),
                     rng.signed_unit(),
                 );
-                // Ambient tangents are perpendicular to their base point by
-                // the cover's contract.
+
                 (raw - raw.dot(at) * at) * reach
             })
             .collect()
@@ -1744,17 +1476,13 @@ impl SpaceFixture for LensSpaceFixture {
     fn degenerate_pairs(&self) -> Vec<(Vec4, Vec4)> {
         let p = self.0.p() as f32;
         let a = Vec4::new(0.1, -0.2, 0.3, 0.9).normalize();
-        // Half a deck displacement along the z1 plane: equidistant from two
-        // lifts of `Vec4::X`, so it is the cut locus of the quotient rather
-        // than of the cover.
+
         let (sin, cos) = (std::f32::consts::PI / p).sin_cos();
         let cut = Vec4::new(cos, sin, 0.0, 0.0);
         vec![
             (a, a),
             (Vec4::X, -Vec4::X),
             (Vec4::X, cut),
-            // On the circle z1 = 0, where the wedge argument is undefined and
-            // the whole orbit is equidistant from the domain's centre.
             (Vec4::X, Vec4::Z),
         ]
     }
@@ -1784,9 +1512,6 @@ impl SpaceFixture for LensSpaceFixture {
 impl IsometryFixture for LensSpaceFixture {
     type Iso = Iso4;
 
-    // Three elements of the deck group's normaliser, pairwise
-    // non-commuting: a torus element, the conjugation, and their product.
-    // An `Iso4` outside the normaliser would not descend to the quotient.
     fn isos(&self) -> Vec<Iso4> {
         let space = self.space();
         vec![
@@ -1806,15 +1531,11 @@ conformance_suite!(euclidean_r4, EuclideanR4Fixture);
 conformance_suite!(hyperbolic_h3, HyperbolicH3Fixture);
 conformance_suite!(spherical_s3, SphericalS3Fixture);
 conformance_suite!(spherical_s3_embedded, SphericalS3EmbeddedFixture);
-conformance_suite!(blended_space, BlendedSpaceFixture);
-// Two orders and two twists: the fixture reads its extent off `p`, so a suite
-// that only ran at one `(p, q)` would not separate a hardcoded lens from a
-// parameterised one.
+conformance_suite!(blended_space, BlendedSpaceFixture;);
+
 conformance_suite!(lens_space_l5_2, LensSpaceFixture(LensSpace::new(5, 2)));
 conformance_suite!(lens_space_rp3, LensSpaceFixture(LensSpace::new(2, 1)));
 
-// `BlendedSpace` is absent by construction: it does not implement
-// `IsometryGroup`, so naming it here would not compile.
 isometry_conformance_suite!(euclidean_r2_isometries, EuclideanR2Fixture);
 isometry_conformance_suite!(euclidean_r3_isometries, EuclideanR3Fixture);
 isometry_conformance_suite!(euclidean_r4_isometries, EuclideanR4Fixture);

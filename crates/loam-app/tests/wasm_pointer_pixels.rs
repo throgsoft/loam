@@ -19,14 +19,6 @@ fn mouse_move(input: &mut InputState, x: f32, y: f32, dpr: f32) {
     input.cursor_moved(x, y);
 }
 
-// Mirrors the worker's `MouseButton` arm: the click's own position lands before
-// the transition is recorded.
-fn mouse_press(input: &mut InputState, x: f32, y: f32, dpr: f32) {
-    let (x, y) = physical_cursor(x, y, dpr);
-    input.cursor_moved(x, y);
-    input.mouse_input(MouseButton::Left, ElementState::Pressed);
-}
-
 #[test]
 fn cursor_position_is_reported_in_physical_pixels() {
     for (dpr, want_x, want_y) in CASES {
@@ -45,7 +37,14 @@ fn a_press_anchors_at_its_own_position_not_the_last_coalesced_move() {
     for (dpr, want_x, want_y) in CASES {
         let mut input = InputState::default();
         mouse_move(&mut input, CSS_X - 20.0, CSS_Y - 30.0, dpr);
-        mouse_press(&mut input, CSS_X, CSS_Y, dpr);
+        input_queue::pointer_button(
+            &mut input,
+            CSS_X,
+            CSS_Y,
+            dpr,
+            MouseButton::Left,
+            ElementState::Pressed,
+        );
         let frame = input.take_frame();
         let anchor = frame
             .buttons
@@ -53,6 +52,6 @@ fn a_press_anchors_at_its_own_position_not_the_last_coalesced_move() {
             .press_pos
             .expect("a press with a known cursor position anchors");
         assert_eq!((anchor.x, anchor.y), (want_x, want_y), "at DPR {dpr}");
-        assert!(frame.left_mouse_down);
+        assert!(frame.buttons.left.down);
     }
 }

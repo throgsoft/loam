@@ -15,21 +15,12 @@ anyhow.workspace = true
 glam.workspace = true
 wgpu.workspace = true
 winit.workspace = true
-
-# Pin all three egui crates to the same patch series. The trio share an
-# internal ABI; mixing minor versions silently breaks at runtime.
 egui = "0.33"
 egui-wgpu = { version = "0.33", default-features = false, features = ["winit"] }
 
 loam-camera  = { path = "../loam-camera",  version = "0.1.0" }
 loam-console = { path = "../loam-console", version = "0.1.0" }
 loam-math    = { path = "../loam-math",    version = "0.1.0" }
-
-# `clipboard` pulls in `arboard`, which doesn't build on wasm32 (no native clipboard
-# crate compiles for the browser); the browser exposes its own clipboard API through
-# the JS interop layer that egui-winit can wire up via its `webbrowser` feature
-# instead. Split the dep into per-target lines so the feature set diverges cleanly:
-# native gets `clipboard + links`, wasm gets `links` only.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 egui-winit = { version = "0.33", default-features = false, features = ["clipboard", "links"] }
 
@@ -38,3 +29,6 @@ egui-winit = { version = "0.33", default-features = false, features = ["links"] 
 
 [dev-dependencies]
 glam = { workspace = true }
+
+[lints]
+workspace = true

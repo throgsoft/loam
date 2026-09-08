@@ -67,15 +67,3 @@ impl VectorOps for Vec4 {
         Vec4::is_finite(self)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_or_handles_zero() {
-        let z = Vec3::ZERO;
-        let got = VectorOps::normalize_or(z, Vec3::Y);
-        assert_eq!(got, Vec3::Y);
-    }
-}

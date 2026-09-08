@@ -1343,19 +1343,15 @@ name = "loam"
 version = "0.1.0"
 dependencies = [
  "loam-app",
- "loam-asset",
  "loam-camera",
  "loam-input",
  "loam-math",
  "loam-physics",
- "loam-player",
  "loam-render",
  "loam-scene",
- "loam-shader",
  "loam-shape",
  "loam-text",
  "loam-time",
- "toml_edit",
 ]
 
 [[package]]
@@ -1370,16 +1366,17 @@ dependencies = [
  "glam",
  "image",
  "js-sys",
- "loam-asset",
  "loam-camera",
+ "loam-console",
  "loam-egui",
  "loam-input",
  "loam-math",
  "loam-render",
- "loam-shader",
  "loam-time",
+ "notify",
  "png 0.17.16",
  "pollster",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "tracing-wasm",
@@ -1389,16 +1386,6 @@ dependencies = [
  "web-time",
  "wgpu",
  "winit",
-]
-
-[[package]]
-name = "loam-asset"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "notify",
- "tempfile",
- "tracing",
 ]
 
 [[package]]
@@ -1464,15 +1451,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loam-player"
-version = "0.1.0"
-dependencies = [
- "glam",
- "loam-input",
- "loam-math",
-]
-
-[[package]]
 name = "loam-render"
 version = "0.1.0"
 dependencies = [
@@ -1481,12 +1459,12 @@ dependencies = [
  "glam",
  "loam-math",
  "loam-scene",
- "loam-shader",
  "loam-shape",
  "loam-time",
  "naga",
  "pollster",
  "tempfile",
+ "thiserror 1.0.69",
  "tracing",
  "wgpu",
  "winit",
@@ -1506,30 +1484,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "loam-shader"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "glam",
- "loam-asset",
- "loam-math",
- "loam-scene",
- "naga",
- "pollster",
- "tempfile",
- "thiserror 1.0.69",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "loam-shape"
 version = "0.1.0"
 dependencies = [
  "glam",
  "loam-math",
- "ron",
  "serde",
 ]
 
@@ -1546,7 +1505,6 @@ dependencies = [
  "loam-shape",
  "pollster",
  "thiserror 1.0.69",
- "tracing",
  "wgpu",
 ]
 
@@ -2229,7 +2187,7 @@ dependencies = [
  "loam-shape",
  "loam-text",
  "loam-time",
- "pollster",
+ "tracing",
  "wgpu",
  "winit",
 ]
@@ -2758,7 +2716,6 @@ dependencies = [
  "anyhow",
  "glam",
  "loam-app",
- "loam-camera",
  "loam-egui",
  "loam-math",
  "loam-render",

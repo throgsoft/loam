@@ -1,6 +1,3 @@
-// R⁴ lines: rotor, Perspective4D and view_projection per endpoint; quad
-// expansion mirrors line_raster.wgsl. Color is one depth cue per line from
-// the post-rotor midpoint w, tinted by start_color; end_color is ignored.
 
 struct TransformUniform {
     // Host-side `Rotor4::to_mat4()`, column-major.
@@ -19,7 +16,6 @@ struct VsOut {
     @location(2)       color:       vec4<f32>,
 };
 
-// Mirrors `EuclideanR4::project_point`; the clamp keeps w = focal finite.
 fn project_perspective_4d(p4: vec4<f32>, focal: f32) -> vec3<f32> {
     let denom = max(focal - p4.w, 1.0e-4);
     let scale = focal / denom;
@@ -42,7 +38,6 @@ fn vs_main(
     var a = transform.view_projection * vec4<f32>(s_3d, 1.0);
     var b = transform.view_projection * vec4<f32>(e_3d, 1.0);
 
-    // Near-plane clip before the divide; see line_raster.wgsl.
     if (a.z < 0.0 && b.z < 0.0) {
         var culled: VsOut;
         culled.clip       = vec4<f32>(0.0, 0.0, -1.0, 1.0);
@@ -59,12 +54,10 @@ fn vs_main(
     let s_ndc  = a.xyz / a.w;
     let e_ndc  = b.xyz / b.w;
 
-    // Corners 0, 2 belong to the start endpoint; 1, 3 to the end.
     let pick_start = (corner == 0u || corner == 2u);
     let base_ndc   = select(e_ndc, s_ndc, pick_start);
     let base_w     = select(b.w, a.w, pick_start);
 
-    // The [-0.5, 0.5] w band is a unit-circumradius tesseract; the clamp covers others.
     let mid_w  = (s_4d.w + e_4d.w) * 0.5;
     let w_norm = clamp(mid_w + 0.5, 0.0, 1.0);
     let back_tint  = vec3<f32>(0.30, 0.42, 0.58);

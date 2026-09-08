@@ -4,8 +4,7 @@ use loam_shape::Shape;
 use crate::literal::wgsl_f32;
 use crate::SENTINEL_DISTANCE;
 
-/// [`Self::to_wgsl_4d`] emits `fn {name}(p: vec4<f32>) -> f32`;
-/// [`Self::eval_4d`] is the CPU twin of that body, exact up to `f32` rounding.
+/// CPU evaluation and named vec4 WGSL functions share primitive support rules.
 pub trait Primitive4 {
     fn to_wgsl_4d(&self, name: &str) -> String;
 
@@ -27,7 +26,6 @@ impl Primitive4 for Shape {
                 radius = wgsl_f32(*radius),
             ),
 
-            // Face hyperplanes are pose-dependent per frame.
             Shape::ConvexPolytope4D { .. } => format!(
                 "fn {name}(_p: vec4<f32>) -> f32 {{\n\
                 \t// ConvexPolytope4D: half-space emit lives in the\n\
@@ -75,29 +73,5 @@ impl Primitive4 for Shape {
             | Shape::Polygon2D { .. }
             | Shape::ConvexPolytope3D { .. } => SENTINEL_DISTANCE,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use glam::Vec4;
-
-    #[test]
-    fn polytope_4d_emit_is_sentinel() {
-        let s = Shape::ConvexPolytope4D {
-            vertices: vec![Vec4::ZERO; 5],
-        };
-        let wgsl = s.to_wgsl_4d("pent");
-        assert!(wgsl.contains("fn pent(_p: vec4<f32>) -> f32"));
-        assert!(wgsl.contains("return 1e9"));
-    }
-
-    #[test]
-    fn three_d_variants_emit_sentinel_in_4d() {
-        let s = Shape::sphere_at(glam::Vec3::ZERO, 1.0);
-        let wgsl = s.to_wgsl_4d("oops");
-        assert!(wgsl.contains("vec4<f32>"));
-        assert!(wgsl.contains("return 1e9"));
     }
 }

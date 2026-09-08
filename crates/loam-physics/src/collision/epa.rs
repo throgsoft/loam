@@ -1,27 +1,17 @@
-//! Every threshold is a coefficient times `scale` to the homogeneity degree of
-//! the quantity it guards, so depth and normal are scale-equivariant.
-
 use glam::Vec3;
 
 use super::gjk::{minkowski_support, MinkowskiPoint, SupportFn};
 
 const EPA_MAX_ITERATIONS: u32 = 48;
-// A well-formed EPA finishes with under 30 vertices; past this is a stall.
-const EPA_MAX_VERTICES: usize = 96;
 
-// Support gap per unit of `scale` at which expansion stops. Degree 1.
 const EPA_TOLERANCE: f32 = 1e-4;
 
-// Band per unit of `scale` in which a support point retires a face. Degree 1.
 const FACE_COPLANAR_EPS: f32 = 1e-5;
 
-// Floor on `|(b−a) × (c−a)|` per `scale`². Degree 2.
 const FACE_DEGENERATE_CROSS: f32 = 1e-8;
 
-// Floor on the seed's scalar triple product per `scale`³. Degree 3.
 const SEED_DEGENERATE_VOLUME: f32 = 1e-8;
 
-// Floor on a face's edge Gram determinant per `scale`⁴. Degree 4.
 const BARYCENTRIC_SINGULAR_EPS: f32 = 1e-12;
 
 #[derive(Clone, Copy)]
@@ -64,6 +54,7 @@ struct Face {
 struct Polytope {
     vertices: Vec<MinkowskiPoint>,
     faces: Vec<Face>,
+    horizon: Vec<(usize, usize)>,
     /// Seed centroid; stays interior under every convex expansion.
     interior: glam::Vec3,
     thresholds: Thresholds,
@@ -87,6 +78,7 @@ impl Polytope {
         Self {
             vertices,
             faces,
+            horizon: Vec::new(),
             interior,
             thresholds,
         }
@@ -105,25 +97,26 @@ impl Polytope {
         let new_idx = self.vertices.len();
         self.vertices.push(support);
 
-        let mut horizon: Vec<(usize, usize)> = Vec::new();
-        let mut keep = Vec::with_capacity(self.faces.len());
+        self.horizon.clear();
+        let horizon = &mut self.horizon;
+        let vertices = &self.vertices;
 
         let coplanar_band = self.thresholds.coplanar_band;
-        for f in self.faces.drain(..) {
-            let view = support.point - self.vertices[f.v[0]].point;
+        self.faces.retain(|f| {
+            let view = support.point - vertices[f.v[0]].point;
             if f.normal.dot(view) > -coplanar_band {
-                add_or_remove_edge(&mut horizon, f.v[0], f.v[1]);
-                add_or_remove_edge(&mut horizon, f.v[1], f.v[2]);
-                add_or_remove_edge(&mut horizon, f.v[2], f.v[0]);
+                add_or_remove_edge(horizon, f.v[0], f.v[1]);
+                add_or_remove_edge(horizon, f.v[1], f.v[2]);
+                add_or_remove_edge(horizon, f.v[2], f.v[0]);
+                false
             } else {
-                keep.push(f);
+                true
             }
-        }
-        self.faces = keep;
+        });
 
         let interior = self.interior;
         let cross_norm = self.thresholds.cross_norm;
-        for &(i, j) in &horizon {
+        for &(i, j) in horizon.iter() {
             self.faces.push(build_face_vs_point(
                 &self.vertices,
                 i,
@@ -136,7 +129,6 @@ impl Polytope {
     }
 }
 
-// The caller guarantees `interior_point` is inside the polytope.
 fn build_face_vs_point(
     verts: &[MinkowskiPoint],
     a: usize,
@@ -173,7 +165,6 @@ fn build_face_vs_point(
     }
 }
 
-// A shared edge appears as `(a, b)` and `(b, a)`; the reverse cancels both.
 fn add_or_remove_edge(horizon: &mut Vec<(usize, usize)>, a: usize, b: usize) {
     if let Some(pos) = horizon.iter().position(|&e| e == (b, a)) {
         horizon.swap_remove(pos);
@@ -201,8 +192,7 @@ fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3, gram_floor: f32) -> (f32, f32
     (u, v, w)
 }
 
-/// `scale` is the characteristic length of the Minkowski difference: the sum
-/// of the two bounding radii.
+/// `scale` is the sum of the two bounding radii.
 pub fn epa<A: SupportFn, B: SupportFn>(
     a: &A,
     b: &B,
@@ -210,10 +200,9 @@ pub fn epa<A: SupportFn, B: SupportFn>(
     scale: f32,
 ) -> Option<ContactInfo> {
     let (polytope, face) = expand_to_boundary(a, b, initial_simplex, scale)?;
-    contact_from_face(&polytope, face)
+    Some(contact_from_face(&polytope, face))
 }
 
-// `None` for a degenerate seed, a non-finite support, or a collapsed polytope.
 fn expand_to_boundary<A: SupportFn, B: SupportFn>(
     a: &A,
     b: &B,
@@ -249,10 +238,6 @@ fn expand_to_boundary<A: SupportFn, B: SupportFn>(
         }
 
         polytope.expand(support);
-
-        if polytope.vertices.len() > EPA_MAX_VERTICES {
-            break;
-        }
     }
 
     tracing::debug!(
@@ -265,7 +250,7 @@ fn expand_to_boundary<A: SupportFn, B: SupportFn>(
     Some((polytope, face))
 }
 
-fn contact_from_face(polytope: &Polytope, face: Face) -> Option<ContactInfo> {
+fn contact_from_face(polytope: &Polytope, face: Face) -> ContactInfo {
     let v0 = polytope.vertices[face.v[0]];
     let v1 = polytope.vertices[face.v[1]];
     let v2 = polytope.vertices[face.v[2]];
@@ -283,11 +268,11 @@ fn contact_from_face(polytope: &Polytope, face: Face) -> Option<ContactInfo> {
     let point_a = v0.sa * u + v1.sa * v + v2.sa * w;
     let point_b = v0.sb * u + v1.sb * v + v2.sb * w;
 
-    Some(ContactInfo {
+    ContactInfo {
         normal: face.normal,
         penetration: face.distance,
         point: (point_a + point_b) * 0.5,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -330,7 +315,6 @@ mod tests {
 
     #[test]
     fn sphere_sphere_penetration_matches_distance() {
-        // Two unit-radius spheres with centres 1.5 apart overlap by 0.5.
         let a = Sphere {
             center: Vec3::ZERO,
             radius: 1.0,
@@ -346,7 +330,6 @@ mod tests {
 
     #[test]
     fn box_box_axis_aligned_overlap_penetration_matches_axis() {
-        // Unit boxes offset 1.5 along x overlap by 0.5.
         let va = box_vertices(Vec3::ZERO, Vec3::ONE);
         let vb = box_vertices(Vec3::new(1.5, 0.0, 0.0), Vec3::ONE);
         let a = ConvexHull { vertices: &va };
@@ -363,7 +346,6 @@ mod tests {
 
     #[test]
     fn sphere_box_corner_penetration_points_outward() {
-        // Corner-centre distance √(3·0.04) ≈ 0.346, so penetration ≈ 0.154.
         let vb = box_vertices(Vec3::ZERO, Vec3::ONE);
         let b = ConvexHull { vertices: &vb };
         let s = Sphere {
@@ -392,7 +374,6 @@ mod tests {
         })
     }
 
-    // `|det| = 4·h` against a floor of `SEED_DEGENERATE_VOLUME·SPHERE_PAIR_SCALE³` = 8e-8.
     fn seed_of_height(h: f32) -> [MinkowskiPoint; 4] {
         seed([
             Vec3::new(-1.0, -1.0, 0.0),
@@ -559,7 +540,7 @@ mod tests {
             polytope.faces.len()
         );
 
-        let info = contact_from_face(&polytope, face).expect("a converged face yields a contact");
+        let info = contact_from_face(&polytope, face);
         assert_close(info.penetration, 0.19, EPA_TOLERANCE);
         assert!(
             info.normal.dot(Vec3::NEG_Z) > 0.999,

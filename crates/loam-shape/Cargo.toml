@@ -15,5 +15,5 @@ loam-math = { path = "../loam-math", version = "0.1.0" }
 glam = { workspace = true }
 serde = { workspace = true }
 
-[dev-dependencies]
-ron = { workspace = true }
+[lints]
+workspace = true

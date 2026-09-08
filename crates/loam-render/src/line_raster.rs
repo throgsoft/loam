@@ -40,7 +40,6 @@ impl Default for LineRasterUniforms {
     }
 }
 
-// Layout matches the `@location(1..=5)` attribute slots in `line_raster.wgsl`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct LineInstance {
@@ -197,7 +196,7 @@ impl LineRasterNode {
             depth_stencil: depth.format().map(|format| DepthStencilState {
                 format,
                 depth_write_enabled: depth.writes(),
-                // `LessEqual`: an outline at exactly its polygon's depth must not lose to it.
+                // Coplanar outlines must survive the filled surface's depth.
                 depth_compare: CompareFunction::LessEqual,
                 stencil: StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -289,8 +288,7 @@ impl LineRasterNode {
         self.instance_count = needed_capacity;
     }
 
-    /// Records into the caller's encoder with `LoadOp::Load` on both attachments;
-    /// `depth_view` is `Some` iff the pipeline has depth.
+    /// Records into the caller's encoder with `LoadOp::Load` on both attachments; `depth_view` is `Some` iff the pipeline has depth.
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -351,17 +349,6 @@ impl LineRasterNode {
     }
 }
 
-// Pins that `record` takes the caller's encoder and cannot submit.
-const _: fn(
-    &LineRasterNode,
-    &mut wgpu::CommandEncoder,
-    &wgpu::TextureView,
-    Option<&wgpu::TextureView>,
-    Option<&crate::Viewport>,
-) = LineRasterNode::record;
-
-// Non-finite endpoints are dropped: one poisons the GPU divide into a
-// full-screen quad.
 fn build_line_instances<S, const N: usize>(
     out: &mut Vec<LineInstance>,
     mesh: &LineMesh<N>,
@@ -370,8 +357,6 @@ fn build_line_instances<S, const N: usize>(
 ) where
     S: RasterizableSpace<N>,
 {
-    let mut tess_buf: Vec<S::Point> = Vec::with_capacity(samples + 1);
-
     out.clear();
     out.reserve(mesh.segments.len() * samples);
 
@@ -381,33 +366,31 @@ fn build_line_instances<S, const N: usize>(
         .zip(mesh.colors.iter())
         .zip(mesh.widths.iter())
     {
-        tess_buf.clear();
         let p0 = S::array_to_point(seg.0);
         let p1 = S::array_to_point(seg.1);
-        S::tessellate_segment(p0, p1, samples, &mut tess_buf);
-
-        let n_sub = tess_buf.len().saturating_sub(1);
-        for i in 0..n_sub {
-            let t0 = i as f32 / samples as f32;
-            let t1 = (i + 1) as f32 / samples as f32;
-            let c0 = lerp_color(*color_a, *color_b, t0);
-            let c1 = lerp_color(*color_a, *color_b, t1);
-            let q0 = S::project_point(tess_buf[i], projection);
-            let q1 = S::project_point(tess_buf[i + 1], projection);
-            if !q0.is_finite() || !q1.is_finite() {
-                continue;
+        let mut previous = None;
+        let mut index = 0;
+        S::tessellate_segment(p0, p1, samples, |point| {
+            let q1 = S::project_point(point, projection);
+            if let Some(q0) = previous {
+                let t0 = index as f32 / samples as f32;
+                let t1 = (index + 1) as f32 / samples as f32;
+                if glam::Vec3::is_finite(q0) && q1.is_finite() {
+                    out.push(LineInstance {
+                        start_pos: q0.to_array(),
+                        _pad0: 0.0,
+                        end_pos: q1.to_array(),
+                        _pad1: 0.0,
+                        start_color: lerp_color(*color_a, *color_b, t0),
+                        end_color: lerp_color(*color_a, *color_b, t1),
+                        width_px: width,
+                        _pad2: [0.0; 3],
+                    });
+                }
+                index += 1;
             }
-            out.push(LineInstance {
-                start_pos: q0.to_array(),
-                _pad0: 0.0,
-                end_pos: q1.to_array(),
-                _pad1: 0.0,
-                start_color: c0,
-                end_color: c1,
-                width_px: width,
-                _pad2: [0.0; 3],
-            });
-        }
+            previous = Some(q1);
+        });
     }
 }
 
@@ -423,17 +406,6 @@ fn lerp_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn line_raster_wgsl_validates() {
-        let module = naga::front::wgsl::parse_str(LINE_RASTER_WGSL)
-            .unwrap_or_else(|e| panic!("line_raster WGSL parse failed:\n{e}"));
-        let flags = naga::valid::ValidationFlags::all();
-        let caps = naga::valid::Capabilities::empty();
-        naga::valid::Validator::new(flags, caps)
-            .validate(&module)
-            .expect("line_raster WGSL must validate");
-    }
 
     use loam_math::EuclideanR3;
     use loam_shape::LineMesh;

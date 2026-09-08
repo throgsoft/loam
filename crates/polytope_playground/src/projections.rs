@@ -1,4 +1,5 @@
 use loam_shape::polytope::Polytope4;
+pub(crate) use loam_shape::projection::SchlegelParams;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) enum WireframeProjection {
@@ -15,97 +16,12 @@ pub(crate) enum WireframeProjection {
     Hyperslice,
 }
 
-// Canonical coordinates: `Demo::resolved_wireframe_projection` scales and rotates per frame.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct SchlegelParams {
-    pub(crate) polytope: Polytope4,
-    pub(crate) cell_index: u32,
-    pub(crate) cell_normal: glam::Vec4,
-    pub(crate) cell_basis: [glam::Vec4; 3],
-    // The cell lies in `{x : dot(cell_normal, x) = cell_offset}`.
-    pub(crate) cell_offset: f32,
-    pub(crate) viewpoint_distance: f32,
-}
-
-const SCHLEGEL_BASIS_EPSILON: f32 = 1e-6;
-
-fn push_schlegel_basis_vector(
-    candidate: glam::Vec4,
-    cell_normal: glam::Vec4,
-    basis: &mut [glam::Vec4; 3],
-    count: &mut usize,
-) {
-    if *count == basis.len() {
-        return;
-    }
-    let mut v = candidate - candidate.dot(cell_normal) * cell_normal;
-    for b in basis.iter().take(*count) {
-        v -= v.dot(*b) * *b;
-    }
-    let len = v.length();
-    if len > SCHLEGEL_BASIS_EPSILON {
-        basis[*count] = v / len;
-        *count += 1;
-    }
-}
-
-fn resolve_schlegel_cell_basis(
-    polytope: Polytope4,
-    cell_index: usize,
-    cell_normal: glam::Vec4,
-) -> [glam::Vec4; 3] {
-    let topo = polytope.topology();
-    let cell = topo.cells[cell_index];
-    let anchor = topo.vertices[cell[0] as usize];
-    let mut basis = [glam::Vec4::ZERO; 3];
-    let mut count = 0usize;
-
-    for &vi in cell.iter().skip(1) {
-        push_schlegel_basis_vector(
-            topo.vertices[vi as usize] - anchor,
-            cell_normal,
-            &mut basis,
-            &mut count,
-        );
-        if count == 3 {
-            return basis;
-        }
-    }
-
-    debug_assert_eq!(count, 3, "Schlegel boundary cell must span a 3-flat");
-    for seed in [glam::Vec4::X, glam::Vec4::Y, glam::Vec4::Z, glam::Vec4::W] {
-        push_schlegel_basis_vector(seed, cell_normal, &mut basis, &mut count);
-        if count == 3 {
-            break;
-        }
-    }
-    basis
-}
-
-// Additive, so a small-inradius polytope's eye clearance does not collapse.
 const SCHLEGEL_EYE_MARGIN: f32 = 0.5;
 
-// Coxeter, *Regular Polytopes*, ch. 13. Not the wrong dual-vertex `cell{120,600}_face_planes`.
 pub(crate) fn resolve_schlegel_params(polytope: Polytope4, cell_index: u32) -> SchlegelParams {
-    let cell_count = polytope.cell_count() as u32;
-    let clamped = cell_index.min(cell_count - 1);
-    let (normals, cell_offset) = polytope.face_planes();
-    let cell_normal = normals[clamped as usize];
-    let cell_basis = resolve_schlegel_cell_basis(polytope, clamped as usize, cell_normal);
-    let max_dot = polytope
-        .topology()
-        .vertices
-        .iter()
-        .map(|v| cell_normal.dot(*v))
-        .fold(f32::NEG_INFINITY, f32::max);
-    SchlegelParams {
-        polytope,
-        cell_index: clamped,
-        cell_normal,
-        cell_basis,
-        cell_offset,
-        viewpoint_distance: max_dot + SCHLEGEL_EYE_MARGIN,
-    }
+    let selected = cell_index.min(polytope.cell_count() as u32 - 1);
+    SchlegelParams::new(polytope, selected, SCHLEGEL_EYE_MARGIN)
+        .expect("regular polytope cell must define a projection frame")
 }
 
 pub(crate) fn synced_schlegel_projection(

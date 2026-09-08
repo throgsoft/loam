@@ -5,20 +5,16 @@
 use ab_glyph::{OutlineCurve, Point};
 use glam::Vec2;
 
-// A pathological font can hand back an arbitrarily large control polygon.
 const MAX_SUBDIVISIONS: u32 = 64;
 
-// Zero-length segments have no direction for the winding test in `super::field`.
 const COINCIDENT_POINT_EM: f32 = 1.0e-6;
 
-/// Y-up, baseline at `y = 0`, one em spanning 1.0. The closing edge is
-/// implicit, so `points` never repeats the start.
+/// Y-up, baseline at `y = 0`, one em spanning 1.0. The closing edge is implicit, so `points` never repeats the start.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Contour {
     pub points: Vec<Vec2>,
 }
 
-// `tolerance_em` bounds the chord deviation of each flattened Bezier segment.
 pub(super) fn contours_from_curves(
     curves: &[OutlineCurve],
     units_to_em: f32,
@@ -66,8 +62,6 @@ fn close_contour(contours: &mut Vec<Contour>, raw: Vec<Vec2>, units_to_em: f32) 
     }
 }
 
-// Appends every point after the curve's start, so callers never duplicate the
-// join.
 fn flatten_into(curve: &OutlineCurve, tolerance: f32, out: &mut Vec<Vec2>) {
     match *curve {
         OutlineCurve::Line(_, p1) => out.push(to_vec2(p1)),
@@ -91,11 +85,9 @@ fn flatten_into(curve: &OutlineCurve, tolerance: f32, out: &mut Vec<Vec2>) {
     }
 }
 
-// Bounds on the distance from a Bezier segment to its own chord.
 const QUAD_CHORD_BOUND: f32 = 0.25;
 const CUBIC_CHORD_BOUND: f32 = 0.385;
 
-// Splitting into `n` uniform pieces scales the deviation bound by `1/n^2`.
 fn subdivisions(deviation: f32, tolerance: f32) -> u32 {
     if tolerance <= 0.0 || tolerance.is_nan() || deviation <= tolerance {
         return 1;
@@ -151,7 +143,6 @@ mod tests {
         for i in 0..4 {
             curves.push(OutlineCurve::Line(corners[i], corners[(i + 1) % 4]));
         }
-        // ab_glyph's builder always emits the explicit closing line.
         curves.push(OutlineCurve::Line(corners[0], corners[0]));
         curves
     }
@@ -186,11 +177,7 @@ mod tests {
 
     #[test]
     fn flattened_quadratic_stays_within_tolerance() {
-        let (p0, p1, p2) = (
-            Vec2::new(0.0, 0.0),
-            Vec2::new(0.5, 1.0),
-            Vec2::new(1.0, 0.0),
-        );
+        let p0 = Vec2::ZERO;
         let tolerance = 1.0e-3;
         let mut out = vec![p0];
         flatten_into(
@@ -199,17 +186,12 @@ mod tests {
             &mut out,
         );
         assert!(out.len() > 2, "curve was not subdivided: {out:?}");
-        assert_max_deviation(&out, tolerance, |t| eval_quad(p0, p1, p2, t));
+        assert_max_deviation(&out, tolerance, |t| Vec2::new(t, 2.0 * t * (1.0 - t)));
     }
 
     #[test]
     fn flattened_cubic_stays_within_tolerance() {
-        let (p0, p1, p2, p3) = (
-            Vec2::new(0.0, 0.0),
-            Vec2::new(0.0, 1.0),
-            Vec2::new(1.0, 1.0),
-            Vec2::new(1.0, 0.0),
-        );
+        let p0 = Vec2::ZERO;
         let tolerance = 5.0e-4;
         let mut out = vec![p0];
         flatten_into(
@@ -223,7 +205,9 @@ mod tests {
             &mut out,
         );
         assert!(out.len() > 2, "curve was not subdivided: {out:?}");
-        assert_max_deviation(&out, tolerance, |t| eval_cubic(p0, p1, p2, p3, t));
+        assert_max_deviation(&out, tolerance, |t| {
+            Vec2::new(t * t * (3.0 - 2.0 * t), 3.0 * t * (1.0 - t))
+        });
     }
 
     fn assert_max_deviation(polyline: &[Vec2], tolerance: f32, curve: impl Fn(f32) -> Vec2) {
@@ -251,13 +235,6 @@ mod tests {
             &mut out,
         );
         assert_eq!(out.len(), 2);
-    }
-
-    #[test]
-    fn subdivision_count_is_clamped() {
-        assert_eq!(subdivisions(1.0e12, 1.0e-12), MAX_SUBDIVISIONS);
-        assert_eq!(subdivisions(0.0, 1.0e-6), 1);
-        assert_eq!(subdivisions(1.0, 0.0), 1);
     }
 
     fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {

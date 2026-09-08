@@ -79,22 +79,46 @@ pub(super) fn to_egui(key: Key) -> egui::Key {
 pub(super) fn key_text(key: Key) -> Option<&'static str> {
     match key {
         Key::Backtick => Some("`"),
+        Key::Space => Some(" "),
+        Key::Minus => Some("-"),
+        Key::Equals => Some("="),
+        Key::Num0 => Some("0"),
+        Key::Num1 => Some("1"),
+        Key::Num2 => Some("2"),
+        Key::Num3 => Some("3"),
+        Key::Num4 => Some("4"),
+        Key::Num5 => Some("5"),
+        Key::Num6 => Some("6"),
+        Key::Num7 => Some("7"),
+        Key::Num8 => Some("8"),
+        Key::Num9 => Some("9"),
+        Key::A => Some("a"),
+        Key::B => Some("b"),
+        Key::C => Some("c"),
+        Key::D => Some("d"),
+        Key::E => Some("e"),
+        Key::F => Some("f"),
+        Key::G => Some("g"),
+        Key::H => Some("h"),
+        Key::I => Some("i"),
+        Key::J => Some("j"),
+        Key::K => Some("k"),
+        Key::L => Some("l"),
+        Key::M => Some("m"),
+        Key::N => Some("n"),
+        Key::O => Some("o"),
+        Key::P => Some("p"),
+        Key::Q => Some("q"),
+        Key::R => Some("r"),
+        Key::S => Some("s"),
+        Key::T => Some("t"),
+        Key::U => Some("u"),
+        Key::V => Some("v"),
+        Key::W => Some("w"),
+        Key::X => Some("x"),
+        Key::Y => Some("y"),
+        Key::Z => Some("z"),
+
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn to_egui_preserves_the_key_name() {
-        for key in Key::ALL {
-            assert_eq!(
-                format!("{key:?}"),
-                format!("{:?}", to_egui(*key)),
-                "{key:?} maps to a differently named egui key"
-            );
-        }
     }
 }

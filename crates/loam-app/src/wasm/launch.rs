@@ -1,19 +1,10 @@
 //! Demos opt into click-to-start by marking the host element in `index.html`.
 
-use anyhow::{anyhow, Context, Result};
-use wasm_bindgen::prelude::Closure;
+use anyhow::{anyhow, Result};
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlButtonElement, HtmlStyleElement};
 
 const LAUNCH_OVERLAY_CSS: &str = r#"
-/* Base: shared chrome (positioning, blur, font, transitions). The
-   overlay is injected with no state class, so the chip is hidden and
-   only the blurred backdrop shows. The worker's `preview_ready`
-   message promotes it to `.ready` once the blurred preview frame is
-   on the canvas AND pipelines are warm, which reveals the click
-   affordance; clicking then removes the overlay entirely. The
-   pre-`.ready` "something's happening" visual is the static
-   `#loam-page-loader` progress bar, not this overlay. */
 .loam-demo-launch {
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
@@ -32,15 +23,10 @@ const LAUNCH_OVERLAY_CSS: &str = r#"
     transition: background 200ms ease, opacity 200ms ease;
 }
 
-/* Default (no state class): chip hidden. The `.ready` class opts in. */
 .loam-demo-launch::after {
     display: none;
 }
 
-/* Ready: preview frame is behind the blur AND warmup is complete,
-   click affordance live. Clicking removes the overlay immediately
-   and starts the RAF loop -- no second loading state because the
-   worker pre-warmed pipelines before getting here. */
 .loam-demo-launch.ready {
     cursor: pointer;
 }
@@ -63,7 +49,6 @@ const LAUNCH_OVERLAY_CSS: &str = r#"
     background: rgba(14, 14, 18, 0.4);
 }
 
-/* Paused embed. `.resume` composes with `.ready`: a paused demo is warm. */
 .loam-demo-launch.ready.resume::after {
     content: 'Click to start';
 }
@@ -156,30 +141,6 @@ pub fn is_manual_mode(host_id: &str) -> bool {
     el.get_attribute("data-mode")
         .map(|m| m == "manual")
         .unwrap_or(false)
-}
-
-/// On click the button removes itself, so a double-click cannot fire twice.
-pub fn wait_for_launch(button_id: &str, on_click: impl FnOnce() + 'static) -> Result<()> {
-    let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
-    let document = window
-        .document()
-        .ok_or_else(|| anyhow!("no document on window"))?;
-    let button = document
-        .get_element_by_id(button_id)
-        .ok_or_else(|| anyhow!("no element with id '{button_id}'"))?;
-    let button_for_click = button.clone();
-
-    let cb = Closure::once(Box::new(move || {
-        button_for_click.remove();
-        on_click();
-    }) as Box<dyn FnOnce()>);
-
-    button
-        .add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
-        .map_err(|e| anyhow!("add_event_listener: {e:?}"))
-        .context("wait_for_launch: attach click listener")?;
-    cb.forget();
-    Ok(())
 }
 
 /// `None` where `performance.memory.usedJSHeapSize` is absent: Chromium exposes

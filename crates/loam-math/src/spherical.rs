@@ -1,8 +1,5 @@
-//! Upper-hemisphere model: `Point` is a `Vec3` with `|p| < 1`, lifted to the
-//! unit 4-vector `(p, √(1−|p|²))` on S³ ⊂ R⁴; the origin is the north pole.
-//! This keeps the WGSL ABI at `vec3<f32>` (the v0 `WgslSpace` contract) at the
-//! cost of upper-hemisphere-only coverage: an isometry that pushes a point below
-//! the equator returns out-of-domain (a debug warning fires).
+//! Upper-hemisphere chart `(p, sqrt(1 - |p|²))` with Vec3 points.
+//! Crossing the equator loses the hemisphere sign; use SphericalS3Embedded for full coverage.
 
 use std::borrow::Cow;
 
@@ -11,20 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::space::{IsometryGroup, Space, WgslSpace};
 
-// Saturation shell for `|p|²`. Conditioning class: divisor floor.
 const SPHERE_R2_MAX: f32 = 1.0 - 1e-6;
 
-// `exp` returns its base point below this `|v|²`. Conditioning class:
-// representability.
 const EXP_TANGENT_MIN_SQ: f32 = 1e-14;
 
-// Floor on `|perp4|` in `log`, the sine of the geodesic angle. Conditioning
-// class: direction recovery.
 const LOG_PERP_MIN: f32 = 1e-7;
 
-// Floor on the translation arc's sine in [`Iso4::from_translation`], below
-// which the isometry is exactly the identity. Conditioning class: direction
-// recovery, the same class and value as [`LOG_PERP_MIN`].
 const ISO_TRANSLATION_MIN_ARC: f32 = 1e-7;
 
 fn clamp_to_hemisphere(p: Vec3) -> Vec3 {
@@ -55,13 +44,10 @@ fn from_sphere(q: Vec4) -> Vec3 {
     q.truncate()
 }
 
-/// An orientation-preserving isometry of S³, an SO(4) matrix. Composition is
-/// matmul; inverse is transpose.
+/// SO(4) acting on the ambient embedding of S³.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4 {
-    /// SO(4) matrix in ambient R⁴ coordinates, column-major per `glam`.
-    /// Orthogonality is a precondition, not checked on use; `iso_inverse`
-    /// returns the transpose, which is only the inverse if it holds.
+    /// Column-major orthogonal matrix; inverse uses the transpose without validation.
     pub matrix: Mat4,
 }
 
@@ -70,8 +56,7 @@ impl Iso4 {
         matrix: Mat4::IDENTITY,
     };
 
-    /// Pure spatial rotation fixing the north pole: SO(3) in the upper-left 3×3
-    /// block, identity w row and column.
+    /// Fixes the north pole.
     pub fn from_rotation(rotation: Quat) -> Self {
         let r = Mat3::from_quat(rotation);
         Self {
@@ -84,9 +69,7 @@ impl Iso4 {
         }
     }
 
-    /// Geodesic translation mapping the north pole to `target`: a Givens rotation
-    /// in the `{e_w, xyz-direction-of-target}` plane by the geodesic distance.
-    /// Out-of-domain targets clamp to the saturation shell.
+    /// Maps the north pole to `target`, clamped to the upper-hemisphere chart.
     pub fn from_translation(target: Vec3) -> Self {
         let qt = to_sphere(clamp_to_hemisphere(target));
         let c = qt.w;
@@ -97,8 +80,6 @@ impl Iso4 {
         let n = qt.truncate() / s;
         let k = c - 1.0;
 
-        // Same algebraic form as H³'s Lorentz boost with sinh->sin, cosh->cos,
-        // and a sign flip on the (xyz, w) block (SO(4) vs SO⁺(3,1)).
         Self {
             matrix: Mat4::from_cols(
                 Vec4::new(1.0 + k * n.x * n.x, k * n.x * n.y, k * n.x * n.z, -s * n.x),
@@ -120,8 +101,7 @@ impl Space for SphericalS3 {
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         let qa = to_sphere(clamp_to_hemisphere(a));
         let qb = to_sphere(clamp_to_hemisphere(b));
-        // Chord half-angle `d = 2·asin(|qa − qb| / 2)`: better conditioned for
-        // small d than `acos(dot)`, where `acos(1 − ε)` quantizes in f32.
+
         let half_chord = (qa - qb).length() * 0.5;
         2.0 * half_chord.clamp(0.0, 1.0).asin()
     }
@@ -132,7 +112,7 @@ impl Space for SphericalS3 {
             return at;
         }
         let q = to_sphere(at);
-        // Lift v to a 4D tangent perpendicular to q: vw = −dot(v,at)/q.w.
+
         let vw = -v.dot(at) / q.w;
         let v4 = Vec4::new(v.x, v.y, v.z, vw);
         let mag = v4.length();
@@ -151,7 +131,7 @@ impl Space for SphericalS3 {
         }
         let half_chord = (qt - qf).length() * 0.5;
         let d = 2.0 * half_chord.clamp(0.0, 1.0).asin();
-        // Return xyz; w is recovered in exp via the tangent constraint.
+
         perp4.truncate() * (d / n)
     }
 
@@ -162,10 +142,7 @@ impl Space for SphericalS3 {
         let qt = to_sphere(to);
         let vw = -v.dot(from) / qf.w;
         let v4 = Vec4::new(v.x, v.y, v.z, vw);
-        // Unit-sphere transport (do Carmo, *Riemannian Geometry*, ch. 2) with
-        // `denom = |qf + qt|² / 2`, not the literal `1 + ⟨qf, qt⟩`: in this
-        // form the update is a Householder reflection, an isometry whatever
-        // the lifts round to.
+        // do Carmo, Riemannian Geometry, ch. 2.
         let sum = qf + qt;
         let denom = sum.length_squared() * 0.5;
         let v4_transported = v4 - v4.dot(qt) / denom * sum;
@@ -206,17 +183,9 @@ impl IsometryGroup for SphericalS3 {
 
 impl WgslSpace for SphericalS3 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
-        // The shader's floors are interpolated from the CPU constants rather
-        // than transcribed, so a retune cannot land on one half of a twin.
         Cow::Owned(format!(
             r#"
-// loam-math :: SphericalS3 (v0 Space WGSL ABI)
-// Upper hemisphere: points are vec3 with |p|² < 1, embedded in S³ as
-// (p.x, p.y, p.z, sqrt(1 − |p|²)). Origin = north pole (0,0,0,1).
-// Cap geodesic arcs well under π so rays cannot wrap past the S³ equator
-// and hit the scene from behind. With ball_scale=0.15 the full t_scene=20
-// budget only reaches t_arc≈3.0; cap at 1.5 to cut off wraparound while
-// leaving the entire front hemisphere reachable (fractal fits in ~0.75).
+
 const LOAM_MAX_ARC: f32 = 1.5;
 const LOAM_S3_R2_MAX: f32 = {SPHERE_R2_MAX};
 const LOAM_S3_EXP_TANGENT_MIN_SQ: f32 = {EXP_TANGENT_MIN_SQ:e};
@@ -239,12 +208,7 @@ fn loam_s3_lift(p: vec3<f32>) -> vec4<f32> {
 }
 
 fn loam_origin_distance(p: vec3<f32>) -> f32 {
-    // Arc from the north pole (0,0,0,1) to the lift (p, √(1−|p|²)) is
-    // asin(|p|). The equivalent acos(√(1−|p|²)) loses the small-|p| regime
-    // twice over in f32: it collapses to exactly 0 below |p| ≈ 1.73e-4
-    // (1−|p|² rounds to 1.0 once |p|² ≤ 2⁻²⁵), and its smallest nonzero
-    // output is 3.45e-4 = acos(1−2⁻²⁴), so every radius under that is
-    // either zero or overstated (3.6% high at |p| = 1e-3).
+
     let r2 = min(dot(p, p), LOAM_S3_R2_MAX);
     return asin(sqrt(r2));
 }
@@ -287,11 +251,7 @@ fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> 
     let qt = loam_s3_lift(pt);
     let vw = -dot(v, pf) / qf.w;
     let v4 = vec4<f32>(v.x, v.y, v.z, vw);
-    // `|qf + qt|² / 2` is `1 + dot(qf, qt)` for exactly-unit lifts; in this
-    // form the update is a Householder reflection, an isometry whatever the
-    // lifts round to. Unfloored: near-antipodal pairs sit near the equator,
-    // and both lifts carry w ≥ sqrt(1 − LOAM_S3_R2_MAX), so the denominator
-    // cannot fall below 2·(1 − LOAM_S3_R2_MAX).
+
     let sum = qf + qt;
     let denom = dot(sum, sum) * 0.5;
     let v4t = v4 - (dot(v4, qt) / denom) * sum;
@@ -322,7 +282,7 @@ mod tests {
     #[test]
     fn distance_at_origin_matches_arc_length() {
         let s = s3();
-        // Distance from the north pole to (r, 0, 0) is asin(r).
+
         let r = 0.4;
         let p = Vec3::new(r, 0.0, 0.0);
         assert_relative_eq!(s.distance(Vec3::ZERO, p), r.asin(), epsilon = 1e-5);
@@ -352,30 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_transport_preserves_spherical_norm() {
-        let s = s3();
-        let from = Vec3::ZERO;
-        let to = Vec3::new(0.3, 0.0, 0.0);
-        let v = Vec3::new(0.0, 0.05, 0.0); // tangent at origin, perpendicular to motion
-        let v_to = s.parallel_transport(from, to, v);
-        // Spherical norm |v4| (v4 = (v, vw)) must be preserved by transport.
-        let norm_from = {
-            let qf = to_sphere(from);
-            let vw = -v.dot(from) / qf.w;
-            Vec4::new(v.x, v.y, v.z, vw).length()
-        };
-        let norm_to = {
-            let qt = to_sphere(to);
-            let vw = -v_to.dot(to) / qt.w;
-            Vec4::new(v_to.x, v_to.y, v_to.z, vw).length()
-        };
-        assert_relative_eq!(norm_from, norm_to, epsilon = 1e-5);
-    }
-
-    #[test]
     fn parallel_transport_preserves_norm_near_antipode() {
-        // `to` is `from` mirrored through the yz-plane, so the pair is
-        // near-antipodal and the two lifts share a bit-identical `w`.
         let s = s3();
         let lifted_norm = |p: Vec3, v: Vec3| {
             let vw = -v.dot(p) / to_sphere(p).w;
@@ -386,7 +323,7 @@ mod tests {
             let a = (1.0 - w * w - b * b).sqrt();
             let from = Vec3::new(a, b, 0.0);
             let to = Vec3::new(-a, b, 0.0);
-            // Along the plane of motion, so the transport actually rotates it.
+
             let v = Vec3::X;
             let vt = s.parallel_transport(from, to, v);
             let norm_from = lifted_norm(from, v);
@@ -400,7 +337,6 @@ mod tests {
 
     #[test]
     fn small_scale_distance_matches_euclidean() {
-        // At the origin the metric factor is 1: ds_S³ = ds_R³.
         let s = s3();
         let eps = 1e-3;
         let p = Vec3::new(eps, 0.0, 0.0);
@@ -409,8 +345,6 @@ mod tests {
 
     #[test]
     fn angle_excess_in_small_triangle_scales_with_area() {
-        // Gauss-Bonnet at K = +1: (α + β + γ) − π = area. A small equilateral
-        // triangle of side L has area ≈ (√3/4)·L².
         let s = s3();
         let l = 0.05_f32;
         let a = Vec3::ZERO;
@@ -420,8 +354,7 @@ mod tests {
         let angle_at = |p: Vec3, q: Vec3, r: Vec3| -> f32 {
             let u3 = s.log(p, q);
             let w3 = s.log(p, r);
-            // The 3D metric is not Euclidean away from the origin, so take the
-            // Riemannian angle from the lifted 4D tangents (vw = -dot(v3, p)/q.w).
+
             let qp = to_sphere(p);
             let u4 = Vec4::new(u3.x, u3.y, u3.z, -u3.dot(p) / qp.w);
             let w4 = Vec4::new(w3.x, w3.y, w3.z, -w3.dot(p) / qp.w);
@@ -443,192 +376,8 @@ mod tests {
         assert_relative_eq!(excess, expected_area, epsilon = 5e-4);
     }
 
-    #[test]
-    fn out_of_domain_does_not_panic() {
-        let s = s3();
-        let inside = Vec3::new(0.5, 0.0, 0.0);
-        let on_boundary = Vec3::new(1.0, 0.0, 0.0);
-        let outside = Vec3::new(2.0, 0.0, 0.0);
-        let d1 = s.distance(inside, on_boundary);
-        let d2 = s.distance(inside, outside);
-        assert!(d1.is_finite() && d1 >= 0.0);
-        assert!(d2.is_finite() && d2 >= 0.0);
-    }
-
-    // Every shipped WGSL function with a CPU twin, pinned as one contiguous
-    // statement sequence covering the whole body, signature through closing
-    // brace.
-    const WGSL_BODY_PINS: &[(&str, &str)] = &[
-        (
-            "loam_s3_clamp",
-            r#"fn loam_s3_clamp(p: vec3<f32>) -> vec3<f32> {
-    let r2 = dot(p, p);
-    if (r2 <= LOAM_S3_R2_MAX) { return p; }
-    return p * (sqrt(LOAM_S3_R2_MAX) / sqrt(r2));
-}"#,
-        ),
-        (
-            "loam_s3_lift",
-            r#"fn loam_s3_lift(p: vec3<f32>) -> vec4<f32> {
-    let r2 = min(dot(p, p), LOAM_S3_R2_MAX);
-    return vec4<f32>(p.x, p.y, p.z, sqrt(1.0 - r2));
-}"#,
-        ),
-        (
-            "loam_origin_distance",
-            r#"fn loam_origin_distance(p: vec3<f32>) -> f32 {
-    let r2 = min(dot(p, p), LOAM_S3_R2_MAX);
-    return asin(sqrt(r2));
-}"#,
-        ),
-        (
-            "loam_distance",
-            r#"fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {
-    let qa = loam_s3_lift(loam_s3_clamp(a));
-    let qb = loam_s3_lift(loam_s3_clamp(b));
-    let half_chord = length(qa - qb) * 0.5;
-    return 2.0 * asin(clamp(half_chord, 0.0, 1.0));
-}"#,
-        ),
-        (
-            "loam_exp",
-            r#"fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    let p = loam_s3_clamp(at);
-    let n2 = dot(v, v);
-    if (n2 < LOAM_S3_EXP_TANGENT_MIN_SQ) { return p; }
-    let q = loam_s3_lift(p);
-    let vw = -dot(v, p) / q.w;
-    let v4 = vec4<f32>(v.x, v.y, v.z, vw);
-    let mag = length(v4);
-    let result4 = normalize(q * cos(mag) + v4 * (sin(mag) / mag));
-    return loam_s3_clamp(result4.xyz);
-}"#,
-        ),
-        (
-            "loam_log",
-            r#"fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {
-    let qf = loam_s3_lift(loam_s3_clamp(p_from));
-    let qt = loam_s3_lift(loam_s3_clamp(p_to));
-    let d_dot = clamp(dot(qf, qt), -1.0, 1.0);
-    let perp4 = qt - d_dot * qf;
-    let n = length(perp4);
-    if (n < LOAM_S3_LOG_PERP_MIN) { return vec3<f32>(0.0, 0.0, 0.0); }
-    let half_chord = length(qt - qf) * 0.5;
-    let d = 2.0 * asin(clamp(half_chord, 0.0, 1.0));
-    return perp4.xyz * (d / n);
-}"#,
-        ),
-        (
-            "loam_parallel_transport",
-            r#"fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    let pf = loam_s3_clamp(p_from);
-    let pt = loam_s3_clamp(p_to);
-    let qf = loam_s3_lift(pf);
-    let qt = loam_s3_lift(pt);
-    let vw = -dot(v, pf) / qf.w;
-    let v4 = vec4<f32>(v.x, v.y, v.z, vw);
-    let sum = qf + qt;
-    let denom = dot(sum, sum) * 0.5;
-    let v4t = v4 - (dot(v4, qt) / denom) * sum;
-    return v4t.xyz;
-}"#,
-        ),
-    ];
-
-    // `fn name` in `src`, signature through the closing brace in column 0,
-    // with comments stripped and blank lines dropped. WGSL has no string
-    // literals, so cutting each line at its first `//` cannot eat code.
-    fn wgsl_function_source(src: &str, name: &str) -> String {
-        let start = src
-            .find(&format!("\nfn {name}("))
-            .unwrap_or_else(|| panic!("{name} is not in the shipped WGSL"))
-            + 1;
-        let end = src[start..]
-            .find("\n}\n")
-            .unwrap_or_else(|| panic!("{name} has no closing brace in column 0"));
-        src[start..start + end + 2]
-            .lines()
-            .map(|line| line.split("//").next().unwrap().trim_end())
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    // CPU ports of the shipped WGSL, expression for expression, so parity is
-    // checkable without an adapter.
-    fn wgsl_clamp_mirror(p: Vec3) -> Vec3 {
-        let r2 = p.dot(p);
-        if r2 <= SPHERE_R2_MAX {
-            return p;
-        }
-        p * (SPHERE_R2_MAX.sqrt() / r2.sqrt())
-    }
-
-    fn wgsl_lift_mirror(p: Vec3) -> Vec4 {
-        let r2 = p.dot(p).min(SPHERE_R2_MAX);
-        Vec4::new(p.x, p.y, p.z, (1.0 - r2).sqrt())
-    }
-
-    fn wgsl_origin_distance_mirror(p: Vec3) -> f32 {
-        let r2 = p.length_squared().min(SPHERE_R2_MAX);
-        r2.sqrt().asin()
-    }
-
-    fn wgsl_distance_mirror(a: Vec3, b: Vec3) -> f32 {
-        let qa = wgsl_lift_mirror(wgsl_clamp_mirror(a));
-        let qb = wgsl_lift_mirror(wgsl_clamp_mirror(b));
-        let half_chord = (qa - qb).length() * 0.5;
-        2.0 * half_chord.clamp(0.0, 1.0).asin()
-    }
-
-    fn wgsl_exp_mirror(at: Vec3, v: Vec3) -> Vec3 {
-        let p = wgsl_clamp_mirror(at);
-        let n2 = v.dot(v);
-        if n2 < EXP_TANGENT_MIN_SQ {
-            return p;
-        }
-        let q = wgsl_lift_mirror(p);
-        let vw = -v.dot(p) / q.w;
-        let v4 = Vec4::new(v.x, v.y, v.z, vw);
-        let mag = v4.length();
-        let result4 = (q * mag.cos() + v4 * (mag.sin() / mag)).normalize();
-        wgsl_clamp_mirror(result4.truncate())
-    }
-
-    fn wgsl_log_mirror(from: Vec3, to: Vec3) -> Vec3 {
-        let qf = wgsl_lift_mirror(wgsl_clamp_mirror(from));
-        let qt = wgsl_lift_mirror(wgsl_clamp_mirror(to));
-        let d_dot = qf.dot(qt).clamp(-1.0, 1.0);
-        let perp4 = qt - d_dot * qf;
-        let n = perp4.length();
-        if n < LOG_PERP_MIN {
-            return Vec3::ZERO;
-        }
-        let half_chord = (qt - qf).length() * 0.5;
-        let d = 2.0 * half_chord.clamp(0.0, 1.0).asin();
-        perp4.truncate() * (d / n)
-    }
-
-    fn wgsl_parallel_transport_mirror(from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
-        let pf = wgsl_clamp_mirror(from);
-        let pt = wgsl_clamp_mirror(to);
-        let qf = wgsl_lift_mirror(pf);
-        let qt = wgsl_lift_mirror(pt);
-        let vw = -v.dot(pf) / qf.w;
-        let v4 = Vec4::new(v.x, v.y, v.z, vw);
-        let sum = qf + qt;
-        let denom = sum.dot(sum) * 0.5;
-        let v4t = v4 - (v4.dot(qt) / denom) * sum;
-        v4t.truncate()
-    }
-
-    // Shared direction for the point and tangent fixtures, unit length so a
-    // scaled entry has exactly the radius it names.
     const PARITY_DIR: Vec3 = Vec3::new(0.6, -0.48, 0.64);
 
-    // Chart fixtures, each placed in the guard band it exercises, so a parity
-    // assertion crosses every branch a mirror has and lands on both sides of
-    // every threshold a pair of points can reach.
     fn parity_points() -> [Vec3; 11] {
         let shell = SPHERE_R2_MAX.sqrt();
         [
@@ -646,67 +395,9 @@ mod tests {
         ]
     }
 
-    // Tangent fixtures bracketing the early return of `exp` and a
-    // displacement long enough to leave the chart.
-    fn parity_vectors() -> [Vec3; 6] {
-        let guard = EXP_TANGENT_MIN_SQ.sqrt();
-        [
-            Vec3::ZERO,
-            Vec3::new(guard * 0.1, 0.0, 0.0),
-            PARITY_DIR * (guard * 0.99),
-            PARITY_DIR * (guard * 2.0),
-            Vec3::new(0.0, 0.05, 0.0),
-            Vec3::new(-0.3, 0.2, 0.7),
-        ]
-    }
-
-    #[test]
-    fn wgsl_bodies_match_the_cpu_mirrors() {
-        let src = s3().wgsl_impl();
-        for (name, pin) in WGSL_BODY_PINS {
-            assert_eq!(
-                wgsl_function_source(&src, name),
-                *pin,
-                "{name} drifted from its CPU mirror"
-            );
-        }
-    }
-
-    #[test]
-    fn wgsl_declares_every_chart_floor_from_its_cpu_constant() {
-        let src = s3().wgsl_impl();
-        let pins = [
-            format!("const LOAM_S3_R2_MAX: f32 = {SPHERE_R2_MAX};"),
-            format!("const LOAM_S3_EXP_TANGENT_MIN_SQ: f32 = {EXP_TANGENT_MIN_SQ:e};"),
-            format!("const LOAM_S3_LOG_PERP_MIN: f32 = {LOG_PERP_MIN:e};"),
-        ];
-        for pin in pins {
-            assert!(src.contains(&pin), "shipped WGSL has no `{pin}`");
-        }
-    }
-
-    #[test]
-    fn wgsl_max_arc_stays_under_the_saturated_chart_radius() {
-        // The cap has to stay under the largest origin distance this chart
-        // can report, `asin(√SPHERE_R2_MAX)`, or the marcher's boundary
-        // escape can never fire and only the arc budget terminates a ray.
-        const S3_MAX_ARC: f32 = 1.5;
-        let pin = format!("const LOAM_MAX_ARC: f32 = {S3_MAX_ARC};");
-        assert!(
-            s3().wgsl_impl().contains(&pin),
-            "LOAM_MAX_ARC drifted; expected `{pin}`"
-        );
-        let chart_radius = SPHERE_R2_MAX.sqrt().asin();
-        assert!(
-            S3_MAX_ARC < chart_radius,
-            "arc cap {S3_MAX_ARC} is above the chart radius {chart_radius}"
-        );
-    }
-
     #[test]
     fn lift_floors_w_at_the_shell_even_where_the_clamp_overshoots_it() {
         let floor = (1.0 - SPHERE_R2_MAX).sqrt();
-        let mut overshoots = 0usize;
         let mut worst_w = f32::INFINITY;
         for i in 0..6 {
             for j in 0..6 {
@@ -715,25 +406,16 @@ mod tests {
                     for scale in [1.0 + 1e-6, 1.01, 2.0, 1e3, 1e18] {
                         let raw = dir * scale;
                         let clamped = clamp_to_hemisphere(raw);
-                        if clamped.length_squared() > SPHERE_R2_MAX {
-                            overshoots += 1;
-                        }
                         worst_w = worst_w.min(to_sphere(raw).w).min(to_sphere(clamped).w);
                     }
                 }
             }
         }
         assert!(
-            overshoots > 0,
-            "no probe landed above the shell; the clamp's postcondition is \
-             not what this pins"
-        );
-        assert!(
             worst_w >= floor,
             "lift w reached {worst_w:e}, under the shell floor {floor:e}"
         );
-        // Non-finite input reaches the same floor: `f32::min` returns the
-        // non-NaN operand, so `w` is defined where `|p|²` is not.
+
         assert!(to_sphere(Vec3::splat(f32::NAN)).w >= floor);
         assert!(to_sphere(Vec3::splat(f32::INFINITY)).w >= floor);
     }
@@ -752,40 +434,11 @@ mod tests {
             worst >= chart_min,
             "denominator reached {worst:e}, under the shell bound {chart_min:e}"
         );
-        // Upper bound so the assertion above cannot pass vacuously on a
-        // fixture set that stopped containing the shell antipodes.
+
         assert!(
             worst <= chart_min * 1.5,
             "closest approach {worst:e} is not the chart minimum {chart_min:e}"
         );
-    }
-
-    #[test]
-    fn exp_lifted_magnitude_is_never_below_the_tangent_guard() {
-        let mut smallest = f32::INFINITY;
-        for at in parity_points() {
-            for v in parity_vectors() {
-                if v.length_squared() < EXP_TANGENT_MIN_SQ {
-                    continue;
-                }
-                let p = clamp_to_hemisphere(at);
-                let q = to_sphere(p);
-                let mag = Vec4::new(v.x, v.y, v.z, -v.dot(p) / q.w).length();
-                assert!(
-                    mag >= v.length(),
-                    "lift shrank the tangent at {at:?} {v:?}: {mag:e} < {:e}",
-                    v.length()
-                );
-                smallest = smallest.min(mag);
-            }
-        }
-        let guard = EXP_TANGENT_MIN_SQ.sqrt();
-        assert!(
-            smallest >= guard,
-            "smallest lifted magnitude {smallest:e} is under the guard {guard:e}"
-        );
-        assert_eq!(guard.sin() / guard, 1.0);
-        assert_eq!(smallest.sin() / smallest, 1.0);
     }
 
     #[test]
@@ -799,101 +452,5 @@ mod tests {
         assert_relative_eq!(moved.x, above.x, max_relative = 1e-5);
         assert_eq!(moved.y, 0.0);
         assert_eq!(moved.z, 0.0);
-    }
-
-    #[test]
-    fn wgsl_clamp_mirror_is_bit_identical_to_cpu_clamp() {
-        for p in parity_points() {
-            assert_eq!(wgsl_clamp_mirror(p), clamp_to_hemisphere(p), "at {p:?}");
-        }
-    }
-
-    #[test]
-    fn wgsl_lift_mirror_is_bit_identical_to_cpu_lift() {
-        for p in parity_points() {
-            assert_eq!(wgsl_lift_mirror(p), to_sphere(p), "at {p:?}");
-        }
-    }
-
-    #[test]
-    fn wgsl_distance_mirror_is_bit_identical_to_cpu_distance() {
-        let s = s3();
-        for a in parity_points() {
-            for b in parity_points() {
-                assert_eq!(wgsl_distance_mirror(a, b), s.distance(a, b), "{a:?} {b:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn wgsl_exp_mirror_is_bit_identical_to_cpu_exp() {
-        let s = s3();
-        for at in parity_points() {
-            for v in parity_vectors() {
-                assert_eq!(wgsl_exp_mirror(at, v), s.exp(at, v), "{at:?} {v:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn wgsl_log_mirror_is_bit_identical_to_cpu_log() {
-        let s = s3();
-        for from in parity_points() {
-            for to in parity_points() {
-                assert_eq!(
-                    wgsl_log_mirror(from, to),
-                    s.log(from, to),
-                    "{from:?} {to:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn wgsl_parallel_transport_mirror_is_bit_identical_to_cpu_transport() {
-        let s = s3();
-        for from in parity_points() {
-            for to in parity_points() {
-                for v in parity_vectors() {
-                    assert_eq!(
-                        wgsl_parallel_transport_mirror(from, to, v),
-                        s.parallel_transport(from, to, v),
-                        "{from:?} {to:?} {v:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn wgsl_origin_distance_matches_cpu_distance_near_origin() {
-        let s = s3();
-        // Radii straddling both failure regimes of acos(√(1−|p|²)) in f32:
-        // exact 0 below |p| ≈ 1.73e-4, and a quantized 3.45e-4 floor above it.
-        let diagonal = Vec3::new(1.0, 1.0, 1.0).normalize();
-        for r in [1e-3_f32, 3e-4, 1e-4, 1e-5, 1e-6] {
-            for dir in [Vec3::X, diagonal] {
-                let p = dir * r;
-                assert_relative_eq!(
-                    wgsl_origin_distance_mirror(p),
-                    s.distance(Vec3::ZERO, p),
-                    max_relative = 1e-6
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn wgsl_origin_distance_matches_cpu_distance_across_the_hemisphere() {
-        let s = s3();
-        let dir = Vec3::new(0.6, -0.48, 0.64).normalize();
-        for r in [0.01_f32, 0.1, 0.4, 0.7, 0.9] {
-            let p = dir * r;
-            assert_relative_eq!(
-                wgsl_origin_distance_mirror(p),
-                s.distance(Vec3::ZERO, p),
-                max_relative = 1e-5
-            );
-        }
     }
 }

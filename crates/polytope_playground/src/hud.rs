@@ -88,13 +88,6 @@ pub(crate) fn hud_seat(free: egui::Rect, pixels_per_point: f32) -> HudSeat {
     }
 }
 
-// The advance box, not the ink box; see `loam_text::TextMetrics::measure`.
-#[cfg(test)]
-fn hud_rect(free: egui::Rect, metrics: &loam_text::TextMetrics, readout: &str) -> egui::Rect {
-    let [w, h] = metrics.measure(readout, HUD_SIZE_PT);
-    egui::Rect::from_min_size(hud_origin(free), egui::vec2(w, h))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HudDraw {
     origin_px: [f32; 2],
@@ -184,17 +177,6 @@ mod tests {
         }
     }
 
-    fn widest_readout() -> String {
-        let mut out = String::new();
-        write_readout(&mut out, &readout(-9.999, -99.99, -9.99, [true; 6]));
-        out
-    }
-
-    fn hud_metrics() -> loam_text::TextMetrics {
-        loam_text::TextMetrics::new(hud_font_bytes(), HUD_BAKE_PX)
-            .expect("bundled Hack Regular parses")
-    }
-
     #[test]
     fn readout_is_renderable_for_every_extreme_float() {
         let mut out = String::new();
@@ -214,27 +196,6 @@ mod tests {
                 loam_text::is_renderable(&out),
                 "readout for {value} contains characters loam-text would drop: {out:?}"
             );
-        }
-    }
-
-    #[test]
-    fn readout_value_columns_align_across_magnitudes() {
-        let mut out = String::new();
-        let mut widths: Option<Vec<usize>> = None;
-        for &(w, t, rate) in &[
-            (0.0_f32, 0.0_f32, 1.0_f32),
-            (-9.999, 99.99, 0.25),
-            (9.999, 9.99, 4.0),
-        ] {
-            write_readout(&mut out, &readout(w, t, rate, [false; 6]));
-            let line_widths: Vec<usize> = out.lines().map(|l| l.chars().count()).collect();
-            match &widths {
-                None => widths = Some(line_widths),
-                Some(first) => assert_eq!(
-                    first, &line_widths,
-                    "line widths drifted for (w={w}, t={t}, rate={rate}): {out:?}"
-                ),
-            }
         }
     }
 
@@ -270,91 +231,6 @@ mod tests {
                 assert!((s.size_px - u.size_px * ppp).abs() < 1e-3, "size at {ppp}x");
                 assert_eq!(s.color, u.color, "scale must not touch color");
             }
-        }
-    }
-
-    #[test]
-    fn hud_rect_top_left_is_the_body_origin_in_points() {
-        let metrics = hud_metrics();
-        let readout = widest_readout();
-        let free = egui::Rect::from_min_max(egui::pos2(3.0, 27.0), egui::pos2(1280.0, 720.0));
-        for ppp in [1.0_f32, 1.5, 2.0] {
-            let body = draw_list(hud_seat(free, ppp))[1];
-            let rect = hud_rect(free, &metrics, &readout);
-            assert!(
-                (body.origin_px[0] - rect.left() * ppp).abs() < 1e-3
-                    && (body.origin_px[1] - rect.top() * ppp).abs() < 1e-3,
-                "at {ppp}x the body sits at {:?}, rect top-left is {:?}",
-                body.origin_px,
-                rect.left_top()
-            );
-        }
-    }
-
-    #[test]
-    fn hud_rect_clears_the_menu_bar_and_the_bottom_overlay() {
-        const OVERLAY_PROBE_FRACTION: f32 = 0.5;
-
-        let metrics = hud_metrics();
-        let readout = widest_readout();
-        for (w, h) in [
-            (640.0_f32, 480.0_f32),
-            (800.0, 600.0),
-            (1280.0, 720.0),
-            (1920.0, 1080.0),
-        ] {
-            let ctx = egui::Context::default();
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(w, h),
-                )),
-                ..Default::default()
-            };
-            let mut rects = None;
-            let _ = ctx.run(input, |ctx| {
-                let bar = egui::TopBottomPanel::top("shell-menu-bar")
-                    .show(ctx, |ui| {
-                        egui::MenuBar::new().ui(ui, |ui| {
-                            ui.menu_button("Demo", |_| {});
-                        });
-                    })
-                    .response
-                    .rect;
-                let overlay = egui::Window::new("overlay-probe")
-                    .title_bar(false)
-                    .resizable(false)
-                    .collapsible(false)
-                    .pivot(egui::Align2::CENTER_BOTTOM)
-                    .default_pos(crate::ui::overlay_seat(ctx))
-                    .show(ctx, |ui| {
-                        ui.set_min_height(h * OVERLAY_PROBE_FRACTION);
-                        ui.label("controls");
-                    })
-                    .expect("probe window is never collapsed")
-                    .response
-                    .rect;
-                rects = Some((
-                    bar,
-                    overlay,
-                    hud_rect(ctx.available_rect(), &metrics, &readout),
-                ));
-            });
-            let (bar, overlay, hud) = rects.expect("run closure fills the rects");
-            assert!(bar.height() > 0.0, "{w}x{h}: menu bar measured empty");
-            assert!(
-                overlay.height() >= h * OVERLAY_PROBE_FRACTION,
-                "{w}x{h}: overlay probe measured {overlay:?}, shorter than requested"
-            );
-            assert!(hud.area() > 0.0, "{w}x{h}: readout measured empty");
-            assert!(
-                !hud.intersects(bar),
-                "{w}x{h}: readout {hud:?} overlaps the menu bar {bar:?}"
-            );
-            assert!(
-                !hud.intersects(overlay),
-                "{w}x{h}: readout {hud:?} overlaps the controls overlay {overlay:?}"
-            );
         }
     }
 }

@@ -5,7 +5,7 @@ use loam_text::TextRenderer;
 use wgpu::{Device, Queue, TextureFormat, TextureView};
 
 const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
-const VIEWPORT: [f32; 2] = [1280.0, 720.0];
+const VIEWPORT: [f32; 2] = [256.0, 64.0];
 
 fn draw_hud_frame(
     device: &Device,
@@ -21,19 +21,6 @@ fn draw_hud_frame(
     text.record(device, queue, &mut encoder, view, VIEWPORT);
     queue.submit(Some(encoder.finish()));
     Ok(())
-}
-
-// libtest reports an early return as a pass.
-fn system_font() -> Vec<u8> {
-    const CANDIDATES: &[&str] = &[
-        r"C:\Windows\Fonts\arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-    ];
-    CANDIDATES
-        .iter()
-        .find_map(|p| std::fs::read(p).ok())
-        .unwrap_or_else(|| panic!("no readable system font; probed {CANDIDATES:?}"))
 }
 
 async fn request_device() -> Result<(Device, Queue), String> {
@@ -62,7 +49,7 @@ async fn request_device() -> Result<(Device, Queue), String> {
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn hud_frame_renders_into_an_offscreen_target_gpu_probe() {
-    let font_bytes = system_font();
+    let font_bytes = include_bytes!("../../hero/fonts/lmroman10-bold.otf");
     let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -76,16 +63,49 @@ fn hud_frame_renders_into_an_offscreen_target_gpu_probe() {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: TARGET_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
-    draw_hud_frame(&device, &queue, &view, &font_bytes).expect("HUD frame should render");
+    draw_hud_frame(&device, &queue, &view, font_bytes).expect("HUD frame should render");
+    let bytes_per_row = VIEWPORT[0] as u32 * 4;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("HUD pixels"),
+        size: (bytes_per_row * VIEWPORT[1] as u32) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &target,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: None,
+            },
+        },
+        target.size(),
+    );
+    queue.submit(Some(encoder.finish()));
+    readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
     device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })
-        .expect("queue drain");
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("readback");
+    let pixels = readback.slice(..).get_mapped_range();
+    assert!(
+        pixels.chunks_exact(4).filter(|p| p[0] > 100).count() > 100,
+        "glyph ink is missing"
+    );
+    assert!(
+        pixels[..bytes_per_row as usize].iter().all(|&b| b == 0),
+        "glyphs escaped the text box"
+    );
 }

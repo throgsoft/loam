@@ -9,7 +9,6 @@ fn scenes_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes")
 }
 
-// Named after the case so concurrently running tests cannot collide on it.
 struct TempScene(PathBuf);
 
 impl TempScene {

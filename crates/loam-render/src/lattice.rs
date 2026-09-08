@@ -44,42 +44,36 @@ impl Viewport {
     }
 
     /// The last cell absorbs the rounding remainder; empty when `n == 0`.
-    pub fn split_horizontal(&self, n: u32) -> Vec<Viewport> {
-        if n == 0 {
-            return Vec::new();
-        }
-        let cell_w = self.width / n;
-        let remainder = self.width - cell_w * n;
-        (0..n)
-            .map(|i| {
-                let extra = if i == n - 1 { remainder } else { 0 };
-                Viewport {
-                    x: self.x + i * cell_w,
-                    y: self.y,
-                    width: cell_w + extra,
-                    height: self.height,
-                }
-            })
-            .collect()
+    pub fn split_horizontal(&self, n: u32) -> impl Iterator<Item = Viewport> {
+        let viewport = *self;
+        (0..n).map(move |i| {
+            let width = viewport.width / n;
+            Viewport {
+                x: viewport.x + i * width,
+                width: if i + 1 == n {
+                    viewport.width - i * width
+                } else {
+                    width
+                },
+                ..viewport
+            }
+        })
     }
 
-    pub fn split_vertical(&self, n: u32) -> Vec<Viewport> {
-        if n == 0 {
-            return Vec::new();
-        }
-        let cell_h = self.height / n;
-        let remainder = self.height - cell_h * n;
-        (0..n)
-            .map(|i| {
-                let extra = if i == n - 1 { remainder } else { 0 };
-                Viewport {
-                    x: self.x,
-                    y: self.y + i * cell_h,
-                    width: self.width,
-                    height: cell_h + extra,
-                }
-            })
-            .collect()
+    pub fn split_vertical(&self, n: u32) -> impl Iterator<Item = Viewport> {
+        let viewport = *self;
+        (0..n).map(move |i| {
+            let height = viewport.height / n;
+            Viewport {
+                y: viewport.y + i * height,
+                height: if i + 1 == n {
+                    viewport.height - i * height
+                } else {
+                    height
+                },
+                ..viewport
+            }
+        })
     }
 }
 
@@ -102,7 +96,7 @@ mod tests {
             width: 17,
             height: 30,
         };
-        let cells = v.split_horizontal(5);
+        let cells: Vec<_> = v.split_horizontal(5).collect();
         assert_eq!(cells.len(), 5);
         assert_eq!(cells.first().unwrap().x, 100);
         assert_eq!(
@@ -119,6 +113,6 @@ mod tests {
     #[test]
     fn split_horizontal_n_zero_returns_empty() {
         let v = Viewport::full([100, 50]);
-        assert!(v.split_horizontal(0).is_empty());
+        assert!(v.split_horizontal(0).next().is_none());
     }
 }

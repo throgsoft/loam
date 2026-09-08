@@ -1,7 +1,5 @@
 name: docs
 
-# Build the workspace rustdoc and publish it to GitHub Pages on every push to
-# main. Enable once under Settings -> Pages -> Source: GitHub Actions.
 on:
   push:
     branches: [main]
@@ -12,7 +10,6 @@ permissions:
   pages: write
   id-token: write
 
-# One Pages deploy at a time; a newer push supersedes an in-flight one.
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -34,14 +31,11 @@ jobs:
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
             pkg-config
-      # Mirror the `doc` gate: broken intra-doc links fail the build.
       - name: cargo doc --no-deps --workspace
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --workspace
-      # cargo doc emits no workspace landing page; generate one linking every
-      # crate so the Pages root lists all of them instead of dead-ending in one.
-      # A folder with an all.html is a real crate's docs (unlike src/, etc.).
+      # rustdoc has no workspace landing page.
       - name: workspace docs index
         run: |
           cd target/doc
@@ -51,7 +45,7 @@ jobs:
             echo '<style>body{font:16px/1.6 system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem}li{margin:.3rem 0}</style>'
             echo '</head><body><h1>Loam API documentation</h1>'
             echo '<p>Start with <code>loam_math</code> and <code>loam_shape</code>,'
-            echo 'the stable surfaces.</p><ul>'
+            echo 'for geometry and shapes.</p><ul>'
             for d in */; do
               name="${d%/}"
               [ -f "${d}all.html" ] && echo "<li><a href=\"${name}/index.html\"><code>${name}</code></a></li>"

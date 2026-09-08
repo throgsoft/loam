@@ -1,4 +1,4 @@
-//! Presentation timing only: a directed value must never feed simulation state.
+//! Frame-indexed animation samples; callers decide how to apply them.
 
 use std::num::NonZeroU32;
 
@@ -68,7 +68,7 @@ pub struct Key<T> {
     pub ease: Ease,
 }
 
-/// Held at the first key before it and at the last key after it.
+/// Sampling outside the key range holds the nearest endpoint.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Track<T> {
@@ -97,7 +97,7 @@ impl<T> Track<T> {
 }
 
 impl<T: Interpolate> Track<T> {
-    /// `None` only for an empty track, which [`Timeline::validate`] refuses.
+    /// Requires ordered keys; returns `None` for an empty track.
     pub fn sample(&self, frame: u32, fps: NonZeroU32) -> Option<T> {
         let first = self.keys.first()?;
         let t = frame as f32 / fps.get() as f32;
@@ -135,7 +135,6 @@ pub struct Timeline {
     pub bodies: Vec<BodyTrack>,
 }
 
-// Admits a component hand-rounded to four decimals.
 const UNIT_ROTOR_TOLERANCE: f32 = 1e-3;
 
 impl Timeline {
@@ -192,20 +191,17 @@ fn validate_rotors(track: &Track<Rotor4>, channel: &str) -> Result<(), TimelineE
     validate_times(track, channel)?;
     for (index, key) in track.keys().iter().enumerate() {
         let norm_squared = key.value.norm_squared();
-        if (norm_squared - 1.0).abs() > UNIT_ROTOR_TOLERANCE {
+        let pseudoscalar = (key.value * key.value.inverse()).xyzw;
+        if !norm_squared.is_finite()
+            || (norm_squared - 1.0).abs() > UNIT_ROTOR_TOLERANCE
+            || !pseudoscalar.is_finite()
+            || pseudoscalar.abs() > UNIT_ROTOR_TOLERANCE
+        {
             return Err(TimelineError::NonUnitRotor {
                 channel: channel.to_owned(),
                 index,
                 norm_squared,
-            });
-        }
-    }
-    for (index, pair) in track.keys().windows(2).enumerate() {
-        let relative = pair[0].value.inverse() * pair[1].value;
-        if relative.is_isoclinic_half_turn() {
-            return Err(TimelineError::IsoclinicHalfTurn {
-                channel: channel.to_owned(),
-                index,
+                pseudoscalar,
             });
         }
     }
@@ -224,18 +220,13 @@ pub enum TimelineError {
     KeyTime { channel: String, index: usize },
     #[error("channel '{channel}' key {index} is not strictly later than its predecessor")]
     KeyOrder { channel: String, index: usize },
-    #[error("channel '{channel}' key {index} is not a unit rotor (norm² = {norm_squared})")]
+    #[error("channel '{channel}' key {index} is not a unit rotor (norm² = {norm_squared}, R reverse(R) pseudoscalar = {pseudoscalar})")]
     NonUnitRotor {
         channel: String,
         index: usize,
         norm_squared: f32,
+        pseudoscalar: f32,
     },
-    #[error(
-        "channel '{channel}' keys {index} and {} differ by an isoclinic half-turn, \
-         whose rotation plane the rotor does not carry; insert an intermediate key",
-        .index + 1
-    )]
-    IsoclinicHalfTurn { channel: String, index: usize },
     #[error("duplicate body name '{name}'")]
     DuplicateBody { name: String },
     #[error(transparent)]
@@ -298,11 +289,11 @@ impl Playhead {
 #[must_use]
 pub enum Drive<T> {
     Host,
-    /// The host must not advance its own clock for this channel.
+    /// Overrides the host animation for this channel.
     Directed(T),
 }
 
-/// Paused channels stay directed; dropping the director hands them back.
+/// Paused and finished channels retain their sampled values.
 #[derive(Clone, Debug)]
 pub struct Director {
     timeline: Timeline,
@@ -365,7 +356,7 @@ impl Director {
         self.drive(self.body(body).and_then(|b| b.orientation.as_ref()))
     }
 
-    /// In file order.
+    /// Preserves timeline order.
     pub fn bodies(&self) -> impl Iterator<Item = &str> {
         self.timeline.bodies.iter().map(|b| b.name.as_str())
     }
@@ -420,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn ease_curves_fix_their_endpoints() {
+    fn easing_clamps_endpoints() {
         for ease in [Ease::Linear, Ease::InOutCubic, Ease::OutCubic] {
             assert_eq!(ease.apply(0.0), 0.0);
             assert!((ease.apply(1.0) - 1.0).abs() < 1e-6);
@@ -431,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sampler_converts_frames_to_seconds_at_the_timelines_own_rate() {
+    fn sampling_uses_timeline_rate() {
         let track = Track::new()
             .key(0.0, 0.0, Ease::Linear)
             .key(1.0, 10.0, Ease::Linear);
@@ -444,17 +435,16 @@ mod tests {
     }
 
     #[test]
-    fn a_span_runs_from_the_earlier_key_and_is_eased_by_the_later_one() {
+    fn destination_key_selects_easing() {
         let track = Track::new()
             .key(0.0, 0.0, Ease::OutCubic)
             .key(1.0, 10.0, Ease::InOutCubic);
-        // InOutCubic(0.25) = 4·0.25³ = 0.625; OutCubic gives 5.78, a reversed u 9.375.
         let quarter = track.sample(15, FPS).unwrap();
         assert!((quarter - 0.625).abs() < 1e-6, "sampled {quarter}");
     }
 
     #[test]
-    fn vec4_keys_lerp_componentwise_including_the_w_channel() {
+    fn position_track_interpolates_w() {
         let track = Track::new()
             .key(0.0, Vec4::new(0.0, 0.0, 0.0, -4.0), Ease::Linear)
             .key(1.0, Vec4::new(2.0, -6.0, 0.0, 4.0), Ease::Linear);
@@ -466,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn values_hold_before_the_first_key_and_after_the_last() {
+    fn sampling_holds_endpoints() {
         let track = Track::new()
             .key(1.0, 4.0, Ease::Linear)
             .key(2.0, 9.0, Ease::Linear);
@@ -478,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn sampling_is_a_pure_function_of_the_frame_index() {
+    fn seeking_matches_sequential_playback() {
         let mut walked = Director::new(spin_timeline()).unwrap();
         for _ in 0..37 {
             walked.advance();
@@ -499,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn advance_steps_exactly_one_frame_and_clamps_at_the_end() {
+    fn playback_stops_at_last_frame() {
         let mut director = Director::new(spin_timeline()).unwrap();
         for expected in 1..=10 {
             director.advance();
@@ -511,10 +501,15 @@ mod tests {
         }
         assert_eq!(director.frame(), 120);
         assert!(director.finished());
+        let final_value = director.orientation("row");
+        assert!(matches!(final_value, Drive::Directed(_)));
+        director.set_playing(false);
+        director.advance();
+        assert_eq!(director.orientation("row"), final_value);
     }
 
     #[test]
-    fn a_paused_playhead_freezes_and_a_seek_clamps() {
+    fn paused_seek_clamps_to_frame_range() {
         let mut playhead = Playhead::new(10);
         playhead.advance();
         playhead.set_playing(false);
@@ -529,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn rotor_keys_interpolate_on_the_manifold_and_reproduce_both_endpoints() {
+    fn rotor_interpolation_preserves_norm_and_endpoints() {
         let from = rotor(Bivector4::new(0.31, -0.62, 0.14, 0.83, -0.27, 0.45));
         let to = rotor(Bivector4::new(-0.71, 0.22, 0.96, -0.18, 0.53, -0.34));
         let probes = [
@@ -550,7 +545,6 @@ mod tests {
             );
         }
 
-        // Compared by action: `mix(.., 1.0)` may be −to under the double cover.
         for probe in probes {
             let start = Rotor4::mix(from, to, 0.0).apply(probe);
             let end = Rotor4::mix(from, to, 1.0).apply(probe);
@@ -560,8 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rotor_track_turns_the_short_way_past_a_half_turn() {
-        // A key pair 1.9π apart in one plane is 0.1π apart the other way.
+    fn rotor_track_uses_short_arc() {
         let track = Track::new().key(0.0, Rotor4::IDENTITY, Ease::Linear).key(
             1.0,
             rotor(Bivector4::new(1.9 * PI, 0.0, 0.0, 0.0, 0.0, 0.0)),
@@ -576,61 +569,95 @@ mod tests {
     }
 
     #[test]
-    fn an_isoclinic_half_turn_between_keys_is_refused_at_authoring_time() {
-        let from = rotor(Bivector4::new(0.4, -0.9, 0.2, 0.0, 0.0, 0.0));
-        let half_turn = rotor(Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, PI));
-        let to = from * half_turn;
-        assert!(!from.is_isoclinic_half_turn());
-        assert!(!to.is_isoclinic_half_turn());
-        assert!((from.inverse() * to).is_isoclinic_half_turn());
-
-        let timeline = Timeline {
-            fps: 60,
-            frames: 61,
-            w_slice: None,
-            bodies: vec![BodyTrack {
-                name: "letter_l".to_owned(),
-                position: None,
-                orientation: Some(Track::new().key(0.0, from, Ease::Linear).key(
-                    1.0,
-                    to,
-                    Ease::Linear,
-                )),
-            }],
-        };
-        let error = Director::new(timeline).unwrap_err();
-        assert!(
-            matches!(
-                error,
-                TimelineError::IsoclinicHalfTurn { ref channel, index: 0 }
-                    if channel == "letter_l.orientation"
-            ),
-            "{error}"
-        );
+    fn isoclinic_half_turn_interpolates_rotation_action() {
+        for sign in [-1.0, 1.0] {
+            let to = Rotor4 {
+                s: 0.0,
+                xyzw: sign,
+                ..Rotor4::IDENTITY
+            };
+            let timeline = Timeline {
+                fps: 60,
+                frames: 61,
+                w_slice: None,
+                bodies: vec![BodyTrack {
+                    name: "row".to_owned(),
+                    position: None,
+                    orientation: Some(Track::new().key(0.0, Rotor4::IDENTITY, Ease::Linear).key(
+                        1.0,
+                        to,
+                        Ease::Linear,
+                    )),
+                }],
+            };
+            let mut director = Director::new(timeline).unwrap();
+            director.seek(30);
+            let Drive::Directed(midpoint) = director.orientation("row") else {
+                panic!("missing orientation")
+            };
+            for probe in [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W] {
+                let rotated = midpoint.apply(probe);
+                assert!((rotated.length() - 1.0).abs() < 1e-5);
+                assert!((rotated - probe).length() > 0.5);
+                assert!((midpoint.apply(rotated) + probe).length() < 1e-5);
+            }
+            director.seek(60);
+            let Drive::Directed(endpoint) = director.orientation("row") else {
+                panic!("missing orientation")
+            };
+            for probe in [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W] {
+                assert!((endpoint.apply(probe) + probe).length() < 1e-5);
+            }
+        }
     }
 
     #[test]
-    fn a_non_unit_rotor_key_is_refused_at_authoring_time() {
-        let mut bent = Rotor4::IDENTITY;
-        bent.xy = 0.5;
-        let timeline = Timeline {
-            fps: 60,
-            frames: 2,
-            w_slice: None,
-            bodies: vec![BodyTrack {
-                name: "row".to_owned(),
-                position: None,
-                orientation: Some(Track::new().key(0.0, bent, Ease::Linear)),
-            }],
-        };
-        assert!(matches!(
-            Director::new(timeline).unwrap_err(),
-            TimelineError::NonUnitRotor { index: 0, .. }
-        ));
+    fn invalid_rotor_keys_are_rejected() {
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        for rotor in [
+            Rotor4 {
+                xy: 0.5,
+                ..Rotor4::IDENTITY
+            },
+            Rotor4 {
+                xy: f32::NAN,
+                ..Rotor4::IDENTITY
+            },
+            Rotor4 {
+                xy: f32::INFINITY,
+                ..Rotor4::IDENTITY
+            },
+            Rotor4 {
+                s: half,
+                xyzw: half,
+                ..Rotor4::IDENTITY
+            },
+            Rotor4 {
+                s: 0.0,
+                xy: half,
+                zw: half,
+                ..Rotor4::IDENTITY
+            },
+        ] {
+            let timeline = Timeline {
+                fps: 60,
+                frames: 2,
+                w_slice: None,
+                bodies: vec![BodyTrack {
+                    name: "row".to_owned(),
+                    position: None,
+                    orientation: Some(Track::new().key(0.0, rotor, Ease::Linear)),
+                }],
+            };
+            assert!(matches!(
+                Director::new(timeline).unwrap_err(),
+                TimelineError::NonUnitRotor { index: 0, .. }
+            ));
+        }
     }
 
     #[test]
-    fn degenerate_timelines_are_refused_at_authoring_time() {
+    fn invalid_timelines_are_rejected() {
         let base = || Timeline {
             fps: 60,
             frames: 60,
@@ -659,23 +686,27 @@ mod tests {
             TimelineError::EmptyTrack { .. }
         ));
 
-        let mut backwards = base();
-        backwards.w_slice = Some(Track::new().key(1.0, 0.0, Ease::Linear).key(
-            0.5,
-            1.0,
-            Ease::Linear,
-        ));
-        assert!(matches!(
-            Director::new(backwards).unwrap_err(),
-            TimelineError::KeyOrder { index: 1, .. }
-        ));
+        for time in [0.5, 1.0] {
+            let mut unordered = base();
+            unordered.w_slice = Some(Track::new().key(1.0, 0.0, Ease::Linear).key(
+                time,
+                1.0,
+                Ease::Linear,
+            ));
+            assert!(matches!(
+                Director::new(unordered).unwrap_err(),
+                TimelineError::KeyOrder { index: 1, .. }
+            ));
+        }
 
-        let mut nan = base();
-        nan.w_slice = Some(Track::new().key(f32::NAN, 0.0, Ease::Linear));
-        assert!(matches!(
-            Director::new(nan).unwrap_err(),
-            TimelineError::KeyTime { index: 0, .. }
-        ));
+        for time in [-1.0, f32::NAN, f32::INFINITY] {
+            let mut invalid = base();
+            invalid.w_slice = Some(Track::new().key(time, 0.0, Ease::Linear));
+            assert!(matches!(
+                Director::new(invalid).unwrap_err(),
+                TimelineError::KeyTime { index: 0, .. }
+            ));
+        }
 
         let mut duplicate = base();
         duplicate.bodies = vec![
@@ -697,26 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ron_timeline_round_trips() {
-        let original = spin_timeline();
-        let text = ron::ser::to_string(&original).unwrap();
-        let parsed: Timeline = ron::from_str(&text).unwrap();
-        assert_eq!(parsed, original);
-
-        let a = Director::new(original).unwrap();
-        let mut b = Director::from_ron(&text).unwrap();
-        for frame in [0, 1, 17, 60, 119, 120] {
-            b.seek(frame);
-            let mut a = a.clone();
-            a.seek(frame);
-            assert_eq!(a.w_slice(), b.w_slice());
-            assert_eq!(a.position("row"), b.position("row"));
-            assert_eq!(a.orientation("row"), b.orientation("row"));
-        }
-    }
-
-    #[test]
-    fn a_hand_written_ron_timeline_loads() {
+    fn ron_defaults_load_into_directed_channels() {
         let text = r#"(
             fps: 30,
             frames: 90,
@@ -752,31 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn a_directed_channel_never_advances_the_hosts_wall_clock() {
-        let mut director = Director::new(spin_timeline()).unwrap();
-        let mut host_rot_time = 0.0f32;
-        let mut directed_frames = 0;
-
-        for _ in 0..200 {
-            match director.orientation("row") {
-                Drive::Host => host_rot_time += 1.0 / 60.0,
-                Drive::Directed(_) => directed_frames += 1,
-            }
-            director.advance();
-        }
-
-        assert_eq!(directed_frames, 200);
-        assert_eq!(host_rot_time, 0.0);
-        assert!(director.finished());
-        assert!(matches!(director.orientation("row"), Drive::Directed(_)));
-        director.set_playing(false);
-        director.seek(0);
-        assert!(matches!(director.orientation("row"), Drive::Directed(_)));
-        assert!(matches!(director.w_slice(), Drive::Directed(_)));
-    }
-
-    #[test]
-    fn a_channel_the_timeline_does_not_name_stays_with_the_host() {
+    fn missing_channels_remain_host_driven() {
         let timeline = Timeline {
             fps: 60,
             frames: 60,

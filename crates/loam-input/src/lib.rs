@@ -1,4 +1,4 @@
-use glam::{Vec2, Vec3};
+use glam::Vec2;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
@@ -11,7 +11,6 @@ pub struct ButtonState {
     pub press_pos: Option<Vec2>,
 }
 
-/// `Back`, `Forward` and `Other` are dropped; nothing binds them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MouseButtons {
     pub left: ButtonState,
@@ -30,7 +29,7 @@ impl MouseButtons {
     }
 }
 
-/// From held physical keys, not `ModifiersChanged`, so left and right agree.
+/// Derived from held physical keys.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Modifiers {
     pub shift: bool,
@@ -46,8 +45,6 @@ pub struct FrameInput {
     /// Raw device delta (`MouseMotion`); accumulates past the screen edge.
     pub mouse_raw_delta: Vec2,
     pub scroll_lines: f32,
-    /// Shorthand for `buttons.left.down`.
-    pub left_mouse_down: bool,
     pub buttons: MouseButtons,
     /// Physical pixels; `None` until `CursorMoved` and after the cursor leaves.
     pub cursor_pos: Option<Vec2>,
@@ -58,12 +55,6 @@ pub struct FrameInput {
     pub move_right: f32,
     /// Space = +1, Left/Right Shift = −1.
     pub move_up: f32,
-}
-
-impl FrameInput {
-    pub fn move_dir(&self) -> Vec3 {
-        Vec3::new(self.move_right, self.move_up, -self.move_forward)
-    }
 }
 
 #[derive(Debug, Default)]
@@ -88,8 +79,8 @@ impl InputState {
 
     /// Call on focus loss.
     pub fn release_buttons(&mut self) {
-        self.frame.buttons = MouseButtons::default();
-        self.frame.left_mouse_down = false;
+        self.held_keys.clear();
+        self.frame = FrameInput::default();
     }
 
     pub fn mouse_input(&mut self, button: MouseButton, state: ElementState) {
@@ -97,10 +88,8 @@ impl InputState {
         let pressed = state == ElementState::Pressed;
         if let Some(slot) = self.frame.buttons.slot(button) {
             slot.down = pressed;
-            // Dropped on release so a stale anchor cannot outlive its drag.
             slot.press_pos = if pressed { cursor } else { None };
         }
-        self.frame.left_mouse_down = self.frame.buttons.left.down;
     }
 
     pub fn mouse_wheel(&mut self, delta: MouseScrollDelta) {
@@ -128,15 +117,8 @@ impl InputState {
         let held = &self.held_keys;
         self.frame.move_forward = axis(held, KeyCode::KeyW, KeyCode::KeyS);
         self.frame.move_right = axis(held, KeyCode::KeyD, KeyCode::KeyA);
-        self.frame.move_up = axis(
-            held,
-            KeyCode::Space,
-            if held.contains(&KeyCode::ShiftRight) {
-                KeyCode::ShiftRight
-            } else {
-                KeyCode::ShiftLeft
-            },
-        );
+        self.frame.move_up = held.contains(&KeyCode::Space) as u8 as f32
+            - either(held, KeyCode::ShiftLeft, KeyCode::ShiftRight) as u8 as f32;
         self.frame.modifiers = Modifiers {
             shift: either(held, KeyCode::ShiftLeft, KeyCode::ShiftRight),
             control: either(held, KeyCode::ControlLeft, KeyCode::ControlRight),
@@ -206,46 +188,20 @@ mod tests {
         input.cursor_moved(10.0, 20.0);
         input.cursor_moved(15.0, 18.0);
         input.mouse_wheel(MouseScrollDelta::LineDelta(0.0, 2.0));
+        input.accumulate_raw_motion(8.0, -3.0);
 
         let frame = input.take_frame();
-        assert!(frame.left_mouse_down);
+        assert!(frame.buttons.left.down);
         assert_eq!(frame.mouse_delta, Vec2::new(5.0, -2.0));
         assert_eq!(frame.scroll_lines, 2.0);
+        assert_eq!(frame.mouse_raw_delta, Vec2::new(8.0, -3.0));
 
         let frame = input.take_frame();
-        assert!(frame.left_mouse_down);
+        assert!(frame.buttons.left.down);
         assert_eq!(frame.mouse_delta, Vec2::ZERO);
         assert_eq!(frame.scroll_lines, 0.0);
-    }
-
-    #[test]
-    fn wasd_keys_produce_move_axes() {
-        let mut input = InputState::default();
-        input.key_input(PhysicalKey::Code(KeyCode::KeyW), ElementState::Pressed);
-        input.key_input(PhysicalKey::Code(KeyCode::KeyD), ElementState::Pressed);
-        let frame = input.take_frame();
-        assert_close(frame.move_forward, 1.0);
-        assert_close(frame.move_right, 1.0);
-        assert_close(frame.move_up, 0.0);
-    }
-
-    #[test]
-    fn key_release_clears_axis() {
-        let mut input = InputState::default();
-        input.key_input(PhysicalKey::Code(KeyCode::KeyW), ElementState::Pressed);
-        input.key_input(PhysicalKey::Code(KeyCode::KeyW), ElementState::Released);
-        let frame = input.take_frame();
-        assert_close(frame.move_forward, 0.0);
-    }
-
-    #[test]
-    fn cursor_moved_reports_absolute_position_and_invalidation_clears_it() {
-        let mut input = InputState::default();
-        assert_eq!(input.take_frame().cursor_pos, None);
-        input.cursor_moved(10.0, 20.0);
-        assert_eq!(input.take_frame().cursor_pos, Some(Vec2::new(10.0, 20.0)));
-        input.cursor_invalidated();
-        assert_eq!(input.take_frame().cursor_pos, None);
+        assert_eq!(frame.mouse_raw_delta, Vec2::ZERO);
+        assert_eq!(frame.cursor_pos, Some(Vec2::new(15.0, 18.0)));
     }
 
     #[test]
@@ -301,69 +257,47 @@ mod tests {
     }
 
     #[test]
-    fn unbound_buttons_leave_tracked_state_untouched() {
-        let mut input = InputState::default();
-        input.cursor_moved(7.0, 8.0);
-        input.mouse_input(MouseButton::Left, ElementState::Pressed);
-        input.mouse_input(MouseButton::Back, ElementState::Pressed);
-        input.mouse_input(MouseButton::Other(9), ElementState::Pressed);
-
-        let frame = input.take_frame();
-        assert_eq!(frame.buttons.left.press_pos, Some(Vec2::new(7.0, 8.0)));
-        assert!(!frame.buttons.right.down);
-        assert!(!frame.buttons.middle.down);
-    }
-
-    #[test]
-    fn release_buttons_clears_every_button_and_anchor() {
+    fn focus_loss_clears_held_keys_buttons_and_pending_motion() {
         let mut input = InputState::default();
         input.cursor_moved(11.0, 12.0);
         input.mouse_input(MouseButton::Left, ElementState::Pressed);
         input.mouse_input(MouseButton::Right, ElementState::Pressed);
         input.mouse_input(MouseButton::Middle, ElementState::Pressed);
+        for key in [
+            KeyCode::KeyW,
+            KeyCode::KeyD,
+            KeyCode::Space,
+            KeyCode::AltLeft,
+            KeyCode::ShiftRight,
+            KeyCode::ControlLeft,
+            KeyCode::SuperRight,
+        ] {
+            input.key_input(PhysicalKey::Code(key), ElementState::Pressed);
+        }
+        let held = input.take_frame();
+        assert_eq!(held.move_forward, 1.0);
+        assert!(held.modifiers.alt);
+        input.cursor_moved(31.0, 22.0);
+        input.accumulate_raw_motion(12.0, 3.0);
+        input.mouse_wheel(MouseScrollDelta::LineDelta(0.0, 2.0));
         input.release_buttons();
 
         let frame = input.take_frame();
         assert_eq!(frame.buttons, MouseButtons::default());
-        assert!(!frame.left_mouse_down);
-    }
-
-    #[test]
-    fn held_buttons_and_cursor_persist_across_drains() {
-        let mut input = InputState::default();
-        input.cursor_moved(50.0, 60.0);
-        input.mouse_input(MouseButton::Right, ElementState::Pressed);
-
-        let first = input.take_frame();
-        let second = input.take_frame();
-        assert_eq!(second.buttons, first.buttons);
-        assert_eq!(second.cursor_pos, first.cursor_pos);
-        assert_eq!(second.mouse_delta, Vec2::ZERO);
-    }
-
-    #[test]
-    fn modifiers_persist_across_drains_until_the_key_releases() {
-        let mut input = InputState::default();
-        input.key_input(
-            PhysicalKey::Code(KeyCode::ControlLeft),
-            ElementState::Pressed,
+        assert_eq!(frame.modifiers, Modifiers::default());
+        assert_eq!(
+            [frame.move_forward, frame.move_right, frame.move_up],
+            [0.0; 3]
         );
-        input.key_input(PhysicalKey::Code(KeyCode::AltLeft), ElementState::Pressed);
-
-        let first = input.take_frame();
-        assert!(first.modifiers.control);
-        assert!(first.modifiers.alt);
-        assert!(!first.modifiers.shift);
-        assert_eq!(input.take_frame().modifiers, first.modifiers);
-
-        input.key_input(PhysicalKey::Code(KeyCode::AltLeft), ElementState::Released);
-        let frame = input.take_frame();
-        assert!(frame.modifiers.control);
-        assert!(!frame.modifiers.alt);
+        assert_eq!(frame.mouse_delta, Vec2::ZERO);
+        assert_eq!(frame.mouse_raw_delta, Vec2::ZERO);
+        assert_eq!(frame.scroll_lines, 0.0);
+        input.cursor_moved(300.0, 200.0);
+        assert_eq!(input.take_frame().mouse_delta, Vec2::ZERO);
     }
 
     #[test]
-    fn either_side_of_a_modifier_pair_sets_exactly_its_own_flag() {
+    fn releasing_one_modifier_keeps_its_held_pair_active() {
         let shift = Modifiers {
             shift: true,
             ..Modifiers::default()
@@ -396,6 +330,14 @@ mod tests {
                     "{key:?} must set exactly {expected:?}"
                 );
             }
+            let mut input = InputState::default();
+            input.key_input(PhysicalKey::Code(left), ElementState::Pressed);
+            input.key_input(PhysicalKey::Code(right), ElementState::Pressed);
+            input.key_input(PhysicalKey::Code(left), ElementState::Released);
+            assert_eq!(input.take_frame().modifiers, expected);
+            assert_eq!(input.take_frame().modifiers, expected);
+            input.key_input(PhysicalKey::Code(right), ElementState::Released);
+            assert_eq!(input.take_frame().modifiers, Modifiers::default());
         }
     }
 }

@@ -9,6 +9,15 @@ pub trait PhysicsSpace: Space + IsometryGroup {
 
     type Inertia: Copy;
 
+    fn supports_collider(&self, kind: crate::ColliderKind) -> bool;
+
+    fn valid_initial_state(
+        &self,
+        position: Self::Point,
+        velocity: Self::Vector,
+        inertia: Self::Inertia,
+    ) -> bool;
+
     fn integrate_orientation(&self, iso: Self::Iso, omega: Self::AngVel, dt: f32) -> Self::Iso;
 
     fn apply_inv_inertia(&self, inertia: Self::Inertia, torque: Self::AngVel) -> Self::AngVel;
@@ -19,7 +28,7 @@ pub trait PhysicsSpace: Space + IsometryGroup {
     where
         Self: Sized;
 
-    /// Zero only when both bodies are static.
+    /// Sleeping and static bodies contribute zero.
     fn effective_mass_inv(
         &self,
         a: &RigidBody<Self>,
@@ -42,15 +51,13 @@ pub trait PhysicsSpace: Space + IsometryGroup {
         Self: Sized;
 }
 
-/// Calls only [`loam_math::Space::exp`],
-/// [`loam_math::Space::parallel_transport`] and
-/// [`PhysicsSpace::integrate_orientation`], so it stays space-generic.
+/// Velocity is transported to the new position before orientation advances.
 pub fn integrate_body<S>(space: &S, body: &mut RigidBody<S>, dt: f32)
 where
     S: PhysicsSpace,
     S::Vector: Mul<f32, Output = S::Vector>,
 {
-    if body.inv_mass == 0.0 {
+    if body.inv_mass() == 0.0 {
         return;
     }
 
@@ -76,7 +83,8 @@ mod tests {
             Collider::sphere_at_origin(0.5),
             1.0,
             &EuclideanR3,
-        );
+        )
+        .unwrap();
         body.velocity = Vec3::new(10.0, 0.0, 0.0);
         integrate_body(&EuclideanR3, &mut body, 1.0);
         assert_eq!(body.position, Vec3::ZERO);
@@ -91,7 +99,8 @@ mod tests {
             1.0,
             0.1,
             &EuclideanR3,
-        );
+        )
+        .unwrap();
         integrate_body(&EuclideanR3, &mut body, 0.5);
         assert_eq!(body.position, Vec3::new(0.5, 1.0, -1.5));
         assert_eq!(body.velocity, Vec3::new(1.0, 2.0, -3.0));
@@ -106,7 +115,8 @@ mod tests {
             1.0,
             0.1,
             &EuclideanR3,
-        );
+        )
+        .unwrap();
         let before = (body.position, body.velocity);
         integrate_body(&EuclideanR3, &mut body, 0.0);
         assert_eq!((body.position, body.velocity), before);

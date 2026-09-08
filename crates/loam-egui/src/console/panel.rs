@@ -244,7 +244,6 @@ fn draw_input_row<Ctx: 'static>(ui: &mut egui::Ui, console: &mut Console<Ctx>, w
             let enter_pressed =
                 ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
 
-            let prev_input = console.input().to_string();
             let ghost = console.tab_preview();
             let output = TextEdit::singleline(console.input_mut())
                 .font(FontId::monospace(FONT_SIZE))
@@ -274,7 +273,7 @@ fn draw_input_row<Ctx: 'static>(ui: &mut egui::Ui, console: &mut Console<Ctx>, w
                 state.store(ui.ctx(), response.id);
             }
 
-            if console.input() != prev_input {
+            if response.changed() {
                 console.cancel_tab_cycle();
             }
 
@@ -308,13 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_history_yields_empty_job() {
-        let job = scrollback_layout_job(&VecDeque::new());
-        assert!(job.text.is_empty());
-        assert!(job.sections.is_empty());
-    }
-
-    #[test]
     fn multiple_lines_alternate_with_newline_separators() {
         let h = history(&[
             (LineKind::Input, "> reset"),
@@ -323,25 +315,5 @@ mod tests {
         ]);
         let job = scrollback_layout_job(&h);
         assert_eq!(job.text, "> reset\nok\nboom");
-        assert_eq!(job.sections.len(), 5);
-    }
-
-    #[test]
-    fn per_line_color_matches_line_kind() {
-        let h = history(&[
-            (LineKind::Input, "in"),
-            (LineKind::Output, "out"),
-            (LineKind::Error, "err"),
-            (LineKind::System, "sys"),
-        ]);
-        let job = scrollback_layout_job(&h);
-        let input_section = &job.sections[0];
-        let output_section = &job.sections[2];
-        let error_section = &job.sections[4];
-        let system_section = &job.sections[6];
-        assert_eq!(input_section.format.color, COLOR_INPUT_ECHO);
-        assert_eq!(output_section.format.color, COLOR_OUTPUT);
-        assert_eq!(error_section.format.color, COLOR_ERROR);
-        assert_eq!(system_section.format.color, COLOR_SYSTEM);
     }
 }

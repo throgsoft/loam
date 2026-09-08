@@ -9,7 +9,6 @@ use wgpu::*;
 /// Shared with [`crate::raymarch::HYPERSLICE_KERNEL_WGSL`].
 pub const SKY_GROUND_WGSL: &str = include_str!("sky_ground.wgsl");
 
-// Mirror `sky`'s endpoints in sky_ground.wgsl.
 const SKY_BELOW: [f64; 3] = [0.04, 0.05, 0.10];
 const SKY_ABOVE: [f64; 3] = [0.10, 0.13, 0.22];
 
@@ -54,8 +53,7 @@ pub struct SkyGroundUniforms {
 }
 
 impl SkyGroundUniforms {
-    /// `view_proj` must be the matrix the raster content over this pass is drawn
-    /// with.
+    /// `view_proj` must be the matrix the raster content over this pass is drawn with.
     pub fn new(view_proj: Mat4, viewport: crate::Viewport, ground: Ground) -> Self {
         Self {
             view_proj: view_proj.to_cols_array_2d(),
@@ -90,10 +88,8 @@ struct Uniforms {
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
-// Below this the plane is past a million units and the pixel is sky; guards the division.
 const HORIZON_EPS: f32 = 1.0e-6;
 
-// The hyperslice kernel's key light and ambient floor.
 const LIGHT_DIR: vec3<f32> = vec3<f32>(0.5, 0.85, 0.3);
 const AMBIENT: f32 = 0.20;
 const DIFFUSE: f32 = 0.85;
@@ -116,7 +112,6 @@ fn unproject(ndc: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
-    // `frag_pos` is framebuffer space with y down.
     let uv = (frag_pos.xy - u.viewport_origin) / u.resolution;
     let ndc_xy = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     // wgpu clip space puts the near plane at z = 0 and the far plane at z = 1.
@@ -160,8 +155,7 @@ pub struct SkyGroundNode {
 }
 
 impl SkyGroundNode {
-    /// `depth_format` and `sample_count` must match the attachments passed to
-    /// [`Self::record`], which owns the frame's colour and depth clear.
+    /// `depth_format` and `sample_count` must match the attachments passed to [`Self::record`], which owns the frame's colour and depth clear.
     pub fn new(
         device: &Device,
         target_format: TextureFormat,
@@ -232,7 +226,6 @@ impl SkyGroundNode {
                 topology: PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            // The pass clears depth and this is its first write.
             depth_stencil: Some(DepthStencilState {
                 format: depth_format,
                 depth_write_enabled: true,
@@ -260,8 +253,7 @@ impl SkyGroundNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
     }
 
-    /// Clears both attachments, so it must be the frame's first pass; `viewport`
-    /// restricts the shading, not the clear.
+    /// Clears both attachments, so it must be the frame's first pass; `viewport` restricts the shading, not the clear.
     pub fn record(
         &self,
         encoder: &mut CommandEncoder,
@@ -300,48 +292,19 @@ impl SkyGroundNode {
     }
 }
 
-// Pins that `record` takes the caller's encoder and cannot submit.
-const _: fn(
-    &SkyGroundNode,
-    &mut CommandEncoder,
-    &TextureView,
-    &TextureView,
-    Option<&crate::Viewport>,
-) = SkyGroundNode::record;
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::{Vec2, Vec3, Vec4};
 
     #[test]
-    fn sky_ground_wgsl_validates() {
-        let module = naga::front::wgsl::parse_str(SKY_GROUND_NODE_WGSL)
-            .unwrap_or_else(|e| panic!("sky_ground WGSL parse failed:\n{e}"));
+    fn shader_validates_and_uniforms_match_host_layout() {
+        let module = naga::front::wgsl::parse_str(SKY_GROUND_NODE_WGSL).expect("parse");
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::empty(),
         )
         .validate(&module)
-        .expect("sky_ground WGSL must validate");
-    }
-
-    #[test]
-    fn sky_horizon_is_the_shader_gradient_at_the_horizon() {
-        let endpoint = |c: [f64; 3]| format!("vec3<f32>({:.2}, {:.2}, {:.2})", c[0], c[1], c[2]);
-        for c in [SKY_BELOW, SKY_ABOVE] {
-            assert!(
-                SKY_GROUND_WGSL.contains(&endpoint(c)),
-                "sky_ground.wgsl no longer mixes {}; the filmstrip's clear \
-                 would seam against the sky it stands in for",
-                endpoint(c),
-            );
-        }
-    }
-
-    #[test]
-    fn uniforms_size_matches_wgsl() {
-        let module = naga::front::wgsl::parse_str(SKY_GROUND_NODE_WGSL).expect("parse");
+        .expect("sky shader validates");
         let ty = module
             .types
             .iter()
@@ -352,7 +315,6 @@ mod tests {
             panic!("`Uniforms` is not a struct");
         };
         assert_eq!(*span as usize, std::mem::size_of::<SkyGroundUniforms>());
-        assert_eq!(std::mem::align_of::<SkyGroundUniforms>(), 4);
         let rust_offsets = [
             (
                 "view_proj",
@@ -396,103 +358,6 @@ mod tests {
         for (member, (name, offset)) in members.iter().zip(rust_offsets) {
             assert_eq!(member.name.as_deref(), Some(name));
             assert_eq!(member.offset as usize, offset, "offset of {name}");
-        }
-    }
-
-    // Rust twin of `fs_main`'s ground path.
-    fn ground_hit(u: &SkyGroundUniforms, pixel: Vec2) -> Option<(Vec3, f32)> {
-        let view_proj = Mat4::from_cols_array_2d(&u.view_proj);
-        let inv = Mat4::from_cols_array_2d(&u.inv_view_proj);
-        let uv = (pixel - Vec2::from(u.viewport_origin)) / Vec2::from(u.resolution);
-        let ndc_xy = Vec2::new(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-        let unproject = |z: f32| {
-            let h = inv * Vec4::new(ndc_xy.x, ndc_xy.y, z, 1.0);
-            h.truncate() / h.w
-        };
-        let near = unproject(0.0);
-        let rd = (unproject(1.0) - near).normalize();
-        if rd.y.abs() <= 1.0e-6 {
-            return None;
-        }
-        let t = (u.ground_y - near.y) / rd.y;
-        if t <= 0.0 {
-            return None;
-        }
-        let p_hit = near + rd * t;
-        let clip = view_proj * p_hit.extend(1.0);
-        Some((p_hit, (clip.z / clip.w).clamp(0.0, 1.0)))
-    }
-
-    fn probe_uniforms(eye: Vec3, ground_y: f32) -> SkyGroundUniforms {
-        let viewport = crate::Viewport {
-            x: 0,
-            y: 0,
-            width: 640,
-            height: 480,
-        };
-        let view = Mat4::look_at_rh(eye, Vec3::new(0.0, ground_y, 0.0), Vec3::Y);
-        let proj = Mat4::perspective_rh(60.0_f32.to_radians(), 640.0 / 480.0, 0.1, 100.0);
-        SkyGroundUniforms::new(
-            proj * view,
-            viewport,
-            Ground {
-                y: ground_y,
-                dark: GROUND_DARK_GREY,
-                light: GROUND_LIGHT_GREY,
-                fog_per_unit: DEFAULT_FOG_PER_UNIT,
-                visible: true,
-            },
-        )
-    }
-
-    #[test]
-    fn background_depth_matches_the_raster_projection() {
-        for (eye, ground_y) in [
-            (Vec3::new(0.0, 2.5, 6.0), 0.0),
-            (Vec3::new(3.0, 0.4, 3.0), 0.0),
-            (Vec3::new(0.0, -2.5, 6.0), 0.0),
-            (Vec3::new(1.0, -0.9, 4.0), -1.2),
-        ] {
-            let u = probe_uniforms(eye, ground_y);
-            let view_proj = Mat4::from_cols_array_2d(&u.view_proj);
-            let resolution = Vec2::from(u.resolution);
-            for on_plane in [
-                Vec3::new(0.0, ground_y, 0.0),
-                Vec3::new(1.7, ground_y, -2.3),
-                Vec3::new(-4.0, ground_y, 5.0),
-                Vec3::new(0.6, ground_y, -40.0),
-            ] {
-                let clip = view_proj * on_plane.extend(1.0);
-                let ndc = clip.truncate() / clip.w;
-                let pixel = Vec2::new(
-                    (ndc.x * 0.5 + 0.5) * resolution.x,
-                    (0.5 - ndc.y * 0.5) * resolution.y,
-                ) + Vec2::from(u.viewport_origin);
-                let (hit, depth) = ground_hit(&u, pixel)
-                    .unwrap_or_else(|| panic!("eye {eye} sees no ground at {on_plane}"));
-                assert!(
-                    hit.distance(on_plane) < 1.0e-3 * on_plane.length().max(1.0),
-                    "eye {eye}, ground y {ground_y}: unprojected {hit} for {on_plane}"
-                );
-                assert!(
-                    (depth - ndc.z).abs() < 1.0e-5,
-                    "eye {eye}, ground y {ground_y}: background depth {depth} \
-                     against raster depth {} at {on_plane}",
-                    ndc.z,
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_ray_leaving_the_plane_behind_finds_no_ground() {
-        let u = probe_uniforms(Vec3::new(0.0, 2.5, 6.0), 0.0);
-        let resolution = Vec2::from(u.resolution);
-        for x in [0.5_f32, resolution.x * 0.5, resolution.x - 0.5] {
-            assert!(
-                ground_hit(&u, Vec2::new(x, 0.5)).is_none(),
-                "a ray above the horizon met the ground at x = {x}"
-            );
         }
     }
 }

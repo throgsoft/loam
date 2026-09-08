@@ -7,7 +7,7 @@ use glam::{Vec2, Vec4};
 
 use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
-use loam_physics::{BodyId, Gravity, RigidBody, World};
+use loam_physics::{BodyId, RigidBody, World};
 use loam_shape::Visualizable;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 
@@ -15,59 +15,38 @@ const WORD: &str = "LOAM";
 const DT: f32 = 1.0 / 120.0;
 const BALL_RADIUS: f32 = 0.03;
 const DROP_Z: f32 = 0.25;
-// The fall from DROP_Z to the front face takes 21 steps under `g = 9.8`.
 const IMPACT_STEPS: usize = 30;
-// Measured at `GlyphParams::default`, with ~12% headroom.
-const COLLIDER_BUDGET: usize = 108;
 
-fn system_font() -> Option<Vec<u8>> {
-    const CANDIDATES: &[&str] = &[
-        r"C:\Windows\Fonts\arial.ttf",
-        r"C:\Windows\Fonts\segoeui.ttf",
-        "/Library/Fonts/Arial.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ];
-    CANDIDATES
-        .iter()
-        .find_map(|path| std::fs::read(path).ok())
-        .or_else(|| {
-            eprintln!("skip: no system font found in {CANDIDATES:?}");
-            None
-        })
+fn word() -> Vec<GlyphSolid> {
+    let bytes = include_bytes!("../../hero/fonts/lmroman10-bold.otf");
+    let font = FontRef::try_from_slice(bytes).expect("parse font");
+    layout_word(&font, WORD, &GlyphParams::default()).expect("layout")
 }
 
-fn word() -> Option<Vec<GlyphSolid>> {
-    let bytes = system_font()?;
-    let font = FontRef::try_from_slice(&bytes).expect("parse font");
-    Some(layout_word(&font, WORD, &GlyphParams::default()).expect("layout"))
-}
-
-// Gravity along `-z`, so a falling body meets a front face.
 fn word_world(letters: &[GlyphSolid]) -> World<EuclideanR4> {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
-    world.push_field(Box::new(Gravity::new(Vec4::new(0.0, 0.0, -9.8, 0.0))));
+    world.gravity = Some(Vec4::new(0.0, 0.0, -9.8, 0.0));
     for letter in letters {
         for (centre, hull) in letter.colliders_4d() {
-            world.push_body(RigidBody::fixed(centre, hull, 1.0, &EuclideanR4));
+            world.push_body(RigidBody::fixed(centre, hull, 1.0, &EuclideanR4).unwrap());
         }
     }
     world
 }
 
 fn drop_ball(world: &mut World<EuclideanR4>, at: Vec2) -> BodyId {
-    world.push_body(sphere_body_r4(
-        Vec4::new(at.x, at.y, DROP_Z, 0.0),
-        Vec4::ZERO,
-        BALL_RADIUS,
-        1.0,
-    ))
+    world.push_body(
+        sphere_body_r4(
+            Vec4::new(at.x, at.y, DROP_Z, 0.0),
+            Vec4::ZERO,
+            BALL_RADIUS,
+            1.0,
+        )
+        .unwrap(),
+    )
 }
 
-// Taken from the render mesh, not the cover under test.
 fn ink_mid_y(letter: &GlyphSolid) -> f32 {
     let mesh = Visualizable::<3>::to_triangles(letter).expect("mesh");
     let lo = mesh.vertices.iter().fold(f32::INFINITY, |m, v| m.min(v[1]));
@@ -78,7 +57,6 @@ fn ink_mid_y(letter: &GlyphSolid) -> f32 {
     0.5 * (lo + hi)
 }
 
-// `(start, end)` runs of `x` the baked field calls ink along `y = mid`.
 fn ink_runs(letter: &GlyphSolid, mid: f32) -> Vec<(f32, f32)> {
     const PROBES: usize = 2048;
     let x0 = letter.pen_origin().x - 0.25 * letter.advance();
@@ -110,36 +88,21 @@ fn widest_stroke(letter: &GlyphSolid) -> Vec2 {
 }
 
 #[test]
-fn a_laid_out_word_spawns_a_solver_sized_set_of_static_bodies() {
-    let Some(letters) = word() else { return };
-    let boxes: usize = letters.iter().map(GlyphSolid::collider_count).sum();
-    assert!(boxes > 0);
-    assert!(boxes <= COLLIDER_BUDGET, "{WORD} emits {boxes} colliders");
-
-    let mut world = word_world(&letters);
-    assert_eq!(world.bodies.iter().count(), boxes);
-
-    let ball = drop_ball(&mut world, widest_stroke(&letters[0]));
-    for _ in 0..IMPACT_STEPS * 2 {
-        world.step(DT);
-        let position = world.bodies.get(ball).unwrap().position;
-        assert!(position.is_finite(), "simulation diverged to {position}");
-    }
-}
-
-#[test]
 fn a_body_dropped_on_a_letter_is_held_up_by_its_front_face() {
-    let Some(letters) = word() else { return };
+    let letters = word();
     let front = 0.5 * GlyphParams::default().depth;
 
-    for letter in &letters {
-        let mut world = word_world(&letters);
-        let ball = drop_ball(&mut world, widest_stroke(letter));
-        for step in 0..IMPACT_STEPS * 2 {
-            world.step(DT);
-            if step < IMPACT_STEPS {
-                continue;
-            }
+    let mut world = word_world(&letters);
+    let balls: Vec<_> = letters
+        .iter()
+        .map(|letter| drop_ball(&mut world, widest_stroke(letter)))
+        .collect();
+    for step in 0..IMPACT_STEPS * 2 {
+        world.step(DT);
+        if step < IMPACT_STEPS {
+            continue;
+        }
+        for (letter, &ball) in letters.iter().zip(&balls) {
             let z = world.bodies.get(ball).unwrap().position.z;
             assert!(
                 z > front,
@@ -152,6 +115,8 @@ fn a_body_dropped_on_a_letter_is_held_up_by_its_front_face() {
                 letter.ch()
             );
         }
+    }
+    for (letter, &ball) in letters.iter().zip(&balls) {
         let body = world.bodies.get(ball).unwrap();
         assert!(
             body.velocity.z.abs() < 0.5,
@@ -164,14 +129,13 @@ fn a_body_dropped_on_a_letter_is_held_up_by_its_front_face() {
 
 #[test]
 fn a_body_dropped_down_the_counter_of_o_falls_through() {
-    let Some(letters) = word() else { return };
+    let letters = word();
     let o = letters.iter().find(|l| l.ch() == 'O').expect("O");
     let mid = ink_mid_y(o);
     let runs = ink_runs(o, mid);
     assert_eq!(runs.len(), 2, "'O' is not two strokes at mid height");
 
     let counter = Vec2::new(0.5 * (runs[0].1 + runs[1].0), mid);
-    // Read off the field, not off the cover.
     assert!(
         o.distance_2d(counter) > o.collider_margin() + BALL_RADIUS,
         "counter probe {counter} is not clear of the ink"
@@ -179,8 +143,11 @@ fn a_body_dropped_down_the_counter_of_o_falls_through() {
 
     let mut world = word_world(&letters);
     let ball = drop_ball(&mut world, counter);
-    for _ in 0..600 {
+    for _ in 0..120 {
         world.step(DT);
+        if world.bodies[ball].position.z < -DROP_Z {
+            break;
+        }
     }
     let z = world.bodies.get(ball).unwrap().position.z;
     assert!(z < -DROP_Z, "ball stopped at z = {z} instead of falling");

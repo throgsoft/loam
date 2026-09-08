@@ -1,7 +1,4 @@
-//! Two ways `loam_input::InputState`'s held-key-derived modifier set goes wrong
-//! on the browser path: the OS can swallow a modifier keyup (Alt+Tab, Cmd+Tab)
-//! and leave it stuck down, and `keymap::keycode_winit` has no entry for
-//! `MetaLeft` / `MetaRight`, so Cmd/Win never reaches the held set at all.
+//! Browser modifier flags correct key transitions lost during OS shortcuts.
 
 use winit::keyboard::KeyCode;
 
@@ -13,17 +10,38 @@ pub struct ModifierFlags {
     pub meta: bool,
 }
 
-/// The modifier state the browser last reported, held so only the divergences
-/// produce synthetic key transitions.
 #[derive(Debug, Default)]
 pub struct ModifierSync {
     applied: ModifierFlags,
 }
 
 impl ModifierSync {
-    /// A flag going false releases both sides of its pair: the flag says neither
-    /// is down, and the keyup for one side is exactly what may have been
-    /// swallowed.
+    pub fn key_event(
+        &mut self,
+        input: &mut loam_input::InputState,
+        code: Option<KeyCode>,
+        pressed: bool,
+        flags: ModifierFlags,
+    ) -> winit::event::ElementState {
+        use winit::event::ElementState;
+        use winit::keyboard::PhysicalKey;
+        let state = |pressed| {
+            if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            }
+        };
+        self.reconcile(flags, |code, pressed| {
+            input.key_input(PhysicalKey::Code(code), state(pressed))
+        });
+        if let Some(code) = code {
+            input.key_input(PhysicalKey::Code(code), state(pressed));
+        }
+        state(pressed)
+    }
+
+    /// A cleared flag releases both physical keys, including a missed keyup.
     pub fn reconcile(&mut self, flags: ModifierFlags, mut emit: impl FnMut(KeyCode, bool)) {
         let pairs = [
             (

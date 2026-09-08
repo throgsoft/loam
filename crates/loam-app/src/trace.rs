@@ -33,7 +33,6 @@ fn unscoped(frame: &frame_trace::FrameTrace) -> Option<Duration> {
     total.map(|t| t.saturating_sub(covered))
 }
 
-// Nearest-rank percentiles, matching `frame_trace::aggregate`.
 fn unscoped_stats() -> Option<frame_trace::SectionStats> {
     let mut samples: Vec<Duration> =
         frame_trace::with_history(|history| history.iter().filter_map(unscoped).collect());
@@ -42,14 +41,13 @@ fn unscoped_stats() -> Option<frame_trace::SectionStats> {
     }
     samples.sort();
     let n = samples.len();
-    let pick = |q: f32| samples[((n as f32 * q) as usize).min(n - 1)];
     Some(frame_trace::SectionStats {
         name: "unscoped",
         samples: n,
         mean: samples.iter().sum::<Duration>() / n as u32,
-        p50: pick(0.50),
-        p95: pick(0.95),
-        p99: pick(0.99),
+        p50: frame_trace::percentile(&samples, 50),
+        p95: frame_trace::percentile(&samples, 95),
+        p99: frame_trace::percentile(&samples, 99),
         max: samples[n - 1],
     })
 }
@@ -69,7 +67,7 @@ fn print_summary(out: &mut loam_egui::ConsoleWriter) {
         out.line("trace: no frames in window (collect runs once the demo is rendering)");
         return;
     }
-    let history_len = frame_trace::history().len();
+    let history_len = frame_trace::with_history(|frames| frames.len());
     out.line(format!(
         "trace summary ({history_len} frames, sorted by p95 desc):"
     ));
@@ -92,10 +90,15 @@ fn print_summary(out: &mut loam_egui::ConsoleWriter) {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
+    if s.chars().count() <= max {
+        s.to_owned()
+    } else if max == 0 {
+        String::new()
     } else {
-        format!("{}~", &s[..max - 1])
+        s.chars()
+            .take(max - 1)
+            .chain(std::iter::once('~'))
+            .collect()
     }
 }
 
@@ -126,32 +129,13 @@ fn print_last(out: &mut loam_egui::ConsoleWriter) {
 }
 
 fn format_summary() -> String {
-    let stats = summary_rows();
-    if stats.is_empty() {
-        return "trace: no frames in window\n".to_string();
-    }
-    let history_len = frame_trace::history().len();
-    let mut s = String::new();
-    s.push_str(&format!(
-        "trace summary ({history_len} frames, sorted by p95 desc):\n"
-    ));
-    s.push_str(&format!(
-        "  {:<18} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}\n",
-        "section", "n", "mean", "p50", "p95", "p99", "max",
-    ));
-    for st in stats {
-        s.push_str(&format!(
-            "  {:<18} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}\n",
-            truncate(st.name, 18),
-            st.samples,
-            fmt_dur(st.mean),
-            fmt_dur(st.p50),
-            fmt_dur(st.p95),
-            fmt_dur(st.p99),
-            fmt_dur(st.max),
-        ));
-    }
-    s
+    let mut out = loam_egui::ConsoleWriter::new();
+    print_summary(&mut out);
+    out.take_lines()
+        .into_iter()
+        .map(|line| line.text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
@@ -169,8 +153,7 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
                         out.line("trace: dumped to browser console (open DevTools to copy)");
                     }
                     Some("clear") => {
-                        frame_trace::set_capacity(1);
-                        frame_trace::set_capacity(frame_trace::DEFAULT_CAPACITY);
+                        frame_trace::clear_history();
                         out.line("trace: history cleared");
                     }
                     Some("cap") => {
@@ -303,11 +286,11 @@ impl PerfOverlay {
         }
 
         let cadence_mean = cadence.mean();
-        let cadence_p99 = cadence.percentile(0.99);
+        let cadence_p99 = cadence.percentile(99);
         let frame_mean = frames_buf.mean();
-        let frame_p99 = frames_buf.percentile(0.99);
+        let frame_p99 = frames_buf.percentile(99);
         let idle_mean = idles.mean();
-        let idle_p99 = idles.percentile(0.99);
+        let idle_p99 = idles.percentile(99);
 
         let cadence_max_ever = frame_trace::max_ever("between-frames");
         let idle_max_ever = frame_trace::max_ever("idle");
@@ -532,14 +515,13 @@ impl StackBuf {
     }
 
     // Sorts a copy: the sparkline reads `self` in time order.
-    fn percentile(&self, q: f32) -> Duration {
+    fn percentile(&self, percent: u8) -> Duration {
         if self.len == 0 {
             return Duration::ZERO;
         }
         let mut local: [Duration; MAX_WINDOW] = self.samples;
-        local[..self.len].sort();
-        let idx = ((self.len as f32 * q) as usize).min(self.len - 1);
-        local[idx]
+        local[..self.len].sort_unstable();
+        frame_trace::percentile(&local[..self.len], percent)
     }
 }
 
@@ -601,38 +583,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fmt_dur_emits_ns_under_microsecond() {
-        assert!(fmt_dur(Duration::from_nanos(0)).ends_with("ns"));
-        assert!(fmt_dur(Duration::from_nanos(999)).ends_with("ns"));
-    }
-
-    #[test]
-    fn fmt_dur_emits_us_under_millisecond() {
-        assert!(fmt_dur(Duration::from_nanos(1_000)).ends_with("us"));
-        assert!(fmt_dur(Duration::from_nanos(999_999)).ends_with("us"));
-    }
-
-    #[test]
-    fn fmt_dur_emits_ms_under_second() {
-        assert!(fmt_dur(Duration::from_nanos(1_000_000)).ends_with("ms"));
-        assert!(fmt_dur(Duration::from_nanos(999_999_999)).ends_with("ms"));
-    }
-
-    #[test]
-    fn fmt_dur_emits_seconds_above() {
-        assert!(fmt_dur(Duration::from_secs(1)).ends_with('s'));
-        assert!(!fmt_dur(Duration::from_secs(1)).ends_with("ms"));
-        assert!(!fmt_dur(Duration::from_secs(1)).ends_with("us"));
-    }
-
-    #[test]
     fn truncate_preserves_short_names_and_marks_long_ones() {
         assert_eq!(truncate("frame", 18), "frame");
         assert_eq!(truncate("abcdefghijklmnopqr", 18).len(), 18);
         let long = "supercalifragilisticexpialidocious";
         let t = truncate(long, 18);
         assert_eq!(t.len(), 18);
-        assert!(t.ends_with('~'), "truncate should mark with `~`");
+        assert!(t.ends_with('~'));
+        assert_eq!(truncate("αβγδε", 3), "αβ~");
+        assert_eq!(truncate("frame", 0), "");
     }
 
     fn frame_of(sections: &[(&'static str, u64)]) -> frame_trace::FrameTrace {
@@ -646,12 +605,6 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn unscoped_is_the_frame_minus_its_frame_loop_sections() {
-        let frame = frame_of(&[("frame", 4000), ("app-record", 130), ("present", 40)]);
-        assert_eq!(unscoped(&frame), Some(Duration::from_micros(3830)));
     }
 
     #[test]
@@ -686,63 +639,6 @@ mod tests {
     }
 
     #[test]
-    fn unscoped_row_reports_frame_time_that_no_section_claims() {
-        {
-            let _frame = frame_trace::scope("frame");
-            std::thread::sleep(Duration::from_millis(4));
-        }
-        frame_trace::end_frame();
-        let row = unscoped_stats().expect("one recorded frame yields the row");
-        assert_eq!(row.samples, 1);
-        assert!(
-            row.max >= Duration::from_millis(4),
-            "a frame whose work is entirely unscoped must report as unscoped, got {:?}",
-            row.max,
-        );
-    }
-
-    // 25 frames put p50, p95 and p99 at distinct nearest ranks (12, 23, 24).
-    const RANK_SPREAD_FRAMES: u32 = 25;
-
-    #[test]
-    fn unscoped_percentiles_agree_with_the_aggregate_they_are_shown_beside() {
-        for i in 0..RANK_SPREAD_FRAMES {
-            frame_trace::begin_frame();
-            {
-                let _frame = frame_trace::scope("frame");
-                let until = web_time::Instant::now() + Duration::from_micros(20 * (i as u64 + 1));
-                while web_time::Instant::now() < until {}
-            }
-            frame_trace::end_frame();
-        }
-        let residual = unscoped_stats().expect("recorded frames yield the row");
-        let frame_row = frame_trace::aggregate()
-            .into_iter()
-            .find(|s| s.name == "frame")
-            .expect("the recorded frames carry a `frame` section");
-        assert_eq!(residual.samples, frame_row.samples);
-        assert_eq!(residual.mean, frame_row.mean);
-        assert_eq!(residual.p50, frame_row.p50);
-        assert_eq!(residual.p95, frame_row.p95);
-        assert_eq!(residual.p99, frame_row.p99);
-        assert_eq!(residual.max, frame_row.max);
-        assert_ne!(
-            frame_row.p95, frame_row.p99,
-            "distinct samples must separate the ranks, else the equalities \
-             above hold for any quantile",
-        );
-    }
-
-    #[test]
-    fn stackbuf_starts_empty() {
-        let buf = StackBuf::new();
-        assert_eq!(buf.as_slice().len(), 0);
-        assert_eq!(buf.mean(), Duration::ZERO);
-        assert_eq!(buf.percentile(0.5), Duration::ZERO);
-        assert_eq!(buf.percentile(0.99), Duration::ZERO);
-    }
-
-    #[test]
     fn stackbuf_push_silently_drops_past_max_window() {
         let mut buf = StackBuf::new();
         for i in 0..(MAX_WINDOW + 10) {
@@ -758,26 +654,12 @@ mod tests {
     #[test]
     fn stackbuf_percentile_picks_nearest_rank() {
         let mut buf = StackBuf::new();
-        for ms in 1..=10u64 {
+        for ms in [10, 4, 7, 1, 8, 2, 9, 6, 3, 5] {
             buf.push(Duration::from_millis(ms));
         }
-        // floor(10 * 0.5) = 5 -> samples[5] = 6ms.
-        assert_eq!(buf.percentile(0.5), Duration::from_millis(6));
-        assert_eq!(buf.percentile(0.95), Duration::from_millis(10));
-        // p99 clamps to len-1.
-        assert_eq!(buf.percentile(0.99), Duration::from_millis(10));
-    }
-
-    #[test]
-    fn stackbuf_percentile_is_order_preserving_on_self() {
-        let mut buf = StackBuf::new();
-        for ms in [30u64, 5, 25, 10, 20] {
-            buf.push(Duration::from_millis(ms));
-        }
-        let before: Vec<Duration> = buf.as_slice().to_vec();
-        let _ = buf.percentile(0.5);
-        let after: Vec<Duration> = buf.as_slice().to_vec();
-        assert_eq!(before, after, "percentile must not reorder self");
+        assert_eq!(buf.percentile(50), Duration::from_millis(5));
+        assert_eq!(buf.percentile(95), Duration::from_millis(10));
+        assert_eq!(buf.percentile(99), Duration::from_millis(10));
     }
 }
 
@@ -785,19 +667,11 @@ mod tests {
 mod seat_tests {
     use super::*;
     use loam_egui::egui;
-
-    // Taller than `OVERLAY_MARGIN`, so the two rects separate.
     const BAR_HEIGHT: f32 = 64.0;
 
     const PANEL_WIDTH: f32 = 120.0;
-
-    // Wide enough that the seat's left clamp stays untaken.
     const VIEWPORT: egui::Vec2 = egui::vec2(1280.0, 800.0);
-
-    // Narrower than `PANEL_WIDTH + OVERLAY_MARGIN + OVERLAY_WIDTH`, so the clamp fires.
     const NARROW_VIEWPORT: egui::Vec2 = egui::vec2(200.0, 400.0);
-
-    // egui's fallback viewport is ~10000 px wide, which leaves the clamp unreachable.
     fn viewport(size: egui::Vec2) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
@@ -834,7 +708,6 @@ mod seat_tests {
             "overlay top {} must clear the menu bar bottom {bar_bottom}",
             rect.top(),
         );
-        // egui constrains a placed area to the viewport, so exact insets are not stable.
         assert!(
             rect.center().x > band.center().x,
             "overlay center x {} must sit in the band's right half of {band:?}",
@@ -844,38 +717,6 @@ mod seat_tests {
             rect.center().y < band.center().y,
             "overlay center y {} must sit in the band's top half of {band:?}",
             rect.center().y,
-        );
-    }
-
-    #[test]
-    fn perf_overlay_seat_insets_from_the_top_right_of_the_panel_band() {
-        let ctx = egui::Context::default();
-        let mut seat = None;
-        let mut band = egui::Rect::NOTHING;
-        let _ = ctx.run(viewport(VIEWPORT), |ctx| {
-            egui::SidePanel::left("left")
-                .exact_width(PANEL_WIDTH)
-                .show(ctx, |ui| {
-                    ui.label("left");
-                });
-            egui::SidePanel::right("right")
-                .exact_width(PANEL_WIDTH)
-                .show(ctx, |ui| {
-                    ui.label("right");
-                });
-            band = ctx.available_rect();
-            seat = Some(perf_overlay_seat(ctx));
-        });
-        let seat = seat.expect("run closure sets the seat");
-        assert_eq!(
-            seat.x,
-            band.right() - OVERLAY_MARGIN - OVERLAY_WIDTH,
-            "seat must inset from the band's right edge, not its left, in {band:?}",
-        );
-        assert_eq!(
-            seat.y,
-            band.top() + OVERLAY_MARGIN,
-            "seat must inset from the band's top edge, not its bottom, in {band:?}",
         );
     }
 

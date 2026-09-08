@@ -2,16 +2,13 @@ use anyhow::{anyhow, Result};
 use loam_egui::Console;
 
 use crate::freecam::{CursorMode, Freecam};
-
-/// Slowest and fastest freecam that is still steerable at 60 Hz.
-const SPEED_RANGE: std::ops::RangeInclusive<f32> = 0.1..=200.0;
+use crate::{Camera, CameraController, Input, OrbitController, UiCapture};
+use loam_math::EuclideanR3;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum CameraMode {
-    /// Orbits its target on the RIGHT button; the left belongs to the scene.
     #[default]
     Orbit,
-    /// Captures the cursor, so it owns every button while it is flying.
     FreeRoam,
 }
 
@@ -34,6 +31,34 @@ impl CameraRig {
     pub fn is_flying(&self) -> bool {
         self.mode == CameraMode::FreeRoam
     }
+
+    pub fn toggle(&mut self) {
+        self.mode = match self.mode {
+            CameraMode::Orbit => CameraMode::FreeRoam,
+            CameraMode::FreeRoam => CameraMode::Orbit,
+        };
+    }
+
+    /// Pass the chosen orbit button in `input.buttons.left`.
+    pub fn advance(
+        &mut self,
+        input: Input,
+        capture: UiCapture,
+        camera: &mut Camera<EuclideanR3>,
+        orbit: &mut OrbitController<EuclideanR3>,
+        dt: f32,
+        runtime: &crate::Runtime,
+    ) {
+        let flying = self.is_flying();
+        self.freecam.set_active(flying, camera, runtime);
+        match self.mode {
+            CameraMode::Orbit if !capture.pointer => orbit.advance(input, camera, &EuclideanR3, dt),
+            CameraMode::FreeRoam if !(capture.pointer || capture.keyboard) => {
+                self.freecam.advance(input, camera, dt, runtime);
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn register_camera_command<Ctx: 'static>(
@@ -43,15 +68,12 @@ pub fn register_camera_command<Ctx: 'static>(
     console.register(
         loam_egui::cmd::<Ctx, _>(
             "camera",
-            "camera mode: orbit | freecam; bare cycles. `camera speed <N>` and              `camera cursor <hold|toggle>` tune the freecam",
+            "camera [orbit|freecam|speed <N>|cursor <hold|toggle>]; bare cycles",
             move |args, ctx, out| {
                 let rig = reach(ctx);
                 match args.first().copied() {
                     None => {
-                        rig.mode = match rig.mode {
-                            CameraMode::Orbit => CameraMode::FreeRoam,
-                            CameraMode::FreeRoam => CameraMode::Orbit,
-                        };
+                        rig.toggle();
                     }
                     Some("orbit") => rig.mode = CameraMode::Orbit,
                     Some("freecam") => rig.mode = CameraMode::FreeRoam,
@@ -83,11 +105,8 @@ fn set_speed(
     let parsed: f32 = value
         .parse()
         .map_err(|e| anyhow!("camera speed: invalid `{value}`: {e}"))?;
-    if !SPEED_RANGE.contains(&parsed) {
-        return Err(anyhow!(
-            "camera speed {parsed} out of range; expected {:?}",
-            SPEED_RANGE
-        ));
+    if !parsed.is_finite() || parsed <= 0.0 {
+        return Err(anyhow!("camera speed must be finite and positive"));
     }
     rig.freecam.speed = parsed;
     out.line(format!("camera speed: set to {parsed:.2} u/sec"));
@@ -115,4 +134,42 @@ fn set_cursor(
     rig.freecam.set_cursor_mode(mode);
     out.line(format!("camera cursor: {mode:?}"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_change_activates_freecam_before_movement() {
+        let runtime = crate::Runtime::default();
+        let mut rig = CameraRig::default();
+        let mut camera = Camera::at_origin();
+        let mut orbit = OrbitController::default();
+        rig.toggle();
+        rig.advance(
+            Input {
+                move_forward: 1.0,
+                ..Default::default()
+            },
+            UiCapture::default(),
+            &mut camera,
+            &mut orbit,
+            1.0,
+            &runtime,
+        );
+        assert!((camera.position.z + rig.freecam.speed).abs() < 1e-6);
+        assert!(rig.freecam.active());
+        rig.toggle();
+        rig.advance(
+            Input::default(),
+            UiCapture::default(),
+            &mut camera,
+            &mut orbit,
+            0.0,
+            &runtime,
+        );
+        assert!(!rig.freecam.active());
+        assert!(!rig.freecam.cursor_grabbed());
+    }
 }

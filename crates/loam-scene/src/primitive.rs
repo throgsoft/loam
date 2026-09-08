@@ -1,6 +1,5 @@
-//! - [`Shape::Box3`]: honest in E³; chart-coord in H³/S³.
-//! - [`Shape::HalfSpace`]: chart-coord `dot(p, n) − offset` only in flat Spaces
-//!   (gated by `Space::is_chart_flat`).
+//! Boxes use chart coordinates; halfspaces require Space::is_chart_flat.
+//! Only geodesic spheres have the same distance contract across curved spaces.
 
 use glam::Vec3;
 use loam_math::{Space, WgslSpace};
@@ -9,8 +8,7 @@ use loam_shape::Shape;
 use crate::literal::wgsl_f32;
 use crate::SENTINEL_DISTANCE;
 
-/// [`Self::to_wgsl`] emits `fn {name}(p: vec3<f32>) -> f32`; [`Self::eval`] is
-/// the CPU twin of that body.
+/// CPU evaluation and named WGSL functions share primitive support rules.
 pub trait Primitive {
     fn to_wgsl<S: WgslSpace>(&self, space: &S, name: &str) -> String;
 
@@ -57,7 +55,6 @@ impl Primitive for Shape {
             | Shape::ConvexPolytope3D { .. }
             | Shape::ConvexPolytope4D { .. }
             | Shape::HyperSphere4D { .. } => {
-                // `{:e}` is the WGSL float-literal spelling of the constant.
                 format!("fn {name}(_p: vec3<f32>) -> f32 {{\n\treturn {SENTINEL_DISTANCE:e};\n}}\n",)
             }
         }
@@ -67,7 +64,6 @@ impl Primitive for Shape {
         match self {
             Shape::Sphere { center, radius } => space.distance(p, *center) - *radius,
 
-            // Quilez 2013, "distance functions", exact box SDF.
             Shape::Box3 { half_extents } => {
                 let q = p.abs() - *half_extents;
                 q.max(Vec3::ZERO).length() + q.x.max(q.y.max(q.z)).min(0.0)

@@ -1,66 +1,8 @@
-//! No-op mirror of `capture.rs` for builds without the native capture
-//! pipeline, so call sites need no `cfg`.
-
-use std::path::PathBuf;
-
 use loam_egui::Console;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum CaptureStage {
-    Pre,
-    Post,
-    Both,
-}
+pub use crate::capture_types::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum CaptureFormat {
-    Png,
-    Gif,
-    Apng,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
-pub enum PaletteMode {
-    #[default]
-    Local,
-    Global,
-}
-
-#[derive(Debug)]
-pub enum CaptureRequest {
-    OneShot {
-        stage: CaptureStage,
-        dir: Option<PathBuf>,
-        name: Option<String>,
-    },
-    StartSequence {
-        format: CaptureFormat,
-        stage: CaptureStage,
-        dir: Option<PathBuf>,
-        name: Option<String>,
-        fps: Option<u16>,
-        scale: Option<u32>,
-        palette: PaletteMode,
-    },
-    Stop,
-    Toggle {
-        format: CaptureFormat,
-        stage: CaptureStage,
-        dir: Option<PathBuf>,
-        name: Option<String>,
-        fps: Option<u16>,
-        scale: Option<u32>,
-        palette: PaletteMode,
-    },
-}
-
-pub fn enqueue(_req: CaptureRequest) {}
-
-pub fn current_status() -> Option<String> {
-    None
-}
-
-pub fn register_commands<Ctx: 'static>(console: &mut Console<Ctx>) {
+pub fn register_commands<Ctx: 'static>(console: &mut Console<Ctx>, _runtime: &crate::Runtime) {
     console.register(loam_egui::cmd(
         "capture",
         "frame capture (unavailable in this build)",
@@ -86,5 +28,5 @@ impl CapturePanel {
         Self { _private: () }
     }
 
-    pub fn show(&mut self, _ctx: &loam_egui::egui::Context) {}
+    pub fn show(&mut self, _ctx: &loam_egui::egui::Context, _runtime: &crate::Runtime) {}
 }

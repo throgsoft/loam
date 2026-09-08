@@ -83,7 +83,6 @@ fn read_to_string(path: &Path) -> Result<String, SceneLoadError> {
     })
 }
 
-// `ron::from_str` caps nesting at 128 frames (`ron::Options` default).
 fn parse<T: DeserializeOwned>(origin: &Path, src: &str) -> Result<T, SceneLoadError> {
     ron::from_str(src).map_err(|source| SceneLoadError::Parse {
         origin: origin.to_path_buf(),
@@ -91,7 +90,6 @@ fn parse<T: DeserializeOwned>(origin: &Path, src: &str) -> Result<T, SceneLoadEr
     })
 }
 
-// Every variant is scanned, not only the ones an emitter bakes today.
 fn non_finite_constant(shape: &Shape) -> Option<f32> {
     fn first(values: impl IntoIterator<Item = f32>) -> Option<f32> {
         values.into_iter().find(|v| !v.is_finite())
@@ -114,8 +112,6 @@ fn non_finite_constant(shape: &Shape) -> Option<f32> {
     }
 }
 
-// Shared with `crate::edit`, so a tree an editor writes is a tree this module
-// would have accepted from a file.
 pub(crate) fn check_leaf(shape: &Shape) -> Result<(), String> {
     match non_finite_constant(shape) {
         None => Ok(()),
@@ -139,7 +135,6 @@ fn check_node(node: &SceneNode) -> Result<(), String> {
     }
 }
 
-// The emitted `smin` divides by `k`, so a zero blend radius is an infinity.
 pub(crate) fn check_blend_radius(k: f32) -> Result<(), String> {
     if !k.is_finite() || k <= 0.0 {
         return Err(format!(

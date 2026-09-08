@@ -33,11 +33,11 @@ impl<S: PhysicsSpace> Narrowphase<S> {
     where
         S::Vector: std::ops::Mul<f32, Output = S::Vector>,
     {
-        let key = (a.collider.kind(), b.collider.kind());
+        let key = (a.collider().kind(), b.collider().kind());
         if let Some(&f) = self.dispatch.get(&key) {
             return f(a, b, space);
         }
-        let reversed = (b.collider.kind(), a.collider.kind());
+        let reversed = (b.collider().kind(), a.collider().kind());
         if let Some(&f) = self.dispatch.get(&reversed) {
             return f(b, a, space).map(|c| Contact {
                 normal: c.normal * -1.0,

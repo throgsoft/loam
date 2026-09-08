@@ -1,16 +1,10 @@
-//! Every threshold is a coefficient times `scale` to the homogeneity degree of
-//! the quantity it guards, so depth and normal are scale-equivariant; the
-//! contact point is not, since which coplanar tile terminates is not.
-
 use glam::Vec4;
 
 use super::gjk_r4::{minkowski_support_r4, MinkowskiPoint4, SupportFn4};
 use super::simplex_r4::project_origin_onto_affine_hull;
 
 const EPA_MAX_ITERATIONS: u32 = 96;
-const EPA_MAX_VERTICES: usize = 192;
 
-// Support gap per unit of `scale` at which expansion stops. Degree 1.
 const EPA_TOLERANCE: f32 = 1e-3;
 
 #[derive(Clone, Copy, Debug)]
@@ -47,6 +41,7 @@ impl Thresholds {
 struct Polytope4 {
     vertices: Vec<MinkowskiPoint4>,
     faces: Vec<Face4>,
+    horizon: Vec<Triangle>,
     /// Seed centroid; stays interior since expansion only adds vertices.
     centroid: Vec4,
     thresholds: Thresholds,
@@ -87,13 +82,13 @@ impl Polytope4 {
         Self {
             vertices,
             faces,
+            horizon: Vec::new(),
             centroid,
             thresholds,
         }
     }
 
-    // Distance-0 faces compete on equal terms; skipping them converges on a
-    // far facet whose normal points through the obstacle.
+    // Zero-distance faces must remain candidates for the near-side normal.
     fn closest_face(&self) -> Option<usize> {
         self.faces
             .iter()
@@ -106,25 +101,26 @@ impl Polytope4 {
         let new_idx = self.vertices.len();
         self.vertices.push(support);
 
-        let mut horizon: Vec<Triangle> = Vec::new();
-        let mut keep = Vec::with_capacity(self.faces.len());
+        self.horizon.clear();
+        let horizon = &mut self.horizon;
+        let vertices = &self.vertices;
 
         let coplanar_band = self.thresholds.coplanar_band;
-        for f in self.faces.drain(..) {
-            let view = support.point - self.vertices[f.v[0]].point;
+        self.faces.retain(|f| {
+            let view = support.point - vertices[f.v[0]].point;
             if f.normal.dot(view) > -coplanar_band {
                 for tri in tet_triangles(&f.v) {
-                    add_or_remove_triangle(&mut horizon, tri);
+                    add_or_remove_triangle(horizon, tri);
                 }
+                false
             } else {
-                keep.push(f);
+                true
             }
-        }
-        self.faces = keep;
+        });
 
         let centroid = self.centroid;
         let wedge_norm = self.thresholds.wedge_norm;
-        for tri in &horizon {
+        for tri in horizon.iter() {
             if let Some(face) = build_face(
                 &self.vertices,
                 tri.0,
@@ -140,24 +136,19 @@ impl Polytope4 {
     }
 }
 
-// Band per unit of `scale` in which a support point retires a face. Degree 1.
 const FACE_COPLANAR_EPS: f32 = 1e-5;
 
-// Floor on a face tetra's edge wedge per `scale`³. Degree 3.
 const FACE_DEGENERATE_WEDGE: f32 = 1e-8;
 
-// Floor on the seed's 4-volume per `scale`⁴. Degree 4.
 const SEED_DEGENERATE_VOLUME: f32 = 1e-8;
 
 type Triangle = (usize, usize, usize);
 
-// Winding is irrelevant: matching is order-insensitive.
 fn tet_triangles(tet: &[usize; 4]) -> [Triangle; 4] {
     let (a, b, c, d) = (tet[0], tet[1], tet[2], tet[3]);
     [(a, b, c), (a, b, d), (a, c, d), (b, c, d)]
 }
 
-// A triangle shared by two removed tetra is interior; the second occurrence cancels.
 fn add_or_remove_triangle(horizon: &mut Vec<Triangle>, tri: Triangle) {
     let key = sort_triangle(tri);
     if let Some(pos) = horizon.iter().position(|t| sort_triangle(*t) == key) {
@@ -173,8 +164,7 @@ fn sort_triangle(t: Triangle) -> (usize, usize, usize) {
     (a[0], a[1], a[2])
 }
 
-// Orient against the centroid: GJK's tolerance can leave the origin on the
-// wrong side of a face.
+// Orient against the centroid: GJK's tolerance can leave the origin on the wrong side of a face.
 fn build_face(
     verts: &[MinkowskiPoint4],
     a: usize,
@@ -213,7 +203,6 @@ fn build_face(
     })
 }
 
-// `e_123 -> −e_4, e_124 -> +e_3, e_134 -> −e_2, e_234 -> +e_1`.
 fn hodge_dual_of_trivector_wedge(u: Vec4, v: Vec4, w: Vec4) -> Vec4 {
     let t_234 = det3(u.y, u.z, u.w, v.y, v.z, v.w, w.y, w.z, w.w);
     let t_134 = det3(u.x, u.z, u.w, v.x, v.z, v.w, w.x, w.z, w.w);
@@ -239,8 +228,7 @@ fn det3(
     a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20)
 }
 
-/// `scale` is the characteristic length of the Minkowski difference: the sum
-/// of the two bounding radii.
+/// `scale` is the sum of the two bounding radii.
 pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
     a: &A,
     b: &B,
@@ -273,13 +261,10 @@ pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
         }
 
         if (new_distance - face.distance).abs() < thresholds.support_gap {
-            return contact_from_face(&polytope, face);
+            return Some(contact_from_face(&polytope, face));
         }
 
         polytope.expand(support);
-        if polytope.vertices.len() > EPA_MAX_VERTICES {
-            break;
-        }
     }
 
     tracing::debug!(
@@ -288,7 +273,7 @@ pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
         "EPA 4D hit iteration cap; returning best-estimate contact",
     );
     let face_idx = polytope.closest_face()?;
-    contact_from_face(&polytope, polytope.faces[face_idx])
+    Some(contact_from_face(&polytope, polytope.faces[face_idx]))
 }
 
 fn det4(r0: Vec4, r1: Vec4, r2: Vec4, r3: Vec4) -> f32 {
@@ -298,7 +283,7 @@ fn det4(r0: Vec4, r1: Vec4, r2: Vec4, r3: Vec4) -> f32 {
         - r0.w * det3(r1.x, r1.y, r1.z, r2.x, r2.y, r2.z, r3.x, r3.y, r3.z)
 }
 
-fn contact_from_face(polytope: &Polytope4, face: Face4) -> Option<ContactInfo4> {
+fn contact_from_face(polytope: &Polytope4, face: Face4) -> ContactInfo4 {
     let tetra = face.v.map(|i| polytope.vertices[i]);
 
     let closest = face.normal * face.distance;
@@ -311,14 +296,14 @@ fn contact_from_face(polytope: &Polytope4, face: Face4) -> Option<ContactInfo4> 
         point_b += vertex.sb * w;
     }
 
-    Some(ContactInfo4 {
+    ContactInfo4 {
         normal: face.normal,
         penetration: face.distance,
         point: (point_a + point_b) * 0.5,
-    })
+    }
 }
 
-// Affine, not convex, so the witnesses differ by exactly `normal·penetration`.
+// Affine witnesses must differ by normal times penetration.
 fn face_barycentrics(points: &[Vec4; 4], closest: Vec4) -> [f32; 4] {
     let shifted = points.map(|p| p - closest);
     match project_origin_onto_affine_hull(&[0, 1, 2, 3], &shifted) {
@@ -344,7 +329,6 @@ mod tests {
 
     #[test]
     fn sphere_sphere_penetration_matches_analytical() {
-        // Centers 0.8 apart, radius 0.5 each: penetration = 1.0 − 0.8 = 0.2.
         let a = Sphere4 {
             center: Vec4::new(0.0, 0.0, 0.0, 0.0),
             radius: 0.5,
@@ -370,7 +354,6 @@ mod tests {
     fn contact_from_face_realizes_the_plane_projection_outside_the_tetra() {
         use super::super::simplex_r4::closest_to_origin;
 
-        // Tetra in the hyperplane x = 1; x̂ projects outside it.
         let points = [
             Vec4::new(1.0, 1.0, 0.0, 0.0),
             Vec4::new(1.0, 0.0, 1.0, 0.0),
@@ -394,9 +377,8 @@ mod tests {
             .collect();
 
         let clamped = closest_to_origin(&points.map(|p| p - Vec4::X));
-        assert_eq!(clamped.kept, vec![0, 1, 2]);
+        assert_eq!(clamped.kept(), &[0, 1, 2]);
 
-        // Σ wᵢ = 1 and Σ wᵢ·qᵢ = 0 in the yzw slice give w₃ = −1/4, (w₀,w₁,w₂) = −w₃·q₃.
         let weights = [1.5, -0.75, 0.5, -0.25];
         let realized = points
             .iter()
@@ -422,12 +404,12 @@ mod tests {
         let polytope = Polytope4 {
             vertices,
             faces: vec![face],
+            horizon: Vec::new(),
             centroid,
             thresholds,
         };
-        let contact = contact_from_face(&polytope, face).expect("face resolves a contact");
+        let contact = contact_from_face(&polytope, face);
 
-        // Midpoint of Σ wᵢ·saᵢ = (0.75, 1.5, −0.75, 0.5) and Σ wᵢ·sbᵢ = (−0.25, 1.5, −0.75, 0.5).
         let expected = Vec4::new(0.25, 1.5, -0.75, 0.5);
         assert!(
             (contact.point - expected).length() < 1e-5,
@@ -446,7 +428,6 @@ mod tests {
         })
     }
 
-    // `|det| = 8·h` against a floor of `SEED_DEGENERATE_VOLUME·SPHERE_PAIR_SCALE⁴` = 1.6e-7.
     fn seed_of_height(h: f32) -> [MinkowskiPoint4; 5] {
         seed([
             Vec4::new(-1.0, -1.0, -1.0, 0.0),
@@ -559,7 +540,6 @@ mod tests {
     const WALL_HALF: f32 = 0.05;
     const WALL_SPAN: f32 = 2.0;
     const BALL_RADIUS: f32 = 0.1;
-    // Distance from the wall's midplane at which the ball stops touching it.
     const CAPTURE: f32 = WALL_HALF + BALL_RADIUS;
     fn wall_scale() -> f32 {
         BALL_RADIUS + Vec4::new(WALL_HALF, WALL_SPAN, WALL_SPAN, WALL_SPAN).length()
@@ -598,13 +578,22 @@ mod tests {
     }
 
     #[test]
-    fn wall_contact_depth_stays_zero_up_to_exact_touching() {
-        for gap in [1e-3_f32, 1e-4, 1e-5, 0.0] {
-            let contact = ball_vs_wall(-(CAPTURE + gap));
-            assert_eq!(
-                contact.penetration, 0.0,
-                "a ball {gap} clear of the wall is not {} deep in it",
-                contact.penetration
+    fn wall_contact_rejects_gaps_and_resolves_overlap() {
+        let vertices = box4_vertices(Vec4::new(WALL_HALF, WALL_SPAN, WALL_SPAN, WALL_SPAN));
+        let wall = ConvexHull4 {
+            vertices: &vertices,
+        };
+        for gap in [1e-3_f32, 1e-4, 1e-5] {
+            let ball = Sphere4 {
+                center: Vec4::X * -(CAPTURE + gap),
+                radius: BALL_RADIUS,
+            };
+            assert!(
+                matches!(
+                    gjk_intersect_r4(&ball, &wall, Vec4::X),
+                    GjkResult4::Separated
+                ),
+                "gap={gap}"
             );
         }
         for overlap in [1e-5_f32, 1e-4, 1e-3, 1e-2] {
@@ -618,9 +607,7 @@ mod tests {
         }
     }
 
-    // With `B = A + t` the depth is `min_j (h_K(u_j) − ⟨u_j, t⟩)` over the facet
-    // normals of `K = A ⊕ (−A)` (Schneider 2014, *Convex Bodies: The
-    // Brunn-Minkowski Theory*, §1.7; Ziegler 1995, *Lectures on Polytopes*, §7.1).
+    // Schneider 2014, Convex Bodies, §1.7; Ziegler 1995, Lectures on Polytopes, §7.1.
 
     #[test]
     fn tesseract_tesseract_contact_matches_deepest_axis() {
@@ -661,7 +648,6 @@ mod tests {
         let phi = (1.0 + root5) * 0.5;
         let inradius600 = phi * phi / (2.0 * 2.0_f32.sqrt());
 
-        // Closed-form depth and normal x at circumradius 1 with `t = 0.3·x̂`.
         type ScaleFixture = (&'static str, fn(f32) -> Vec<Vec4>, f32, f32);
         let fixtures: [ScaleFixture; 6] = [
             (

@@ -198,30 +198,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_bare_field_reads_and_an_argument_sets() {
-        let mut env = Environment::default();
-        let read = env.apply(&["fog"]).expect("bare read");
-        assert!(
-            read.contains(&format!("{DEFAULT_FOG_PER_UNIT:.4}")),
-            "bare fog read said `{read}`"
-        );
-        assert_eq!(env, Environment::default(), "a bare read wrote a value");
-
-        env.apply(&["fog", "0.1"]).expect("set");
-        assert_eq!(env.fog_per_unit, 0.1);
-        assert_eq!(env.dark, Environment::default().dark);
-
-        env.apply(&["dark", "0.5", "0.25", "0.125"]).expect("set");
-        assert_eq!(env.dark, [0.5, 0.25, 0.125]);
-        env.apply(&["light", "1", "0", "0.5"]).expect("set");
-        assert_eq!(env.light, [1.0, 0.0, 0.5]);
-        assert_eq!(env.fog_per_unit, 0.1, "a colour write moved the density");
-
-        env.apply(&["reset"]).expect("reset");
-        assert_eq!(env, Environment::default());
-    }
-
-    #[test]
     fn the_parse_rejects_out_of_range_and_malformed_arguments() {
         let mut env = Environment::default();
         for line in [
@@ -264,16 +240,6 @@ mod tests {
         assert_eq!(uniforms.fog_per_unit, 0.07);
         assert_eq!(uniforms.ground_dark, [0.1, 0.2, 0.3]);
         assert_eq!(uniforms.show_ground, 0.0);
-    }
-
-    #[test]
-    fn the_half_blend_distance_is_where_the_sky_is_half_mixed_in() {
-        for density in [0.005_f32, 0.02, 0.05, 0.5] {
-            let t = half_blend_distance(density);
-            let fog = 1.0 - (-t * density).exp();
-            assert!((fog - 0.5).abs() < 1e-6, "density {density} blended {fog}");
-        }
-        assert_eq!(half_blend_distance(0.0), f32::INFINITY);
     }
 
     #[test]

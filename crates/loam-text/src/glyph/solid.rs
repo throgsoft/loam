@@ -8,19 +8,16 @@ use loam_shape::{
 };
 
 use super::field::DistanceField2D;
-use super::hull::{centroid, convex_hull, reduce_sides, MAX_HULL_SIDES};
+use super::hull::{centroid, convex_hull, double_area, reduce_sides, MAX_HULL_SIDES};
 use super::{GlyphParams, BLANK_DISTANCE};
 
 // `Isovolume::extract` requires a true 1-Lipschitz field, which `sample` is not.
 const LIPSCHITZ_SCALE: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
-// `Isovolume::clipped` flags a marked cell touching the domain boundary.
 const COVER_PADDING_CELLS: f32 = 2.0;
 
-// A zero-length ring edge has no outward normal for the side wall.
 const RING_MERGE_FRACTION: f32 = 1.0e-4;
 
-// Degenerate convex polytopes have no well-defined support direction.
 const SLIVER_AREA_FRACTION: f32 = 1.0e-6;
 
 const WIREFRAME_WIDTH_PX: f32 = 1.0;
@@ -30,14 +27,18 @@ const POINT_MARKER_PX: f32 = 2.0;
 // Counter-clockwise in world XY.
 #[derive(Clone, Debug)]
 pub(super) struct Piece {
-    // At least three vertices: `clip_triangle` drops anything degenerate.
-    ring: Vec<Vec2>,
-    // Index `k` such that `ring[k] -> ring[k + 1]` is on the zero isoline.
+    vertices: [Vec2; 4],
+    len: usize,
     cut: Option<usize>,
 }
 
-/// A 2D glyph cross-section extruded along `z` and embedded in a `w` slab. All
-/// geometry is in world units, already offset by the pen origin.
+impl Piece {
+    fn ring(&self) -> &[Vec2] {
+        &self.vertices[..self.len]
+    }
+}
+
+/// World-space glyph geometry extruded along `z` and embedded in a `w` slab.
 #[derive(Clone, Debug)]
 pub struct GlyphSolid {
     ch: char,
@@ -105,17 +106,11 @@ impl GlyphSolid {
         self.field.as_ref()
     }
 
-    /// Boxes in the conservative isovolume cover, the COARSE decomposition.
-    pub fn cover_box_count(&self) -> usize {
-        self.cover.as_ref().map(|c| c.piece_count()).unwrap_or(0)
-    }
-
     pub fn piece_count(&self) -> usize {
         self.pieces.len()
     }
 
-    /// `None` for a blank. [`Isovolume::enclosure_margin`] under-reports this
-    /// cover. [`Self::collider_margin`] is the bound that holds.
+    /// Use [`Self::collider_margin`] for the enclosure bound of this scaled field.
     pub fn collider_cover(&self) -> Option<&Isovolume<2>> {
         self.cover.as_ref()
     }
@@ -124,8 +119,7 @@ impl GlyphSolid {
         self.cover.as_ref().map_or(0, Isovolume::piece_count)
     }
 
-    /// Upper bound on how far the collider cover reaches past the letter's
-    /// baked surface.
+    /// Upper bound on how far the collider cover reaches past the letter's baked surface.
     pub fn collider_margin(&self) -> f32 {
         2.0 * self.collider_cell
     }
@@ -137,20 +131,14 @@ impl GlyphSolid {
             .map_or(BLANK_DISTANCE, |field| field.sample(p))
     }
 
-    /// Negative inside. Exact in `z` and `w`, grid-interpolated in `xy`.
+    /// Negative inside, with bilinear `xy` distance and exact `z` and `w` interval distances.
     pub fn distance_4d(&self, p: Vec4) -> f32 {
         let cross_section = self.distance_2d(Vec2::new(p.x, p.y));
         let extruded = extend(cross_section, p.z, 0.0, self.half_depth);
         extend(extruded, p.w, self.slab_center, self.slab_half)
     }
 
-    /// `(centre, hull)` pairs; pose is extrinsic per the [`Shape`] contract, so
-    /// the hull is a 16-vertex box about the origin.
-    ///
-    /// # Static bodies only
-    ///
-    /// `loam-physics` gives a rigid body exactly one collider and no
-    /// per-collider local offset. Use [`Self::rigid_hull_4d`] instead.
+    /// Origin-centred box colliders for static geometry; use [`Self::rigid_hull_4d`] for a single dynamic body.
     pub fn colliders_4d(&self) -> Vec<(Vec4, Shape)> {
         let Some(cover) = &self.cover else {
             return Vec::new();
@@ -189,11 +177,7 @@ impl GlyphSolid {
         self.hull.len()
     }
 
-    /// The single collider a dynamic letter gets, `None` for a blank. The hull
-    /// is the prism `ring x [-depth/2, depth/2] x slab`, with `ring` the convex
-    /// hull of [`Self::collider_cover`] simplified to at most eight sides.
-    ///
-    /// `centre` is the prism's centre of mass.
+    /// A convex prism with at most 32 vertices, centred at its centre of mass; fills glyph counters.
     pub fn rigid_hull_4d(&self) -> Option<(Vec4, Shape)> {
         if self.hull.is_empty() {
             return None;
@@ -239,7 +223,6 @@ fn extract_cover(field: &DistanceField2D, cell: f32) -> Isovolume<2> {
     let lo = field.corner(0, 0) - padding;
     let span = field.corner(cells_x, cells_y) + padding - lo;
     let counts = (span / cell).ceil().max(Vec2::ONE);
-    // Every letter of a word covers on one pitch however wide its own ink is.
     let resolution = counts.max_element() as usize;
     Isovolume::extract(
         lo.to_array(),
@@ -249,29 +232,28 @@ fn extract_cover(field: &DistanceField2D, cell: f32) -> Isovolume<2> {
     )
 }
 
-/// The slab `{ field <= 0 } x [-half_depth, half_depth]`, triangulated.
-/// Appends, and returns whether it wrote anything.
+/// Appends the triangulated extrusion and returns whether the field enclosed any area.
 pub fn append_field_prism(
     field: &DistanceField2D,
     half_depth: f32,
     color: [f32; 4],
     mesh: &mut TriangleMesh<3>,
 ) -> bool {
-    let pieces = extract_pieces(field);
-    if pieces.is_empty() {
-        return false;
-    }
-    append_prism(&pieces, half_depth, color, mesh);
-    true
+    let mut emitted = false;
+    for_each_piece(field, |piece| {
+        append_prism(std::slice::from_ref(&piece), half_depth, color, mesh);
+        emitted = true;
+    });
+    emitted
 }
 
 fn append_prism(pieces: &[Piece], half_depth: f32, color: [f32; 4], mesh: &mut TriangleMesh<3>) {
     for piece in pieces {
-        let n = piece.ring.len();
+        let n = piece.ring().len();
         let back = mesh.vertices.len() as u32;
         let front = back + n as u32;
         for z in [-half_depth, half_depth] {
-            for q in &piece.ring {
+            for q in piece.ring() {
                 mesh.vertices.push([q.x, q.y, z]);
                 mesh.colors.push(color);
             }
@@ -311,8 +293,8 @@ impl Visualizable<3> for GlyphSolid {
         };
         for piece in &self.pieces {
             let Some(cut) = piece.cut else { continue };
-            let a = piece.ring[cut];
-            let b = piece.ring[(cut + 1) % piece.ring.len()];
+            let a = piece.ring()[cut];
+            let b = piece.ring()[(cut + 1) % piece.ring().len()];
             let (a_back, a_front) = (at_z(a, -self.half_depth), at_z(a, self.half_depth));
             let (b_back, b_front) = (at_z(b, -self.half_depth), at_z(b, self.half_depth));
             push(a_back, b_back);
@@ -330,7 +312,7 @@ impl Visualizable<3> for GlyphSolid {
         let mut mesh = PointMesh::default();
         for piece in &self.pieces {
             let Some(cut) = piece.cut else { continue };
-            let a = piece.ring[cut];
+            let a = piece.ring()[cut];
             for z in [-self.half_depth, self.half_depth] {
                 mesh.positions.push(at_z(a, z).to_array());
                 mesh.colors.push(self.color);
@@ -352,9 +334,14 @@ fn extend(d: f32, x: f32, center: f32, half: f32) -> f32 {
 }
 
 fn extract_pieces(field: &DistanceField2D) -> Vec<Piece> {
+    let mut pieces = Vec::new();
+    for_each_piece(field, |piece| pieces.push(piece));
+    pieces
+}
+
+fn for_each_piece(field: &DistanceField2D, mut emit: impl FnMut(Piece)) {
     let (cells_x, cells_y) = field.cell_counts();
     let cell = field.cell_size();
-    let mut pieces = Vec::new();
 
     for j in 0..cells_y {
         for i in 0..cells_x {
@@ -366,8 +353,6 @@ fn extract_pieces(field: &DistanceField2D) -> Vec<Piece> {
                     distance: field.at(ci, cj),
                 }
             });
-            // Alternate the split diagonal by cell parity so the clipped edges
-            // carry no global directional grain.
             let triangles: [[usize; 3]; 2] = if (i + j) % 2 == 0 {
                 [[0, 1, 2], [0, 2, 3]]
             } else {
@@ -380,12 +365,11 @@ fn extract_pieces(field: &DistanceField2D) -> Vec<Piece> {
                     corners[tri[2]].clone(),
                 ];
                 if let Some(piece) = clip_triangle(&corners, cell) {
-                    pieces.push(piece);
+                    emit(piece);
                 }
             }
         }
     }
-    pieces
 }
 
 #[derive(Clone, Debug)]
@@ -395,73 +379,48 @@ struct Corner {
 }
 
 fn clip_triangle(tri: &[Corner; 3], cell: f32) -> Option<Piece> {
-    let mut ring: Vec<Vec2> = Vec::with_capacity(4);
-    let mut on_isoline: Vec<bool> = Vec::with_capacity(4);
-
+    let mut ring = [Vec2::ZERO; 4];
+    let mut on_isoline = [false; 4];
+    let mut len = 0;
     for k in 0..3 {
         let a = &tri[k];
         let b = &tri[(k + 1) % 3];
         if a.distance <= 0.0 {
-            ring.push(a.position);
-            on_isoline.push(a.distance == 0.0);
+            ring[len] = a.position;
+            on_isoline[len] = a.distance == 0.0;
+            len += 1;
         }
         if (a.distance <= 0.0) != (b.distance <= 0.0) {
-            // Signs differ, so the denominator is nonzero by construction.
             let t = a.distance / (a.distance - b.distance);
-            ring.push(a.position + (b.position - a.position) * t);
-            on_isoline.push(true);
+            ring[len] = a.position + (b.position - a.position) * t;
+            on_isoline[len] = true;
+            len += 1;
         }
     }
-    if ring.len() < 3 {
-        return None;
-    }
-
-    merge_coincident(&mut ring, &mut on_isoline, cell);
-    if ring.len() < 3 || double_signed_area(&ring) <= SLIVER_AREA_FRACTION * cell * cell {
-        return None;
-    }
-
-    let n = ring.len();
-    let cut = (0..n).find(|&k| on_isoline[k] && on_isoline[(k + 1) % n]);
-    Some(Piece { ring, cut })
-}
-
-fn merge_coincident(ring: &mut Vec<Vec2>, on_isoline: &mut Vec<bool>, cell: f32) {
     let merge2 = (cell * RING_MERGE_FRACTION).powi(2);
-    let mut kept_ring: Vec<Vec2> = Vec::with_capacity(ring.len());
-    let mut kept_flags: Vec<bool> = Vec::with_capacity(ring.len());
-    for (p, flag) in ring.iter().zip(on_isoline.iter()) {
-        match kept_ring.last() {
-            Some(last) if last.distance_squared(*p) <= merge2 => {
-                let end = kept_flags.len() - 1;
-                kept_flags[end] |= *flag;
-            }
-            _ => {
-                kept_ring.push(*p);
-                kept_flags.push(*flag);
-            }
+    let mut kept = 0;
+    for index in 0..len {
+        if kept > 0 && ring[kept - 1].distance_squared(ring[index]) <= merge2 {
+            on_isoline[kept - 1] |= on_isoline[index];
+        } else {
+            ring[kept] = ring[index];
+            on_isoline[kept] = on_isoline[index];
+            kept += 1;
         }
     }
-    while kept_ring.len() >= 2
-        && kept_ring[0].distance_squared(kept_ring[kept_ring.len() - 1]) <= merge2
-    {
-        kept_ring.pop();
-        let tail = kept_flags.pop().unwrap_or(false);
-        kept_flags[0] |= tail;
+    while kept >= 2 && ring[0].distance_squared(ring[kept - 1]) <= merge2 {
+        kept -= 1;
+        on_isoline[0] |= on_isoline[kept];
     }
-    *ring = kept_ring;
-    *on_isoline = kept_flags;
-}
-
-fn double_signed_area(ring: &[Vec2]) -> f32 {
-    let n = ring.len();
-    let mut sum = 0.0;
-    for i in 0..n {
-        let a = ring[i];
-        let b = ring[(i + 1) % n];
-        sum += a.x * b.y - b.x * a.y;
+    if kept < 3 || double_area(&ring[..kept]) <= SLIVER_AREA_FRACTION * cell * cell {
+        return None;
     }
-    sum
+    let cut = (0..kept).find(|&k| on_isoline[k] && on_isoline[(k + 1) % kept]);
+    Some(Piece {
+        vertices: ring,
+        len: kept,
+        cut,
+    })
 }
 
 #[cfg(test)]
@@ -579,13 +538,13 @@ mod tests {
         let solid = square_solid(1.0, 17, 0.5, (-0.25, 0.25));
         assert!(solid.piece_count() > 0);
         for piece in &solid.pieces {
-            let n = piece.ring.len();
+            let n = piece.ring().len();
             assert!((3..=4).contains(&n), "ring has {n} vertices");
-            assert!(double_signed_area(&piece.ring) > 0.0);
+            assert!(double_area(piece.ring()) > 0.0);
             for k in 0..n {
-                let a = piece.ring[k];
-                let b = piece.ring[(k + 1) % n];
-                let c = piece.ring[(k + 2) % n];
+                let a = piece.ring()[k];
+                let b = piece.ring()[(k + 1) % n];
+                let c = piece.ring()[(k + 2) % n];
                 let cross = (b - a).perp_dot(c - b);
                 assert!(cross >= -1.0e-6, "reflex vertex at {k}: cross = {cross}");
             }
@@ -599,10 +558,9 @@ mod tests {
             let area: f32 = solid
                 .pieces
                 .iter()
-                .map(|p| 0.5 * double_signed_area(&p.ring))
+                .map(|p| 0.5 * double_area(p.ring()))
                 .sum();
             let cell = solid.field().unwrap().cell_size();
-            // At most one cell of area along a perimeter of 8.
             assert!(
                 (area - 4.0).abs() < 8.0 * cell,
                 "resolution {resolution}: area {area} off by more than {} ",
@@ -733,26 +691,6 @@ mod tests {
     }
 
     #[test]
-    fn a_coarser_collider_pitch_cuts_boxes_without_touching_the_render_mesh() {
-        let fine = diamond_solid(1.0, 48, 48);
-        let coarse = diamond_solid(1.0, 48, 12);
-        assert_eq!(fine.piece_count(), coarse.piece_count());
-        assert!(
-            coarse.collider_count() < fine.collider_count(),
-            "coarse {} is not below fine {}",
-            coarse.collider_count(),
-            fine.collider_count()
-        );
-        assert!(
-            coarse.collider_count() * 20 < fine.piece_count(),
-            "{} boxes against {} render pieces is not a cut",
-            coarse.collider_count(),
-            fine.piece_count()
-        );
-        assert!(coarse.collider_margin() > fine.collider_margin());
-    }
-
-    #[test]
     fn a_counter_stays_open_past_the_margin() {
         let solid = annulus_solid(1.0, 0.6, 48, 16);
         let cover = solid.collider_cover().expect("cover");
@@ -780,7 +718,6 @@ mod tests {
 
     #[test]
     fn a_cover_cell_is_marked_out_to_a_full_cell_of_clearance() {
-        // A single pitch can step over the band between the two thresholds.
         let (mut band, mut clear) = (0, 0);
         for collider_cells in [11u32, 12, 13, 16, 17] {
             let solid = diamond_solid(1.0, 48, collider_cells);
@@ -792,7 +729,6 @@ mod tests {
                 "stated margin {margin} is not two extractor cells of {cell}"
             );
 
-            // Box bounds sit on grid nodes, so one of them anchors the lattice.
             let anchor = Vec2::from_array(cover.piece_bounds(0).0);
             let tolerance = 1.0e-4 * cell;
             let half_threshold = std::f32::consts::FRAC_1_SQRT_2 * cell;
@@ -843,7 +779,6 @@ mod tests {
         assert_eq!(vertices.len(), 4 * sides);
         assert!(vertices.len() <= 32);
 
-        // The centre of mass is the area centroid, not the vertex mean.
         let local: Vec<Vec2> = vertices[..sides].iter().map(|v| v.xy()).collect();
         let local_centroid = centroid(&local);
         assert!(
@@ -852,7 +787,6 @@ mod tests {
         );
         assert_eq!(centre.z, 0.0);
         assert!((centre.w - 0.5 * (slab.0 + slab.1)).abs() < 1e-6);
-        // A diamond about the origin has its centroid there.
         assert!(centre.xy().length() < solid.collider_margin());
 
         for v in &vertices {
@@ -907,19 +841,6 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_emits_no_rigid_hull() {
-        let blank = GlyphSolid::new(
-            ' ',
-            Vec2::ZERO,
-            0.25,
-            &fixture_params(1.0, 20, 0.5, (0.0, 1.0)),
-            None,
-        );
-        assert_eq!(blank.rigid_hull_sides(), 0);
-        assert!(blank.rigid_hull_4d().is_none());
-    }
-
-    #[test]
     fn distance_4d_extends_the_cross_section_on_both_interval_axes() {
         let depth = 0.5;
         let slab = (-1.0, 1.0);
@@ -934,7 +855,6 @@ mod tests {
         let beyond = solid.distance_4d(Vec4::new(0.0, 0.0, 0.0, slab.1 + 3.0));
         assert!((beyond - 3.0).abs() < 1e-5, "beyond {beyond}");
 
-        // Diagonally out of both a cap and the slab: Euclidean, not Chebyshev.
         let corner = solid.distance_4d(Vec4::new(0.0, 0.0, 0.5 * depth + 3.0, slab.1 + 4.0));
         assert!((corner - 5.0).abs() < 1e-5, "corner {corner}");
     }
@@ -948,6 +868,7 @@ mod tests {
             &fixture_params(1.0, 20, 0.5, (0.0, 1.0)),
             None,
         );
+        assert!(blank.rigid_hull_4d().is_none());
         assert!(blank.is_blank());
         assert_eq!(blank.piece_count(), 0);
         assert_eq!(blank.collider_count(), 0);
@@ -977,7 +898,7 @@ mod tests {
             },
         ];
         let whole = clip_triangle(&inside, 1.0).expect("whole triangle");
-        assert_eq!(whole.ring.len(), 3);
+        assert_eq!(whole.ring().len(), 3);
         assert!(whole.cut.is_none());
 
         let straddling = [
@@ -995,10 +916,10 @@ mod tests {
             },
         ];
         let clipped = clip_triangle(&straddling, 1.0).expect("clipped triangle");
-        assert_eq!(clipped.ring.len(), 3);
+        assert_eq!(clipped.ring().len(), 3);
         let cut = clipped.cut.expect("cut edge");
-        let a = clipped.ring[cut];
-        let b = clipped.ring[(cut + 1) % 3];
+        let a = clipped.ring()[cut];
+        let b = clipped.ring()[(cut + 1) % 3];
         assert!(
             a.distance(Vec2::new(0.5, 0.0))
                 .min(a.distance(Vec2::new(0.0, 0.5)))

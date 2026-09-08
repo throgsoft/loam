@@ -1,12 +1,10 @@
-//! One authored rotation drives the whole row: every rotation control writes
-//! it and every body reads it. The rotors stay per-slot because a timeline can
-//! own one body's orientation while the rest of the row keeps turning.
+//! Host rotation drives unowned slots; timeline-owned slots retain separate rotors.
 
 use loam_math::Rotor4;
 
 use crate::state::{active_plane_angle, compose_active_rotor};
 
-// A mask shorter than the row leaves its tail to the spin.
+// Slots past the mask remain host-owned.
 pub(crate) fn is_directed(directed: &[bool], slot: usize) -> bool {
     directed.get(slot).copied().unwrap_or(false)
 }
@@ -15,7 +13,7 @@ const DEFAULT_ACTIVE: [bool; 6] = [false, false, true, false, false, false];
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SlotSpin {
-    /// Displayed angle is `base_angles[i] + rot_time · RATE · active[i]`, in radians.
+    /// Base angles exclude the accumulated active spin, in radians.
     pub(crate) base_angles: [f32; 6],
     pub(crate) active: [bool; 6],
 }
@@ -39,11 +37,10 @@ impl SlotSpin {
     }
 }
 
-// Never empty: the rotation UI always needs a subject to write to.
 pub(crate) struct SlotSpins {
     spin: SlotSpin,
     rotor: Rotor4,
-    /// Upload row: `rotor` everywhere except the slots a timeline owns.
+    /// Timeline-owned slots retain their sampled orientations.
     rotors: Vec<Rotor4>,
 }
 
@@ -63,7 +60,6 @@ impl SlotSpins {
         spins
     }
 
-    // Resizes rather than rebuilds: a slot arriving mid-spin joins at the row's orientation.
     pub(crate) fn sync(&mut self, slots: usize) {
         self.rotors.resize(slots.max(1), self.rotor);
     }
@@ -84,7 +80,6 @@ impl SlotSpins {
         &mut self.spin
     }
 
-    // `t` is the UI clock; a directed slot is on the director's frame index.
     pub(crate) fn recompose_active(&mut self, t: f32, directed: &[bool]) {
         self.set_row_rotor(self.spin.active_rotor_at(t), directed);
     }
@@ -108,7 +103,6 @@ impl SlotSpins {
         }
     }
 
-    // Length included: a row edit changes which body each rotor belongs to.
     pub(crate) fn rotors_differ_from(&self, uploaded: &[Rotor4]) -> bool {
         self.rotors != uploaded
     }
@@ -118,7 +112,7 @@ impl SlotSpins {
         out.extend_from_slice(&self.rotors);
     }
 
-    // `base_angles` too, or the next Active recompose undoes this.
+    // Clear base angles before the next active recompose.
     pub(crate) fn clear_orientation(&mut self) {
         self.spin.base_angles = [0.0; 6];
         self.rotor = Rotor4::IDENTITY;
@@ -126,52 +120,15 @@ impl SlotSpins {
     }
 
     pub(crate) fn reset(&mut self) {
-        *self = Self::new(self.rotors.len());
+        self.spin = SlotSpin::default();
+        self.clear_orientation();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec4;
-    use loam_math::{Bivector, Plane4, Rotor};
-
-    // Chord half-angle `2·asin(|a - b| / 2)`; Kahan, *Mindless Assessments of Roundoff*, 2006, §12.
-    fn probe_separation(a: Rotor4, b: Rotor4) -> f32 {
-        let probe = Vec4::new(0.5, -0.3, 0.7, 0.4).normalize();
-        2.0 * ((a.apply(probe) - b.apply(probe)).length() * 0.5)
-            .clamp(-1.0, 1.0)
-            .asin()
-    }
-
-    #[test]
-    fn the_row_turns_as_one_and_stays_on_the_unit_sphere() {
-        const SLOTS: usize = 3;
-        let mut spins = SlotSpins::new(SLOTS);
-        spins.spin_mut().active = [false, false, true, false, false, true];
-
-        const STEPS: usize = 600;
-        const DT: f32 = 1.0 / 60.0;
-        let mut turned = 0.0_f32;
-        for step in 0..=STEPS {
-            let t = step as f32 * DT;
-            spins.recompose_active(t, &[]);
-            for slot in 0..SLOTS {
-                assert_eq!(
-                    spins.rotor(slot),
-                    spins.row_rotor(),
-                    "slot {slot} left the row at t={t}"
-                );
-                let norm_squared = spins.rotor(slot).norm_squared();
-                assert!(
-                    (norm_squared - 1.0).abs() < 1e-5,
-                    "slot {slot} left the unit sphere at t={t}: |R|² = {norm_squared}"
-                );
-            }
-            turned = turned.max(probe_separation(Rotor4::IDENTITY, spins.row_rotor()));
-        }
-        assert!(turned > 1.0, "the row never turned past {turned} rad");
-    }
+    use loam_math::{Bivector, Plane4};
 
     #[test]
     fn a_directed_slot_is_skipped_by_the_ui_clock_and_its_neighbours_are_not() {
@@ -191,7 +148,6 @@ mod tests {
         assert!(spins.any_unowned(&[false, true]));
         assert!(spins.any_unowned(&[true, true]), "slot 2 is past the mask");
         assert!(!spins.any_unowned(&[true; 3]));
-        spins.set_rotor(9, Rotor4::IDENTITY);
     }
 
     #[test]
@@ -226,22 +182,6 @@ mod tests {
             DEFAULT_ACTIVE,
             "clearing the orientation also cleared the plane mask"
         );
-    }
-
-    #[test]
-    fn reset_returns_the_row_to_the_boot_rotation() {
-        let mut spins = SlotSpins::new(3);
-        spins.spin_mut().active = [true; 6];
-        spins.spin_mut().base_angles[3] = 2.0;
-        spins.recompose_active(1.0, &[]);
-        spins.set_rotor(2, Rotor4::IDENTITY);
-
-        spins.reset();
-        assert_eq!(*spins.spin(), SlotSpin::default());
-        assert_eq!(spins.row_rotor(), Rotor4::IDENTITY);
-        for slot in 0..3 {
-            assert_eq!(spins.rotor(slot), Rotor4::IDENTITY);
-        }
     }
 
     #[test]

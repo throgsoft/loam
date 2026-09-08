@@ -1,20 +1,16 @@
 use crate::*;
 
-fn handles_arg(arg: Option<&str>, current: bool) -> anyhow::Result<bool> {
-    match arg {
-        None => Ok(!current),
-        Some("on") => Ok(true),
-        Some("off") => Ok(false),
-        Some(other) => Err(anyhow!("handles: unknown arg `{other}` (try on|off)")),
-    }
-}
-
 impl RotateScene {
-    pub(crate) fn build_console() -> Console<Demo> {
+    pub(crate) fn build_console(
+        runtime: &loam_app::Runtime,
+        control: &loam_app::shell::SceneControl,
+    ) -> Console<Demo> {
         let mut c = Console::<Demo>::new();
         loam_app::shell::register_shell_commands::<Demo, shell::Playground>(
             &mut c,
             loam_app::build_info!(),
+            runtime,
+            control,
         );
         c.register(loam_egui::cmd(
             "reset",
@@ -158,34 +154,20 @@ impl RotateScene {
                             }
                             Some("reset") | Some("default") => {
                                 d.stereographic_pole = state::STEREOGRAPHIC_DEFAULT_POLE;
-                                out.line("stereographic pole: reset to the cell-center default");
+                                out.line("stereographic pole: reset to +w");
                             }
                             Some("+w") => {
                                 d.stereographic_pole = Vec4::W;
                                 out.line("stereographic pole: set to +w (textbook map)");
                             }
                             Some(_) => {
-                                let coords: Result<Vec<f32>> = args
-                                    .iter()
-                                    .map(|t| {
-                                        t.parse::<f32>()
-                                            .map_err(|e| anyhow!("invalid pole component `{t}`: {e}"))
-                                    })
-                                    .collect();
-                                let coords = coords?;
-                                if coords.len() != 4 {
-                                    return Err(anyhow!(
-                                        "pole needs 4 components `<x y z w>`, got {}",
-                                        coords.len()
-                                    ));
-                                }
-                                let raw = Vec4::new(coords[0], coords[1], coords[2], coords[3]);
-                                if raw.length() < MIN_EDGE_RADIUS {
-                                    return Err(anyhow!(
-                                        "pole vector is too close to zero to have a direction"
-                                    ));
-                                }
-                                let pole = raw.normalize();
+                                let [x, y, z, w] = args else {
+                                    return Err(anyhow!("pole needs four components: x y z w"));
+                                };
+                                let raw = Vec4::new(x.parse()?, y.parse()?, z.parse()?, w.parse()?);
+                                let pole = raw.try_normalize().ok_or_else(|| anyhow!(
+                                    "pole must have finite, nonzero length"
+                                ))?;
                                 d.stereographic_pole = pole;
                                 out.line(format!(
                                     "stereographic pole: set to ({:.3}, {:.3}, {:.3}, {:.3})",
@@ -350,9 +332,7 @@ impl RotateScene {
                     };
                     if next == SurfaceMode::Sdf && demo.sdf_blocked_by_heavy_polychora() {
                         return Err(anyhow!(
-                            "surface sdf disabled while 120-cell or 600-cell is in the row \
-                             (the SDF kernel crashes the browser tab on those); remove the \
-                             heavy polychora first, or use `surface raster`"
+                            "SDF rendering for the 120-cell and 600-cell is not yet verified in the browser; use surface raster"
                         ));
                     }
                     if next != demo.surface_mode {
@@ -364,35 +344,23 @@ impl RotateScene {
             )
             .with_args(&[&["raster", "sdf", "off", "scale"]])
             .with_long_help(
-                "Selects how the six regular convex 4-polytopes (5-cell, tesseract, 16-cell,\n\
-                 24-cell, 120-cell, 600-cell) are rendered, plus a runtime scale knob.\n\
-                 \n\
-                 subcommands:\n  \
-                 raster      Rasterized cross-section cell-caps (the default). Face-normal\n                             Lambert lit, per-body solid color. Much faster for the\n                             120-cell + 600-cell and exact (no SDF approximation).\n  \
-                 sdf         SDF raymarch. The historical pre-rasterizer path; smoother\n                             shading but the 120-cell and 600-cell carry a face-plane\n                             approximation BUG. Kept for visual comparison.\n  \
-                 off         No surface rendered. Wireframe overlay + cross-section\n                             perimeter stay visible if enabled; the cap interiors are\n                             blank. Useful for inspecting the wireframe on its own.\n  \
-                 scale <N>   Multiply the canonical body radius by N (default 1.0; range\n                             0.05..=10.0). Affects SDF kernel, raster cross-section caps,\n                             wireframe overlay, perimeter, and points sprites uniformly.\n\
-                 \n\
-                 Bare `surface` (no argument) is shorthand for `surface off`.\n\
-                 \n\
-                 The rasterized cross-section splits into two overlaid layers with\n\
-                 independent perimeter + fill alpha: see the `section` command (the honest\n\
-                 drop-w cross-section and the projection-following cap).\n\
-                 \n\
-                 Smooth-surface shapes (Clifford torus, duocylinder, spherinder, 3-sphere)\n\
-                 ignore the mode and always render via the SDF; they have no rasterizer\n\
-                 path. Surface scale still applies to their SDF body radius.",
+                "raster: draw cross-section caps with face-normal lighting.\n\
+                 sdf: raymarch the surface; unavailable for the 120-cell and 600-cell.\n\
+                 off: hide surfaces and keep enabled overlays.\n\
+                 scale <N>: multiply body size by N (0.05..=10).\n\
+                 Bare `surface` selects `off`. `section` controls cap and cross-section alpha.\n\
+                 Smooth shapes always use SDF rendering.",
             ),
         );
 
         c.register(
             loam_egui::subcommands::<Demo>(
                 "section",
-                "rasterized cross-section layers: cross (honest drop-w) + cap (projection-following), each with perimeter + alpha",
+                "rasterized cross-section layers: cross (drop-w) + cap (projection-following), each with perimeter + alpha",
             )
             .toggle(
                 "cross-perimeter",
-                "honest drop-w cross-section perimeter outline (bare flips)",
+                "drop-w cross-section perimeter outline (bare flips)",
                 |d, v| {
                     d.cross_section.perimeter = v.unwrap_or(!d.cross_section.perimeter);
                     Ok(())
@@ -408,7 +376,7 @@ impl RotateScene {
             )
             .custom(
                 "cross-alpha",
-                "honest cross-section fill alpha (0 = off; range (0, 1])",
+                "cross-section fill alpha (0 = off; range (0, 1])",
                 &[&[]],
                 &[],
                 |d, args, out| run_section_alpha("cross", &mut d.cross_section, args, out),
@@ -429,7 +397,12 @@ impl RotateScene {
                 "handles",
                 "toggle the 4D transform handles (on | off; bare flips)",
                 |args, demo, out| {
-                    let next = handles_arg(args.first().copied(), demo.gimbal.enabled)?;
+                    let next = match args {
+                        [] => !demo.gimbal.enabled,
+                        ["on"] => true,
+                        ["off"] => false,
+                        _ => return Err(anyhow!("usage: handles [on|off]")),
+                    };
                     demo.gimbal.enabled = next;
                     out.line(format!("handles: {}", if next { "on" } else { "off" }));
                     Ok(())
@@ -437,16 +410,9 @@ impl RotateScene {
             )
             .with_args(&[&["on", "off"]])
             .with_long_help(
-                "Six interlocked rings, one per rotation plane, from the stereographic\n\
-                 projection of the 16-cell, plus four arrows, one per translation axis.\n\
-                 Drag a ring to turn the whole row in its plane; drag an arrowhead to\n\
-                 slide the row along that axis. The violet arrow is w: it moves the bodies\n\
-                 off the 3D slice, so the cross-sections change shape rather than\n\
-                 travelling.\n\
-                 \n\
-                 Off at startup and reachable only from here. The handles are hidden in\n\
-                 Filmstrip view, which composes per-cell viewports with no shared world\n\
-                 origin for the widget to stand on.",
+                "Drag a ring to rotate the row in its plane. Drag an arrow to translate\n\
+                 along its axis. The violet arrow controls w.\n\
+                 Handles start hidden and are unavailable in Filmstrip view.",
             ),
         );
 
@@ -454,80 +420,5 @@ impl RotateScene {
         loam_app::environment::register_floor_command(&mut c, |demo| &mut demo.environment);
 
         c
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use loam_app::shell::SceneRegistry;
-
-    #[test]
-    fn handles_arg_flips_when_bare_and_is_absolute_when_named() {
-        assert!(handles_arg(None, false).unwrap());
-        assert!(!handles_arg(None, true).unwrap());
-        assert!(handles_arg(Some("on"), false).unwrap());
-        assert!(handles_arg(Some("on"), true).unwrap());
-        assert!(!handles_arg(Some("off"), true).unwrap());
-        assert!(!handles_arg(Some("off"), false).unwrap());
-    }
-
-    #[test]
-    fn handles_arg_rejects_an_unknown_token() {
-        assert!(handles_arg(Some("yes"), false).is_err());
-    }
-
-    #[test]
-    fn scene_completion_cycles_every_registered_slug() {
-        let mut console = RotateScene::build_console();
-        *console.input_mut() = "scene ".to_string();
-        let mut completed: Vec<String> = Vec::new();
-        for _ in shell::Playground::SCENES {
-            console.tab_complete();
-            completed.push(
-                console
-                    .input()
-                    .strip_prefix("scene ")
-                    .expect("completion fills the switcher's first argument")
-                    .to_string(),
-            );
-        }
-        completed.sort();
-        let mut slugs: Vec<String> = shell::Playground::SCENES
-            .iter()
-            .map(|entry| entry.slug.to_string())
-            .collect();
-        slugs.sort();
-        assert_eq!(completed, slugs);
-    }
-
-    #[test]
-    fn the_help_listing_describes_the_scene_switcher() {
-        let mut console = Console::<()>::new();
-        loam_app::shell::register_shell_commands::<(), shell::Playground>(
-            &mut console,
-            loam_app::build_info!(),
-        );
-        console.execute("help");
-        let listed = console
-            .history()
-            .iter()
-            .find_map(|line| line.text.trim_start().strip_prefix("scene "))
-            .expect("`help` lists the scene command")
-            .trim()
-            .to_string();
-        assert!(!listed.is_empty(), "the listing carries no description");
-
-        console.clear_history();
-        console.execute("help scene");
-        let long = console
-            .history()
-            .iter()
-            .map(|line| line.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        for param in ["--scene=", "?scene=", "--embed=1"] {
-            assert!(long.contains(param), "`help scene` omits {param}");
-        }
     }
 }

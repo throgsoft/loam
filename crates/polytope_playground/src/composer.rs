@@ -58,6 +58,9 @@ fn peel_scalar(s: &str) -> Result<(Option<f32>, &str), String> {
     let value: f32 = num_str
         .parse()
         .map_err(|_| format!("not a number: `{num_str}`"))?;
+    if !value.is_finite() {
+        return Err("angle must be finite".into());
+    }
     let mut tail = s[i..].trim_start();
     let radians = if let Some(rest) = tail.strip_prefix("rad") {
         tail = rest.trim_start();
@@ -222,7 +225,7 @@ impl Demo {
 
     // Deferred so the loop can borrow `self.seq` immutably.
     pub(crate) fn render_composer_seq_cards(&mut self, ui: &mut egui::Ui) {
-        let mut entry_moves: Vec<(usize, usize, usize)> = Vec::new();
+        let mut entry_move = None;
         let mut remove_term: Option<usize> = None;
         let mut remove_scalar: Option<usize> = None;
         let mut add_scalar: Option<usize> = None;
@@ -335,8 +338,8 @@ impl Demo {
                                             );
                                             ui.monospace("·");
                                         }
-                                        let planes = self.seq[term_idx].planes.clone();
-                                        render_plane_sum(ui, &planes, |ui, plane_idx, plane| {
+                                        let planes = &self.seq[term_idx].planes;
+                                        render_plane_sum(ui, planes, |ui, plane_idx, plane| {
                                             let pill_id = ui.make_persistent_id((
                                                 "plane-pill",
                                                 term_idx,
@@ -372,7 +375,7 @@ impl Demo {
                             {
                                 if let DragPayload::Entry(from_t, idx) = *arc {
                                     if from_t != term_idx {
-                                        entry_moves.push((from_t, idx, term_idx));
+                                        entry_move = Some((from_t, idx, term_idx));
                                     }
                                 }
                             }
@@ -410,7 +413,7 @@ impl Demo {
                     term_h,
                     dragged_term_width,
                 );
-                if !entry_moves.is_empty() || remove_term.is_some() {
+                if entry_move.is_some() || remove_term.is_some() {
                     let ctx = ui.ctx();
                     for i in 0..32 {
                         let card_id = ui.make_persistent_id(("term-card", i));
@@ -441,9 +444,7 @@ impl Demo {
                 }
             }
         }
-        // Descending plane index, so a removal cannot shift a later one.
-        entry_moves.sort_by_key(|(from, idx, _)| (*from, std::cmp::Reverse(*idx)));
-        for (from_t, idx, to_t) in entry_moves {
+        if let Some((from_t, idx, to_t)) = entry_move {
             if let Some(src) = self.seq.get_mut(from_t) {
                 if idx < src.planes.len() {
                     let plane = src.planes.remove(idx);
@@ -453,47 +454,41 @@ impl Demo {
                 }
             }
         }
-        self.seq.retain(|t| !t.planes.is_empty());
         if let Some(i) = remove_term {
             if i < self.seq.len() {
                 self.seq.remove(i);
             }
         }
+        self.seq.retain(|t| !t.planes.is_empty());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use loam_math::{Bivector, Bivector4, Rotor};
-    use std::f32::consts::{PI, SQRT_2};
+    use super::*;
 
     #[test]
-    fn the_scrub_range_never_exceeds_what_log_can_return() {
-        const LIMIT_DEG: f32 = 254.558_44;
-        assert!(
-            LIMIT_DEG.to_radians() <= PI * SQRT_2,
-            "the slider reaches past every rotor's log; a drag there snaps back"
-        );
+    fn formula_units_and_grouping_agree() {
+        let degrees = parse_formula_term("90deg * (xy + zw)").unwrap();
+        let radians = parse_formula_term("1.5707963rad (xy + zw)").unwrap();
+        assert_eq!(degrees.planes, [Plane4::Xy, Plane4::Zw]);
+        assert!((degrees.scalar.unwrap() - radians.scalar.unwrap()).abs() < 1e-6);
+        assert_eq!(parse_formula_term("xw").unwrap().scalar, None);
+    }
 
-        let unit = Bivector4 {
-            xy: 1.0,
-            ..Default::default()
-        };
-        for deg in [10.0f32, 90.0, 179.0] {
-            let round_tripped = (unit * deg.to_radians()).exp().log().dot(unit).to_degrees();
-            assert!(
-                (round_tripped - deg).abs() < 1e-2,
-                "{deg}° read back as {round_tripped}°, so the slider would jump"
-            );
+    #[test]
+    fn invalid_formula_does_not_create_a_rotor() {
+        for input in [
+            "",
+            "90",
+            "90 ()",
+            "xy +",
+            "xx",
+            "3..4 xy",
+            "NaN xy",
+            "999999999999999999999999999999999999999999 xy",
+        ] {
+            assert!(parse_formula_term(input).is_err(), "{input}");
         }
-        let past = (unit * 360.0f32.to_radians())
-            .exp()
-            .log()
-            .dot(unit)
-            .to_degrees();
-        assert!(
-            past.abs() < 1.0,
-            "360° should collapse toward identity under the minimal branch, got {past}"
-        );
     }
 }

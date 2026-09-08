@@ -3,10 +3,11 @@
 use std::time::Instant;
 
 use ab_glyph::FontRef;
+use anyhow::{Context, Result};
 use glam::Vec4;
 use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
-use loam_physics::{Gravity, RigidBody, World};
+use loam_physics::{RigidBody, World};
 use loam_shape::Shape;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 
@@ -17,7 +18,6 @@ const TIMED_STEPS: usize = 60;
 const BALL_RADIUS: f32 = 0.04;
 const BALLS: usize = 30;
 
-// Fonts are not vendored.
 fn system_font() -> Option<Vec<u8>> {
     const CANDIDATES: &[&str] = &[
         r"C:\Windows\Fonts\arial.ttf",
@@ -49,8 +49,10 @@ impl Xorshift64 {
     }
 }
 
-fn main() {
-    let Some(bytes) = system_font() else { return };
+fn main() -> Result<()> {
+    let Some(bytes) = system_font() else {
+        return Ok(());
+    };
     let font = FontRef::try_from_slice(&bytes).expect("parse font");
 
     let render = GlyphParams::default();
@@ -110,7 +112,7 @@ fn main() {
             .sum::<usize>(),
     );
 
-    let (bodies, micros) = time_word(&letters);
+    let (bodies, micros) = time_word(&letters)?;
     let frame = 1.0e6 / FIXED_HZ as f64;
     println!();
     println!(
@@ -118,9 +120,9 @@ fn main() {
         bodies - BALLS,
         100.0 * micros / frame,
     );
+    Ok(())
 }
 
-// The first `sides` vertices of the 4D prism are the ring itself, in order.
 fn hull_area(letter: &GlyphSolid) -> f32 {
     let Some((_, Shape::ConvexPolytope4D { vertices })) = letter.rigid_hull_4d() else {
         return 0.0;
@@ -136,16 +138,16 @@ fn hull_area(letter: &GlyphSolid) -> f32 {
     0.5 * doubled
 }
 
-// Returns the body count and the mean microseconds per fixed step.
-fn time_word(letters: &[GlyphSolid]) -> (usize, f64) {
+fn time_word(letters: &[GlyphSolid]) -> Result<(usize, f64)> {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
-    // Along -z, so the spheres land on the letters' front faces.
-    world.push_field(Box::new(Gravity::new(Vec4::new(0.0, 0.0, -9.8, 0.0))));
+    world.gravity = Some(Vec4::new(0.0, 0.0, -9.8, 0.0));
 
     for letter in letters {
         for (centre, hull) in letter.colliders_4d() {
-            world.push_body(RigidBody::fixed(centre, hull, 1.0, &EuclideanR4));
+            let body = RigidBody::fixed(centre, hull, 1.0, &EuclideanR4)
+                .with_context(|| format!("invalid collider for glyph {:?}", letter.ch()))?;
+            world.push_body(body);
         }
     }
 
@@ -160,7 +162,9 @@ fn time_word(letters: &[GlyphSolid]) -> (usize, f64) {
             0.3 + rng.unit() * 0.3,
             0.0,
         );
-        world.push_body(sphere_body_r4(position, Vec4::ZERO, BALL_RADIUS, 1.0));
+        let body = sphere_body_r4(position, Vec4::ZERO, BALL_RADIUS, 1.0)
+            .context("invalid sphere body")?;
+        world.push_body(body);
     }
 
     let dt = 1.0 / FIXED_HZ;
@@ -172,5 +176,5 @@ fn time_word(letters: &[GlyphSolid]) -> (usize, f64) {
         world.step(dt);
     }
     let micros = started.elapsed().as_secs_f64() * 1.0e6 / TIMED_STEPS as f64;
-    (world.bodies.iter().count(), micros)
+    Ok((world.bodies.iter().count(), micros))
 }

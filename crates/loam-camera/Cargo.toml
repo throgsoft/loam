@@ -14,3 +14,6 @@ categories = ["game-development", "graphics"]
 glam.workspace = true
 loam-input = { path = "../loam-input", version = "0.1.0" }
 loam-math  = { path = "../loam-math",  version = "0.1.0" }
+
+[lints]
+workspace = true
