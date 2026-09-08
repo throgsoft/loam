@@ -7,8 +7,6 @@ use loam_egui::{
     },
     media::add_button,
 };
-use loam_render::raymarch::RaymarchShape;
-use loam_shape::polytope::Polytope4;
 
 use crate::catalog::{render_shape_catalog_menu, ShapeEntry};
 use crate::consts::{CARD_ITEM_SPACING_X, CONTROL_H, CONTROL_W, MAX_ROW_LEN, SHAPE_CARD_WIDTH};
@@ -17,19 +15,6 @@ use crate::state::Demo;
 impl Demo {
     pub(crate) fn render_shapes_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        let has_heavy_sdf = self.surface_mode.uses_sdf_for_polychora()
-            && self.row.iter().any(|e| {
-                matches!(
-                    e.shape,
-                    RaymarchShape::Polytope(Polytope4::Cell120 | Polytope4::Cell600)
-                )
-            });
-        if has_heavy_sdf {
-            ui.colored_label(
-                egui::Color32::from_rgb(242, 130, 70),
-                "120/600-cell SDFs are heavy; expect <60 fps. Try `surface raster`.",
-            );
-        }
         let mut row_changed = false;
 
         let mut remove_idx: Option<usize> = None;

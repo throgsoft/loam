@@ -1,6 +1,4 @@
-//! Verified on Chrome and Firefox (desktop). The hard requirements are WebGPU
-//! (`navigator.gpu`), `OffscreenCanvas` + `transferControlToOffscreen`, and
-//! ES-module workers. Safari is unverified.
+//! Requires WebGPU, transferable OffscreenCanvas, and module workers.
 
 pub mod host_action;
 pub mod input_queue;
@@ -13,7 +11,7 @@ pub mod worker_ui;
 
 pub use main_launcher::launch_on_click;
 
-pub use launch::{is_manual_mode, js_heap_sampler, wait_for_launch};
+pub use launch::{is_manual_mode, js_heap_sampler};
 
 pub fn is_worker_context() -> bool {
     use wasm_bindgen::JsCast;

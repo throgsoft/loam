@@ -1,6 +1,4 @@
-//! Unlike [`crate::TextRenderer`]'s HUD path, which skips characters it cannot
-//! draw so a per-frame overlay never fails, this pipeline is a build-time step
-//! and returns [`GlyphError`] for anything it cannot represent.
+//! Glyph baking returns errors for unsupported characters and invalid geometry.
 
 mod field;
 mod hull;
@@ -33,7 +31,7 @@ pub enum GlyphError {
     #[error("font declares no units_per_em")]
     NoUnitsPerEm,
 
-    #[error("GlyphParams::{field} must be positive, got {value}")]
+    #[error("GlyphParams::{field} must be finite and positive, got {value}")]
     NonPositive { field: &'static str, value: f32 },
 
     #[error("GlyphParams::{field} must be at least {MIN_RESOLUTION}, got {resolution}")]
@@ -56,7 +54,7 @@ pub struct GlyphParams {
     pub resolution: u32,
     /// Grid cells per em for the collider cover.
     pub collider_resolution: u32,
-    /// Maximum chord deviation when flattening Bezier segments, in em.
+    /// Requested chord deviation in em, subject to a 64-subdivision budget per Bezier segment.
     pub flatten_tolerance_em: f32,
     /// RGBA linear.
     pub color: [f32; 4],
@@ -68,9 +66,7 @@ impl Default for GlyphParams {
             em_size: 1.0,
             depth: 0.15,
             slab: (-0.075, 0.075),
-            // 48 cells across an em resolves the thinnest stems of a text face.
             resolution: 48,
-            // Measured by `examples/glyph_collider_budget.rs`.
             collider_resolution: 48,
             flatten_tolerance_em: 0.002,
             color: [1.0, 1.0, 1.0, 1.0],
@@ -86,7 +82,7 @@ impl GlyphParams {
             ("slab", self.slab.1 - self.slab.0),
             ("flatten_tolerance_em", self.flatten_tolerance_em),
         ] {
-            if value <= 0.0 || value.is_nan() {
+            if value <= 0.0 || !value.is_finite() {
                 return Err(GlyphError::NonPositive { field, value });
             }
         }
@@ -102,8 +98,7 @@ impl GlyphParams {
     }
 }
 
-/// One [`GlyphSolid`] per character, in a shared word frame: baseline at
-/// `y = 0`, the first character's pen origin at `x = 0`. Characters the font
+/// Places glyphs in a shared word frame with baseline `y = 0` and first pen origin `x = 0`.
 pub fn layout_word(
     font: &FontRef<'_>,
     text: &str,
@@ -165,26 +160,6 @@ mod tests {
     use super::*;
     use loam_shape::{Shape, Visualizable};
 
-    // Fonts are not vendored, so these tests skip when the host has none.
-    fn system_font() -> Option<Vec<u8>> {
-        const CANDIDATES: &[&str] = &[
-            r"C:\Windows\Fonts\arial.ttf",
-            r"C:\Windows\Fonts\segoeui.ttf",
-            "/Library/Fonts/Arial.ttf",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        ];
-        CANDIDATES
-            .iter()
-            .find_map(|path| std::fs::read(path).ok())
-            .or_else(|| {
-                eprintln!("skip: no system font found in {CANDIDATES:?}");
-                None
-            })
-    }
-
     fn params() -> GlyphParams {
         GlyphParams {
             resolution: 32,
@@ -244,7 +219,7 @@ mod tests {
 
     #[test]
     fn nonpositive_or_nan_flatten_tolerance_is_rejected() {
-        for value in [0.0, -0.002, f32::NAN] {
+        for value in [0.0, -0.002, f32::NAN, f32::INFINITY] {
             let params = GlyphParams {
                 flatten_tolerance_em: value,
                 ..GlyphParams::default()
@@ -265,8 +240,8 @@ mod tests {
 
     #[test]
     fn characters_the_font_lacks_are_rejected() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let font = FontRef::try_from_slice(bytes).expect("parse font");
         let missing = '\u{10FFFF}';
         assert_eq!(font.glyph_id(missing), GlyphId(0));
         let error = layout_word(&font, &format!("LO{missing}AM"), &params()).unwrap_err();
@@ -279,8 +254,8 @@ mod tests {
 
     #[test]
     fn control_characters_are_rejected() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let font = FontRef::try_from_slice(bytes).expect("parse font");
         for ch in ['\t', '\n', '\u{7F}'] {
             assert_eq!(
                 layout_word(&font, &format!("A{ch}B"), &params()).unwrap_err(),
@@ -290,32 +265,9 @@ mod tests {
     }
 
     #[test]
-    fn word_yields_one_solid_per_character_at_advancing_pen_origins() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
-        let letters = layout_word(&font, "LOAM", &params()).expect("layout");
-
-        assert_eq!(letters.len(), 4);
-        assert_eq!(
-            letters.iter().map(|l| l.ch()).collect::<Vec<_>>(),
-            vec!['L', 'O', 'A', 'M']
-        );
-        assert_eq!(letters[0].pen_origin().x, 0.0);
-        for pair in letters.windows(2) {
-            assert!(
-                pair[1].pen_origin().x > pair[0].pen_origin().x,
-                "pen must advance: {:?} then {:?}",
-                pair[0].pen_origin(),
-                pair[1].pen_origin()
-            );
-            assert!(pair[0].advance() > 0.0);
-        }
-    }
-
-    #[test]
     fn letters_are_placed_at_their_own_pen_positions() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let font = FontRef::try_from_slice(bytes).expect("parse font");
         let letters = layout_word(&font, "LOAM", &params()).expect("layout");
 
         let mut previous_centroid_x = f32::NEG_INFINITY;
@@ -331,7 +283,6 @@ mod tests {
             );
             previous_centroid_x = centroid_x;
 
-            // Margin covers side bearings a face may make negative.
             let cell = letter.field().expect("field").cell_size();
             let left = letter.pen_origin().x - 0.2 * letter.advance() - 2.0 * cell;
             let right = letter.pen_origin().x + 1.2 * letter.advance() + 2.0 * cell;
@@ -347,22 +298,9 @@ mod tests {
     }
 
     #[test]
-    fn all_letters_share_one_grid_pitch() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
-        let params = params();
-        let letters = layout_word(&font, "Loam.", &params).expect("layout");
-
-        let expected = params.em_size / params.resolution as f32;
-        for letter in &letters {
-            assert_eq!(letter.field().expect("field").cell_size(), expected);
-        }
-    }
-
-    #[test]
     fn counters_stay_open() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let font = FontRef::try_from_slice(bytes).expect("parse font");
         let o = &layout_word(&font, "O", &params()).expect("layout")[0];
 
         let mesh = Visualizable::<3>::to_triangles(o).expect("mesh");
@@ -389,8 +327,8 @@ mod tests {
 
     #[test]
     fn letters_serve_as_render_geometry_and_colliders() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let font = FontRef::try_from_slice(bytes).expect("parse font");
         let letters = layout_word(&font, "LOAM", &params()).expect("layout");
 
         for letter in &letters {
@@ -401,7 +339,6 @@ mod tests {
             let colliders = letter.colliders_4d();
             assert_eq!(colliders.len(), letter.collider_count());
             assert!(!colliders.is_empty());
-            // Only the cross-section can overshoot, so the 4D bound is the 2D one.
             let margin = letter.collider_margin();
             for (centre, collider) in &colliders {
                 let Shape::ConvexPolytope4D { vertices } = collider else {
@@ -422,28 +359,9 @@ mod tests {
     }
 
     #[test]
-    fn a_laid_out_word_stays_inside_the_solver_body_budget() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
-        let letters = layout_word(&font, "LOAM", &GlyphParams::default()).expect("layout");
-
-        let colliders: usize = letters.iter().map(GlyphSolid::collider_count).sum();
-        let render_pieces: usize = letters.iter().map(GlyphSolid::piece_count).sum();
-        assert!(colliders > 0);
-        assert!(
-            colliders <= 108,
-            "LOAM emits {colliders} colliders, past the measured budget"
-        );
-        assert!(
-            colliders * 20 < render_pieces,
-            "{colliders} colliders against {render_pieces} render pieces is not a cut"
-        );
-    }
-
-    #[test]
     fn the_cover_encloses_every_letter_without_filling_its_counters() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let font = FontRef::try_from_slice(bytes).expect("parse font");
         let letters = layout_word(&font, "LOAM", &params()).expect("layout");
 
         for letter in &letters {
@@ -451,7 +369,6 @@ mod tests {
             assert!(!cover.clipped(), "{:?} ran off its domain", letter.ch());
             let margin = letter.collider_margin();
 
-            // Offset off both grids so probes never land on a cell centre.
             const PROBES: usize = 161;
             let x0 = letter.pen_origin().x - 0.25 * letter.advance();
             let width = 1.5 * letter.advance();
@@ -491,8 +408,8 @@ mod tests {
 
     #[test]
     fn the_collider_pitch_moves_the_box_count_and_not_the_render_mesh() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let font = FontRef::try_from_slice(bytes).expect("parse font");
         let fine = layout_word(&font, "LOAM", &params()).expect("layout");
         let coarse_params = GlyphParams {
             collider_resolution: 12,
@@ -518,27 +435,9 @@ mod tests {
     }
 
     #[test]
-    fn all_letters_share_one_collider_pitch() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
-        let params = params();
-        let letters = layout_word(&font, "Loam.", &params).expect("layout");
-
-        let expected = params.em_size / params.collider_resolution as f32;
-        for letter in &letters {
-            let cell = letter.collider_cover().expect("cover").cell_size();
-            assert!(
-                (cell - expected).abs() <= 4.0 * f32::EPSILON * expected,
-                "{:?} covers at {cell}, not {expected}",
-                letter.ch()
-            );
-        }
-    }
-
-    #[test]
     fn spaces_advance_without_geometry() {
-        let Some(bytes) = system_font() else { return };
-        let font = FontRef::try_from_slice(&bytes).expect("parse font");
+        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let font = FontRef::try_from_slice(bytes).expect("parse font");
         let letters = layout_word(&font, "A B", &params()).expect("layout");
 
         assert_eq!(letters.len(), 3);

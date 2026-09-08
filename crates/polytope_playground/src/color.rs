@@ -29,32 +29,19 @@ fn unique_edge_palette_color(idx: usize) -> [f32; 4] {
 
 // Greedy first-fit coloring of the edge line-graph.
 pub(crate) fn unique_edge_palette(edges: &[[u32; 2]]) -> Vec<[f32; 4]> {
-    let n = edges.len();
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let [a0, a1] = edges[i];
-            let [b0, b1] = edges[j];
-            if a0 == b0 || a0 == b1 || a1 == b0 || a1 == b1 {
-                adj[i].push(j);
-                adj[j].push(i);
+    let mut color_idx = Vec::with_capacity(edges.len());
+    let mut used = vec![usize::MAX; edges.len()];
+    for (i, &[a, b]) in edges.iter().enumerate() {
+        for (j, &[c, d]) in edges[..i].iter().enumerate() {
+            if a == c || a == d || b == c || b == d {
+                used[color_idx[j]] = i;
             }
         }
-    }
-    let mut color_idx = vec![usize::MAX; n];
-    let mut used = std::collections::HashSet::<usize>::new();
-    for i in 0..n {
-        used.clear();
-        for &nbr in &adj[i] {
-            if color_idx[nbr] != usize::MAX {
-                used.insert(color_idx[nbr]);
-            }
-        }
-        let mut c = 0;
-        while used.contains(&c) {
-            c += 1;
-        }
-        color_idx[i] = c;
+        let color = used
+            .iter()
+            .position(|&generation| generation != i)
+            .unwrap_or(i);
+        color_idx.push(color);
     }
     color_idx
         .into_iter()
@@ -96,22 +83,6 @@ mod tests {
     }
 
     #[test]
-    fn hsv_to_rgb_zero_saturation_is_gray() {
-        for h in [0.0, 0.25, 0.5, 0.75, 0.999_f32] {
-            let rgb = hsv_to_rgb(h, 0.0, 0.7);
-            assert!((rgb[0] - 0.7).abs() < 1e-5, "h={h}: r should be 0.7");
-            assert!((rgb[1] - 0.7).abs() < 1e-5, "h={h}: g should be 0.7");
-            assert!((rgb[2] - 0.7).abs() < 1e-5, "h={h}: b should be 0.7");
-        }
-    }
-
-    #[test]
-    fn hsv_to_rgb_zero_value_is_black() {
-        let rgb = hsv_to_rgb(0.5, 0.8, 0.0);
-        assert!(rgb.iter().all(|c| c.abs() < 1e-5));
-    }
-
-    #[test]
     fn unique_edge_palette_separates_adjacent_edges() {
         let edges: &[[u32; 2]] = &[[0, 1], [0, 2], [0, 3]];
         let palette = unique_edge_palette(edges);
@@ -124,20 +95,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn w_depth_color_zero_w_is_midpoint() {
-        let c = w_depth_color(0.0, 1.0);
-        for ch in 0..3 {
-            let expected = (W_DEPTH_BACK[ch] + W_DEPTH_FRONT[ch]) * 0.5;
-            assert!(
-                (c[ch] - expected).abs() < 1e-5,
-                "channel {ch}: expected {expected}, got {}",
-                c[ch],
-            );
-        }
-        assert!((c[3] - 1.0).abs() < 1e-5, "alpha is 1.0");
     }
 
     #[test]

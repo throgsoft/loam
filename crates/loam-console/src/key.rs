@@ -1,7 +1,6 @@
 //! A frontend translates [`Key`] at its input boundary.
 
-/// Declaration order is [`Key::ALL`] order, `Ord` order and bind firing order.
-#[repr(u8)]
+/// Declaration order controls bind firing order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {
     Escape,
@@ -75,93 +74,4 @@ pub enum Key {
     F10,
     F11,
     F12,
-}
-
-impl Key {
-    /// `ALL[i] as usize == i`.
-    pub const ALL: &'static [Key] = &[
-        Key::Escape,
-        Key::Tab,
-        Key::Backspace,
-        Key::Enter,
-        Key::Space,
-        Key::Delete,
-        Key::ArrowUp,
-        Key::ArrowDown,
-        Key::ArrowLeft,
-        Key::ArrowRight,
-        Key::Home,
-        Key::End,
-        Key::PageUp,
-        Key::PageDown,
-        Key::Backtick,
-        Key::Minus,
-        Key::Equals,
-        Key::Num0,
-        Key::Num1,
-        Key::Num2,
-        Key::Num3,
-        Key::Num4,
-        Key::Num5,
-        Key::Num6,
-        Key::Num7,
-        Key::Num8,
-        Key::Num9,
-        Key::A,
-        Key::B,
-        Key::C,
-        Key::D,
-        Key::E,
-        Key::F,
-        Key::G,
-        Key::H,
-        Key::I,
-        Key::J,
-        Key::K,
-        Key::L,
-        Key::M,
-        Key::N,
-        Key::O,
-        Key::P,
-        Key::Q,
-        Key::R,
-        Key::S,
-        Key::T,
-        Key::U,
-        Key::V,
-        Key::W,
-        Key::X,
-        Key::Y,
-        Key::Z,
-        Key::F1,
-        Key::F2,
-        Key::F3,
-        Key::F4,
-        Key::F5,
-        Key::F6,
-        Key::F7,
-        Key::F8,
-        Key::F9,
-        Key::F10,
-        Key::F11,
-        Key::F12,
-    ];
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_is_the_dense_discriminant_sequence() {
-        for (index, key) in Key::ALL.iter().enumerate() {
-            assert_eq!(*key as usize, index, "ALL[{index}] is out of order");
-        }
-        let last = *Key::ALL.last().expect("ALL is non-empty");
-        assert_eq!(
-            Key::ALL.len(),
-            last as usize + 1,
-            "ALL skips a variant before {last:?}"
-        );
-    }
 }

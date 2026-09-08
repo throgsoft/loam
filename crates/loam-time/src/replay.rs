@@ -6,8 +6,7 @@ use thiserror::Error;
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-/// FNV-1a 64 over little-endian bytes with no framing; a sampler that
-/// changes what it writes owes a [`TAPE_FORMAT_VERSION`] bump.
+/// FNV-1a over unframed little-endian words; callers own the sampled state schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StateHash(u64);
 
@@ -43,12 +42,11 @@ impl StateHash {
         self.write_bytes(&value.to_le_bytes());
     }
 
-    /// Raw bits: two states one ulp apart are two states.
+    /// Preserves signed zero and NaN payload bits.
     pub fn write_f32(&mut self, value: f32) {
         self.write_u32(value.to_bits());
     }
 
-    /// Does not end the sequence.
     pub fn finish(&self) -> u64 {
         self.0
     }
@@ -56,10 +54,10 @@ impl StateHash {
 
 pub const TAPE_MAGIC: [u8; 8] = *b"LOAMTAPE";
 
-/// Bump when an existing tape would be misread.
+/// Version of the tape container, independent of the game's input and state schemas.
 pub const TAPE_FORMAT_VERSION: u32 = 1;
 
-// magic + version + hz + seed + words_per_tick + ticks + checkpoint count.
+// Tape v1 header: magic, version, hz, seed, words_per_tick, ticks, checkpoint count.
 const HEADER_LEN: usize = 8 + 4 + 4 + 8 + 4 + 8 + 4;
 const CHECKPOINT_LEN: usize = 16;
 
@@ -218,12 +216,21 @@ impl Tape {
         let word_count = (input_bytes / 4) as usize;
         let mut inputs = Vec::with_capacity(word_count);
         for _ in 0..word_count {
-            inputs.push(reader.u32().expect("length checked above"));
+            inputs.push(reader.u32().ok_or(TapeError::LengthMismatch {
+                expected,
+                found: bytes.len(),
+            })?);
         }
         let mut checkpoints = Vec::with_capacity(checkpoint_count as usize);
         for index in 0..checkpoint_count as usize {
-            let tick = reader.u64().expect("length checked above");
-            let state_hash = reader.u64().expect("length checked above");
+            let tick = reader.u64().ok_or(TapeError::LengthMismatch {
+                expected,
+                found: bytes.len(),
+            })?;
+            let state_hash = reader.u64().ok_or(TapeError::LengthMismatch {
+                expected,
+                found: bytes.len(),
+            })?;
             if let Some(last) = checkpoints.last() {
                 let Checkpoint { tick: prev, .. } = *last;
                 if tick <= prev {
@@ -261,19 +268,17 @@ impl fmt::Display for Tape {
 
 struct Reader<'a> {
     bytes: &'a [u8],
-    at: usize,
 }
 
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, at: 0 }
+        Self { bytes }
     }
 
     fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
-        let end = self.at.checked_add(N)?;
-        let slice = self.bytes.get(self.at..end)?;
-        self.at = end;
-        Some(slice.try_into().expect("slice is N bytes"))
+        let (value, remaining) = self.bytes.split_first_chunk::<N>()?;
+        self.bytes = remaining;
+        Some(*value)
     }
 
     fn u32(&mut self) -> Option<u32> {
@@ -311,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_is_sensitive_to_order_and_to_one_flipped_bit() {
+    fn hash_detects_word_order_and_bit_changes() {
         let mut ab = StateHash::new();
         ab.write_u32(1);
         ab.write_u32(2);
@@ -328,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_is_a_function_of_the_byte_stream_and_not_of_the_word_widths() {
+    fn hash_uses_little_endian_words() {
         let mut split = StateHash::new();
         split.write_u32(0);
         split.write_u32(1);
@@ -338,39 +343,25 @@ mod tests {
     }
 
     #[test]
-    fn hash_separates_signed_zeros_and_every_nan_it_is_given() {
-        let mut positive = StateHash::new();
-        positive.write_f32(0.0);
-        let mut negative = StateHash::new();
-        negative.write_f32(-0.0);
-        assert_ne!(
-            positive.finish(),
-            negative.finish(),
-            "f32 hashing is over bits, and 0.0 == -0.0 is a value comparison",
-        );
-
-        let mut nan = StateHash::new();
-        nan.write_f32(f32::NAN);
-        assert_eq!(
-            nan.finish(),
-            {
-                let mut again = StateHash::new();
-                again.write_f32(f32::NAN);
-                again.finish()
-            },
-            "one NaN bit pattern must hash to one value",
-        );
+    fn hash_preserves_signed_zero_and_nan_payloads() {
+        for (a, b) in [(0x0000_0000, 0x8000_0000), (0x7fc0_0001, 0x7fc0_0002)] {
+            let mut first = StateHash::new();
+            first.write_f32(f32::from_bits(a));
+            let mut second = StateHash::new();
+            second.write_f32(f32::from_bits(b));
+            assert_ne!(first.finish(), second.finish());
+        }
     }
 
     #[test]
-    fn encode_decode_round_trips_every_field() {
+    fn encoded_tape_preserves_fields() {
         let tape = recorded();
         let decoded = Tape::decode(&tape.encode()).expect("own encoding decodes");
         assert_eq!(decoded, tape);
     }
 
     #[test]
-    fn input_is_addressed_by_tick_and_ends_at_the_tick_count() {
+    fn input_ends_at_tick_count() {
         let tape = recorded();
         assert_eq!(tape.ticks(), 8);
         assert_eq!(tape.input(0), Some(&[0u32, 0, 0.0f32.to_bits()][..]));
@@ -379,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tape_with_no_input_still_carries_ticks_and_checkpoints() {
+    fn zero_width_tape_preserves_ticks() {
         let mut tape = Tape::new(120, 7, 0);
         for _ in 0..4 {
             tape.push_tick(&[]);
@@ -392,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn a_future_version_is_rejected_rather_than_read() {
+    fn future_container_version_is_rejected() {
         let mut bytes = recorded().encode();
         let bumped = TAPE_FORMAT_VERSION + 1;
         bytes[8..12].copy_from_slice(&bumped.to_le_bytes());
@@ -403,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn foreign_bytes_are_rejected_before_any_field_is_believed() {
+    fn bad_magic_and_empty_tapes_are_rejected() {
         let mut bytes = recorded().encode();
         bytes[0] = b'X';
         let mut found = TAPE_MAGIC;
@@ -416,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn a_payload_that_does_not_match_the_header_is_rejected_either_way() {
+    fn truncated_and_padded_payloads_are_rejected() {
         let full = recorded().encode();
         let expected = full.len() as u64;
         assert_eq!(
@@ -440,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn a_header_claiming_more_payload_than_memory_is_rejected_without_wrapping() {
+    fn oversized_input_width_is_rejected() {
         let mut bytes = recorded().encode();
         bytes[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(matches!(
@@ -450,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn a_header_declaring_more_ticks_than_a_byte_count_can_express_is_rejected() {
+    fn overflowing_tick_count_is_rejected() {
         let mut bytes = recorded().encode();
         bytes[28..36].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(matches!(
@@ -471,14 +462,14 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "tape frame is 3 words")]
-    fn a_short_frame_panics_rather_than_shifting_later_ticks() {
+    fn short_input_cannot_shift_tick_boundaries() {
         let mut tape = Tape::new(60, 0, 3);
         tape.push_tick(&[1, 2]);
     }
 
     #[test]
     #[should_panic(expected = "checkpoint ticks must ascend")]
-    fn an_out_of_order_checkpoint_panics_at_the_writer() {
+    fn writer_rejects_duplicate_checkpoint_ticks() {
         let mut tape = Tape::new(60, 0, 0);
         tape.checkpoint(5, 1);
         tape.checkpoint(5, 2);

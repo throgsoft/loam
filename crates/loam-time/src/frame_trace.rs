@@ -1,6 +1,4 @@
-//! Recording is thread-local, so [`take_worker_trace`] and
-//! [`merge_worker_trace`] move a worker's sections onto the frame's thread;
-//! [`crate::jobs::JobPool::run_stage`] calls them in ascending partition index.
+//! Frame histories belong to the recording thread.
 
 #[cfg(feature = "frame-trace")]
 use std::cell::RefCell;
@@ -26,12 +24,12 @@ pub struct FrameTrace {
 }
 
 impl FrameTrace {
+    /// Sum of section durations, including nested scopes and synthetic sections.
     pub fn total(&self) -> Duration {
         self.sections.iter().map(|s| s.elapsed).sum()
     }
 }
 
-/// Two seconds at 60 fps.
 pub const DEFAULT_CAPACITY: usize = 120;
 
 #[cfg(feature = "frame-trace")]
@@ -64,18 +62,18 @@ thread_local! {
     static HEAP_SAMPLER: std::cell::Cell<Option<HeapSampler>> = const { std::cell::Cell::new(None) };
     static MAX_EVER: RefCell<std::collections::HashMap<&'static str, Duration>> =
         RefCell::new(std::collections::HashMap::new());
-    // 250 ms is a user-perceptible freeze.
     static SPIKE_THRESHOLD: std::cell::Cell<Duration> =
         const { std::cell::Cell::new(Duration::from_millis(250)) };
     static FRAME_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Not safe to hold across `await`: the tracer is thread-local.
+/// Keep the scope on its recording thread until drop.
 #[cfg(feature = "frame-trace")]
 #[must_use = "Scope records on drop; binding it to `_` would record immediately"]
 pub struct Scope {
     name: &'static str,
     start: Instant,
+    recording_thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 #[cfg(feature = "frame-trace")]
@@ -97,6 +95,7 @@ pub fn scope(name: &'static str) -> Scope {
     Scope {
         name,
         start: Instant::now(),
+        recording_thread: std::marker::PhantomData,
     }
 }
 
@@ -163,7 +162,7 @@ pub fn end_frame() {
         }
     }
 
-    // Borrows must not nest: a re-entrant tracing subscriber would deadlock.
+    // Release tracer borrows before invoking a tracing subscriber.
     let mut over_threshold: Vec<(&'static str, Duration)> = Vec::new();
     MAX_EVER.with(|m| {
         let mut m = m.borrow_mut();
@@ -178,18 +177,25 @@ pub fn end_frame() {
         }
     });
 
-    TRACER.with(|t| {
+    let mut reusable = TRACER.with(|t| {
         let mut t = t.borrow_mut();
-        let cap = t.capacity;
-        if t.history.len() >= cap {
-            t.history.pop_front();
-        }
+        let reusable = if t.history.len() >= t.capacity {
+            t.history
+                .pop_front()
+                .map(|frame| frame.sections)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         t.history.push_back(FrameTrace {
             sections,
             heap_delta_bytes,
             allocs: alloc_delta,
         });
+        reusable
     });
+    reusable.clear();
+    CURRENT_SECTIONS.with(|current| *current.borrow_mut() = reusable);
 
     for (name, elapsed) in over_threshold {
         let heap_suffix = heap_delta_bytes
@@ -228,7 +234,15 @@ pub fn history() -> Vec<FrameTrace> {
     TRACER.with(|t| t.borrow().history.iter().cloned().collect())
 }
 
-/// `f` must not call [`end_frame`] or [`set_capacity`]; the borrow is held.
+#[cfg(feature = "frame-trace")]
+pub fn clear_history() {
+    TRACER.with(|t| t.borrow_mut().history.clear());
+}
+
+#[cfg(not(feature = "frame-trace"))]
+pub fn clear_history() {}
+
+/// `f` must not call [`end_frame`], [`set_capacity`], or [`clear_history`]; the borrow is held.
 #[cfg(feature = "frame-trace")]
 pub fn with_history<R>(f: impl FnOnce(&std::collections::VecDeque<FrameTrace>) -> R) -> R {
     TRACER.with(|t| f(&t.borrow().history))
@@ -267,7 +281,7 @@ pub fn set_spike_threshold(threshold: Duration) {
     SPIKE_THRESHOLD.with(|c| c.set(threshold));
 }
 
-/// A late sample attributes to whatever frame is current.
+/// Attributes the sample to the current frame, even if it arrives late.
 #[cfg(feature = "frame-trace")]
 pub fn record_external(name: &'static str, elapsed: Duration) {
     CURRENT_SECTIONS.with(|s| {
@@ -279,33 +293,6 @@ pub fn record_external(name: &'static str, elapsed: Duration) {
 
 #[cfg(not(feature = "frame-trace"))]
 pub fn record_external(_name: &'static str, _elapsed: Duration) {}
-
-#[cfg(feature = "frame-trace")]
-#[derive(Debug, Default)]
-pub struct WorkerTrace(Vec<Section>);
-
-/// On the frame's own thread this steals the frame's sections.
-#[cfg(feature = "frame-trace")]
-pub fn take_worker_trace() -> WorkerTrace {
-    CURRENT_SECTIONS.with(|s| WorkerTrace(std::mem::take(&mut *s.borrow_mut())))
-}
-
-#[cfg(feature = "frame-trace")]
-pub fn merge_worker_trace(trace: WorkerTrace) {
-    CURRENT_SECTIONS.with(|s| s.borrow_mut().extend(trace.0));
-}
-
-#[cfg(not(feature = "frame-trace"))]
-#[derive(Debug, Default)]
-pub struct WorkerTrace;
-
-#[cfg(not(feature = "frame-trace"))]
-pub fn take_worker_trace() -> WorkerTrace {
-    WorkerTrace
-}
-
-#[cfg(not(feature = "frame-trace"))]
-pub fn merge_worker_trace(_trace: WorkerTrace) {}
 
 #[cfg(not(feature = "frame-trace"))]
 pub fn max_ever(_name: &'static str) -> Duration {
@@ -337,20 +324,30 @@ pub struct SectionStats {
     pub max: Duration,
 }
 
+/// Nearest-rank percentile of ascending samples; empty input returns zero.
+pub fn percentile(sorted: &[Duration], percent: u8) -> Duration {
+    if sorted.is_empty() {
+        return Duration::ZERO;
+    }
+    let rank = (sorted.len() * usize::from(percent)).div_ceil(100);
+    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+}
+
 /// Keyed by name, in descending p95 order.
 #[cfg(feature = "frame-trace")]
 pub fn aggregate() -> Vec<SectionStats> {
     use std::collections::HashMap;
-    let frames = history();
     let mut buckets: HashMap<&'static str, Vec<Duration>> = HashMap::new();
-    for frame in &frames {
-        for section in &frame.sections {
-            buckets
-                .entry(section.name)
-                .or_default()
-                .push(section.elapsed);
+    with_history(|frames| {
+        for frame in frames {
+            for section in &frame.sections {
+                buckets
+                    .entry(section.name)
+                    .or_default()
+                    .push(section.elapsed);
+            }
         }
-    }
+    });
 
     let mut stats: Vec<SectionStats> = buckets
         .into_iter()
@@ -358,14 +355,13 @@ pub fn aggregate() -> Vec<SectionStats> {
             samples.sort();
             let n = samples.len();
             let mean = samples.iter().sum::<Duration>() / (n as u32).max(1);
-            let pick = |q: f32| samples[((n as f32 * q) as usize).min(n - 1)];
             SectionStats {
                 name,
                 samples: n,
                 mean,
-                p50: pick(0.50),
-                p95: pick(0.95),
-                p99: pick(0.99),
+                p50: percentile(&samples, 50),
+                p95: percentile(&samples, 95),
+                p99: percentile(&samples, 99),
                 max: *samples.last().unwrap_or(&Duration::ZERO),
             }
         })
@@ -421,6 +417,18 @@ mod tests {
     use std::thread::sleep;
 
     #[test]
+    fn clearing_history_preserves_retention_capacity() {
+        set_capacity(2);
+        end_frame();
+        clear_history();
+        assert!(history().is_empty());
+        for _ in 0..3 {
+            end_frame();
+        }
+        assert_eq!(history().len(), 2);
+    }
+
+    #[test]
     fn scope_records_elapsed_on_drop() {
         end_frame();
 
@@ -444,21 +452,8 @@ mod tests {
     }
 
     #[test]
-    fn end_frame_caps_history_to_capacity() {
-        set_capacity(3);
-        for _ in 0..10 {
-            {
-                let _s = scope("cap-test");
-            }
-            end_frame();
-        }
-        assert!(history().len() <= 3, "history should be capped");
-    }
-
-    #[test]
     fn heap_sampler_populates_delta_on_completed_frame() {
         use std::sync::atomic::{AtomicU64, Ordering};
-        // begin and end each sample once, so the delta is one increment.
         static FAKE_HEAP: AtomicU64 = AtomicU64::new(1_000_000);
         fn fake_sampler() -> Option<u64> {
             Some(FAKE_HEAP.fetch_add(4096, Ordering::SeqCst) + 4096)
@@ -476,64 +471,23 @@ mod tests {
     }
 
     #[test]
-    fn merged_worker_traces_land_in_merge_order_and_the_take_empties_the_source() {
+    fn aggregate_uses_retained_frames_and_sorts_percentiles() {
+        set_capacity(2);
+        record_external("discarded", Duration::from_secs(10));
         end_frame();
-
-        {
-            let _s = scope("recorded-first");
-        }
-        let first = take_worker_trace();
-        assert_eq!(first.0.len(), 1, "the take should carry the one section");
-        assert!(
-            take_worker_trace().0.is_empty(),
-            "the take must leave the recording thread's buffer empty"
-        );
-
-        {
-            let _s = scope("recorded-second");
-        }
-        let second = take_worker_trace();
-
-        {
-            let _s = scope("local");
-        }
-        merge_worker_trace(second);
-        merge_worker_trace(first);
-        end_frame();
-
-        let names: Vec<&str> = last_frame()
-            .expect("end_frame should produce a frame")
-            .sections
-            .iter()
-            .map(|s| s.name)
-            .filter(|name| !matches!(*name, "between-frames" | "idle"))
-            .collect();
-        assert_eq!(names, ["local", "recorded-second", "recorded-first"]);
-    }
-
-    #[test]
-    fn aggregate_sorts_by_p95_descending() {
-        set_capacity(20);
-        for _ in 0..10 {
-            {
-                let _s = scope("slow");
-                sleep(Duration::from_millis(2));
-            }
-            {
-                let _f = scope("fast");
-            }
+        for elapsed in [10, 20] {
+            record_external("slow", Duration::from_millis(elapsed));
+            record_external("fast", Duration::from_millis(1));
             end_frame();
         }
         let stats = aggregate();
-        let slow_idx = stats.iter().position(|s| s.name == "slow");
-        let fast_idx = stats.iter().position(|s| s.name == "fast");
-        assert!(
-            slow_idx.is_some() && fast_idx.is_some(),
-            "both sections present"
-        );
-        assert!(
-            slow_idx.unwrap() < fast_idx.unwrap(),
-            "'slow' should sort before 'fast' by descending p95: {stats:?}"
-        );
+        assert!(!stats.iter().any(|row| row.name == "discarded"));
+        let slow = stats.iter().position(|row| row.name == "slow").unwrap();
+        let fast = stats.iter().position(|row| row.name == "fast").unwrap();
+        assert!(slow < fast);
+        assert_eq!(stats[slow].samples, 2);
+        assert_eq!(stats[slow].mean, Duration::from_millis(15));
+        assert_eq!(stats[slow].p50, Duration::from_millis(10));
+        assert_eq!(stats[slow].p95, Duration::from_millis(20));
     }
 }

@@ -7,12 +7,12 @@ impl SceneRegistry for Playground {
         SceneEntry {
             slug: "rotate",
             label: "Rotate polytopes",
-            build: |ctx| Ok(Box::new(crate::RotateScene::new(ctx)?)),
+            build: |ctx, control| Ok(Box::new(crate::RotateScene::new(ctx, control)?)),
         },
         SceneEntry {
             slug: "toybox",
             label: "Toybox",
-            build: |ctx| Ok(Box::new(crate::toybox::ToyboxScene::new(ctx)?)),
+            build: |ctx, control| Ok(Box::new(crate::toybox::ToyboxScene::new(ctx, control)?)),
         },
     ];
 }

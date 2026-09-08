@@ -1,4 +1,4 @@
-//! `execute_strip` owns its clear, and the kernel discards on a miss and on
+//! `record_strip` owns its clear, and the kernel discards on a miss and on
 //! the floor, so the clear is what stands in for the sky in a comparison grid.
 //! A cell of `Color::BLACK` is the regression this pins.
 
@@ -14,10 +14,8 @@ const SIZE: [u32; 2] = [64, 64];
 
 const CELLS: u32 = 4;
 
-// Slack for the float-to-unorm round trip in the clear.
 const TOLERANCE: u8 = 2;
 
-// Floor only: every ray misses or lands on the half-space, both discard paths.
 const FLOOR_SCENE_WGSL: &str = r#"
 const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
 const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
@@ -93,11 +91,12 @@ fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
     }
     let cells: Vec<(Viewport, f32, BodyUniform)> = Viewport::full(SIZE)
         .split_horizontal(CELLS)
-        .into_iter()
         .map(|vp| (vp, 0.0, BodyUniform::default()))
         .collect();
-    node.execute_strip(&device, &queue, &view, &cells)
+    let mut strip_encoder = device.create_command_encoder(&Default::default());
+    node.record_strip(&device, &queue, &mut strip_encoder, &view, &cells)
         .expect("strip draw");
+    queue.submit(Some(strip_encoder.finish()));
 
     let bytes_per_row = SIZE[0] * 4;
     let readback = device.create_buffer(&BufferDescriptor {

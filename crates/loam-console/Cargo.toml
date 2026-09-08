@@ -10,10 +10,8 @@ description = "Developer console model: command registry, scrollback, tokenizer,
 
 [dependencies]
 anyhow.workspace = true
-
-# `web-sys` (with the `console` feature) backs the optional scrollback echo
-# path (`log echo on`): `web_sys::console::log_1` mirrors lines to the browser
-# DevTools console without routing through `tracing`, which would feed back
-# into `loam_app::log`'s tracing -> scrollback mirror.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-sys = { version = "0.3", features = ["console"] }
+
+[lints]
+workspace = true

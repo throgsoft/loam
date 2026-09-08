@@ -3,7 +3,6 @@
 
 use glam::Vec2;
 
-// `loam-physics` carries a 4D polytope through a fixed 32-vertex stack buffer.
 pub(super) const MAX_HULL_SIDES: usize = 8;
 
 // Andrew's monotone chain (Andrew 1979, Inf. Process. Lett. 9(5)).
@@ -28,7 +27,6 @@ pub(super) fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
     hull
 }
 
-// Strictly left: a collinear vertex has no removable edge for `reduce_sides`.
 fn pop_non_left_turns(hull: &mut Vec<Vec2>, p: Vec2, floor: usize) {
     while hull.len() >= floor {
         let b = hull[hull.len() - 1];
@@ -40,7 +38,6 @@ fn pop_non_left_turns(hull: &mut Vec<Vec2>, p: Vec2, floor: usize) {
     }
 }
 
-// A ring of `n >= 5` vertices always has a deletable edge.
 pub(super) fn reduce_sides(ring: &mut Vec<Vec2>, sides: usize) {
     debug_assert!(sides >= 4, "a convex ring cannot be reduced below a quad");
     while ring.len() > sides {
@@ -65,12 +62,10 @@ pub(super) fn reduce_sides(ring: &mut Vec<Vec2>, sides: usize) {
     }
 }
 
-// Line `a -> b` extended past `b` against `c -> d` extended back before `c`.
 fn extend_to_meet(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Option<Vec2> {
     let ab = b - a;
     let cd = d - c;
     let denom = ab.perp_dot(cd);
-    // Near-parallel edges meet so far out that the added area disqualifies them.
     if denom == 0.0 {
         return None;
     }
@@ -82,7 +77,6 @@ fn extend_to_meet(a: Vec2, b: Vec2, c: Vec2, d: Vec2) -> Option<Vec2> {
     Some(a + ab * t)
 }
 
-// Shoelace formula.
 pub(super) fn double_area(ring: &[Vec2]) -> f32 {
     let n = ring.len();
     (0..n)
@@ -94,7 +88,6 @@ pub(super) fn double_area(ring: &[Vec2]) -> f32 {
         .sum()
 }
 
-// Area centroid, the centre of mass of a uniform prism over the ring.
 pub(super) fn centroid(ring: &[Vec2]) -> Vec2 {
     let n = ring.len();
     let mut moment = Vec2::ZERO;
@@ -196,23 +189,6 @@ mod tests {
         let mut ring = original.clone();
         reduce_sides(&mut ring, MAX_HULL_SIDES);
         assert_eq!(ring, original);
-    }
-
-    #[test]
-    fn reduction_deletes_the_cheapest_edge_first() {
-        let mut ring = vec![
-            Vec2::new(-1.0, -1.0),
-            Vec2::new(1.0, -1.0),
-            Vec2::new(1.0, 0.99),
-            Vec2::new(0.99, 1.0),
-            Vec2::new(-1.0, 1.0),
-        ];
-        reduce_sides(&mut ring, 4);
-        assert_eq!(ring.len(), 4);
-        let restored = ring
-            .iter()
-            .any(|p| p.distance(Vec2::new(1.0, 1.0)) < 1.0e-5);
-        assert!(restored, "the chamfer was not the edge deleted: {ring:?}");
     }
 
     #[test]

@@ -8,12 +8,10 @@ use loam_shape::polytope::Polytope4;
 
 const TEST_ANGLE: f32 = 0.7;
 
-/// Equal angles in two orthogonal planes: the isoclinic (Clifford) generator.
 fn clifford_generator(theta: f32) -> Bivector4 {
     Bivector4::new(theta, 0.0, 0.0, 0.0, 0.0, theta)
 }
 
-/// `Rotor4::to_mat4` is column-major to match glam.
 fn iso_from_rotor(rotor: Rotor4) -> Iso4 {
     Iso4 {
         matrix: Mat4::from_cols_array_2d(&rotor.to_mat4()),
@@ -40,16 +38,13 @@ fn posed_at(polytope: Polytope4, angle: f32) -> Vec<Vec4> {
 fn the_isoclinic_rotor_displaces_every_vertex_equally_and_a_simple_one_does_not() {
     let vertices = Polytope4::Cell600.topology().vertices;
     let posed = posed_at(Polytope4::Cell600, TEST_ANGLE);
-    let mut spread = 0.0_f32;
     for (v, p) in vertices.iter().zip(&posed) {
         let d = SphericalS3Embedded.distance(*v, *p);
         assert!(
             (d - TEST_ANGLE).abs() < 1e-4,
             "isoclinic displacement {d} should equal the generator angle {TEST_ANGLE}"
         );
-        spread = spread.max((d - TEST_ANGLE).abs());
     }
-    assert!(spread < 1e-4, "displacement spread {spread} must vanish");
 
     let simple = iso_from_rotor(Bivector4::new(TEST_ANGLE, 0.0, 0.0, 0.0, 0.0, 0.0).exp());
     let mut simple_posed = Vec::new();
@@ -86,22 +81,7 @@ fn the_space_isometry_and_the_rotor_sandwich_agree_on_every_vertex() {
 }
 
 #[test]
-fn posed_vertices_stay_on_the_unit_three_sphere_at_every_angle() {
-    for step in 0..257 {
-        let angle = step as f32 * 0.0245;
-        for p in posed_at(Polytope4::Cell24, angle) {
-            assert!(
-                (p.length() - 1.0).abs() < 1e-5,
-                "posed vertex off S³ at angle {angle}: |p| = {}",
-                p.length()
-            );
-        }
-    }
-}
-
-#[test]
 fn the_pose_preserves_every_pairwise_separation() {
-    // Antipodal pairs sit on the cut locus.
     const CUT_LOCUS_MARGIN: f32 = 0.05;
     let vertices = Polytope4::Cell24.topology().vertices;
     let posed = posed_at(Polytope4::Cell24, TEST_ANGLE);

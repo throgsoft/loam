@@ -3,7 +3,6 @@
 use glam::Vec4;
 
 pub fn pentatope_vertices(r: f32) -> Vec<Vec4> {
-    // Base circumradius `r·sqrt(15)/4` chosen for equal edges.
     let k = r;
     let base_w = -r * 0.25;
     let base_r = r * (15.0_f32).sqrt() / 4.0;
@@ -65,7 +64,6 @@ pub fn cell24_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-// The alternating group A₄. Result `[i]` is `arr[σ(i)]`.
 fn even_permutations_4<T: Copy>(arr: [T; 4]) -> [[T; 4]; 12] {
     [
         [arr[0], arr[1], arr[2], arr[3]],
@@ -83,12 +81,12 @@ fn even_permutations_4<T: Copy>(arr: [T; 4]) -> [[T; 4]; 12] {
     ]
 }
 
+// Wikipedia, 600-cell.
 /// Vertex set at circumradius 1 (Wikipedia "600-cell").
 pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     let mut v = Vec::with_capacity(120);
 
-    // 8 axial.
     for axis in 0..4 {
         for sign in [r, -r] {
             let mut c = [0.0_f32; 4];
@@ -97,7 +95,6 @@ pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
         }
     }
 
-    // 16 half-tesseract corners.
     let h = r * 0.5;
     for s in 0..16u32 {
         let x = if s & 1 == 1 { -h } else { h };
@@ -107,7 +104,6 @@ pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
         v.push(Vec4::new(x, y, z, w));
     }
 
-    // 96 even permutations of (0, ±r/2, ±rφ/2, ±r/(2φ)).
     let base = [0.0_f32, r * 0.5, r * phi * 0.5, r / (2.0 * phi)];
     for perm in even_permutations_4(base) {
         for sign_mask in 0..8u32 {
@@ -128,6 +124,7 @@ pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
+// Wikipedia, 120-cell.
 /// Vertex set at circumradius `2√2` before rescaling (Wikipedia "120-cell").
 pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
@@ -138,7 +135,6 @@ pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     let scale = r / (2.0 * 2.0_f32.sqrt());
     let mut v = Vec::with_capacity(600);
 
-    // 24 permutations of (0, 0, ±2, ±2).
     for i in 0..4 {
         for j in (i + 1)..4 {
             for si in [2.0_f32, -2.0] {
@@ -152,7 +148,6 @@ pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
         }
     }
 
-    // `special` at one of 4 positions, `common` at the other 3: 4·16 = 64.
     let mut emit_one_special = |special: f32, common: f32| {
         for special_pos in 0..4 {
             for sm in 0..16u32 {
@@ -171,7 +166,6 @@ pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     emit_one_special(phi2, inv_phi);
     emit_one_special(inv_phi2, phi);
 
-    // Even permutations of (0, ±a, ±b, ±c), independent signs: 12·8 = 96.
     let mut emit_even_zero = |a: f32, b: f32, c: f32| {
         let base = [0.0_f32, a, b, c];
         for perm in even_permutations_4(base) {
@@ -197,7 +191,6 @@ pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     emit_even_zero(inv_phi2, 1.0, phi2);
     emit_even_zero(inv_phi, phi, sqrt5);
 
-    // 192 even permutations of (±1/φ, ±1, ±φ, ±2): 12·16 = 192.
     let base7 = [inv_phi, 1.0, phi, 2.0_f32];
     for perm in even_permutations_4(base7) {
         for sm in 0..16u32 {
@@ -215,132 +208,4 @@ pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     }
 
     v
-}
-
-/// `φ² / (2√2) = (3 + √5) / (4√2) ≈ 0.92562`, shared by polar duality.
-pub fn icosian_inradius_unit() -> f32 {
-    let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
-    phi * phi / (2.0 * 2.0_f32.sqrt())
-}
-
-/// `(normals, offset)`: inside iff `dot(n_i, p) <= offset` for all i.
-// BUG: dual-vertex normals are only approximate for the 96 golden-ratio orbits,
-// so the SDF surface is a slightly-truncated 120-cell.
-pub fn cell120_face_planes() -> (Vec<Vec4>, f32) {
-    (cell600_vertices(1.0), icosian_inradius_unit())
-}
-
-/// Same contract as [`cell120_face_planes`], with the roles swapped.
-// BUG: same approximation as [`cell120_face_planes`].
-pub fn cell600_face_planes() -> (Vec<Vec4>, f32) {
-    (cell120_vertices(1.0), icosian_inradius_unit())
-}
-
-/// Exact signed Euclidean distance to a convex polytope of uniform-distance
-/// face hyperplanes (`dot(n_i, x) = inradius`, `n_i` unit), by Wolfe's greedy
-/// hyperplane projection.
-pub fn polytope_sdf_wolfe(p: Vec4, face_normals: &[Vec4], inradius: f32) -> f32 {
-    let mut max_d = f32::NEG_INFINITY;
-    let mut active_idx = [0usize; 4];
-    for (i, n) in face_normals.iter().enumerate() {
-        let d = n.dot(p) - inradius;
-        if d > max_d {
-            max_d = d;
-            active_idx[0] = i;
-        }
-    }
-    if max_d <= 0.0 {
-        return max_d;
-    }
-    let mut active_count = 1usize;
-
-    let mut active = [Vec4::ZERO; 4];
-    active[0] = face_normals[active_idx[0]];
-
-    let tol = 1e-6_f32;
-    let mut q = p - max_d * active[0];
-
-    while active_count < 4 {
-        let mut next_d = tol;
-        let mut next_i = usize::MAX;
-        for (i, n) in face_normals.iter().enumerate() {
-            if active_idx[..active_count].contains(&i) {
-                continue;
-            }
-            let d = n.dot(q) - inradius;
-            if d > next_d {
-                next_d = d;
-                next_i = i;
-            }
-        }
-        if next_i == usize::MAX {
-            return (p - q).length();
-        }
-        active_idx[active_count] = next_i;
-        active[active_count] = face_normals[next_i];
-        active_count += 1;
-        q = project_onto_active_planes(p, &active, active_count, inradius);
-    }
-    (p - q).length()
-}
-
-// Lagrange multipliers: solves `G λ = b` with `G` the Gram matrix.
-fn project_onto_active_planes(p: Vec4, active: &[Vec4; 4], count: usize, inradius: f32) -> Vec4 {
-    let b = [
-        active[0].dot(p) - inradius,
-        active[1].dot(p) - inradius,
-        active[2].dot(p) - inradius,
-        active[3].dot(p) - inradius,
-    ];
-    match count {
-        1 => p - b[0] * active[0],
-        2 => {
-            // 2x2 Gram matrix; unit normals so diagonals = 1.
-            let g01 = active[0].dot(active[1]);
-            let det = 1.0 - g01 * g01;
-            if det.abs() < 1e-9 {
-                return p;
-            }
-            let inv_det = 1.0 / det;
-            let l0 = (b[0] - g01 * b[1]) * inv_det;
-            let l1 = (b[1] - g01 * b[0]) * inv_det;
-            p - l0 * active[0] - l1 * active[1]
-        }
-        3 => {
-            // 3x3 Gram matrix. Symmetric, with unit-normal diagonals.
-            let g01 = active[0].dot(active[1]);
-            let g02 = active[0].dot(active[2]);
-            let g12 = active[1].dot(active[2]);
-            let det = 1.0 + 2.0 * g01 * g02 * g12 - g01 * g01 - g02 * g02 - g12 * g12;
-            if det.abs() < 1e-9 {
-                return p;
-            }
-            let inv_det = 1.0 / det;
-            // Cofactors of the 3x3 symmetric matrix.
-            let c00 = 1.0 - g12 * g12;
-            let c01 = g02 * g12 - g01;
-            let c02 = g01 * g12 - g02;
-            let c11 = 1.0 - g02 * g02;
-            let c12 = g01 * g02 - g12;
-            let c22 = 1.0 - g01 * g01;
-            let l0 = (c00 * b[0] + c01 * b[1] + c02 * b[2]) * inv_det;
-            let l1 = (c01 * b[0] + c11 * b[1] + c12 * b[2]) * inv_det;
-            let l2 = (c02 * b[0] + c12 * b[1] + c22 * b[2]) * inv_det;
-            p - l0 * active[0] - l1 * active[1] - l2 * active[2]
-        }
-        4 => {
-            // glam::Mat4 is column-major, so transpose at build.
-            let m = glam::Mat4::from_cols(
-                Vec4::new(active[0].x, active[1].x, active[2].x, active[3].x),
-                Vec4::new(active[0].y, active[1].y, active[2].y, active[3].y),
-                Vec4::new(active[0].z, active[1].z, active[2].z, active[3].z),
-                Vec4::new(active[0].w, active[1].w, active[2].w, active[3].w),
-            );
-            if m.determinant().abs() < 1e-9 {
-                return p;
-            }
-            m.inverse() * Vec4::splat(inradius)
-        }
-        _ => p,
-    }
 }

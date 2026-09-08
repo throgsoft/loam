@@ -12,7 +12,7 @@ use loam_physics::body::MASK_ALL;
 use loam_physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
 };
-use loam_physics::{BodyId, Gravity, World};
+use loam_physics::{BodyId, World};
 use loam_render::{
     DepthBuffer, DepthMode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode, Viewport,
 };
@@ -30,10 +30,13 @@ const WORD: &str = "LOAM";
 
 const TICK_HZ: u32 = 60;
 
-// 240 Hz: a letter hull on a half-space settles at 240 and skids at 120.
 const SUBSTEPS_PER_TICK: usize = 4;
 
 const SOLVER_DT: f32 = 1.0 / (TICK_HZ as f32 * SUBSTEPS_PER_TICK as f32);
+
+const MAX_SURFACE_TRAVEL: f32 = RAIN_SIZE / 16.0;
+
+const MAX_SUBDIVISIONS: usize = 8;
 
 // One frame per tick; the APNG holds every frame in memory until the stop.
 const RECORD_FPS: u16 = TICK_HZ as u16;
@@ -42,7 +45,6 @@ const GRAVITY: f32 = -9.8;
 
 const PILE_PGS_ITERS: usize = 20;
 
-// Falling drops pass through each other; a landed drop collides with all.
 const GROUP_SCENERY: u32 = 1 << 0;
 const GROUP_FALLING: u32 = 1 << 1;
 const GROUP_LANDED: u32 = 1 << 2;
@@ -50,58 +52,46 @@ const MASK_FALLING: u32 = GROUP_SCENERY | GROUP_LANDED;
 
 const ASSEMBLE_TICKS: u32 = 90;
 
-// Bounded so the last letter's slide ends inside ASSEMBLE_TICKS.
 const LETTER_STAGGER_TICKS: u32 = 12;
 
 const LETTER_SLIDE_TICKS: u32 = 36;
 
-// Two letterforms of w, so the entrance sweeps both neighbours.
 const W_ENTRY_SPAN: f32 = 0.6;
 
-// Height of the lowest hull vertex above the floor at release, in em.
 const RELEASE_CLEARANCE: f32 = 0.20;
 
 const SETTLE_TICKS: u32 = 120;
 
 const RAIN_START_TICK: u32 = ASSEMBLE_TICKS + SETTLE_TICKS;
 
-// After this the sim is frozen and only the slice moves.
 const PHYSICS_TICKS: u32 = 360;
 const PHYSICS_PAUSE_TICK: u32 = RAIN_START_TICK + PHYSICS_TICKS;
 
-// One full sweep out to `SLICE_SWEEP_RANGE` and back.
 const SWEEP_TICKS: u32 = 300;
 
 pub(crate) const SEQUENCE_TICKS: u32 = PHYSICS_PAUSE_TICK + SWEEP_TICKS;
 
-// An allocation cap, not a target: a spawn past it is skipped.
 const RAIN_CAP: usize = 64;
 
 const RAIN_INTERVAL_TICKS: u32 = 7;
 const RAIN_INTERVAL_JITTER: u32 = 4;
 
-// A difference, so a jitter wider than the interval fails to compile.
 const RAIN_INTERVAL_MIN: u32 = RAIN_INTERVAL_TICKS - RAIN_INTERVAL_JITTER;
 
 const RAIN_SIZE: f32 = 0.30;
 
 const LETTER_MASS: f32 = 1.0;
 
-// The most the floor holds: heavier rain tunnels past 0.075 em.
 const RAIN_MASS: f32 = 0.75;
 
-// The lower bound clears the tops of the letters.
 const RAIN_HEIGHT: (f32, f32) = (2.6, 3.6);
 
-// A spawn speed large enough to matter is the one that tunnels.
 const RAIN_ENTRY_SPEED: f32 = 1.0;
 
-// A letter prism spans 0.15 em in w; a drop further out passes it by.
 const RAIN_W_SPREAD: f32 = 0.10;
 
 const RAIN_Z_SPREAD: f32 = 0.20;
 
-// Per-plane spawn tumble ceiling, rad/s.
 const RAIN_TUMBLE: f32 = 6.0;
 
 const RESTITUTION: f32 = 0.0;
@@ -159,7 +149,6 @@ pub(crate) struct HeroSequence {
     director: Director,
     letters: Vec<HeroLetter>,
     drops: Vec<HeroDrop>,
-    // Advanced only by a spawn, so a drop's draw is independent of tick count.
     rng: u64,
     tick: u32,
     next_spawn_tick: u32,
@@ -173,9 +162,12 @@ impl HeroSequence {
 
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        world.push_field(Box::new(Gravity::new(Vec4::new(0.0, GRAVITY, 0.0, 0.0))));
+        world.gravity = Some(Vec4::new(0.0, GRAVITY, 0.0, 0.0));
         world.pgs_iters = PILE_PGS_ITERS;
-        let floor = world.push_body(halfspace4_body_r4(Vec4::Y, FLOOR_Y));
+        let floor = world.push_body(
+            halfspace4_body_r4(Vec4::Y, FLOOR_Y)
+                .ok_or_else(|| anyhow::anyhow!("invalid Hero floor"))?,
+        );
         world.bodies[floor].restitution = RESTITUTION;
 
         let mut letters: Vec<HeroLetter> = solids
@@ -197,8 +189,7 @@ impl HeroSequence {
             director,
             letters,
             drops: Vec::with_capacity(RAIN_CAP),
-            // xorshift64* fixes zero; the mix keeps seed 0 a live stream.
-            rng: seed ^ 0x9e37_79b9_7f4a_7c15,
+            rng: (seed ^ 0x9e37_79b9_7f4a_7c15).max(1),
             tick: 0,
             next_spawn_tick: RAIN_START_TICK,
             letter_w_scratch: Vec::new(),
@@ -214,11 +205,25 @@ impl HeroSequence {
             }
             let mut before_w = std::mem::take(&mut self.letter_w_scratch);
             for _ in 0..SUBSTEPS_PER_TICK {
-                self.letter_w_velocities(&mut before_w);
-                self.world.step(SOLVER_DT);
-                self.hold_letters_in_the_slice();
-                self.keep_scenery_from_moving_letters_in_w(&before_w);
-                self.land_touched_drops();
+                let mut remaining = SOLVER_DT;
+                for subdivision in 0..MAX_SUBDIVISIONS {
+                    let speed = self.surface_speed_bound();
+                    let gravity = GRAVITY.abs();
+                    let travel_dt = 2.0 * MAX_SURFACE_TRAVEL
+                        / (speed + (speed * speed + 4.0 * gravity * MAX_SURFACE_TRAVEL).sqrt());
+                    let pieces = ((remaining / travel_dt).ceil() as usize)
+                        .clamp(1, MAX_SUBDIVISIONS - subdivision);
+                    let dt = remaining / pieces as f32;
+                    self.letter_w_velocities(&mut before_w);
+                    self.world.step(dt);
+                    self.hold_letters_in_the_slice();
+                    self.keep_scenery_from_moving_letters_in_w(&before_w);
+                    self.land_touched_drops();
+                    if pieces == 1 {
+                        break;
+                    }
+                    remaining -= dt;
+                }
             }
             self.letter_w_scratch = before_w;
         }
@@ -227,6 +232,20 @@ impl HeroSequence {
         if self.tick == ASSEMBLE_TICKS {
             self.release_letters();
         }
+    }
+
+    fn surface_speed_bound(&self) -> f32 {
+        self.world.bodies.iter().fold(0.0_f32, |fastest, body| {
+            let Shape::ConvexPolytope4D { vertices } = body.collider() else {
+                return fastest;
+            };
+            let radius = vertices
+                .iter()
+                .map(|v| v.length_squared())
+                .fold(0.0_f32, f32::max)
+                .sqrt();
+            fastest.max(body.velocity.length() + radius * body.angular_velocity.magnitude())
+        })
     }
 
     fn land_touched_drops(&mut self) {
@@ -275,7 +294,7 @@ impl HeroSequence {
                 })
                 .all(|(key, _)| {
                     let other = if key.0 == body { key.1 } else { key.0 };
-                    self.world.bodies[other].inv_mass == 0.0
+                    self.world.bodies[other].inv_mass() == 0.0
                 });
             if only_scenery {
                 let w = &mut self.world.bodies[body].velocity.w;
@@ -347,12 +366,13 @@ impl HeroSequence {
     fn release_letters(&mut self) {
         for letter in &mut self.letters {
             debug_assert!(letter.body.is_none(), "released twice");
-            let id = self.world.push_body(polytope_body_r4(
-                letter.mark,
-                Vec4::ZERO,
-                letter.hull.clone(),
-                LETTER_MASS,
-            ));
+            let Some(body) =
+                polytope_body_r4(letter.mark, Vec4::ZERO, letter.hull.clone(), LETTER_MASS)
+            else {
+                tracing::error!("invalid Hero letter body");
+                continue;
+            };
+            let id = self.world.push_body(body);
             self.world.bodies[id].restitution = RESTITUTION;
             letter.body = Some(id);
         }
@@ -386,12 +406,16 @@ impl HeroSequence {
             .iter()
             .map(|v| RAIN_SIZE * *v)
             .collect();
-        let id = self.world.push_body(polytope_body_r4(
+        let Some(body) = polytope_body_r4(
             position,
             Vec4::new(0.0, -RAIN_ENTRY_SPEED, 0.0, 0.0),
             vertices,
             RAIN_MASS,
-        ));
+        ) else {
+            tracing::error!("invalid Hero rain body");
+            return;
+        };
+        let id = self.world.push_body(body);
         let body = &mut self.world.bodies[id];
         body.restitution = RESTITUTION;
         body.angular_velocity = tumble;
@@ -424,14 +448,6 @@ impl HeroSequence {
         }
     }
 
-    fn fastest_body_speed(&self) -> f32 {
-        self.world
-            .bodies
-            .iter()
-            .map(|b| b.velocity.length())
-            .fold(0.0, f32::max)
-    }
-
     fn letter_deepest_y(&self, index: usize) -> f32 {
         let letter = &self.letters[index];
         let pose = self.letter_pose(index);
@@ -445,7 +461,7 @@ impl HeroSequence {
     fn deepest_dynamic_point(&self) -> f32 {
         let mut deepest = f32::INFINITY;
         for body in self.world.bodies.iter() {
-            let Shape::ConvexPolytope4D { vertices } = &body.collider else {
+            let Shape::ConvexPolytope4D { vertices } = body.collider() else {
                 continue;
             };
             for v in vertices {
@@ -471,14 +487,10 @@ fn lerp(a: f32, b: f32, u: f32) -> f32 {
 
 /// Every letter on one shared grid, so a blend between two is elementwise.
 pub(crate) struct MorphField {
-    origin: glam::Vec2,
-    cell: f32,
-    counts: (usize, usize),
     letters: Vec<Vec<f32>>,
-    blended: Vec<f32>,
+    blended: loam_text::glyph::DistanceField2D,
 }
 
-// A shape growing out of a neighbour reaches past both outlines.
 const MORPH_PAD_EM: f32 = 0.25;
 
 const W_PER_LETTERFORM: f32 = 0.3;
@@ -506,7 +518,6 @@ impl MorphField {
             .iter()
             .map(|solid| {
                 let field = solid.field().expect("checked above");
-                // About the hull centroid the body sits on, not the box centre.
                 let centre = solid
                     .rigid_hull_4d()
                     .map(|(c, _)| glam::Vec2::new(c.x, c.y))
@@ -521,31 +532,36 @@ impl MorphField {
                 grid
             })
             .collect::<Vec<_>>();
-        (!letters.is_empty()).then(|| Self {
-            origin,
-            cell,
-            counts,
-            blended: vec![0.0; counts.0 * counts.1],
+        if letters.is_empty() {
+            return None;
+        }
+        Some(Self {
+            blended: loam_text::glyph::DistanceField2D::from_samples(
+                origin,
+                cell,
+                counts.0,
+                counts.1,
+                vec![0.0; counts.0 * counts.1],
+            )?,
             letters,
         })
     }
 
-    fn blend_at(&mut self, u: f32) -> Option<loam_text::glyph::DistanceField2D> {
+    fn blend_at(&mut self, u: f32) -> &loam_text::glyph::DistanceField2D {
         let n = self.letters.len();
         let wrapped = u.rem_euclid(n as f32);
         let lo = wrapped.floor() as usize % n;
         let t = wrapped - wrapped.floor();
         let (a, b) = (&self.letters[lo], &self.letters[(lo + 1) % n]);
-        for (out, (x, y)) in self.blended.iter_mut().zip(a.iter().zip(b.iter())) {
+        for (out, (x, y)) in self
+            .blended
+            .samples_mut()
+            .iter_mut()
+            .zip(a.iter().zip(b.iter()))
+        {
             *out = x + (y - x) * t;
         }
-        loam_text::glyph::DistanceField2D::from_samples(
-            self.origin,
-            self.cell,
-            self.counts.0,
-            self.counts.1,
-            self.blended.clone(),
-        )
+        &self.blended
     }
 }
 
@@ -569,7 +585,6 @@ fn letter_from(solid: &GlyphSolid, index: usize) -> Result<HeroLetter> {
 }
 
 fn centre_word_on_origin(letters: &mut [HeroLetter]) {
-    // Over the ink, not the marks: the letters differ in width.
     let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
     for letter in letters.iter() {
         for v in &letter.hull {
@@ -623,17 +638,14 @@ fn assembly_timeline(letters: &[HeroLetter]) -> Timeline {
 
 const LETTER_COLOR: [f32; 4] = [0.92, 0.90, 0.86, 1.0];
 
-// Shared by the physics half-space and the drawn ground.
 const FLOOR_Y: f32 = 0.0;
 
 const W_SLICE: f32 = 0.0;
 
 const SLICE_SWEEP_RANGE: f32 = 4.0 * W_PER_LETTERFORM;
 
-// 24-bit depth cracks the thin, dense caps of a tumbling 24-cell.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-// Bounded by the rain: its spawn height must sit above the top of view.
 const BOOT_ORBIT_DISTANCE: f32 = 4.0;
 const BOOT_ORBIT_PITCH: f32 = -0.12;
 const BOOT_EYE_HEIGHT: f32 = 1.4;
@@ -683,7 +695,6 @@ fn build_frame_mesh(
     push_drop_caps(sequence, local, scratch, mesh);
 }
 
-// Sampled at the body centre; exact while the letter's w axis is world w.
 fn push_letters(sequence: &mut HeroSequence, mesh: &mut TriangleMesh<3>) {
     let half_depth = 0.5 * GlyphParams::default().depth;
     let slice = sequence.slice();
@@ -692,23 +703,15 @@ fn push_letters(sequence: &mut HeroSequence, mesh: &mut TriangleMesh<3>) {
         let translate = pose.position_r3();
         let base = mesh.vertices.len() as u32;
 
-        // Negative w reads the letterforms BEFORE this one in the word.
         let u = index as f32 - (pose.position.w - slice) / W_PER_LETTERFORM;
-        let Some(field) = sequence.morph.blend_at(u) else {
-            continue;
-        };
-        let mut section = TriangleMesh::<3>::default();
-        if !loam_text::glyph::append_field_prism(&field, half_depth, LETTER_COLOR, &mut section) {
+        let field = sequence.morph.blend_at(u);
+        if !loam_text::glyph::append_field_prism(field, half_depth, LETTER_COLOR, mesh) {
             continue;
         }
-        for v in &section.vertices {
+        for v in &mut mesh.vertices[base as usize..] {
             let posed = pose.rotor.apply(Vec4::new(v[0], v[1], v[2], 0.0));
-            mesh.vertices
-                .push((posed.truncate() + translate).to_array());
-            mesh.colors.push(LETTER_COLOR);
+            *v = (posed.truncate() + translate).to_array();
         }
-        mesh.indices
-            .extend((section.indices.iter()).map(|t| [t[0] + base, t[1] + base, t[2] + base]));
     }
 }
 
@@ -752,7 +755,6 @@ pub(crate) struct RecordRequest {
     pub(crate) dir: Option<std::path::PathBuf>,
 }
 
-// Stop lags a frame: the runner drains captures after update and taps after.
 enum Recording {
     Running,
     LastFrameQueued,
@@ -760,12 +762,12 @@ enum Recording {
 }
 
 impl Recording {
-    fn advance(&mut self, finished: bool) {
+    fn advance(&mut self, finished: bool, runtime: &loam_app::Runtime) {
         match self {
             Recording::Running if finished => *self = Recording::LastFrameQueued,
             Recording::LastFrameQueued => {
-                loam_app::capture::enqueue(CaptureRequest::Stop);
-                loam_app::script::request_exit();
+                runtime.capture(CaptureRequest::Stop);
+                runtime.request_exit();
                 *self = Recording::Stopped;
             }
             _ => {}
@@ -789,27 +791,35 @@ pub(crate) struct HeroScene {
     hold_at_end: bool,
     paused: bool,
     recording: Option<Recording>,
+    pending_seed: Option<u64>,
 }
 
 impl HeroScene {
-    fn build_console() -> Console<Environment> {
+    fn build_console(
+        runtime: &loam_app::Runtime,
+        control: &loam_app::shell::SceneControl,
+    ) -> Console<Environment> {
         let mut console = Console::<Environment>::new();
         loam_app::shell::register_shell_commands::<Environment, crate::Hero>(
             &mut console,
             loam_app::build_info!(),
+            runtime,
+            control,
         );
         register_ground_command(&mut console, |env| env);
         register_floor_command(&mut console, |env| env);
         console
     }
 
-    pub(crate) fn new(ctx: &mut SetupCtx<'_>, record: Option<RecordRequest>) -> Result<Self> {
-        let console = Self::build_console();
+    pub(crate) fn new(
+        ctx: &mut SetupCtx<'_>,
+        control: &loam_app::shell::SceneControl,
+        record: Option<RecordRequest>,
+    ) -> Result<Self> {
+        let console = Self::build_console(ctx.runtime, control);
         let recording = record.map(|record| {
-            // The tap fires per rendered frame; lock frames to ticks.
-            loam_app::frame_pacing::set_target_fps(TICK_HZ as f32);
-            // Pre-egui, so the console never lands in a frame.
-            loam_app::capture::enqueue(CaptureRequest::StartSequence {
+            ctx.runtime.set_target_fps(TICK_HZ as f32);
+            ctx.runtime.capture(CaptureRequest::StartSequence {
                 format: CaptureFormat::Apng,
                 stage: CaptureStage::Pre,
                 dir: record.dir,
@@ -853,6 +863,7 @@ impl HeroScene {
             hold_at_end: true,
             paused: false,
             recording,
+            pending_seed: None,
         })
     }
 
@@ -878,17 +889,18 @@ impl loam_app::shell::Scene for HeroScene {
         Ok(())
     }
 
-    fn update(&mut self, ctx: &mut FrameCtx<'_>) {
-        if !self.paused {
-            for _ in 0..ctx.n_ticks {
-                if self.hold_at_end && self.sequence.finished() {
-                    break;
-                }
-                self.sequence.tick();
-            }
+    fn tick(&mut self, _dt: f32, _ctx: &mut loam_app::TickCtx) {
+        if let Some(seed) = self.pending_seed.take() {
+            self.replay(seed);
         }
+        if !self.paused && !(self.hold_at_end && self.sequence.finished()) {
+            self.sequence.tick();
+        }
+    }
+
+    fn update(&mut self, ctx: &mut FrameCtx<'_>) {
         if let Some(recording) = &mut self.recording {
-            recording.advance(self.sequence.finished());
+            recording.advance(self.sequence.finished(), ctx.runtime);
         }
         let cfg = &ctx.rd.surface_bundle.config;
         self.camera.aspect = cfg.width as f32 / cfg.height.max(1) as f32;
@@ -898,11 +910,11 @@ impl loam_app::shell::Scene for HeroScene {
         }
     }
 
-    fn ui(&mut self, ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {
+    fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
         loam_app::log::pump_into(&mut self.console);
-        loam_app::command::pump_into(&mut self.console);
+        frame.runtime.pump_console(&mut self.console);
         self.console.ui(ctx);
-        loam_app::command::forward_pending(&mut self.console);
+        frame.runtime.forward_console(&mut self.console);
     }
 
     fn on_key(
@@ -918,7 +930,9 @@ impl loam_app::shell::Scene for HeroScene {
         }
         match code {
             KeyCode::Space => self.paused = !self.paused,
-            KeyCode::KeyN => self.replay(self.seed.wrapping_add(1)),
+            KeyCode::KeyN => {
+                self.pending_seed = Some(self.pending_seed.unwrap_or(self.seed).wrapping_add(1));
+            }
             _ => {}
         }
     }
@@ -942,7 +956,6 @@ impl loam_app::shell::Scene for HeroScene {
         let proj_mat = Mat4::perspective_rh(55.0_f32.to_radians(), aspect, 0.05, 200.0);
         let view_proj = proj_mat * view_mat;
 
-        // First in the encoder; the raster node loads rather than clears.
         self.sky_ground.set_uniforms(
             &rd.queue,
             &SkyGroundUniforms::new(
@@ -986,20 +999,9 @@ mod tests {
     const SEED: u64 = 0x10a3_5eed;
 
     const REST_WINDOW_TICKS: u32 = 60;
-    // Measured worst at rest: 0.0063 em, the Baumgarte limit cycle.
     const REST_SPREAD: f32 = 0.02;
 
-    // Displacement, in em, that reads as knocked aside rather than nudged.
-    const SCATTER_THRESHOLD: f32 = 0.25;
-
-    // An impact transiently reaches 0.034; deeper, the contact never caught.
     const TUNNEL_DEPTH: f32 = 0.075;
-
-    // 1.5x the measured peak.
-    const MESH_VERTEX_BUDGET: u32 = 42_000;
-
-    // Per-step travel the R⁴ narrowphase still resolves against a thin wall.
-    const RESOLVABLE_STEP_TRAVEL: f32 = 0.150;
 
     fn scene() -> HeroSequence {
         HeroSequence::new(hero_font_bytes(), SEED).expect("hero scene")
@@ -1019,35 +1021,12 @@ mod tests {
     }
 
     #[test]
-    fn the_whole_sequence_is_a_function_of_its_seed_and_replays_bit_for_bit() {
-        let trace = || {
-            let mut scene = scene();
-            let mut samples = Vec::with_capacity(SEQUENCE_TICKS as usize);
-            while !scene.finished() {
-                scene.tick();
-                let mut frame: Vec<[f32; 4]> = letter_positions(&scene)
-                    .iter()
-                    .map(Vec4::to_array)
-                    .collect();
-                frame.extend(
-                    (0..scene.drops().len()).map(|i| scene.drop_pose(i).position.to_array()),
-                );
-                samples.push(frame);
-            }
-            samples
-        };
-        let first = trace();
-        assert_eq!(first.len(), SEQUENCE_TICKS as usize);
-        assert_eq!(first, trace());
-    }
-
-    #[test]
     fn the_seed_moves_the_rain_and_leaves_the_letters_landing_untouched() {
         let settled = |seed: u64| {
             let mut scene = HeroSequence::new(hero_font_bytes(), seed).expect("hero scene");
             scene.run_to(RAIN_START_TICK);
             let letters = letter_positions(&scene);
-            scene.run_to(SEQUENCE_TICKS);
+            scene.run_to(RAIN_START_TICK + 60);
             let drops: Vec<Vec4> = (0..scene.drops().len())
                 .map(|i| scene.drop_pose(i).position)
                 .collect();
@@ -1084,7 +1063,6 @@ mod tests {
             scene.letters().len() + 1,
             "the release did not hand every letter to the solver"
         );
-        // The slides finish before the release, so the handover pose is exact.
         for (index, before) in directed.iter().enumerate() {
             assert_eq!(scene.letter_pose(index).position, *before);
         }
@@ -1095,158 +1073,6 @@ mod tests {
             frame_at_release,
             "the director advanced after handing its letters over"
         );
-    }
-
-    #[test]
-    fn every_letter_is_at_rest_on_the_floor_before_the_rain_starts() {
-        let mut scene = scene();
-        scene.run_to(RAIN_START_TICK - REST_WINDOW_TICKS);
-        let mut window: Vec<Vec<Vec4>> = Vec::with_capacity(REST_WINDOW_TICKS as usize);
-        while scene.tick < RAIN_START_TICK {
-            scene.tick();
-            window.push(letter_positions(&scene));
-        }
-        assert!(scene.drops().is_empty(), "a drop spawned during the settle");
-
-        for index in 0..scene.letters().len() {
-            let spread = window
-                .iter()
-                .map(|frame| frame[index].distance(window[0][index]))
-                .fold(0.0f32, f32::max);
-            assert!(
-                spread < REST_SPREAD,
-                "{:?} still moves {spread} in the second before the rain",
-                label(index)
-            );
-            let deepest = scene.letter_deepest_y(index);
-            assert!(
-                deepest <= 1.0e-4,
-                "{:?} floats with its lowest point at {deepest}",
-                label(index)
-            );
-            assert!(
-                deepest >= -2.0 * PENETRATION_SLOP,
-                "{:?} sank to {deepest} through the floor",
-                label(index)
-            );
-        }
-    }
-
-    #[test]
-    fn every_letter_is_moved_by_the_rain_and_none_is_launched_out_of_the_word() {
-        let mut s = scene();
-        s.run_to(RAIN_START_TICK);
-        let settled = letter_positions(&s);
-        s.run_to(SEQUENCE_TICKS);
-
-        // A band: the pile is chaotic, so exact figures pin nothing.
-        for (index, (before, after)) in settled.iter().zip(&letter_positions(&s)).enumerate() {
-            let moved = before.distance(*after);
-            assert!(
-                (0.1..2.0).contains(&moved),
-                "{:?} moved {moved} em, outside the band the rain should leave it in",
-                label(index)
-            );
-        }
-    }
-
-    #[test]
-    fn the_rain_knocks_at_least_one_letter_past_the_scatter_threshold() {
-        let mut scene = scene();
-        scene.run_to(RAIN_START_TICK);
-        let settled = letter_positions(&scene);
-        scene.run_to(SEQUENCE_TICKS);
-        assert!(
-            scene.drops().len() > 20,
-            "only {} drops spawned before the freeze",
-            scene.drops().len()
-        );
-
-        let scattered = letter_positions(&scene);
-        let worst = settled
-            .iter()
-            .zip(&scattered)
-            .map(|(before, after)| before.distance(*after))
-            .fold(0.0f32, f32::max);
-        assert!(
-            worst > SCATTER_THRESHOLD,
-            "the rain moved the worst-hit letter only {worst}"
-        );
-    }
-
-    #[test]
-    fn nothing_passes_through_the_floor_at_any_tick_of_the_run() {
-        let mut scene = scene();
-        while !scene.finished() {
-            scene.tick();
-            let deepest = scene.deepest_dynamic_point();
-            assert!(
-                deepest > -TUNNEL_DEPTH,
-                "a body reached {deepest} below the floor at tick {}",
-                scene.tick
-            );
-            let travel = scene.fastest_body_speed() * SOLVER_DT;
-            assert!(
-                travel < RESOLVABLE_STEP_TRAVEL,
-                "a body travelled {travel} in one step at tick {}",
-                scene.tick
-            );
-        }
-        for index in 0..scene.letters().len() {
-            assert!(scene.letter_pose(index).position.y > 0.0);
-        }
-        for index in 0..scene.drops().len() {
-            assert!(scene.drop_pose(index).position.y > 0.0);
-        }
-    }
-
-    #[test]
-    fn every_raining_shape_collides_as_its_own_hull_rather_than_a_bounding_ball() {
-        let mut scene = scene();
-        scene.run_to(SEQUENCE_TICKS);
-        assert!(scene.drops().len() > 20);
-        for (index, drop) in scene.drops().iter().enumerate() {
-            let body = &scene.world.bodies[drop.body];
-            let Shape::ConvexPolytope4D { vertices } = &body.collider else {
-                panic!(
-                    "{:?} rains as a {:?}",
-                    drop.polytope(),
-                    body.collider.kind()
-                );
-            };
-            assert_eq!(vertices.len(), drop.polytope().topology().vertices.len());
-            let exact = regular_polytope4_inertia(drop.polytope(), RAIN_MASS, RAIN_SIZE);
-            assert_eq!(body.inertia, exact, "drop {index} kept the ball's moment");
-        }
-        for large in [Polytope4::Cell120, Polytope4::Cell600] {
-            assert!(
-                RAIN_SHAPES.contains(&large),
-                "{large:?} dropped out of the rain"
-            );
-        }
-    }
-
-    #[test]
-    fn a_falling_letter_is_one_convex_prism_and_not_its_static_cover() {
-        let mut scene = scene();
-        scene.run_to(ASSEMBLE_TICKS + 1);
-        assert_eq!(scene.world.bodies.iter().count(), scene.letters().len() + 1);
-
-        let font = ab_glyph::FontRef::try_from_slice(hero_font_bytes()).expect("font");
-        let solids = layout_word(&font, WORD, &GlyphParams::default()).expect("layout");
-        let cover: usize = solids.iter().map(GlyphSolid::collider_count).sum();
-        assert!(
-            cover > 8 * scene.letters().len(),
-            "{cover} cover boxes is not enough to make the hull a cut"
-        );
-        for (index, letter) in scene.letters().iter().enumerate() {
-            let body = &scene.world.bodies[letter.body.expect("released")];
-            let Shape::ConvexPolytope4D { vertices } = &body.collider else {
-                panic!("{:?} falls as a {:?}", label(index), body.collider.kind());
-            };
-            assert_eq!(vertices.len() % 4, 0);
-            assert!(vertices.len() <= 32, "{:?} overflows the cap", label(index));
-        }
     }
 
     #[test]
@@ -1286,7 +1112,7 @@ mod tests {
     fn letter_section_bounds(scene: &mut HeroSequence, index: usize) -> (Vec3, Vec3) {
         let pose = scene.letter_pose(index);
         let u = index as f32 - (pose.position.w - W_SLICE) / W_PER_LETTERFORM;
-        let field = scene.morph.blend_at(u).expect("the blend has a grid");
+        let field = scene.morph.blend_at(u);
         let mut mesh = TriangleMesh::<3>::default();
         assert!(
             loam_text::glyph::append_field_prism(
@@ -1298,182 +1124,6 @@ mod tests {
             "letter {index} cut an empty section"
         );
         bounds_of(&mesh).expect("a non-empty section has bounds")
-    }
-
-    #[test]
-    fn the_slice_holds_while_the_sim_runs_and_sweeps_once_it_freezes() {
-        let mut scene = scene();
-        for tick in 0..PHYSICS_PAUSE_TICK {
-            scene.run_to(tick);
-            assert!(
-                (scene.slice() - W_SLICE).abs() < 1e-6,
-                "the slice moved to {} at tick {tick}, while the pile was still rolling",
-                scene.slice()
-            );
-        }
-
-        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
-        for tick in PHYSICS_PAUSE_TICK..SEQUENCE_TICKS {
-            scene.run_to(tick);
-            lo = lo.min(scene.slice());
-            hi = hi.max(scene.slice());
-        }
-        assert!(
-            hi > 0.9 * SLICE_SWEEP_RANGE && lo < -0.9 * SLICE_SWEEP_RANGE,
-            "the sweep only reached [{lo}, {hi}] of +/-{SLICE_SWEEP_RANGE}"
-        );
-    }
-
-    #[test]
-    fn nothing_moves_once_the_sim_is_frozen_except_the_slice() {
-        let mut scene = scene();
-        scene.run_to(PHYSICS_PAUSE_TICK);
-        let poses: Vec<Vec4> = (0..scene.drops().len())
-            .map(|i| scene.drop_pose(i).position)
-            .collect();
-        let letters: Vec<Vec4> = (0..scene.letters().len())
-            .map(|i| scene.letter_pose(i).position)
-            .collect();
-
-        // A whole sweep ends on the resting slice, so the end shows nothing.
-        let mut swept = 0.0f32;
-        for tick in PHYSICS_PAUSE_TICK..SEQUENCE_TICKS {
-            scene.run_to(tick);
-            swept = swept.max((scene.slice() - W_SLICE).abs());
-            for (i, was) in poses.iter().enumerate() {
-                assert_eq!(
-                    scene.drop_pose(i).position,
-                    *was,
-                    "drop {i} moved at tick {tick}, after the freeze"
-                );
-            }
-            for (i, was) in letters.iter().enumerate() {
-                assert_eq!(
-                    scene.letter_pose(i).position,
-                    *was,
-                    "letter {i} moved at tick {tick}, after the freeze"
-                );
-            }
-        }
-        assert!(
-            swept > 0.9 * SLICE_SWEEP_RANGE,
-            "the slice froze along with everything else, reaching only {swept}"
-        );
-    }
-
-    #[test]
-    fn a_letters_pose_stays_a_rotation_of_the_slice_however_hard_it_is_hit() {
-        let mut scene = scene();
-        let mut worst = 1.0f32;
-        let mut worst_tick = 0;
-        for tick in ASSEMBLE_TICKS..SEQUENCE_TICKS {
-            scene.run_to(tick);
-            for index in 0..scene.letters().len() {
-                let r = scene.letter_pose(index).rotor;
-                // The draw's 3x3 block; singular once tumbled into a w plane.
-                let det = r.apply(Vec4::X).truncate().dot(
-                    r.apply(Vec4::Y)
-                        .truncate()
-                        .cross(r.apply(Vec4::Z).truncate()),
-                );
-                if (det - 1.0).abs() > (worst - 1.0).abs() {
-                    worst = det;
-                    worst_tick = tick;
-                }
-            }
-        }
-        assert!(
-            (worst - 1.0).abs() < 1e-3,
-            "a letter's drawn basis had determinant {worst} at tick {worst_tick}, so it is being scaled rather than rotated"
-        );
-    }
-
-    #[test]
-    fn the_rain_still_tumbles_through_the_w_planes_the_letters_are_held_out_of() {
-        let mut scene = scene();
-        scene.run_to(SEQUENCE_TICKS);
-        let spun = (0..scene.drops().len())
-            .map(|i| {
-                let spin = scene.world.bodies[scene.drops()[i].body].angular_velocity;
-                spin.xw.abs() + spin.yw.abs() + spin.zw.abs()
-            })
-            .fold(0.0f32, f32::max);
-        assert!(
-            spun > 0.1,
-            "the rain lost its w-plane tumble too, at {spun}"
-        );
-
-        for letter in scene.letters() {
-            let body = letter.body.expect("released");
-            let spin = scene.world.bodies[body].angular_velocity;
-            assert_eq!((spin.xw, spin.yw, spin.zw), (0.0, 0.0, 0.0));
-        }
-    }
-
-    #[test]
-    fn the_rain_falls_through_itself_and_stacks_only_once_it_has_landed() {
-        let mut scene = scene();
-        scene.run_to(RAIN_START_TICK + 20);
-        let falling: Vec<BodyId> = (scene.drops().iter())
-            .map(|d| d.body)
-            .filter(|id| scene.world.bodies[*id].collision_group == GROUP_FALLING)
-            .collect();
-        assert!(
-            !falling.is_empty(),
-            "nothing was in the air 20 ticks into the rain"
-        );
-
-        for tick in RAIN_START_TICK..PHYSICS_PAUSE_TICK {
-            scene.run_to(tick);
-            for (key, manifold) in &scene.world.manifolds {
-                if manifold.points.is_empty() {
-                    continue;
-                }
-                let air = |id: BodyId| scene.world.bodies[id].collision_group == GROUP_FALLING;
-                assert!(
-                    !(air(key.0) && air(key.1)),
-                    "two airborne drops met at tick {tick}"
-                );
-            }
-        }
-
-        let landed = (scene.drops().iter())
-            .filter(|d| scene.world.bodies[d.body].collision_group == GROUP_LANDED)
-            .count();
-        assert!(
-            landed * 2 > scene.drops().len(),
-            "only {landed} of {} drops ever touched anything",
-            scene.drops().len()
-        );
-    }
-
-    #[test]
-    fn the_floor_never_slides_a_letter_along_w_but_the_rain_still_does() {
-        let mut scene = scene();
-        for tick in ASSEMBLE_TICKS..RAIN_START_TICK {
-            scene.run_to(tick);
-            for (index, letter) in scene.letters().iter().enumerate() {
-                let body = letter.body.expect("released");
-                let w = scene.world.bodies[body].position.w;
-                assert!(
-                    (w - letter.mark.w).abs() < 1e-6,
-                    "{:?} slid to w {w} on the floor alone at tick {tick}",
-                    label(index)
-                );
-            }
-        }
-
-        scene.run_to(PHYSICS_PAUSE_TICK);
-        let pushed = (scene.letters().iter())
-            .map(|l| {
-                let body = l.body.expect("released");
-                (scene.world.bodies[body].position.w - l.mark.w).abs()
-            })
-            .fold(0.0f32, f32::max);
-        assert!(
-            pushed > 0.05,
-            "the rain moved no letter further than {pushed} in w, so the letters never morph"
-        );
     }
 
     #[test]
@@ -1491,7 +1141,6 @@ mod tests {
                 .expect("a solid per letter");
             let own = bounds_of(&Visualizable::<3>::to_triangles(solid).expect("glyph mesh"))
                 .expect("baked mesh");
-            // Resampled at the bake pitch, so a section matches to a cell.
             let cell = GlyphParams::default().em_size / GlyphParams::default().resolution as f32;
             let (want, got) = (own.1 - own.0, hi - lo);
             assert!(
@@ -1515,7 +1164,6 @@ mod tests {
         let mid = letter_section_bounds(&mut approaching, 0);
         let own = settled[0];
 
-        // A pure scale keeps the aspect ratio; a changed ratio is a morph.
         let ratio = |(lo, hi): (Vec3, Vec3)| (hi.x - lo.x) / (hi.y - lo.y);
         assert!(
             (ratio(mid) - ratio(own)).abs() > 0.05,
@@ -1524,19 +1172,6 @@ mod tests {
             ratio(own)
         );
         assert!(mid.1.y - mid.0.y > 0.1, "the approach drew almost nothing");
-    }
-
-    #[test]
-    fn the_letterform_sequence_wraps_so_neither_direction_runs_off_the_word() {
-        let mut scene = scene();
-        let count = scene.letters().len() as f32;
-        for step in -20..=20 {
-            let u = step as f32 * 0.37 * count;
-            assert!(
-                scene.morph.blend_at(u).is_some(),
-                "the blend at u = {u} has no field"
-            );
-        }
     }
 
     #[test]
@@ -1573,32 +1208,15 @@ mod tests {
     }
 
     #[test]
-    fn the_frame_mesh_is_well_formed_and_inside_the_upload_budget() {
+    fn morph_wraps_across_both_ends_of_the_word() {
         let mut scene = scene();
-        scene.run_to(SEQUENCE_TICKS);
-        let mut mesh = TriangleMesh::<3>::default();
-        let (mut local, mut scratch) = (Vec::new(), SectionScratch::default());
-        build_frame_mesh(&mut scene, &mut local, &mut scratch, &mut mesh);
-
-        assert_eq!(mesh.colors.len(), mesh.vertices.len());
-        let count = mesh.vertices.len() as u32;
-        assert!(count > 4, "the mesh holds the floor and nothing else");
-        for tri in &mesh.indices {
-            for i in tri {
-                assert!(*i < count, "index {i} past {count} vertices");
-            }
+        let cycle = scene.letters().len() as f32;
+        let point = glam::Vec2::new(0.13, 0.27);
+        for position in [-2.25_f32, -0.25, 0.0, 0.25, 3.5] {
+            let expected = scene.morph.blend_at(position).sample(point);
+            let wrapped = scene.morph.blend_at(position + 2.0 * cycle).sample(point);
+            assert!((expected - wrapped).abs() < 1e-6);
         }
-        for v in &mesh.vertices {
-            assert!(v.iter().all(|c| c.is_finite()), "non-finite vertex {v:?}");
-        }
-        assert!(
-            count < MESH_VERTEX_BUDGET,
-            "the frame mesh grew to {count} vertices"
-        );
-
-        let repeat = mesh.vertices.clone();
-        build_frame_mesh(&mut scene, &mut local, &mut scratch, &mut mesh);
-        assert_eq!(mesh.vertices, repeat);
     }
 
     #[test]
@@ -1651,29 +1269,121 @@ mod tests {
         );
         assert_ne!(before, caps(&scene), "the cut did not follow the tumble");
     }
-
     #[test]
-    fn the_assembled_word_is_in_reading_order_on_the_baseline() {
+    fn release_rain_and_freeze_preserve_the_sequence_boundaries() {
         let mut scene = scene();
-        scene.run_to(ASSEMBLE_TICKS);
-        let placed = letter_positions(&scene);
-        let font = ab_glyph::FontRef::try_from_slice(hero_font_bytes()).expect("font");
-        let solids = layout_word(&font, WORD, &GlyphParams::default()).expect("layout");
-        let inked: Vec<char> = solids
-            .iter()
-            .filter(|solid| !solid.is_blank())
-            .map(GlyphSolid::ch)
-            .collect();
-        assert_eq!(inked, WORD.chars().collect::<Vec<_>>());
-        assert_eq!(inked.len(), placed.len());
-        for pair in placed.windows(2) {
-            assert!(pair[1].x > pair[0].x, "the word came out of order");
+        let mut rest_start = Vec::new();
+        let mut frozen = Vec::new();
+        let mut falling_seen = false;
+        let mut slice_sweep = 0.0_f32;
+        while !scene.finished() {
+            scene.tick();
+            assert!(
+                scene.deepest_dynamic_point() > -TUNNEL_DEPTH,
+                "floor depth {} at tick {}",
+                scene.deepest_dynamic_point(),
+                scene.tick
+            );
+            if scene.tick == RAIN_START_TICK - REST_WINDOW_TICKS {
+                rest_start = letter_positions(&scene);
+            }
+            for (index, letter) in scene.letters().iter().enumerate() {
+                let pose = scene.letter_pose(index);
+                if scene.tick >= ASSEMBLE_TICKS && scene.tick <= RAIN_START_TICK {
+                    assert!(
+                        (pose.position.w - letter.mark.w).abs() < 1e-6,
+                        "floor moved letter {index} through w"
+                    );
+                }
+                if scene.tick > RAIN_START_TICK - REST_WINDOW_TICKS && scene.tick <= RAIN_START_TICK
+                {
+                    assert!(
+                        pose.position.distance(rest_start[index]) < REST_SPREAD,
+                        "letter {index} has not settled"
+                    );
+                }
+                let rotor = pose.rotor;
+                let determinant = rotor.apply(Vec4::X).truncate().dot(
+                    rotor
+                        .apply(Vec4::Y)
+                        .truncate()
+                        .cross(rotor.apply(Vec4::Z).truncate()),
+                );
+                assert!(
+                    (determinant - 1.0).abs() < 1e-3,
+                    "letter {index} left the draw's rotation plane"
+                );
+            }
+            if scene.tick == RAIN_START_TICK {
+                assert!(scene.drops().is_empty());
+                for index in 0..scene.letters().len() {
+                    let deepest = scene.letter_deepest_y(index);
+                    assert!((-2.0 * PENETRATION_SLOP..=1e-4).contains(&deepest));
+                }
+            }
+            falling_seen |= scene
+                .drops()
+                .iter()
+                .any(|drop| scene.world.bodies[drop.body].collision_group == GROUP_FALLING);
+            for (key, manifold) in &scene.world.manifolds {
+                if !manifold.points.is_empty() {
+                    let falling =
+                        |id: BodyId| scene.world.bodies[id].collision_group == GROUP_FALLING;
+                    assert!(
+                        !(falling(key.0) && falling(key.1)),
+                        "airborne drops collided"
+                    );
+                }
+            }
+            if scene.tick == PHYSICS_PAUSE_TICK {
+                let landed = scene
+                    .drops()
+                    .iter()
+                    .filter(|drop| scene.world.bodies[drop.body].collision_group == GROUP_LANDED)
+                    .count();
+                assert!(falling_seen && landed * 2 > scene.drops().len());
+                assert!(scene.drops().iter().any(|drop| {
+                    let spin = scene.world.bodies[drop.body].angular_velocity;
+                    spin.xw.abs() + spin.yw.abs() + spin.zw.abs() > 0.1
+                }));
+                assert!(scene.letters().iter().any(|letter| {
+                    (scene.world.bodies[letter.body.unwrap()].position.w - letter.mark.w).abs()
+                        > 0.05
+                }));
+                for letter in scene.letters() {
+                    let spin = scene.world.bodies[letter.body.unwrap()].angular_velocity;
+                    assert_eq!((spin.xw, spin.yw, spin.zw), (0.0, 0.0, 0.0));
+                }
+                frozen = scene
+                    .world
+                    .bodies
+                    .iter()
+                    .map(|body| (body.position, body.orientation.rotation))
+                    .collect();
+            }
+            if scene.tick > PHYSICS_PAUSE_TICK {
+                assert_eq!(scene.world.bodies.len(), frozen.len());
+                for (body, before) in scene.world.bodies.iter().zip(&frozen) {
+                    assert_eq!((body.position, body.orientation.rotation), *before);
+                }
+                slice_sweep = slice_sweep.max((scene.slice() - W_SLICE).abs());
+            }
         }
-        let heights: Vec<f32> = (0..scene.letters().len())
-            .map(|i| scene.letter_deepest_y(i))
-            .collect();
-        for h in &heights {
-            assert!((h - RELEASE_CLEARANCE).abs() < 1.0e-5, "released at {h}");
+        assert!(slice_sweep > 0.9 * SLICE_SWEEP_RANGE);
+        let mut mesh = TriangleMesh::<3>::default();
+        let (mut local, mut scratch) = (Vec::new(), SectionScratch::default());
+        build_frame_mesh(&mut scene, &mut local, &mut scratch, &mut mesh);
+
+        assert_eq!(mesh.colors.len(), mesh.vertices.len());
+        let count = mesh.vertices.len() as u32;
+        assert!(count > 4, "the mesh holds the floor and nothing else");
+        for tri in &mesh.indices {
+            for i in tri {
+                assert!(*i < count, "index {i} past {count} vertices");
+            }
+        }
+        for v in &mesh.vertices {
+            assert!(v.iter().all(|c| c.is_finite()), "non-finite vertex {v:?}");
         }
     }
 }

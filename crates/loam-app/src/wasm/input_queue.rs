@@ -1,23 +1,18 @@
-//! Free of `web-sys` and `js-sys` so the queue policy and the pixel units
-//! the messages carry are exercisable off target.
+//! Input transitions preserve arrival order; overflow releases held input and keeps the latest control state.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
 #[derive(Debug)]
 pub enum InputMessage {
-    /// Canvas pixel dimensions, DPR-multiplied to physical pixels. `dpr` rides
-    /// along because the worker has no `window.devicePixelRatio` and a monitor
-    /// change alters the ratio and the size together.
+    /// Physical canvas size and the DPR measured with it.
     Resize {
         width: u32,
         height: u32,
         dpr: f32,
     },
 
-    /// (x, y) in canvas-local CSS pixels; `buttons` is the `MouseEvent.buttons`
-    /// bitmask. `dx`/`dy` are raw `movementX/Y`, valid both before and after
-    /// Pointer Lock engages; coalesced moves sum the dropped deltas.
+    /// Canvas-local CSS position and accumulated DOM `movementX/Y` deltas.
     MouseMove {
         x: f32,
         y: f32,
@@ -34,15 +29,13 @@ pub enum InputMessage {
         pressed: bool,
     },
 
-    /// Wheel delta in lines, normalized on the main thread. DOM convention:
-    /// positive = right/down.
+    /// Lines in DOM convention: positive is right/down.
     MouseWheel {
         dx: f32,
         dy: f32,
     },
 
-    /// `code` is the physical-key code, for hotkey routing; `key` is the logical
-    /// key, for text-input fan-out to egui.
+    /// DOM `code` identifies the physical key; `key` carries logical text.
     Key {
         code: String,
         key: String,
@@ -58,42 +51,74 @@ pub enum InputMessage {
 
     Visibility(bool),
 
-    /// Sent after the user clicks the launch overlay; before it arrives the
-    /// worker has rendered one preview frame for the overlay to blur.
     Start,
 
-    /// Mirror of the main thread's `pointerlockchange`. The worker calls
-    /// [`crate::cursor::mark_applied`] so `current_state()` tracks the browser.
+    /// Browser-confirmed lock state, including releases by Esc or focus loss.
     PointerLockChanged(bool),
 }
 
-/// Reachable only when nothing is draining (paused embed, halted RAF chain).
 pub const MESSAGE_QUEUE_CAPACITY: usize = 256;
 
 thread_local! {
     static MESSAGE_QUEUE: RefCell<VecDeque<InputMessage>> = const { RefCell::new(VecDeque::new()) };
 }
 
+fn control_kind(msg: &InputMessage) -> Option<usize> {
+    match msg {
+        InputMessage::Resize { .. } => Some(0),
+        InputMessage::Visibility(_) => Some(1),
+        InputMessage::Start => Some(2),
+        InputMessage::PointerLockChanged(_) => Some(3),
+        InputMessage::Focus(_) => Some(4),
+        _ => None,
+    }
+}
+
 pub fn enqueue(msg: InputMessage) {
     MESSAGE_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
         if q.len() >= MESSAGE_QUEUE_CAPACITY {
-            let dropped = q.pop_front();
-            tracing::warn!("loam_app::wasm::worker: input queue full, dropped {dropped:?}");
+            let mut latest = [None; 5];
+            for (index, queued) in q.iter().enumerate() {
+                if let Some(kind) = control_kind(queued) {
+                    latest[kind] = Some(index);
+                }
+            }
+            let mut index = 0;
+            q.retain(|queued| {
+                let keep = control_kind(queued).is_some_and(|kind| latest[kind] == Some(index));
+                index += 1;
+                keep
+            });
+            q.push_front(InputMessage::Focus(false));
+            tracing::warn!("input queue overflow: released held input and discarded stale events");
         }
         q.push_back(msg);
     });
 }
 
-pub fn drain_messages() -> Vec<InputMessage> {
-    MESSAGE_QUEUE.with(|q| q.borrow_mut().drain(..).collect())
+pub fn drain_messages_into(batch: &mut VecDeque<InputMessage>) {
+    batch.clear();
+    MESSAGE_QUEUE.with(|q| std::mem::swap(&mut *q.borrow_mut(), batch));
 }
 
-/// CSS pixels scaled to the physical pixels `FrameInput::cursor_pos` is
-/// specified in.
+/// Converts DOM coordinates to `FrameInput::cursor_pos` units.
 pub fn physical_cursor(x: f32, y: f32, device_pixel_ratio: f32) -> (f64, f64) {
     (
         (x * device_pixel_ratio) as f64,
         (y * device_pixel_ratio) as f64,
     )
+}
+
+pub fn pointer_button(
+    input: &mut loam_input::InputState,
+    x: f32,
+    y: f32,
+    dpr: f32,
+    button: winit::event::MouseButton,
+    state: winit::event::ElementState,
+) {
+    let (x, y) = physical_cursor(x, y, dpr);
+    input.cursor_moved(x, y);
+    input.mouse_input(button, state);
 }

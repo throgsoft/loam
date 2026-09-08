@@ -4,14 +4,13 @@
 
 use glam::Vec3;
 use loam_math::{FlatTorus3, QuotientSpace, Space, WgslSpace};
+use loam_render::shader::{validate_wgsl, GEODESIC_MARCH_KERNEL};
 use loam_scene::{Scene, SceneNode};
-use loam_shader::{validate_wgsl, GEODESIC_MARCH_KERNEL};
-use wgpu::util::DeviceExt;
+mod support;
+use support::{dispatch, request_device};
 
-// Unequal sides, so a swapped axis in the wrap reads as a wrong distance.
 const CELL: Vec3 = Vec3::new(2.0, 2.6, 1.7);
 
-// Spheres only: `Shape::Sphere` routes through `loam_distance` and is lattice-periodic.
 fn room() -> Scene {
     Scene::new(
         SceneNode::sphere(Vec3::ZERO, 0.36)
@@ -24,7 +23,6 @@ fn torus() -> FlatTorus3 {
     FlatTorus3::new(CELL)
 }
 
-// Per ray: drift of the marched wrap from the covering ray's wrap, and the hit arclength.
 const PROBE_WGSL: &str = r#"
 struct Ray {
     origin: vec3<f32>,
@@ -34,8 +32,6 @@ struct Ray {
 };
 
 @group(0) @binding(0) var<storage, read> rays: array<Ray>;
-// x: |wrap(covering point) - wrap(marched point)|, negative on a miss.
-// y: geodesic arclength of the hit, negative on a miss.
 @group(0) @binding(1) var<storage, read_write> out: array<vec2<f32>>;
 
 @compute @workgroup_size(64)
@@ -49,13 +45,10 @@ fn probe(@builtin(global_invocation_id) gid: vec3<u32>) {
         out[i] = vec2<f32>(-1.0, -1.0);
         return;
     }
-    // The kernel's parameter is in units of its finite-difference tangent (~1e-3
-    // relative error), not arclength.
     let probe_eps = 1e-4;
     let speed = loam_distance(ray.origin, loam_exp(ray.origin, dir * probe_eps)) / probe_eps;
     let arclength = hit.w / speed;
 
-    // Geodesics of E³/L lift to straight lines of the cover.
     let cover = ray.origin + dir * arclength;
     out[i] = vec2<f32>(length(loam_torus_wrap(cover) - loam_torus_wrap(hit.xyz)), arclength);
 }
@@ -76,8 +69,6 @@ fn assemble_probe_source() -> String {
 fn the_unmodified_geodesic_kernel_accepts_the_quotient_prelude() {
     let source = assemble_probe_source();
     validate_wgsl(&source).expect("flat-torus march chain should validate");
-    assert!(source.contains("fn loam_torus_wrap("));
-    assert!(source.contains("fn loam_scene_sdf("));
 }
 
 #[repr(C)]
@@ -89,7 +80,6 @@ struct GpuRay {
     _pad1: f32,
 }
 
-// Fixed lattice origins and a spiral of directions, identical on every machine.
 fn probe_rays(origin_offset: Vec3) -> Vec<GpuRay> {
     let mut rays = Vec::with_capacity(16 * 64);
     for oi in 0..16 {
@@ -113,106 +103,6 @@ fn probe_rays(origin_offset: Vec3) -> Vec<GpuRay> {
         }
     }
     rays
-}
-
-async fn request_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::default();
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await
-        .expect("wgpu adapter");
-    adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("flat-torus-room probe"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::Off,
-            experimental_features: Default::default(),
-        })
-        .await
-        .expect("wgpu device")
-}
-
-fn dispatch<I: bytemuck::Pod, O: bytemuck::Pod>(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    source: &str,
-    entry_point: &str,
-    input: &[I],
-) -> Vec<O> {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(entry_point),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    });
-
-    let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("probe input"),
-        contents: bytemuck::cast_slice(input),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-    let output_size = (input.len() * std::mem::size_of::<O>()) as u64;
-    let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("probe output"),
-        size: output_size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let staging = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("probe staging"),
-        size: output_size,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some(entry_point),
-        layout: None,
-        module: &module,
-        entry_point: Some(entry_point),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(entry_point),
-        layout: &pipeline.get_bind_group_layout(0),
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: input_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: output_buffer.as_entire_binding(),
-            },
-        ],
-    });
-
-    let mut encoder = device.create_command_encoder(&Default::default());
-    {
-        let mut pass = encoder.begin_compute_pass(&Default::default());
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(input.len().div_ceil(64) as u32, 1, 1);
-    }
-    encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging, 0, output_size);
-    queue.submit(Some(encoder.finish()));
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll");
-    rx.recv().expect("map").expect("map succeeded");
-    let results = bytemuck::cast_slice::<u8, O>(&staging.slice(..).get_mapped_range()).to_vec();
-    staging.unmap();
-    results
 }
 
 fn run_probe(device: &wgpu::Device, queue: &wgpu::Queue, rays: &[GpuRay]) -> Vec<[f32; 2]> {
@@ -291,7 +181,6 @@ fn the_emitted_prelude_wraps_to_the_same_quotient_point_as_the_rust_impl_gpu_pro
         on_face > 0,
         "no lift landed on a face; the boundary case went untested"
     );
-    // Measured: one ulp at the cell scale, 2.4e-7.
     assert!(
         worst_off_face < 1e-6,
         "away from the faces the prelude and the Rust wrap disagreed by \
@@ -321,7 +210,6 @@ fn marched_position_agrees_with_the_covering_ray_gpu_probe() {
         .iter()
         .filter(|r| r[1] >= 0.0)
         .fold(0.0_f32, |acc, r| acc.max(r[0]));
-    // Measured worst over this fan: 1.4e-5.
     assert!(worst < 1e-4, "worst covering-ray disagreement was {worst}");
 }
 
@@ -345,7 +233,6 @@ fn translating_by_a_lattice_vector_leaves_the_view_unchanged_gpu_probe() {
             );
             worst = worst.max((base[1] - moved[1]).abs() / base[1].max(1.0));
         }
-        // Measured worst over this fan: 4.3e-5; a dropped axis is O(1).
         assert!(
             worst < 1e-3,
             "lattice translation on axis {axis} moved a hit by {worst} relative"

@@ -1,16 +1,13 @@
-//! Manifolds key on generational [`BodyId`] handles, not storage positions, so
-//! a despawn elsewhere cannot rebind a key to another pair.
+//! Contact anchors and impulses persist across steps; manifold keys use generational handles.
 
 use crate::body::{BodyId, RigidBody};
 use crate::collision::VectorOps;
 use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
 
-/// The Box2D and rapier figure for 3D.
 pub const MAX_POINTS: usize = 4;
 
-/// Bullet's `gContactBreakingThreshold` default (Coumans, Bullet Physics SDK
-/// 3.x), applied to the normal gap and the tangential drift alike.
+// Coumans, Bullet Physics SDK 3.x, gContactBreakingThreshold.
 pub const CONTACT_BREAK_DISTANCE: f32 = 0.02;
 
 const CONTACT_BREAK_DISTANCE_SQ: f32 = CONTACT_BREAK_DISTANCE * CONTACT_BREAK_DISTANCE;
@@ -20,10 +17,9 @@ const MERGE_RADIUS_SQ: f32 = CONTACT_BREAK_DISTANCE_SQ;
 #[derive(Clone, Copy)]
 pub struct ContactPoint<S: PhysicsSpace> {
     pub world_point: S::Point,
-    /// Witness on A in A's frame, so a retained point can be re-projected.
+    /// Witness in A's local frame.
     pub anchor_a: S::Vector,
-    /// Witness on B in B's frame; the pair straddles `world_point` by half the
-    /// penetration.
+    /// Witness in B's local frame.
     pub anchor_b: S::Vector,
     /// Unit, from A toward B.
     pub normal: S::Vector,
@@ -32,7 +28,7 @@ pub struct ContactPoint<S: PhysicsSpace> {
     pub normal_impulse: f32,
     /// Valid within one step only: the slide direction can flip.
     pub tangent_dir: S::Vector,
-    /// Reset to 0 each step; not every iteration reaches the `μ·jn` clamp.
+    /// Cleared before each step; stored as a magnitude.
     pub tangent_impulse: f32,
     /// Snapshot before the warm-start, constant across the PGS iterations.
     pub velocity_bias: f32,
@@ -62,9 +58,7 @@ where
         }
     }
 
-    /// Re-projects each point from its anchors, dropping those past
-    /// [`CONTACT_BREAK_DISTANCE`] in normal gap or tangential drift, in slot
-    /// order. `a` and `b` are [`Self::body_a`] and [`Self::body_b`].
+    /// Retains anchors within [`CONTACT_BREAK_DISTANCE`]; bodies must match the manifold key.
     pub fn refresh(&mut self, space: &S, a: &RigidBody<S>, b: &RigidBody<S>) {
         self.points.retain_mut(|cp| {
             let pa = anchor_world_point(space, a, cp.anchor_a);
@@ -84,9 +78,7 @@ where
         });
     }
 
-    /// Merges within `MERGE_RADIUS_SQ`, keeping the slot's impulses; at
-    /// `MAX_POINTS` evicts the slot with the least total impulse. `a` and `b`
-    /// as in [`Self::refresh`].
+    /// Nearby contacts retain impulses; a full manifold replaces its weakest contact.
     pub fn add_or_update(
         &mut self,
         space: &S,
@@ -97,7 +89,6 @@ where
         S::Point: Copy + std::ops::Sub<Output = S::Vector>,
     {
         let new_point = contact.point;
-        // A's witness leads B's by the penetration, so `refresh` reads back a separation.
         let half_gap = contact.normal * (0.5 * contact.penetration);
         let anchor_a = local_anchor(space, a, space.exp(new_point, half_gap));
         let anchor_b = local_anchor(space, b, space.exp(new_point, -half_gap));
@@ -108,6 +99,9 @@ where
                 cp.world_point = new_point;
                 cp.anchor_a = anchor_a;
                 cp.anchor_b = anchor_b;
+                cp.normal_impulse *= VectorOps::dot(cp.normal, contact.normal).max(0.0);
+                cp.tangent_impulse = 0.0;
+                cp.tangent_dir = VectorOps::zero();
                 cp.normal = contact.normal;
                 cp.penetration = contact.penetration;
                 return;
@@ -129,17 +123,13 @@ where
         if self.points.len() < MAX_POINTS {
             self.points.push(fresh);
         } else {
-            let (worst, _) = self
-                .points
-                .iter()
-                .enumerate()
-                .min_by(|(_, a), (_, b)| {
-                    let sa = a.normal_impulse + a.tangent_impulse.abs();
-                    let sb = b.normal_impulse + b.tangent_impulse.abs();
-                    sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .unwrap();
-            self.points[worst] = fresh;
+            if let Some((worst, _)) = self.points.iter().enumerate().min_by(|(_, a), (_, b)| {
+                let sa = a.normal_impulse + a.tangent_impulse.abs();
+                let sb = b.normal_impulse + b.tangent_impulse.abs();
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+            }) {
+                self.points[worst] = fresh;
+            }
         }
     }
 }
@@ -161,7 +151,6 @@ fn anchor_world_point<S: PhysicsSpace>(
 
 pub const DEFAULT_PGS_ITERS: usize = 8;
 
-/// The Bullet and rapier default.
 pub const BAUMGARTE_BETA: f32 = 0.2;
 
 /// Penetration tolerated without bias, in world units.
@@ -169,7 +158,7 @@ pub const PENETRATION_SLOP: f32 = 0.005;
 
 pub const MAX_LINEAR_CORRECTION: f32 = 0.5;
 
-/// Approach speed below which restitution is suppressed, m/s; the Box2D figure.
+/// Restitution is suppressed below this approach speed, in world units per second.
 pub const RESTITUTION_THRESHOLD: f32 = 1.0;
 
 #[cfg(test)]
@@ -199,43 +188,34 @@ mod tests {
             1.0,
             &SPACE,
         )
+        .unwrap()
     }
 
-    // A above, B below, so the normal points down.
     fn resting_pair() -> (RigidBody<EuclideanR2>, RigidBody<EuclideanR2>) {
         (body(Vec2::new(0.0, 1.0)), body(Vec2::new(0.0, -1.0)))
     }
 
     #[test]
-    fn merge_preserves_warm_start_impulses() {
+    fn merged_normal_projects_the_warm_start_without_reversing_it() {
         let (a, b) = resting_pair();
-        let mut m: Manifold<EuclideanR2> =
-            Manifold::new(BodyId::forge(0, 0), BodyId::forge(1, 0), 0.0);
-        m.add_or_update(&SPACE, &a, &b, contact(Vec2::ZERO, Vec2::Y, 0.01));
-        m.points[0].normal_impulse = 4.2;
-        m.points[0].tangent_impulse = -1.7;
-        m.points[0].tangent_dir = Vec2::X;
-
-        let merged_point = Vec2::new(0.01, 0.0);
-        let merged_normal = Vec2::new(0.0, -1.0);
-        m.add_or_update(&SPACE, &a, &b, contact(merged_point, merged_normal, 0.05));
-
-        assert_eq!(m.points.len(), 1, "merge must not add a new slot");
-        let cp = &m.points[0];
-        assert_eq!(cp.world_point, merged_point, "geometry refreshed");
-        assert_eq!(cp.normal, merged_normal, "normal refreshed");
-        assert!(
-            (cp.penetration - 0.05).abs() < 1e-6,
-            "penetration refreshed",
-        );
-        assert!(
-            (cp.normal_impulse - 4.2).abs() < 1e-6,
-            "normal impulse preserved across merge",
-        );
-        assert!(
-            (cp.tangent_impulse - -1.7).abs() < 1e-6,
-            "tangent impulse preserved across merge",
-        );
+        for (normal, expected) in [
+            (Vec2::Y, 4.2),
+            (-Vec2::Y, 0.0),
+            (Vec2::X, 0.0),
+            (Vec2::new(0.8, 0.6), 2.52),
+        ] {
+            let mut manifold = Manifold::new(BodyId::forge(0, 0), BodyId::forge(1, 0), 0.0);
+            manifold.add_or_update(&SPACE, &a, &b, contact(Vec2::ZERO, Vec2::Y, 0.01));
+            manifold.points[0].normal_impulse = 4.2;
+            let point = Vec2::new(0.01, 0.0);
+            manifold.add_or_update(&SPACE, &a, &b, contact(point, normal, 0.05));
+            assert_eq!(manifold.points.len(), 1);
+            let merged = &manifold.points[0];
+            assert_eq!(merged.world_point, point);
+            assert_eq!(merged.normal, normal);
+            assert_eq!(merged.penetration, 0.05);
+            assert!((merged.normal_impulse - expected).abs() < 1e-6);
+        }
     }
 
     #[test]
@@ -383,7 +363,6 @@ mod tests {
 
     #[test]
     fn refresh_follows_a_point_through_a_body_rotation() {
-        // A radius-1 arc, far past the break distance.
         let (mut m, mut a, b) = touching_manifold(0.006);
         a.orientation.rotation = Bivector2(std::f32::consts::FRAC_PI_4).exp();
         m.refresh(&SPACE, &a, &b);
@@ -393,7 +372,6 @@ mod tests {
              the manifold",
         );
 
-        // The turn lifts the contact by the sagitta `1 − cos θ`.
         let (mut m, mut a, b) = touching_manifold(0.006);
         let theta = 0.5 * CONTACT_BREAK_DISTANCE;
         a.orientation.rotation = Bivector2(theta).exp();
@@ -414,7 +392,6 @@ mod tests {
             Manifold::new(BodyId::forge(0, 0), BodyId::forge(1, 0), 0.0);
         let kept = [Vec2::new(-0.5, 0.0), Vec2::new(0.5, 0.0)];
         m.add_or_update(&SPACE, &a, &b, contact(kept[0], -Vec2::Y, 0.006));
-        // Created already separated past the break distance, so only this slot goes.
         m.add_or_update(&SPACE, &a, &b, contact(Vec2::ZERO, -Vec2::Y, -0.1));
         m.add_or_update(&SPACE, &a, &b, contact(kept[1], -Vec2::Y, 0.006));
 

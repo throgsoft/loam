@@ -1,45 +1,8 @@
-# Trunk: wasm packager for the loam engine demos.
-#
-# Tested with Trunk 0.21.x. Trunk is a local-dev tool only: it is NOT in the
-# CI build path (the `wasm-build` job in .github/workflows/ci.yml runs raw
-# `cargo build --target wasm32-unknown-unknown`, which is what gates wasm
-# regressions). Install with `cargo install --locked trunk` to pin the
-# transitive dep tree. If a future Trunk release changes the `[serve]` or
-# `data-trunk rel="inline"` semantics this file relies on, pin explicitly via
-# `cargo install --locked --version 0.21 trunk`.
-#
-# Each demo lives in its own workspace member crate under `crates/<name>/`, with a
-# `Cargo.toml` registering an implicit `[[bin]]` (from `src/main.rs`) and an
-# `index.html` next to the Cargo.toml that points Trunk at it. The dev loop is:
-#   trunk serve crates/polytope_playground/index.html
-# and the release build is:
-#   trunk build --release crates/polytope_playground/index.html
-#
-# Under the hood Trunk runs `cargo build --target wasm32-unknown-unknown` with
-# `--no-default-features` (the `data-cargo-no-default-features` attribute in each
-# index.html). Default features are off because the `capture` feature drags in
-# native-only PNG / GIF / APNG encoder crates that don't build on wasm32. The cfg
-# dispatch in `crates/loam-app/src/lib.rs` and `crates/loam-app/src/capture_stub.rs`
-# keeps the public API surface identical.
-#
-# Demos are workspace member crates rather than cargo examples because Trunk's wasm
-# pipeline can only target `[[bin]]`, not `[[example]]`.
-
 [build]
-# Per-build output directory. Each demo writes its bundle into
-# `dist/<index-html-parent-folder>` so artifacts from different demos don't
-# clobber each other.
 dist = "dist"
-
-# Root-relative URLs for hosted deploys; override at the command line if you ever
-# need a subpath (`trunk build --public-url /demos/polytope/`).
 public_url = "/"
 
 [serve]
-# Single-address bind on 8081. The default port 8080 collides with VS Code's
-# extension host on Windows (you'll see `os error 10048` if you try to use it).
-# Trunk 0.21's older `address = "127.0.0.1"` field is deprecated; the modern
-# `addresses` accepts a list, but we only ever want one entry locally.
 addresses = ["127.0.0.1"]
 port = 8081
 open = false

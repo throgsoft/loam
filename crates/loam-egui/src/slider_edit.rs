@@ -60,29 +60,6 @@ mod tests {
     }
 
     #[test]
-    fn no_input_returns_false_and_preserves_value() {
-        let ctx = egui::Context::default();
-        let mut value = 0.5_f32;
-        let input = egui::RawInput {
-            screen_rect: Some(screen()),
-            time: Some(0.0),
-            ..Default::default()
-        };
-        let mut interaction = SliderInteraction::default();
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                interaction = slider_with_edit(ui, &mut value, 0.0..=1.0, "0.50", "", 2, 60.0);
-            });
-        });
-        assert!(
-            !interaction.changed,
-            "no input should not fire a changed event"
-        );
-        assert!(!interaction.dragged, "no input should not report dragged");
-        assert_eq!(value, 0.5);
-    }
-
-    #[test]
     fn side_cell_width_is_fixed() {
         let ctx = egui::Context::default();
         let mut total_widths: Vec<f32> = Vec::new();

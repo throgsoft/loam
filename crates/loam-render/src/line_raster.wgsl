@@ -48,7 +48,6 @@ fn vs_main(
     let s_ndc  = a.xyz / a.w;
     let e_ndc  = b.xyz / b.w;
 
-    // Corners 0, 2 belong to the start endpoint; 1, 3 to the end.
     let pick_start = (corner == 0u || corner == 2u);
     let base_ndc   = select(e_ndc, s_ndc, pick_start);
     let base_w     = select(b.w, a.w, pick_start);

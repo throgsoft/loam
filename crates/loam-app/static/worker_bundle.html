@@ -1,0 +1,10 @@
+<!-- Place after Trunk's Rust link; the worker needs the same hashed JS module. -->
+<script>
+  for (const script of document.querySelectorAll('script[type="module"]')) {
+    const match = script.textContent.match(/from\s*['"]([^'"]+\.js)['"]/);
+    if (match) {
+      window.__loam_wasm_url = new URL(match[1], document.baseURI).href;
+      break;
+    }
+  }
+</script>

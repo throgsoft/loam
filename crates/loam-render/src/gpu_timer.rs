@@ -2,8 +2,9 @@
 //! buffer while any slice is mapped, so one resolve buffer feeds a map buffer
 //! per slot.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 use std::time::Duration;
 use wgpu::{
@@ -12,13 +13,6 @@ use wgpu::{
 };
 
 const FRAMES_IN_FLIGHT: usize = 3;
-
-const MAX_PLAUSIBLE_FRAME_NS: u64 = 1_000_000_000 / 10;
-
-// Some drivers pair a start tick with an end tick from a later cycle.
-fn is_plausible_frame_delta_ns(delta_ns: u64) -> bool {
-    delta_ns <= MAX_PLAUSIBLE_FRAME_NS
-}
 
 const BYTES_PER_SLOT: u64 = 16;
 
@@ -36,7 +30,9 @@ pub struct GpuTimer {
     frame_index: u64,
     timestamp_period_ns: f32,
     rx: Receiver<Duration>,
-    tx: Sender<Duration>,
+    tx: SyncSender<Duration>,
+    started_slot: Cell<Option<usize>>,
+    resolved_slot: Cell<Option<usize>>,
 }
 
 impl GpuTimer {
@@ -65,7 +61,7 @@ impl GpuTimer {
                 mapped_at_creation: false,
             }),
         });
-        let (tx, rx) = channel();
+        let (tx, rx) = sync_channel(FRAMES_IN_FLIGHT);
         Some(Self {
             query_set,
             resolve_buffer,
@@ -74,6 +70,8 @@ impl GpuTimer {
             timestamp_period_ns: queue.get_timestamp_period(),
             rx,
             tx,
+            started_slot: Cell::new(None),
+            resolved_slot: Cell::new(None),
         })
     }
 
@@ -92,19 +90,20 @@ impl GpuTimer {
     }
 
     pub fn write_start(&self, encoder: &mut CommandEncoder) {
+        self.started_slot.set(None);
         let slot = self.current_slot();
         if self.slots[slot].in_flight.load(Ordering::Acquire) {
             return;
         }
         let range = Self::slot_query_range(slot);
         encoder.write_timestamp(&self.query_set, range.start);
+        self.started_slot.set(Some(slot));
     }
 
     pub fn write_end_and_resolve(&self, encoder: &mut CommandEncoder) {
-        let slot = self.current_slot();
-        if self.slots[slot].in_flight.load(Ordering::Acquire) {
+        let Some(slot) = self.started_slot.take() else {
             return;
-        }
+        };
         let query_range = Self::slot_query_range(slot);
         let byte_range = Self::slot_byte_range(slot);
         encoder.write_timestamp(&self.query_set, query_range.end - 1);
@@ -122,6 +121,7 @@ impl GpuTimer {
             BYTES_PER_SLOT,
         );
         self.slots[slot].in_flight.store(true, Ordering::Release);
+        self.resolved_slot.set(Some(slot));
     }
 
     /// Call once per redraw, after the end-of-frame queue submit.
@@ -132,14 +132,9 @@ impl GpuTimer {
             loam_time::frame_trace::record_external("gpu-total", duration);
         }
 
-        // Mapping an already-mapping slice is a wgpu validation error.
-        let just_resolved_slot = (self.frame_index.wrapping_sub(1) as usize) % FRAMES_IN_FLIGHT;
-        if !self.slots[just_resolved_slot]
-            .in_flight
-            .load(Ordering::Acquire)
-        {
+        let Some(just_resolved_slot) = self.resolved_slot.take() else {
             return;
-        }
+        };
         let buffer = self.slots[just_resolved_slot].map_buffer.clone();
         let buffer_for_callback = buffer.clone();
         let period_ns = self.timestamp_period_ns;
@@ -154,10 +149,9 @@ impl GpuTimer {
                 ) {
                     let start_ticks = u64::from_le_bytes(start_bytes);
                     let end_ticks = u64::from_le_bytes(end_bytes);
-                    let delta_ticks = end_ticks.saturating_sub(start_ticks);
-                    let delta_ns = (delta_ticks as f64 * period_ns as f64) as u64;
-                    if is_plausible_frame_delta_ns(delta_ns) {
-                        let _ = tx.send(Duration::from_nanos(delta_ns));
+                    if let Some(delta_ticks) = end_ticks.checked_sub(start_ticks) {
+                        let delta_ns = (delta_ticks as f64 * period_ns as f64) as u64;
+                        let _ = tx.try_send(Duration::from_nanos(delta_ns));
                     }
                 }
                 drop(view);
@@ -190,15 +184,5 @@ mod tests {
             let b = GpuTimer::slot_byte_range(slot + 1);
             assert!(a.end <= b.start);
         }
-    }
-
-    #[test]
-    fn plausible_frame_delta_rejects_over_budget() {
-        assert!(is_plausible_frame_delta_ns(4_000_000));
-        assert!(is_plausible_frame_delta_ns(16_666_667));
-        assert!(is_plausible_frame_delta_ns(MAX_PLAUSIBLE_FRAME_NS));
-        assert!(!is_plausible_frame_delta_ns(250_000_000));
-        assert!(!is_plausible_frame_delta_ns(950_000_000));
-        assert!(is_plausible_frame_delta_ns(0));
     }
 }

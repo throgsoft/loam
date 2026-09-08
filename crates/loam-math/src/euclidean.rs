@@ -8,8 +8,7 @@ use crate::space::{IsometryGroup, Space, WgslSpace};
 /// A rigid motion of R³: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3 {
-    /// Rotation about the origin, applied first. Assumed unit; `iso_apply`
-    /// does not renormalize.
+    /// Applied before translation; composition does not renormalize.
     pub rotation: Quat,
     /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec3,

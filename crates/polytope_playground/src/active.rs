@@ -166,27 +166,20 @@ mod tests {
     use super::wrap_slider_deg;
 
     #[test]
-    fn wrap_is_identity_inside_range() {
-        for d in [0.0_f32, 359.0, -359.0, 720.0, -719.0, 123.456] {
-            assert_eq!(wrap_slider_deg(d), d, "in-range value {d} changed");
+    fn slider_wrap_uses_one_representative_at_the_seam() {
+        for (input, expected) in [
+            (0.0, 0.0),
+            (123.456, 123.456),
+            (720.0, 720.0),
+            (-720.0, 720.0),
+            (721.0, -719.0),
+            (-721.0, 719.0),
+            (1080.0, -360.0),
+            (1440.0, 0.0),
+            (-1440.0, 0.0),
+            (2880.0, 0.0),
+        ] {
+            assert_eq!(wrap_slider_deg(input), expected, "{input}");
         }
-    }
-
-    #[test]
-    fn wrap_folds_one_period_past_the_top() {
-        assert_eq!(wrap_slider_deg(721.0), -719.0);
-        assert_eq!(wrap_slider_deg(1080.0), -360.0);
-    }
-
-    #[test]
-    fn wrap_folds_below_the_bottom() {
-        assert_eq!(wrap_slider_deg(-721.0), 719.0);
-    }
-
-    #[test]
-    fn wrap_period_multiples_land_on_zero() {
-        assert_eq!(wrap_slider_deg(1440.0), 0.0);
-        assert_eq!(wrap_slider_deg(-1440.0), 0.0);
-        assert_eq!(wrap_slider_deg(2880.0), 0.0);
     }
 }

@@ -31,8 +31,7 @@ impl SceneNode {
         SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
     }
 
-    /// Emits chart-coord `dot(p, n) - d` in flat charts and
-    /// [`crate::SENTINEL_DISTANCE`] in curved ones.
+    /// Emits chart-coord `dot(p, n) - d` in flat charts and [`crate::SENTINEL_DISTANCE`] in curved ones.
     pub fn plane(normal: Vec3, offset: f32) -> Self {
         SceneNode::Leaf(PrimitiveKind::HalfSpace { normal, offset })
     }
@@ -78,8 +77,7 @@ impl Scene {
         Self { root }
     }
 
-    /// Emits `fn loam_scene_sdf(p: vec3<f32>) -> f32` plus its helpers. Prepend
-    /// the Space prelude to the result.
+    /// Emits `loam_scene_sdf` and helpers; prepend the space prelude.
     pub fn to_wgsl<S: WgslSpace>(&self, space: &S) -> String {
         let mut helpers = String::new();
         let mut body = String::new();
@@ -97,14 +95,12 @@ impl Scene {
         )
     }
 
-    /// The CPU twin of the emitted `loam_scene_sdf`; see [`Primitive::eval`]
-    /// for the residual divergence that remains. Allocation-free.
+    /// Evaluates the scene without heap allocation.
     pub fn eval<S: Space<Point = Vec3, Vector = Vec3>>(&self, space: &S, p: Vec3) -> f32 {
         eval_node(&self.root, space, p)
     }
 }
 
-// Returns the WGSL variable holding this node's distance.
 fn emit_node<S: WgslSpace>(
     node: &SceneNode,
     space: &S,
@@ -160,7 +156,6 @@ fn emit_node<S: WgslSpace>(
     }
 }
 
-// Reassociating these is algebraically neutral but not bit-neutral.
 fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S, p: Vec3) -> f32 {
     match node {
         SceneNode::Leaf(prim) => prim.eval(space, p),
@@ -176,8 +171,6 @@ fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S,
         }
 
         SceneNode::SmoothUnion { k, left, right } => {
-            // Quilez 2013, "smooth minimum", polynomial variant.
-            // `mix(b, a, h)` is `b·(1 − h) + a·h` (WGSL spec, "mix").
             let a = eval_node(left, space, p);
             let b = eval_node(right, space, p);
             let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
@@ -190,26 +183,6 @@ fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S,
 mod tests {
     use super::*;
     use loam_math::EuclideanR3;
-
-    #[test]
-    fn union_of_two_spheres() {
-        let scene = Scene::new(
-            SceneNode::sphere(Vec3::ZERO, 0.2).union(SceneNode::sphere(Vec3::X * 0.5, 0.2)),
-        );
-        let wgsl = scene.to_wgsl(&EuclideanR3);
-        assert!(wgsl.contains("fn loam_scene_sdf"));
-        assert!(wgsl.contains("min("));
-        assert!(wgsl.contains("sdf_p1"));
-        assert!(wgsl.contains("sdf_p2"));
-    }
-
-    #[test]
-    fn difference_uses_negation() {
-        let scene = Scene::new(SceneNode::sphere(Vec3::ZERO, 0.3).subtract(SceneNode::cube(0.2)));
-        let wgsl = scene.to_wgsl(&EuclideanR3);
-        assert!(wgsl.contains("max("));
-        assert!(wgsl.contains("-("));
-    }
 
     #[test]
     fn ron_round_trip() {

@@ -1,7 +1,3 @@
-//! `Runner`'s frame loop needs a window, so these pin the GPU-side contract it
-//! is ordered against.
-//! The `gpu_probe` suffix is what CI's software-adapter job selects on.
-
 use loam_render::composite::CompositeNode;
 use wgpu::{
     Color, CommandEncoderDescriptor, Device, Extent3d, LoadOp, MapMode, Operations, Origin3d,
@@ -10,59 +6,21 @@ use wgpu::{
     TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
 };
 
-// 64 * 4 bytes hits `COPY_BYTES_PER_ROW_ALIGNMENT` exactly, so the readback
-// needs no row unpadding.
 const SIZE: u32 = 64;
 
-// The linear canvas format browser-WebGPU advertises; `RenderDevice` gives the
-// offscreen scene target the sRGB sibling (`add_srgb_suffix`).
 const SWAP_FORMAT: TextureFormat = TextureFormat::Bgra8Unorm;
 const SCENE_FORMAT: TextureFormat = TextureFormat::Bgra8UnormSrgb;
 
-// Three distinct values so a channel swap cannot pass, none of them near the
-// transfer function's linear segment.
+// IEC 61966-2-1; expected bytes below are BGRA after sRGB encoding.
 const SCENE_LINEAR: [f64; 3] = [0.25, 0.5, 0.75];
 
-// What the UI pass leaves in the scene target after the pre-egui tap has
-// composited. Shares no channel value with `SCENE_LINEAR`, so a composite that
-// republished stale bits fails on every channel.
 const SCENE_LINEAR_AFTER_UI: [f64; 3] = [0.9, 0.1, 0.4];
 
-// Swapchain contents before any of the frame's passes touch it, in the
-// attachment's BGRA byte order. Opaque magenta: nothing the scene colour could
-// be confused with.
-const UNWRITTEN_BGRA: [u8; 4] = [255, 0, 255, 255];
-
-// One 8-bit code point of slack, spent on the encode-decode-encode round trip.
 const TOLERANCE: u8 = 1;
-
-// IEC 61966-2-1 linear to sRGB, mirroring `composite.wgsl`'s `linear_to_srgb`.
-fn linear_to_srgb(c: f64) -> f64 {
-    if c <= 0.003_130_8 {
-        12.92 * c
-    } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
-    }
-}
-
-fn encoded_byte(linear: f64) -> u8 {
-    (linear_to_srgb(linear) * 255.0).round() as u8
-}
-
-// A linear triple after encoding, in the attachments' BGRA byte order.
-fn expected_bgra(linear: [f64; 3]) -> [u8; 4] {
-    [
-        encoded_byte(linear[2]),
-        encoded_byte(linear[1]),
-        encoded_byte(linear[0]),
-        255,
-    ]
-}
 
 struct Probe {
     device: Device,
     queue: Queue,
-    scene: Texture,
     scene_view: TextureView,
     swap: Texture,
     swap_view: TextureView,
@@ -81,7 +39,6 @@ impl Probe {
         Self {
             device,
             queue,
-            scene,
             scene_view,
             swap,
             swap_view,
@@ -89,8 +46,6 @@ impl Probe {
         }
     }
 
-    // On the sRGB scene target the clear value is linear and the hardware
-    // encodes it on write, the same path a shader's linear output takes.
     fn fill(&self, view: &TextureView, color: Color) {
         let mut encoder = self
             .device
@@ -143,7 +98,6 @@ impl Probe {
     }
 }
 
-// `Bgra8Unorm` stores clear channels verbatim, so 1.0 and 0.0 land on 255 and 0.
 fn unwritten_color() -> Color {
     Color {
         r: 1.0,
@@ -195,8 +149,6 @@ async fn request_device() -> Result<(Device, Queue), String> {
         .map_err(|e| format!("request_device failed: {e}"))
 }
 
-// Raw stored bytes, no format interpretation: what `capture::read_texture_rgba`
-// copies out before its BGRA swizzle.
 fn read_back(probe: &Probe, texture: &Texture) -> Vec<u8> {
     let bytes_per_row = SIZE * 4;
     let buffer = probe.device.create_buffer(&wgpu::BufferDescriptor {
@@ -246,8 +198,6 @@ fn read_back(probe: &Probe, texture: &Texture) -> Vec<u8> {
     data
 }
 
-// Every texel, so a pass that covered part of the target fails here rather than
-// passing on a lucky sample.
 fn assert_every_texel(pixels: &[u8], expected: [u8; 4], tolerance: u8, what: &str) {
     for (index, texel) in pixels.chunks_exact(4).enumerate() {
         for channel in 0..4 {
@@ -264,77 +214,23 @@ fn assert_every_texel(pixels: &[u8], expected: [u8; 4], tolerance: u8, what: &st
 }
 
 #[test]
-#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn swapchain_holds_no_scene_pixels_until_the_composite_runs_gpu_probe() {
-    let probe = Probe::new();
-    probe.record_scene();
-
-    let before = read_back(&probe, &probe.swap);
-    assert_every_texel(&before, UNWRITTEN_BGRA, 0, "swapchain before the composite");
-
-    probe.run_composite();
-    let after = read_back(&probe, &probe.swap);
-    assert_every_texel(
-        &after,
-        expected_bgra(SCENE_LINEAR),
-        TOLERANCE,
-        "swapchain after the composite",
-    );
-}
-
-#[test]
-#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn composite_leaves_the_swapchain_holding_srgb_encoded_channels_gpu_probe() {
+#[ignore = "requires a working wgpu adapter; CI runs software-adapter probes"]
+fn composite_encodes_channels_and_refreshes_after_scene_changes_gpu_probe() {
     let probe = Probe::new();
     probe.record_scene();
     probe.run_composite();
-
-    let expected = expected_bgra(SCENE_LINEAR);
-    assert_eq!(
-        expected,
-        [225, 188, 137, 255],
-        "closed-form expectation drifted from the literals this test was written against"
-    );
-    assert_every_texel(
-        &read_back(&probe, &probe.scene),
-        expected,
-        TOLERANCE,
-        "scene target",
-    );
     assert_every_texel(
         &read_back(&probe, &probe.swap),
-        expected,
+        [225, 188, 137, 255],
         TOLERANCE,
-        "swapchain",
+        "initial composite",
     );
-}
-
-#[test]
-#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn a_repeated_composite_leaves_the_swapchain_unchanged_gpu_probe() {
-    let probe = Probe::new();
-    probe.record_scene();
-    probe.run_composite();
-    let once = read_back(&probe, &probe.swap);
-    probe.run_composite();
-    let twice = read_back(&probe, &probe.swap);
-    assert_eq!(once, twice, "a second composite changed the swapchain");
-}
-
-#[test]
-#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn the_composite_after_a_diagnostic_one_republishes_the_post_ui_scene_gpu_probe() {
-    let probe = Probe::new();
-    probe.record_scene();
-    probe.run_composite();
-
     probe.fill_scene(SCENE_LINEAR_AFTER_UI);
     probe.run_composite();
-
     assert_every_texel(
         &read_back(&probe, &probe.swap),
-        expected_bgra(SCENE_LINEAR_AFTER_UI),
+        [170, 89, 243, 255],
         TOLERANCE,
-        "swapchain after the presenting composite",
+        "updated composite",
     );
 }

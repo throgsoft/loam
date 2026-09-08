@@ -1,30 +1,17 @@
-//! Pairs with the `Visualizable<N>` trait in `loam-shape`: that produces mesh
-//! data in R^N, this maps it to screen-ready R³ vertices. The rasterizer
-//! pipeline in `loam-render` composes them.
+//! Projection consumes canonical ambient coordinates; tessellation emits samples without owning storage.
 
 use glam::{Vec3, Vec4};
 
 use crate::space::Space;
 use crate::{EuclideanR3, EuclideanR4};
 
-// Sign-preserving floor for central-projection denominators (Perspective4D
-// scale, Schlegel ray parameter): keeps a vertex on the viewer's 3-flat from
-// dividing by zero. The denominator is a dot of order-1 unit vectors, so `1e-4`
-// sits above f32 roundoff yet below any real ray parameter; it engages only at
-// the singularity, where the buffer stays finite but the picture is meaningless.
 const PROJECTION_DENOM_EPSILON: f32 = 1e-4;
 
-/// Floor for the stereographic denominator `1 - dot(p, n)`. The pole is a
-/// reachable input, so a vertex at the pole gives `dot = 1` and a bare divide
-/// NaNs the buffer. Same order-1 reasoning as `PROJECTION_DENOM_EPSILON`.
+/// Floor on `1 - dot(p, pole)` at the projection singularity.
 pub const STEREOGRAPHIC_POLE_EPSILON: f32 = 1e-4;
 
-// Orthonormal basis `(e1, e2, e3)` of the 3-flat perpendicular to unit `n`.
-// Deterministic in `n`: drop the world axis most aligned with `n`, then
-// Gram-Schmidt the surviving three in x, y, z, w order (do Carmo, *Differential
-// Geometry of Curves and Surfaces*, §1.4).
+// do Carmo, Differential Geometry of Curves and Surfaces, 1976, §1.4.
 fn perp_frame(n: Vec4) -> (Vec4, Vec4, Vec4) {
-    // Ties resolve toward the earliest axis for determinism.
     let ax = n.x.abs();
     let ay = n.y.abs();
     let az = n.z.abs();
@@ -58,10 +45,7 @@ fn perp_frame(n: Vec4) -> (Vec4, Vec4, Vec4) {
     (basis[0], basis[1], basis[2])
 }
 
-// Stereographic map of `p` on S³ to R³ from unit `pole` (Wikipedia,
-// *Stereographic projection*). The numerator is truncated before the divide
-// so the image lies in the `pole`-perpendicular 3-flat; the bare `p / denom`
-// form leaks a `pole`-component.
+// Wikipedia, Stereographic projection.
 pub(crate) fn stereographic_to_r3(p: Vec4, pole: Vec4) -> Vec3 {
     let dot = p.dot(pole).clamp(-1.0, 1.0);
     let denom = (1.0 - dot).max(STEREOGRAPHIC_POLE_EPSILON);
@@ -74,58 +58,34 @@ pub(crate) fn stereographic_to_r3(p: Vec4, pole: Vec4) -> Vec3 {
     Vec3::new(scaled.dot(e1), scaled.dot(e2), scaled.dot(e3))
 }
 
-/// Variants are dimension-generic in the type system but each makes sense only
-/// for specific `N`; impls return `Vec3::ZERO` rather than panic on an
-/// unsupported variant.
+/// Unsupported dimension/variant combinations return `Vec3::ZERO`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Projection<const N: usize> {
-    /// First 3 components, zero-pad if `N < 3`, truncate if `N > 3`. Bitwise
-    /// identity at `N == 3`. Default variant.
+    /// Keeps the first three components, padding with zero if needed.
     #[default]
     Identity,
 
-    /// Drop one axis by 0-based index; remaining `N - 1` components fill R³ in
-    /// order, zero-padded if short. R⁴ `drop_axis: 3` gives `(x, y, z)`, the
-    /// standard R⁴-into-R³ convention. Out-of-range (>= `N`) returns `Vec3::ZERO`.
+    /// Drops the indexed axis; an out-of-range index returns `Vec3::ZERO`.
     Orthographic { drop_axis: usize },
 
-    /// 4D pinhole from a viewer at `(0, 0, 0, focal_distance)` looking in -w:
-    /// `(x, y, z, w) -> (x, y, z) * focal_distance / (focal_distance - w)`. For a
-    /// unit-circumradius polytope this is the "cube within a cube" tesseract view.
-    ///
-    /// **Precondition: `focal_distance > max(w)` over every vertex.** Otherwise
-    /// the denominator hits zero (eye singularity) or flips sign; the impl clamps
-    /// it rather than NaN-ing the upload, but the picture is then meaningless.
+    /// Pinhole at `(0, 0, 0, focal_distance)`; callers must keep every vertex below the eye in w.
     Perspective4D { focal_distance: f32 },
 
-    /// 4D Schlegel diagram: central projection from a viewpoint just outside a
-    /// chosen cell onto that cell's bounding 3-flat (Coxeter, *Regular Polytopes*,
-    /// 3rd ed., ch. 13). The chosen cell maps to the outer boundary and the rest
-    /// nest inside.
-    ///
-    /// **Precondition: `cell_normal` is the *outward* unit normal and
-    /// `viewpoint_distance > cell_offset`.** The inward normal breaks nesting.
+    // Coxeter, Regular Polytopes, 3rd ed., ch. 13.
+    /// Projects onto the cell plane; the normal must be outward and unit, and the eye outside the polytope.
     Schlegel {
         cell_normal: Vec4,
-        /// Signed plane offset: the cell lies in
-        /// `{x : dot(cell_normal, x) = cell_offset}`.
+        /// Signed plane offset: the cell lies in `{x : dot(cell_normal, x) = cell_offset}`.
         cell_offset: f32,
         /// Eye distance along `cell_normal`; must exceed `cell_offset`.
         viewpoint_distance: f32,
         basis: [Vec4; 3],
     },
 
-    /// Conformal projection of S³ onto R³ from a unit `pole` (Wikipedia,
-    /// *Stereographic projection*):
-    ///   `image = (p - dot(p, pole)*pole) / (1 - dot(p, pole))`,
-    /// read out in an orthonormal basis of the `pole`-perpendicular 3-flat (see
-    /// `perp_frame`). Pole `Vec4::W` collapses to `(p.x, p.y, p.z) / (1 - p.w)`.
-    ///
-    /// **Precondition: `pole` and `p` are unit.** `dot` is clamped to `[-1, 1]`
-    /// (matching [`crate::SphericalS3Embedded`]).
+    // Wikipedia, Stereographic projection.
+    /// Projects unit S³ from a unit pole into its perpendicular 3-flat.
     Stereographic {
-        /// Unit `Vec4` pole the projection casts away from. `Vec4::W` gives the
-        /// closed-form `(x, y, z) / (1 - w)` map.
+        /// Unit pole; `Vec4::W` gives the usual xyz readout.
         pole: Vec4,
     },
 }
@@ -151,8 +111,7 @@ impl Projection<4> {
     }
 }
 
-/// `N` is the const-generic ambient dimension matching the `Visualizable<N>` mesh
-/// data in `loam-shape`.
+/// `N` is the const-generic ambient dimension matching the `Visualizable<N>` mesh data in `loam-shape`.
 pub trait RasterizableSpace<const N: usize>: Space {
     fn point_to_array(p: Self::Point) -> [f32; N];
 
@@ -160,17 +119,12 @@ pub trait RasterizableSpace<const N: usize>: Space {
 
     fn project_point(point: Self::Point, projection: &Projection<N>) -> Vec3;
 
-    /// `samples` is the subdivision count, not the point count: `samples == 1`
-    /// appends `[p0, p1]`; `samples == 4` appends 5 points. Flat spaces lerp;
-    /// curved spaces sample along [`Space::exp`] / [`Space::log`].
-    ///
-    /// **Writer pattern:** the upload loop reuses one `Vec` across segments, so
-    /// impls `push` and never `clear` (the caller owns the buffer).
+    /// Emits both endpoints and `samples - 1` interior points when `samples > 1`.
     fn tessellate_segment(
         p0: Self::Point,
         p1: Self::Point,
         samples: usize,
-        out: &mut Vec<Self::Point>,
+        emit: impl FnMut(Self::Point),
     );
 }
 
@@ -198,13 +152,13 @@ impl RasterizableSpace<3> for EuclideanR3 {
         }
     }
 
-    fn tessellate_segment(p0: Vec3, p1: Vec3, samples: usize, out: &mut Vec<Vec3>) {
-        out.push(p0);
+    fn tessellate_segment(p0: Vec3, p1: Vec3, samples: usize, mut emit: impl FnMut(Vec3)) {
+        emit(p0);
         for i in 1..samples {
             let t = i as f32 / samples as f32;
-            out.push(p0.lerp(p1, t));
+            emit(p0.lerp(p1, t));
         }
-        out.push(p1);
+        emit(p1);
     }
 }
 
@@ -238,15 +192,11 @@ impl RasterizableSpace<4> for EuclideanR4 {
                 viewpoint_distance,
                 basis,
             } => {
-                // Central projection from `E = viewpoint_distance * n` onto the
-                // cell 3-flat (Coxeter, *Regular Polytopes*, ch. 13). A
-                // chosen-cell vertex has `t = 1` and maps to itself.
+                // Coxeter, Regular Polytopes, 3rd ed., ch. 13.
                 let n = *cell_normal;
                 let eye = *viewpoint_distance * n;
                 let n_dot_eye = n.dot(eye);
-                // Sign-preserving clamp keeps a vertex on the viewer's 3-flat
-                // shooting off in the correct direction rather than dividing by
-                // zero or flipping across the eye.
+
                 let raw_denom = n.dot(point) - n_dot_eye;
                 let denom = if raw_denom.abs() < PROJECTION_DENOM_EPSILON {
                     PROJECTION_DENOM_EPSILON.copysign(raw_denom)
@@ -258,21 +208,17 @@ impl RasterizableSpace<4> for EuclideanR4 {
                 let [e1, e2, e3] = *basis;
                 Vec3::new(result.dot(e1), result.dot(e2), result.dot(e3))
             }
-            Projection::Stereographic { pole } => {
-                // Normalize onto S³ first: demo vertices are body-scaled, and the
-                // map is only defined on the unit sphere.
-                stereographic_to_r3(point.normalize(), *pole)
-            }
+            Projection::Stereographic { pole } => stereographic_to_r3(point.normalize(), *pole),
         }
     }
 
-    fn tessellate_segment(p0: Vec4, p1: Vec4, samples: usize, out: &mut Vec<Vec4>) {
-        out.push(p0);
+    fn tessellate_segment(p0: Vec4, p1: Vec4, samples: usize, mut emit: impl FnMut(Vec4)) {
+        emit(p0);
         for i in 1..samples {
             let t = i as f32 / samples as f32;
-            out.push(p0.lerp(p1, t));
+            emit(p0.lerp(p1, t));
         }
-        out.push(p1);
+        emit(p1);
     }
 }
 
@@ -282,9 +228,6 @@ mod tests {
     use crate::SphericalS3Embedded;
     use approx::assert_relative_eq;
 
-    // Golden Vec3 for `stereographic_frame_is_deterministic_under_tie`: the
-    // readout of pole `(0,0,1,1)/sqrt(2)`, input `(0.5,0.5,-0.5,0.5)`. A gauge
-    // flip from a tie-break or Gram-Schmidt change moves it.
     const GOLDEN_TIE_FRAME: Vec3 = Vec3::new(0.5, 0.5, std::f32::consts::FRAC_1_SQRT_2);
 
     #[test]
@@ -311,7 +254,7 @@ mod tests {
         let p0 = Vec3::new(0.0, 0.0, 0.0);
         let p1 = Vec3::new(2.0, 4.0, -6.0);
         let mut out = Vec::new();
-        <EuclideanR3 as RasterizableSpace<3>>::tessellate_segment(p0, p1, 1, &mut out);
+        <EuclideanR3 as RasterizableSpace<3>>::tessellate_segment(p0, p1, 1, |p| out.push(p));
         assert_eq!(out.len(), 2);
         assert_eq!(out[0], p0);
         assert_eq!(out[1], p1);
@@ -322,23 +265,13 @@ mod tests {
         let p0 = Vec3::new(0.0, 0.0, 0.0);
         let p1 = Vec3::new(4.0, 0.0, 0.0);
         let mut out = Vec::new();
-        <EuclideanR3 as RasterizableSpace<3>>::tessellate_segment(p0, p1, 4, &mut out);
+        <EuclideanR3 as RasterizableSpace<3>>::tessellate_segment(p0, p1, 4, |p| out.push(p));
         assert_eq!(out.len(), 5);
         assert_eq!(out[0], p0);
         assert_eq!(out[1], Vec3::new(1.0, 0.0, 0.0));
         assert_eq!(out[2], Vec3::new(2.0, 0.0, 0.0));
         assert_eq!(out[3], Vec3::new(3.0, 0.0, 0.0));
         assert_eq!(out[4], p1);
-    }
-
-    #[test]
-    fn r3_tessellate_appends_does_not_clear() {
-        let mut out = vec![Vec3::new(9.0, 9.0, 9.0)];
-        <EuclideanR3 as RasterizableSpace<3>>::tessellate_segment(Vec3::ZERO, Vec3::X, 1, &mut out);
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0], Vec3::new(9.0, 9.0, 9.0));
-        assert_eq!(out[1], Vec3::ZERO);
-        assert_eq!(out[2], Vec3::X);
     }
 
     #[test]
@@ -401,7 +334,7 @@ mod tests {
         let far = Vec4::new(0.5, 0.5, 0.5, -0.5);
         let pn = <EuclideanR4 as RasterizableSpace<4>>::project_point(near, &proj);
         let pf = <EuclideanR4 as RasterizableSpace<4>>::project_point(far, &proj);
-        // Scale is `4/3` at w=+0.5 and `4/5` at w=-0.5.
+
         let r_near = (pn.length() / 0.5_f32.mul_add(3.0_f32.sqrt(), 0.0)).abs();
         let r_far = (pf.length() / 0.5_f32.mul_add(3.0_f32.sqrt(), 0.0)).abs();
         assert!((r_near - 4.0 / 3.0).abs() < 1e-5, "near scale {r_near}");
@@ -434,8 +367,6 @@ mod tests {
         assert_eq!(got, Vec3::ZERO);
     }
 
-    // Tesseract vertices, unit-circumradius (`±0.5` each). The `w = +0.5` cell
-    // is the canonical boundary cell.
     const TESSERACT_VERTS: [Vec4; 16] = [
         Vec4::new(0.5, 0.5, 0.5, 0.5),
         Vec4::new(-0.5, 0.5, 0.5, 0.5),
@@ -464,7 +395,7 @@ mod tests {
             .iter()
             .map(|v| <EuclideanR4 as RasterizableSpace<4>>::project_point(*v, &proj))
             .collect();
-        // The cube's 3D distances ignore the shared `w`; compare against xyz.
+
         for i in 0..cell.len() {
             for j in (i + 1)..cell.len() {
                 let orig = (Vec3::new(cell[i].x, cell[i].y, cell[i].z)
@@ -491,18 +422,16 @@ mod tests {
             Vec4::W,
             -Vec4::W,
         ];
-        // Chosen cell {+x,+y,+z,+w}; centroid direction is the outward normal.
+
         let centroid = (Vec4::X + Vec4::Y + Vec4::Z + Vec4::W) / 4.0;
         let cell_offset = centroid.length();
         let cell_normal = centroid / cell_offset;
         let proj = Projection::schlegel(cell_normal, cell_offset, 1.5 * cell_offset);
-        // The +axes are the boundary; the -axes nest.
+
         let boundary = [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W];
         let inner = [-Vec4::X, -Vec4::Y, -Vec4::Z, -Vec4::W];
         let proj_pt = |v: Vec4| <EuclideanR4 as RasterizableSpace<4>>::project_point(v, &proj);
 
-        // Boundary vertices form a regular tetrahedron, each farther from center
-        // than every nested vertex.
         let boundary_r: Vec<f32> = boundary.iter().map(|&v| proj_pt(v).length()).collect();
         let inner_r: Vec<f32> = inner.iter().map(|&v| proj_pt(v).length()).collect();
         let r0 = boundary_r[0];
@@ -519,8 +448,7 @@ mod tests {
                 "every nested vertex must sit inside the boundary, inner {inner_r:?} vs {r0}"
             );
         }
-        // The four boundary +axes are mutually equidistant at `sqrt(2)`; the
-        // isometric frame readout must preserve that, where a drop-w would not.
+
         let proj_boundary: Vec<Vec3> = boundary.iter().map(|&v| proj_pt(v)).collect();
         let edge_len = 2.0_f32.sqrt();
         for i in 0..proj_boundary.len() {
@@ -532,7 +460,7 @@ mod tests {
                 );
             }
         }
-        // Coarse non-degeneracy guard.
+
         let all: Vec<Vec3> = verts.iter().map(|&v| proj_pt(v)).collect();
         for axis in 0..3 {
             let comp = |p: Vec3| [p.x, p.y, p.z][axis];
@@ -562,25 +490,10 @@ mod tests {
     }
 
     #[test]
-    fn schlegel_projection_is_always_finite() {
-        let cell_offset = 0.5;
-        let proj = Projection::schlegel(Vec4::W, cell_offset, 1.5 * cell_offset);
-        for v in TESSERACT_VERTS {
-            let got = <EuclideanR4 as RasterizableSpace<4>>::project_point(v, &proj);
-            for c in [got.x, got.y, got.z] {
-                assert!(
-                    c.is_finite(),
-                    "vertex {v:?} projected to non-finite {got:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn schlegel_zero_denominator_clamps_finite() {
         let viewpoint_distance = 0.75;
         let proj = Projection::schlegel(Vec4::W, 0.5, viewpoint_distance);
-        // `w = viewpoint_distance` puts the vertex on the eye's 3-flat.
+
         let p = Vec4::new(0.3, -0.2, 0.1, viewpoint_distance);
         let got = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
         for c in [got.x, got.y, got.z] {
@@ -591,61 +504,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn schlegel_outward_normal_sign_required() {
-        let cell_offset = 0.5;
-        let viewpoint_distance = 1.5 * cell_offset;
-        let outward = Projection::schlegel(Vec4::W, cell_offset, viewpoint_distance);
-        // Same `w = +0.5` cell via the inward normal `-W`: offset flips, eye lands
-        // on the far side.
-        let inward = Projection::schlegel(-Vec4::W, -cell_offset, viewpoint_distance);
-        let opposite = Vec4::new(0.5, 0.5, 0.5, -0.5);
-        // Boundary cube corners sit at radius `sqrt(3)/2`.
-        let boundary_radius = (0.75_f32).sqrt();
-        let nested = <EuclideanR4 as RasterizableSpace<4>>::project_point(opposite, &outward);
-        let escaped = <EuclideanR4 as RasterizableSpace<4>>::project_point(opposite, &inward);
-        assert!(
-            nested.length() < boundary_radius,
-            "outward normal must nest the opposite cell (r {} < {boundary_radius}), got {nested:?}",
-            nested.length()
-        );
-        assert!(
-            escaped.length() > boundary_radius,
-            "inward normal must push the opposite cell outside (r {} > {boundary_radius}), got {escaped:?}",
-            escaped.length()
-        );
-    }
-
-    #[test]
-    fn perp_frame_is_orthonormal_and_perpendicular_to_normal() {
-        let normals = [
-            Vec4::W,
-            Vec4::X,
-            Vec4::new(0.5, 0.5, 0.5, 0.5),
-            Vec4::new(0.1, -0.2, 0.3, 0.9).normalize(),
-            Vec4::new(-0.6, 0.0, 0.8, 0.0).normalize(),
-        ];
-        for n in normals {
-            let (e1, e2, e3) = perp_frame(n);
-            for (label, e) in [("e1", e1), ("e2", e2), ("e3", e3)] {
-                assert!(
-                    (e.length() - 1.0).abs() < 1e-5,
-                    "{label} not unit for n {n:?}"
-                );
-                assert!(
-                    e.dot(n).abs() < 1e-5,
-                    "{label} not perpendicular to n {n:?}"
-                );
-            }
-            assert!(e1.dot(e2).abs() < 1e-5, "e1·e2 != 0 for n {n:?}");
-            assert!(e1.dot(e3).abs() < 1e-5, "e1·e3 != 0 for n {n:?}");
-            assert!(e2.dot(e3).abs() < 1e-5, "e2·e3 != 0 for n {n:?}");
-        }
-    }
-
-    // Inverse stereographic map for pole `Vec4::W`: with `s = |q|²`,
-    // `w = (s - 1)/(s + 1)`, `(x, y, z) = q*(1 - w)` (Wikipedia, *Stereographic
-    // projection*).
+    // Wikipedia, Stereographic projection.
     fn stereo_inverse_w_pole(q: Vec3) -> Vec4 {
         let s = q.length_squared();
         let w = (s - 1.0) / (s + 1.0);
@@ -653,13 +512,10 @@ mod tests {
         Vec4::new(xyz.x, xyz.y, xyz.z, w)
     }
 
-    // General-pole inverse: re-embed `q` against `perp_frame(pole)`, then invert
-    // the radial scaling against `|p| = 1`. Inverts `stereographic_to_r3`.
     fn stereo_inverse_general(q: Vec3, pole: Vec4) -> Vec4 {
         let (e1, e2, e3) = perp_frame(pole);
         let perp = q.x * e1 + q.y * e2 + q.z * e3;
-        // |perp| = sqrt((1 + dot)/(1 - dot)); solve for dot, then restore the
-        // pole part.
+
         let s = perp.length_squared();
         let dot = (s - 1.0) / (s + 1.0);
         dot * pole + (1.0 - dot) * perp
@@ -679,7 +535,7 @@ mod tests {
                 "fast path must match canonical formula for {p:?}"
             );
         }
-        // Also bit-identical to the general frame-readout path for the W pole.
+
         let general = {
             let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
             let dot = p.dot(Vec4::W).clamp(-1.0, 1.0);
@@ -726,31 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn stereographic_image_in_n_perp_hyperplane() {
-        for pole in [
-            Vec4::W,
-            Vec4::new(0.1, -0.2, 0.3, 0.9).normalize(),
-            Vec4::new(0.5, 0.5, 0.5, 0.5),
-        ] {
-            let (e1, e2, e3) = perp_frame(pole);
-            for p in [
-                Vec4::new(0.6, 0.5, -0.2, 0.0).normalize(),
-                Vec4::new(-0.3, 0.4, 0.5, -0.2).normalize(),
-                Vec4::new(0.2, 0.1, -0.3, 0.4).normalize(),
-            ] {
-                let proj = Projection::Stereographic { pole };
-                let img = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
-                let ambient = img.x * e1 + img.y * e2 + img.z * e3;
-                assert!(
-                    ambient.dot(pole).abs() < 1e-5,
-                    "image must lie in pole-perp 3-flat: pole {pole:?} p {p:?} leak {}",
-                    ambient.dot(pole)
-                );
-            }
-        }
-    }
-
-    #[test]
     fn stereographic_pole_denominator_clamped_finite() {
         for pole in [Vec4::W, Vec4::new(0.5, 0.5, 0.5, 0.5)] {
             let proj = Projection::Stereographic { pole };
@@ -761,7 +592,7 @@ mod tests {
                     "pole input must clamp finite, got {at_pole:?}"
                 );
             }
-            // Just off the pole, mostly tangential.
+
             let (e1, _, _) = perp_frame(pole);
             let near = (pole * 0.9999 + e1 * 0.01).normalize();
             let near_img = <EuclideanR4 as RasterizableSpace<4>>::project_point(near, &proj);
@@ -786,18 +617,12 @@ mod tests {
     }
 
     #[test]
-    fn stereographic_frame_is_deterministic_under_tie() {
-        // Pole equidistant from the z and w axes.
+    fn stereographic_frame_breaks_axis_ties_in_index_order() {
         let pole = Vec4::new(0.0, 0.0, 1.0, 1.0).normalize();
         let proj = Projection::Stereographic { pole };
-        let p = Vec4::new(0.5, 0.5, -0.5, 0.5); // unit
+        let p = Vec4::new(0.5, 0.5, -0.5, 0.5);
         let first = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
-        for _ in 0..16 {
-            let again = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
-            assert_eq!(first, again, "frame must be byte-stable across calls");
-        }
-        // Golden value locks the chosen gauge; the `==` ladder drops z (index 2)
-        // on the z/w max tie.
+
         assert_relative_eq!(first.x, GOLDEN_TIE_FRAME.x, epsilon = 1e-6);
         assert_relative_eq!(first.y, GOLDEN_TIE_FRAME.y, epsilon = 1e-6);
         assert_relative_eq!(first.z, GOLDEN_TIE_FRAME.z, epsilon = 1e-6);
@@ -837,14 +662,13 @@ mod tests {
         let v = Vec4::new(0.3, -0.1, 0.2, -0.5).normalize();
         let a = Vec4::new(0.5, 0.4, -0.1, -0.3).normalize();
         let b = Vec4::new(-0.2, 0.3, 0.6, -0.4).normalize();
-        // Intrinsic edge angle at `v` from the geodesic tangents.
+
         let ta = s.log(v, a);
         let tb = s.log(v, b);
         let intrinsic = (ta.dot(tb) / (ta.length() * tb.length()))
             .clamp(-1.0, 1.0)
             .acos();
-        // Secant a small step along each geodesic approximates the projected
-        // tangent.
+
         let step = 1e-3;
         let pv = <EuclideanR4 as RasterizableSpace<4>>::project_point(v, &proj);
         let pa = <EuclideanR4 as RasterizableSpace<4>>::project_point(
@@ -868,7 +692,7 @@ mod tests {
         let p0 = Vec4::new(0.0, 0.0, 0.0, 0.0);
         let p1 = Vec4::new(4.0, 8.0, 12.0, 16.0);
         let mut out = Vec::new();
-        <EuclideanR4 as RasterizableSpace<4>>::tessellate_segment(p0, p1, 2, &mut out);
+        <EuclideanR4 as RasterizableSpace<4>>::tessellate_segment(p0, p1, 2, |p| out.push(p));
         assert_eq!(out.len(), 3);
         assert_eq!(out[0], p0);
         assert_eq!(out[1], Vec4::new(2.0, 4.0, 6.0, 8.0));

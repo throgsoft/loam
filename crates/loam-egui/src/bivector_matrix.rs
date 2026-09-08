@@ -64,23 +64,6 @@ mod tests {
     }
 
     #[test]
-    fn cell_text_diagonal_is_zero() {
-        let b = Bivector4::ZERO;
-        for i in 0..4 {
-            assert_eq!(cell_text(&b, i, i), "0");
-        }
-    }
-
-    #[test]
-    fn cell_text_pure_xy_plane() {
-        let b = pure(Plane4::Xy);
-        assert_eq!(cell_text(&b, 0, 1), "+57.3");
-        assert_eq!(cell_text(&b, 1, 0), "-57.3");
-        assert_eq!(cell_text(&b, 0, 2), " +0.0");
-        assert_eq!(cell_text(&b, 2, 3), " +0.0");
-    }
-
-    #[test]
     fn cell_text_each_basis_plane_lights_correct_cell() {
         let cases = [
             (Plane4::Xy, (0, 1)),

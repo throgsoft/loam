@@ -6,8 +6,7 @@ mod modifier_sync;
 
 use loam_input::{InputState, Modifiers};
 use modifier_sync::{ModifierFlags, ModifierSync};
-use winit::event::ElementState;
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::KeyCode;
 
 fn all_flag_combinations() -> impl Iterator<Item = ModifierFlags> {
     (0u8..16).map(|bits| ModifierFlags {
@@ -27,44 +26,19 @@ fn expected(flags: ModifierFlags) -> Modifiers {
     }
 }
 
-// Mirrors the worker's `InputMessage::Key` branch: the browser's flags reconcile
-// first, then the physical key lands (`None` for codes `keymap::keycode_winit`
-// does not carry).
-fn key_event(
-    sync: &mut ModifierSync,
-    input: &mut InputState,
-    code: Option<KeyCode>,
-    pressed: bool,
-    flags: ModifierFlags,
-) {
-    let state = |pressed| {
-        if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        }
-    };
-    sync.reconcile(flags, |code, pressed| {
-        input.key_input(PhysicalKey::Code(code), state(pressed));
-    });
-    if let Some(code) = code {
-        input.key_input(PhysicalKey::Code(code), state(pressed));
-    }
-}
-
 #[test]
 fn frame_input_modifiers_equal_the_browser_flags_after_any_transition() {
     for from in all_flag_combinations() {
         for to in all_flag_combinations() {
             let mut sync = ModifierSync::default();
             let mut input = InputState::default();
-            key_event(&mut sync, &mut input, Some(KeyCode::KeyW), true, from);
+            sync.key_event(&mut input, Some(KeyCode::KeyW), true, from);
             assert_eq!(
                 input.take_frame().modifiers,
                 expected(from),
                 "reaching {from:?} from the default state"
             );
-            key_event(&mut sync, &mut input, Some(KeyCode::KeyW), false, to);
+            sync.key_event(&mut input, Some(KeyCode::KeyW), false, to);
             assert_eq!(
                 input.take_frame().modifiers,
                 expected(to),
@@ -83,12 +57,11 @@ fn a_swallowed_keyup_is_released_by_the_next_contradicting_flag() {
             alt: true,
             ..ModifierFlags::default()
         };
-        key_event(&mut sync, &mut input, Some(side), true, alt);
+        sync.key_event(&mut input, Some(side), true, alt);
         assert!(input.take_frame().modifiers.alt);
 
         // No keyup for `side` ever arrives; the next unrelated key does.
-        key_event(
-            &mut sync,
+        sync.key_event(
             &mut input,
             Some(KeyCode::KeyW),
             true,
@@ -105,8 +78,7 @@ fn a_swallowed_keyup_is_released_by_the_next_contradicting_flag() {
 fn meta_reaches_super_key_without_a_mapped_code() {
     let mut sync = ModifierSync::default();
     let mut input = InputState::default();
-    key_event(
-        &mut sync,
+    sync.key_event(
         &mut input,
         None,
         true,
@@ -138,18 +110,11 @@ fn a_held_right_hand_modifier_survives_unrelated_key_events() {
         shift: true,
         ..ModifierFlags::default()
     };
-    key_event(
-        &mut sync,
-        &mut input,
-        Some(KeyCode::ShiftRight),
-        true,
-        shift,
-    );
-    key_event(&mut sync, &mut input, Some(KeyCode::KeyW), true, shift);
+    sync.key_event(&mut input, Some(KeyCode::ShiftRight), true, shift);
+    sync.key_event(&mut input, Some(KeyCode::KeyW), true, shift);
     assert!(input.take_frame().modifiers.shift);
 
-    key_event(
-        &mut sync,
+    sync.key_event(
         &mut input,
         Some(KeyCode::ShiftRight),
         false,

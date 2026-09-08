@@ -6,7 +6,7 @@ use ab_glyph::FontRef;
 use glam::Vec4;
 use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
-use loam_physics::{Gravity, RigidBody, World};
+use loam_physics::{RigidBody, World};
 use loam_shape::Shape;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 
@@ -17,7 +17,6 @@ const TIMED_STEPS: usize = 60;
 const BALL_RADIUS: f32 = 0.04;
 const BALLS: usize = 30;
 
-// Fonts are not vendored.
 fn system_font() -> Option<Vec<u8>> {
     const CANDIDATES: &[&str] = &[
         r"C:\Windows\Fonts\arial.ttf",
@@ -120,7 +119,6 @@ fn main() {
     );
 }
 
-// The first `sides` vertices of the 4D prism are the ring itself, in order.
 fn hull_area(letter: &GlyphSolid) -> f32 {
     let Some((_, Shape::ConvexPolytope4D { vertices })) = letter.rigid_hull_4d() else {
         return 0.0;
@@ -136,12 +134,10 @@ fn hull_area(letter: &GlyphSolid) -> f32 {
     0.5 * doubled
 }
 
-// Returns the body count and the mean microseconds per fixed step.
 fn time_word(letters: &[GlyphSolid]) -> (usize, f64) {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
-    // Along -z, so the spheres land on the letters' front faces.
-    world.push_field(Box::new(Gravity::new(Vec4::new(0.0, 0.0, -9.8, 0.0))));
+    world.gravity = Some(Vec4::new(0.0, 0.0, -9.8, 0.0));
 
     for letter in letters {
         for (centre, hull) in letter.colliders_4d() {

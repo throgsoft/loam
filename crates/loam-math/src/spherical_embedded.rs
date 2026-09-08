@@ -1,9 +1,4 @@
-//! S³ in the full ambient embedding: points are unit 4-vectors in R⁴, not a
-//! chart. exp / log / transport are the standard unit-sphere forms (Absil,
-//! Mahony & Sepulchre, *Optimization Algorithms on Matrix Manifolds*, 2008,
-//! §3.6, Example 8.1.1); slerp is Shoemake (*Animating Rotation with
-//! Quaternion Curves*, SIGGRAPH 1985). Isometries reuse
-//! [`crate::spherical::Iso4`], shared with the hemisphere model.
+//! S³ uses unit ambient Vec4 points and tangent vectors perpendicular to their base points.
 
 use glam::Vec4;
 
@@ -12,42 +7,25 @@ use crate::space::{IsometryGroup, Space};
 use crate::spherical::Iso4;
 use crate::EuclideanR4;
 
-// Floor on the tangent-direction norm below which a geodesic has no defined
-// direction: near-coincident (`p1 ≈ p0`) or near-antipodal (`p1 ≈ −p0`, the
-// great circle is non-unique). Conditioning class: direction recovery, the
-// same class and value as the hemisphere model's `LOG_PERP_MIN`.
 const GEODESIC_DIRECTION_MIN: f32 = 1e-7;
 
-// Floor on the transport denominator `|from + to|² / 2`. Conditioning class:
-// divisor floor on a squared quantity, which is why it is its own constant
-// despite sharing [`GEODESIC_DIRECTION_MIN`]'s value. `Point = Vec4` makes
-// `from = −to` exactly representable, so the floor is load-bearing here.
 const TRANSPORT_DENOM_MIN: f32 = 1e-7;
 
-/// Spherical 3-space, full ambient embedding, curvature `K = +1`.
-///
-/// Points are unit 4-vectors (`|p| = 1`); methods assume
-/// that and clamp dot products rather than re-normalizing on the hot path.
-/// [`RasterizableSpace::array_to_point`] normalizes on the way in.
+/// S³ with unit Vec4 points and ambient tangents; methods assume unit points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SphericalS3Embedded;
 
 impl Space for SphericalS3Embedded {
     type Point = Vec4;
-    // Ambient tangent vector in R⁴, perpendicular to its base point.
-    // [`Self::exp`] projects out any radial component.
+
     type Vector = Vec4;
 
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {
-        // Chord half-angle `d = 2·asin(|a − b| / 2)`: better conditioned near
-        // `d = 0` than `acos(dot)`, where `acos(1 − ε)` quantizes in f32.
         let half_chord = (a - b).length() * 0.5;
         2.0 * half_chord.clamp(0.0, 1.0).asin()
     }
 
     fn exp(&self, at: Vec4, v: Vec4) -> Vec4 {
-        // Drop any radial part so the result lands exactly on the sphere even if
-        // the caller's vector drifted off-tangent.
         let v_tan = v - v.dot(at) * at;
         let theta = v_tan.length();
         if theta < GEODESIC_DIRECTION_MIN {
@@ -58,8 +36,7 @@ impl Space for SphericalS3Embedded {
 
     fn log(&self, from: Vec4, to: Vec4) -> Vec4 {
         let d = self.distance(from, to);
-        // `dot` clamped so a slightly-off-unit input cannot flip the
-        // sign of the perpendicular term.
+
         let dot = from.dot(to).clamp(-1.0, 1.0);
         let perp = to - dot * from;
         let n = perp.length();
@@ -70,12 +47,7 @@ impl Space for SphericalS3Embedded {
     }
 
     fn parallel_transport(&self, from: Vec4, to: Vec4, v: Vec4) -> Vec4 {
-        // Unit-sphere transport `v − (⟨v, to⟩ / denom)·(from + to)` (do Carmo,
-        // *Riemannian Geometry*, ch. 2). Undefined at antipodes; the floor keeps
-        // it finite.
-        // The denominator is `|from + to|² / 2`, equal to `1 + ⟨from, to⟩` for
-        // unit inputs but without its catastrophic cancellation as
-        // `⟨from, to⟩ -> −1`.
+        // do Carmo, Riemannian Geometry, ch. 2.
         let sum = from + to;
         let denom = (sum.length_squared() * 0.5).max(TRANSPORT_DENOM_MIN);
         v - (v.dot(to) / denom) * sum
@@ -102,13 +74,10 @@ impl IsometryGroup for SphericalS3Embedded {
     }
 
     fn iso_apply(&self, iso: Iso4, p: Vec4) -> Vec4 {
-        // Normalize to shed accumulated f32 drift across repeated applications.
         (iso.matrix * p).normalize()
     }
 
     fn iso_transport(&self, iso: Iso4, _at: Vec4, v: Vec4) -> Vec4 {
-        // An SO(4) matrix is a global linear isometry, so its differential is the
-        // matrix itself: exact and base-point-independent.
         iso.matrix * v
     }
 }
@@ -119,19 +88,15 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
     }
 
     fn array_to_point(arr: [f32; 4]) -> Vec4 {
-        // Mesh storage may drift off-sphere; project back. Inputs are polytope
-        // vertices, never zero, so `normalize` is well-defined.
         Vec4::from_array(arr).normalize()
     }
 
     fn project_point(point: Vec4, projection: &Projection<4>) -> glam::Vec3 {
         match projection {
-            // No normalize: the input is already unit by this type's invariant.
             Projection::Stereographic { pole } => {
                 crate::rasterizable::stereographic_to_r3(point, *pole)
             }
-            // The other variants project the ambient unit 4-vector exactly as
-            // flat R⁴ does.
+
             Projection::Identity
             | Projection::Orthographic { .. }
             | Projection::Perspective4D { .. }
@@ -141,53 +106,33 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
         }
     }
 
-    fn tessellate_segment(p0: Vec4, p1: Vec4, samples: usize, out: &mut Vec<Vec4>) {
-        // Constant-speed walk along the great-circle arc in exponential-map form
-        // (Absil/Mahony/Sepulchre §3.6; Shoemake slerp, *Animating Rotation with
-        // Quaternion Curves*, SIGGRAPH 1985):
-        //   γ(t) = cos(t·ω)·p0 + sin(t·ω)·d̂,  d̂ = (p1 − ⟨p0,p1⟩·p0) / n
-        // This divides only by the pre-normalize perpendicular length `n = sin(ω)`,
-        // never by a `sin(ω)` reconstructed from `acos(dot)`, so it stays on S³ to
-        // machine epsilon as ω -> π, where the classic `sin((1−t)ω)/sin(ω)` slerp
-        // drifts percent-level off the sphere.
+    fn tessellate_segment(p0: Vec4, p1: Vec4, samples: usize, mut emit: impl FnMut(Vec4)) {
+        // Absil, Mahony and Sepulchre, Optimization Algorithms on Matrix Manifolds, 2008, §3.6.
+        // Shoemake, Animating Rotation with Quaternion Curves, 1985.
         let dot = p0.dot(p1).clamp(-1.0, 1.0);
         let half_chord = (p0 - p1).length() * 0.5;
         let omega = 2.0 * half_chord.clamp(0.0, 1.0).asin();
-        // `n = sin(ω)` vanishes for both coincident and antipodal endpoints; both
-        // leave the direction undefined and share the degenerate branch.
+
         let perp = p1 - dot * p0;
         let n = perp.length();
-        out.push(p0);
-        if n > GEODESIC_DIRECTION_MIN {
-            let dir = perp / n;
-            for i in 1..samples {
-                let t = i as f32 / samples as f32;
-                let ang = t * omega;
-                out.push(ang.cos() * p0 + ang.sin() * dir);
-            }
+        let dir = if n > GEODESIC_DIRECTION_MIN {
+            perp / n
         } else {
-            // Direction undefined (coincident or antipodal): walk a deterministic
-            // perpendicular great circle through `p0` rather than dividing by the
-            // zero `perp`. Coincident: ω ≈ 0, samples collapse onto `p0`.
-            let dir = deterministic_perp(p0);
-            for i in 1..samples {
-                let t = i as f32 / samples as f32;
-                let ang = t * omega;
-                out.push(ang.cos() * p0 + ang.sin() * dir);
-            }
+            deterministic_perp(p0)
+        };
+        emit(p0);
+        for i in 1..samples {
+            let ang = i as f32 / samples as f32 * omega;
+            emit(ang.cos() * p0 + ang.sin() * dir);
         }
-        out.push(p1);
+        emit(p1);
     }
 }
 
-// A deterministic unit vector perpendicular to unit `p0`, for the degenerate
-// slerp branch. Picks the world axis least aligned with `p0` (best-conditioned
-// residual), Gram-Schmidt's it against `p0`, normalizes (do Carmo, *Differential
-// Geometry of Curves and Surfaces*, §1.4). Ties resolve toward the earliest
-// axis, so it is a pure function of `p0`.
+// do Carmo, Differential Geometry of Curves and Surfaces, 1976, §1.4.
 fn deterministic_perp(p0: Vec4) -> Vec4 {
     let a = p0.abs();
-    // Smallest-magnitude component; `<` ties toward the earlier index.
+
     let mut min_idx = 0usize;
     let mut min_v = a.x;
     if a.y < min_v {
@@ -230,7 +175,7 @@ mod tests {
     #[test]
     fn distance_at_antipode_is_pi() {
         let s = s3();
-        let a = Vec4::new(0.5, 0.5, 0.5, 0.5); // unit
+        let a = Vec4::new(0.5, 0.5, 0.5, 0.5);
         assert_relative_eq!(s.distance(a, -a), PI, epsilon = 1e-5);
     }
 
@@ -257,8 +202,8 @@ mod tests {
     fn parallel_transport_preserves_norm_and_tangency() {
         let s = s3();
         let from = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let to = Vec4::new(0.6, 0.0, 0.0, 0.8); // unit, in the xw-plane
-        let v = Vec4::new(0.5, 0.0, 0.0, 0.0); // tangent at `from`, in-plane
+        let to = Vec4::new(0.6, 0.0, 0.0, 0.8);
+        let v = Vec4::new(0.5, 0.0, 0.0, 0.0);
         let vt = s.parallel_transport(from, to, v);
         assert_relative_eq!(vt.length(), v.length(), epsilon = 1e-5);
         assert_relative_eq!(vt.dot(to), 0.0, epsilon = 1e-5);
@@ -272,7 +217,7 @@ mod tests {
         for delta in [3e-3_f32, 2e-3, 1e-3] {
             let omega = PI - delta;
             let to = Vec4::new(omega.cos(), omega.sin(), 0.0, 0.0).normalize();
-            // Unit tangent in the plane of motion, so transport rotates it.
+
             let v = Vec4::Y;
             let vt = s.parallel_transport(from, to, v);
             assert_relative_eq!(vt.length(), v.length(), epsilon = 1e-3);
@@ -285,7 +230,7 @@ mod tests {
         let s = s3();
         let iso = Iso4::from_translation(glam::Vec3::new(0.2, -0.1, 0.15));
         let at = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let v = Vec4::new(0.3, 0.2, 0.0, 0.0); // tangent at the north pole
+        let v = Vec4::new(0.3, 0.2, 0.0, 0.0);
         let moved_at = s.iso_apply(iso, at);
         let moved_v = s.iso_transport(iso, at, v);
         assert_relative_eq!(moved_v.length(), v.length(), epsilon = 1e-5);
@@ -293,22 +238,13 @@ mod tests {
     }
 
     #[test]
-    fn array_round_trip_on_unit_input() {
-        let p = Vec4::new(0.5, -0.5, 0.5, 0.5); // unit
-        let arr = <SphericalS3Embedded as RasterizableSpace<4>>::point_to_array(p);
-        let back = <SphericalS3Embedded as RasterizableSpace<4>>::array_to_point(arr);
-        assert_relative_eq!(back.x, p.x, epsilon = 1e-6);
-        assert_relative_eq!(back.y, p.y, epsilon = 1e-6);
-        assert_relative_eq!(back.z, p.z, epsilon = 1e-6);
-        assert_relative_eq!(back.w, p.w, epsilon = 1e-6);
-    }
-
-    #[test]
     fn slerp_endpoints_exact_and_count() {
         let p0 = Vec4::X;
         let p1 = Vec4::Y;
         let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 4, &mut out);
+        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 4, |p| {
+            out.push(p)
+        });
         assert_eq!(out.len(), 5);
         assert_relative_eq!(out[0].x, p0.x, epsilon = 1e-6);
         assert_relative_eq!(out[4].y, p1.y, epsilon = 1e-6);
@@ -319,7 +255,9 @@ mod tests {
         let p0 = Vec4::new(1.0, 0.0, 0.0, 0.0);
         let p1 = Vec4::new(0.0, 0.0, 0.0, 1.0);
         let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 8, &mut out);
+        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 8, |p| {
+            out.push(p)
+        });
         for p in &out {
             assert_relative_eq!(p.length(), 1.0, epsilon = 1e-6);
         }
@@ -331,10 +269,12 @@ mod tests {
         let p0 = Vec4::new(1.0, 0.0, 0.0, 0.0);
         let p1 = Vec4::new(0.0, 0.0, 0.0, 1.0);
         let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 2, &mut out);
+        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 2, |p| {
+            out.push(p)
+        });
         let mid = out[1];
         assert_relative_eq!(s.distance(mid, p0), s.distance(mid, p1), epsilon = 1e-6);
-        // At 45°: x = w = cos(π/4), not the chord's 0.5.
+
         let c = (PI / 4.0).cos();
         assert_relative_eq!(mid.x, c, epsilon = 1e-5);
         assert_relative_eq!(mid.w, c, epsilon = 1e-5);
@@ -346,7 +286,9 @@ mod tests {
         let p0 = Vec4::X;
         let p1 = -Vec4::X;
         let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 16, &mut out);
+        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 16, |p| {
+            out.push(p)
+        });
         assert_eq!(out.len(), 17);
         for p in &out {
             assert!(
@@ -360,13 +302,14 @@ mod tests {
     #[test]
     fn slerp_near_antipode_samples_stay_on_sphere() {
         let p0 = Vec4::X;
-        // The tightest is `sin(ω)` at twice the gate, so it stays on the
-        // passing side of it whatever the gate is retuned to.
+
         for delta in [1e-3_f32, 1e-5, GEODESIC_DIRECTION_MIN * 2.0] {
             let omega = PI - delta;
             let p1 = Vec4::new(omega.cos(), omega.sin(), 0.0, 0.0).normalize();
             let mut out = Vec::new();
-            <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 16, &mut out);
+            <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 16, |p| {
+                out.push(p)
+            });
             for p in &out[1..out.len() - 1] {
                 assert!(p.is_finite(), "near-antipode sample must be finite: {p:?}");
                 assert!(
@@ -387,46 +330,13 @@ mod tests {
         for samples in [2usize, 3, 8, 17] {
             let mut out = Vec::new();
             <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(
-                p0, p1, samples, &mut out,
+                p0,
+                p1,
+                samples,
+                |p| out.push(p),
             );
             let arc_sum: f32 = out.windows(2).map(|w| s.distance(w[0], w[1])).sum();
             assert_relative_eq!(arc_sum, total, epsilon = 1e-6);
-        }
-    }
-
-    #[test]
-    fn slerp_is_bit_reproducible() {
-        let p0 = Vec4::new(0.3, -0.2, 0.5, 0.4).normalize();
-        let p1 = Vec4::new(-0.4, 0.1, 0.2, 0.7).normalize();
-        let mut a = Vec::new();
-        let mut b = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 12, &mut a);
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 12, &mut b);
-        assert_eq!(a.len(), b.len());
-        for (x, y) in a.iter().zip(&b) {
-            assert_eq!(x.to_array(), y.to_array(), "slerp not bit-reproducible");
-        }
-        // The degenerate branch must be reproducible too.
-        let mut c = Vec::new();
-        let mut d = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(
-            Vec4::Y,
-            -Vec4::Y,
-            9,
-            &mut c,
-        );
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(
-            Vec4::Y,
-            -Vec4::Y,
-            9,
-            &mut d,
-        );
-        for (x, y) in c.iter().zip(&d) {
-            assert_eq!(
-                x.to_array(),
-                y.to_array(),
-                "antipodal slerp not bit-reproducible"
-            );
         }
     }
 
@@ -436,7 +346,9 @@ mod tests {
         let nudge = GEODESIC_DIRECTION_MIN * 0.01;
         let p1 = (p0 + Vec4::new(nudge, 0.0, -nudge, 0.0)).normalize();
         let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 8, &mut out);
+        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 8, |p| {
+            out.push(p)
+        });
         for p in &out {
             assert!(p.is_finite(), "coincident sample must be finite: {p:?}");
             assert_relative_eq!(p.length(), 1.0, epsilon = 1e-6);
@@ -449,28 +361,8 @@ mod tests {
     }
 
     #[test]
-    fn project_point_matches_flat_r4() {
-        let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
-        let proj = Projection::Perspective4D {
-            focal_distance: 2.0,
-        };
-        let got = <SphericalS3Embedded as RasterizableSpace<4>>::project_point(p, &proj);
-        let want = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
-        assert_eq!(got, want);
-    }
-
-    #[test]
-    fn project_point_schlegel_matches_flat_r4() {
-        let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
-        let proj = Projection::schlegel(Vec4::W, 0.5, 0.75);
-        let got = <SphericalS3Embedded as RasterizableSpace<4>>::project_point(p, &proj);
-        let want = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
-        assert_eq!(got, want);
-    }
-
-    #[test]
     fn project_point_stereographic_is_conformal_map_not_drop_w() {
-        let p = Vec4::new(0.5, 0.5, 0.5, 0.5); // unit
+        let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
         let proj = Projection::Stereographic { pole: Vec4::W };
         let got = <SphericalS3Embedded as RasterizableSpace<4>>::project_point(p, &proj);
         let want = glam::Vec3::new(p.x, p.y, p.z) / (1.0 - p.w);

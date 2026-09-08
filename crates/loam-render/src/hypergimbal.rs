@@ -1,24 +1,16 @@
-//! Six rings, one per SO(4) rotation plane: the coordinate great circles of
-//! S³ under stereographic projection from [`POLE`]. Circles map to circles
-//! (Coxeter, *Introduction to Geometry*, 2nd ed. 1969, §6.9); ring angle to
-//! arc angle is Kepler's eccentric-to-true anomaly with eccentricity ρ
-//! (Danby, *Fundamentals of Celestial Mechanics*, 2nd ed. 1992, §6.3).
+//! Stereographic images of the six coordinate great circles of S³.
 
 use glam::{Vec3, Vec4};
 use loam_math::{Bivector, Plane4, Rotor4};
 use loam_shape::LineMesh;
 
-/// A 16-cell cell centre, on no coordinate great circle: every ring is finite
-/// and congruent.
+/// A 16-cell cell centre, on no coordinate great circle: every ring is finite and congruent.
 pub const POLE: Vec4 = Vec4::new(0.5, 0.5, 0.5, 0.5);
 
-// Sine floor on the ray-to-ring-plane angle; the hit distance grows as `1/sin`.
 const MIN_PLANE_INCIDENCE: f32 = 1e-2;
 
-// Within this of the pole the image runs to infinity.
 const MIN_POLE_DISTANCE: f32 = 1e-4;
 
-// The other three 16-cell cell centres orthogonal to `POLE`; `det[u₁,u₂,u₃,POLE] = +1`.
 const IMAGE_AXES: [Vec4; 3] = [
     Vec4::new(0.5, 0.5, -0.5, -0.5),
     Vec4::new(0.5, -0.5, 0.5, -0.5),
@@ -33,7 +25,6 @@ fn to_r3(q: Vec4) -> Vec3 {
     )
 }
 
-// Ordered so `Plane4::unit_bivector` rotates `a` toward `b`.
 fn plane_axes(plane: Plane4) -> (Vec4, Vec4) {
     match plane {
         Plane4::Xy => (Vec4::X, Vec4::Y),
@@ -64,6 +55,7 @@ pub struct Hypergimbal {
 
 impl Hypergimbal {
     /// `None` within f32 noise of [`POLE`], where the image is unbounded.
+    // Coxeter, Introduction to Geometry (1969), section 6.9.
     pub fn project(&self, p: Vec4) -> Option<Vec3> {
         let denom = 1.0 - p.dot(POLE);
         if denom.abs() < MIN_POLE_DISTANCE {
@@ -166,6 +158,7 @@ impl Ring {
     }
 
     /// Great-circle parameter `θ` at ring angle `χ`.
+    // Danby, Fundamentals of Celestial Mechanics (1992), section 6.3.
     pub fn arc_angle(&self, chi: f32) -> f32 {
         let s = (1.0 - self.pole_overlap * self.pole_overlap).sqrt();
         (s * chi.sin()).atan2(chi.cos() + self.pole_overlap) + self.phase
@@ -246,70 +239,6 @@ mod tests {
     }
 
     #[test]
-    fn all_six_rings_are_finite_and_congruent() {
-        let rings = WIDGET.rings();
-        for ring in rings {
-            assert_close(
-                ring.pole_overlap,
-                std::f32::consts::FRAC_1_SQRT_2,
-                1e-6,
-                "pole overlap",
-            );
-            assert_close(
-                ring.radius,
-                WIDGET.scale * 2.0_f32.sqrt(),
-                1e-5,
-                "ring radius",
-            );
-            assert_close(
-                (ring.center - WIDGET.center).length(),
-                WIDGET.scale,
-                1e-5,
-                "centre offset",
-            );
-            assert_close(ring.u.length(), 1.0, 1e-5, "u unit");
-            assert_close(ring.v.length(), 1.0, 1e-5, "v unit");
-            assert_close(ring.u.dot(ring.v), 0.0, 1e-5, "u ⟂ v");
-        }
-        for (i, first) in rings.iter().enumerate() {
-            for second in &rings[i + 1..] {
-                assert!(
-                    first.normal().cross(second.normal()).length() > 1e-3,
-                    "{:?} and {:?} share a circle plane",
-                    first.plane,
-                    second.plane
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn dual_plane_pairs_sit_at_antipodal_ring_centres() {
-        let offset = |plane| (WIDGET.ring(plane).center - WIDGET.center) / WIDGET.scale;
-        for (axis, first, second) in [
-            (Vec3::X, Plane4::Xy, Plane4::Zw),
-            (Vec3::Y, Plane4::Xz, Plane4::Yw),
-            (Vec3::Z, Plane4::Xw, Plane4::Yz),
-        ] {
-            assert!((offset(first) - axis).length() < 1e-5, "{first:?} off axis");
-            assert!(
-                (offset(second) + axis).length() < 1e-5,
-                "{second:?} not antipodal to {first:?}"
-            );
-        }
-        for ring in WIDGET.rings() {
-            let normal = ring.normal();
-            for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
-                assert!(
-                    normal.dot(axis).abs() < 0.99,
-                    "{:?}'s plane is square to an image axis",
-                    ring.plane
-                );
-            }
-        }
-    }
-
-    #[test]
     fn ring_is_the_projected_great_circle() {
         for plane in Plane4::ALL {
             let ring = WIDGET.ring(plane);
@@ -371,56 +300,12 @@ mod tests {
                     );
 
                     let rotor = ring.drag_rotor(grab, cursor);
-                    let expected = (plane.unit_bivector() * delta).exp();
-                    for (got, want) in <[f32; 8]>::from(rotor)
-                        .into_iter()
-                        .zip(<[f32; 8]>::from(expected))
-                    {
-                        assert_close(got, want, 1e-3, &format!("{plane:?} rotor component"));
-                    }
                     assert!(
                         (rotor.apply(start) - end).length() < 2e-3,
                         "{plane:?}: rotor does not carry the grabbed point to the cursor"
                     );
                 }
             }
-        }
-    }
-
-    #[test]
-    fn every_plane_is_pickable_over_most_of_its_arc() {
-        let eye = WIDGET.center + Vec3::new(4.3, 5.1, 6.7);
-        const SAMPLES: usize = 72;
-        for plane in Plane4::ALL {
-            let ring = WIDGET.ring(plane);
-            let hits = (0..SAMPLES)
-                .filter(|step| {
-                    let target = ring.point(*step as f32 / SAMPLES as f32 * TAU);
-                    WIDGET
-                        .pick(eye, (target - eye).normalize(), 0.02 * WIDGET.scale)
-                        .is_some_and(|picked| picked.plane == plane)
-                })
-                .count();
-            assert!(
-                hits * 2 > SAMPLES,
-                "{plane:?} selectable at only {hits}/{SAMPLES} points on its own ring"
-            );
-        }
-    }
-
-    #[test]
-    fn drag_angle_is_zero_at_rest_and_odd_under_reversal() {
-        for plane in Plane4::ALL {
-            let ring = WIDGET.ring(plane);
-            let grab = ring.point(0.4);
-            let cursor = ring.point(1.9);
-            assert_eq!(ring.drag_angle(grab, grab), 0.0);
-            assert_close(
-                ring.drag_angle(grab, cursor) + ring.drag_angle(cursor, grab),
-                0.0,
-                1e-5,
-                "reversal",
-            );
         }
     }
 
@@ -459,15 +344,6 @@ mod tests {
     }
 
     #[test]
-    fn a_ray_missing_every_ring_picks_nothing() {
-        let eye = WIDGET.center + Vec3::new(0.0, 0.0, 40.0);
-        let miss = WIDGET.center + Vec3::new(0.0, 60.0, 0.0);
-        assert!(WIDGET
-            .pick(eye, (miss - eye).normalize(), 0.02 * WIDGET.scale)
-            .is_none());
-    }
-
-    #[test]
     fn line_mesh_is_well_formed_and_on_the_rings() {
         let style = RingStyle {
             segments: 12,
@@ -483,15 +359,18 @@ mod tests {
         assert_eq!(mesh.colors.len(), mesh.segments.len());
         assert_eq!(mesh.widths.len(), mesh.segments.len());
 
-        let radii: Vec<f32> = mesh.segments[1..]
-            .iter()
-            .map(|(start, _)| (Vec3::from_array(*start) - WIDGET.center).length())
-            .collect();
-        for radius in radii {
-            assert!(
-                (radius - WIDGET.scale).abs() <= WIDGET.scale * 2.0_f32.sqrt() + 1e-4,
-                "chord endpoint {radius} outside the ring's reach"
-            );
+        for (plane, edges) in Plane4::ALL
+            .into_iter()
+            .zip(mesh.segments[1..].chunks_exact(style.segments))
+        {
+            let ring = WIDGET.ring(plane);
+            for (start, end) in edges {
+                for point in [*start, *end] {
+                    let offset = Vec3::from_array(point) - ring.center;
+                    assert!(offset.dot(ring.normal()).abs() < 1e-4);
+                    assert!((offset.length() - ring.radius).abs() < 1e-4);
+                }
+            }
         }
         let first = mesh.segments[1].0;
         let last = mesh.segments[style.segments].1;

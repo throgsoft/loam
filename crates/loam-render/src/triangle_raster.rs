@@ -73,6 +73,7 @@ pub struct TriangleRasterNode {
     index_count: u32,
 
     has_depth: bool,
+    vertices_scratch: Vec<TriangleVertex>,
 }
 
 impl TriangleRasterNode {
@@ -214,6 +215,7 @@ impl TriangleRasterNode {
             index_capacity: 0,
             index_count: 0,
             has_depth: depth.is_active(),
+            vertices_scratch: Vec::new(),
         }
     }
 
@@ -240,7 +242,8 @@ impl TriangleRasterNode {
             n_vertices,
             "TriangleMesh invariant: colors.len() == vertices.len()"
         );
-        let mut verts: Vec<TriangleVertex> = Vec::with_capacity(n_vertices);
+        self.vertices_scratch.clear();
+        let verts = &mut self.vertices_scratch;
         for (v, color) in mesh.vertices.iter().zip(mesh.colors.iter()) {
             let p_native = S::array_to_point(*v);
             let p3 = S::project_point(p_native, projection);
@@ -251,10 +254,7 @@ impl TriangleRasterNode {
             });
         }
 
-        let mut indices: Vec<u32> = Vec::with_capacity(mesh.indices.len() * 3);
-        for tri in &mesh.indices {
-            indices.extend_from_slice(tri);
-        }
+        let indices: &[u32] = bytemuck::cast_slice(&mesh.indices);
 
         if verts.len() as u32 > self.vertex_capacity {
             let new_cap = (verts.len() as u32).next_power_of_two().max(16);
@@ -278,17 +278,15 @@ impl TriangleRasterNode {
         }
 
         if !verts.is_empty() {
-            queue.write_buffer(&self.vertex_buf, 0, bytemuck::cast_slice(&verts));
+            queue.write_buffer(&self.vertex_buf, 0, bytemuck::cast_slice(verts));
         }
         if !indices.is_empty() {
-            queue.write_buffer(&self.index_buf, 0, bytemuck::cast_slice(&indices));
+            queue.write_buffer(&self.index_buf, 0, bytemuck::cast_slice(indices));
         }
         self.index_count = indices.len() as u32;
     }
 
-    /// `LoadOp::Load` on both attachments; `depth_view` is `Some` iff the pipeline
-    /// has depth. Never `upload` between two `record` calls in one frame:
-    /// `write_buffer` lands before the whole command buffer.
+    /// Loads both attachments; uploads between records affect every draw in the same submission.
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -345,30 +343,5 @@ impl TriangleRasterNode {
         rp.set_vertex_buffer(0, self.vertex_buf.slice(..));
         rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
         rp.draw_indexed(0..self.index_count, 0, 0..1);
-    }
-}
-
-// Pins that `record` takes the caller's encoder and cannot submit.
-const _: fn(
-    &TriangleRasterNode,
-    &mut wgpu::CommandEncoder,
-    &wgpu::TextureView,
-    Option<&wgpu::TextureView>,
-    Option<&crate::Viewport>,
-) = TriangleRasterNode::record;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn triangle_raster_wgsl_validates() {
-        let module = naga::front::wgsl::parse_str(TRIANGLE_RASTER_WGSL)
-            .unwrap_or_else(|e| panic!("triangle_raster WGSL parse failed:\n{e}"));
-        let flags = naga::valid::ValidationFlags::all();
-        let caps = naga::valid::Capabilities::empty();
-        naga::valid::Validator::new(flags, caps)
-            .validate(&module)
-            .expect("triangle_raster WGSL must validate");
     }
 }

@@ -1,10 +1,11 @@
+mod runtime;
+pub use runtime::Runtime;
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::sync::Arc;
 // `std::time::Instant::now` panics on wasm32, so the swap is mandatory there.
 use web_time::Instant;
 
-// Both cfg arms expose one surface, so demos need no gates at the call sites.
 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
 pub mod capture;
 
@@ -12,6 +13,7 @@ pub mod args;
 #[cfg(any(not(feature = "capture"), target_arch = "wasm32"))]
 #[path = "capture_stub.rs"]
 pub mod capture;
+mod capture_types;
 
 pub mod camera_rig;
 pub mod command;
@@ -29,6 +31,7 @@ pub mod version;
 pub mod vsync;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
+mod watcher;
 
 use winit::{
     application::ApplicationHandler,
@@ -38,30 +41,34 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-use loam_asset::AssetWatcher;
 use loam_egui::UiIntegration;
 use loam_input::{FrameInput, InputState};
 use loam_render::device::RenderDevice;
-use loam_time::jobs::JobPool;
 use loam_time::FixedTimestep;
 
-use crate::args::Args;
-
-pub use loam_asset::AssetEvent;
 pub use loam_camera::{
     orbit_on_right, Camera, CameraController, CameraView, FirstPersonController, OrbitController,
 };
 pub use loam_egui::{egui, world_to_screen, UiCapture};
 pub use loam_input::FrameInput as Input;
-pub use loam_shader::{ShaderDb, ShaderOwner};
+pub use loam_render::shader::{ShaderDb, ShaderOwner};
+pub use watcher::FileWatcher;
+
+pub fn reload_shaders(shader_db: &mut ShaderDb, owner: ShaderOwner, paths: &[std::path::PathBuf]) {
+    for path in paths {
+        if let Err(error) = shader_db.reload_path(owner, path) {
+            tracing::warn!(?path, %error, "shader reload failed");
+        }
+    }
+}
 
 pub trait App: Sized + 'static {
     fn setup(ctx: &mut SetupCtx<'_>) -> anyhow::Result<Self>;
 
     /// Runs 0..N times per frame, N bounded by the runner's catch-up cap.
-    fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx<'_>) {}
+    fn tick(&mut self, _dt: f32, _ctx: &mut TickCtx) {}
 
-    /// Applied before the tick it is stamped for.
+    /// Dispatches frame commands before simulation; games queue simulation effects for `tick`.
     fn apply_command(
         &mut self,
         cmd: &command::CommandLine,
@@ -73,7 +80,7 @@ pub trait App: Sized + 'static {
     /// Runs after all the frame's ticks, with the drained input.
     fn update(&mut self, _ctx: &mut FrameCtx<'_>) {}
 
-    /// Not called for keyboard events in the wasm worker; `on_key` fires on both paths.
+    /// Winit events only; worker input reaches the portable callbacks.
     fn on_event(&mut self, _ev: &WindowEvent, _ctx: &mut FrameCtx<'_>) {}
 
     /// Fired for every press and release, after input routing.
@@ -85,21 +92,16 @@ pub trait App: Sized + 'static {
     ) {
     }
 
-    fn apply_shader_events(&mut self, events: &[AssetEvent], shader_db: &mut ShaderDb) {
-        shader_db.apply_events(ShaderDb::ROOT_OWNER, events);
+    fn apply_shader_events(&mut self, events: &[std::path::PathBuf], shader_db: &mut ShaderDb) {
+        reload_shaders(shader_db, ShaderDb::ROOT_OWNER, events);
     }
 
     /// Runs after `apply_shader_events`; rebuild any stale consumer pipelines.
     fn on_shader_reload(&mut self, _ctx: &mut SetupCtx<'_>) {}
 
-    /// Implement either this or `record`; the runner always calls `record`.
-    fn render(&mut self, _rd: &RenderDevice, _view: &wgpu::TextureView) -> anyhow::Result<()> {
+    /// Record into the runner's encoder; the runner owns submission.
+    fn record(&mut self, _ctx: &mut RenderCtx<'_>) -> anyhow::Result<()> {
         Ok(())
-    }
-
-    /// Do not call `encoder.finish()` or `queue.submit`; the runner submits once per frame.
-    fn record(&mut self, ctx: &mut RenderCtx<'_>) -> anyhow::Result<()> {
-        self.render(ctx.rd, ctx.view)
     }
 
     fn ui(&mut self, _ctx: &egui::Context, _frame: &mut FrameCtx<'_>) {}
@@ -114,46 +116,37 @@ pub trait App: Sized + 'static {
 pub(crate) fn drive_fixed_ticks<A: App>(
     app: &mut A,
     timestep: &mut FixedTimestep,
-    tick_index: &mut u64,
     now: Instant,
-    fixed_hz: u32,
-    jobs: &JobPool,
 ) -> usize {
     let _scope = loam_time::frame_trace::scope("sim-ticks");
     let ticks = timestep.advance(now);
-    let dt = 1.0 / fixed_hz as f32;
+    let dt = timestep.dt_seconds();
     let n_ticks = (ticks.end - ticks.start) as usize;
     for tick in ticks {
         let mut tctx = TickCtx {
             time: tick as f32 * dt,
             tick,
-            jobs,
         };
         app.tick(dt, &mut tctx);
-        *tick_index = tick + 1;
     }
     n_ticks
 }
 
 pub struct SetupCtx<'a> {
+    pub runtime: &'a Runtime,
     pub rd: &'a RenderDevice,
     pub shader_db: &'a mut ShaderDb,
     /// `None` when filesystem watching failed to init.
-    pub watcher: Option<&'a mut AssetWatcher>,
-    /// Wall-clock seconds since `run`. Always 0 in `setup`.
+    pub watcher: Option<&'a mut FileWatcher>,
+    /// Wall-clock seconds since the runner started, including scene rebuilds.
     pub time: f32,
-    /// Resolved once before `setup` and constant for the run.
-    pub sim_threads: usize,
 }
 
-/// Deliberately GPU-free so sim code stays bit-deterministic.
-pub struct TickCtx<'a> {
+/// Games choose state ordering, random sources, and parallel reductions for reproducibility.
+pub struct TickCtx {
     /// Derived from the tick index, not the clock.
     pub time: f32,
     pub tick: u64,
-    /// Its partition is a pure function of (unit count, worker count); nothing
-    /// in a tick may branch on its timings.
-    pub jobs: &'a JobPool,
 }
 
 /// The runner submits `encoder` once per frame; `view` is the scene-pass target.
@@ -164,6 +157,8 @@ pub struct RenderCtx<'a> {
 }
 
 pub struct FrameCtx<'a> {
+    pub shader_db: &'a mut ShaderDb,
+    pub runtime: &'a Runtime,
     pub rd: &'a RenderDevice,
     pub input: FrameInput,
     pub time: f32,
@@ -178,48 +173,12 @@ pub struct FrameCtx<'a> {
 
 pub const DEFAULT_MAX_TICKS_PER_FRAME: u32 = 4;
 
-const SIM_THREADS_KEY: &str = "threads";
-
-pub(crate) fn resolve_sim_threads(args: &Args, configured: Option<usize>) -> usize {
-    let requested = match args.get(SIM_THREADS_KEY) {
-        Some(raw) => raw.parse::<usize>().ok().or_else(|| {
-            tracing::warn!("--{SIM_THREADS_KEY}={raw} is not a worker count; ignoring");
-            None
-        }),
-        None => {
-            if args.has_bare_flag(SIM_THREADS_KEY) {
-                tracing::warn!(
-                    "--{SIM_THREADS_KEY} needs an attached value (--{SIM_THREADS_KEY}=N); ignoring"
-                );
-            }
-            None
-        }
-    };
-    match requested.or(configured) {
-        Some(n) if n > 0 => n,
-        _ => default_sim_threads(),
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn default_sim_threads() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get())
-}
-
-// `frame_trace`'s thread-local state is sound only because this stays one.
-#[cfg(target_arch = "wasm32")]
-fn default_sim_threads() -> usize {
-    1
-}
-
 pub struct RunConfig {
     pub window: WindowAttributes,
     /// Native only; the wasm worker simulates at 60 Hz.
     pub fixed_hz: u32,
     /// Ticks beyond this are dropped; `0` stops the sim. Native only.
     pub max_ticks_per_frame: u32,
-    /// `None` or `Some(0)` lets the runner pick; `--threads=N` overrides.
-    pub sim_threads: Option<usize>,
     /// `None` keeps the installed subscriber or `RUST_LOG`.
     pub log_filter: Option<String>,
     pub esc_exits: bool,
@@ -259,7 +218,6 @@ impl Default for RunConfig {
                 .with_visible(false),
             fixed_hz: 60,
             max_ticks_per_frame: DEFAULT_MAX_TICKS_PER_FRAME,
-            sim_threads: None,
             log_filter: None,
             esc_exits: true,
             render_error_budget: 8,
@@ -315,8 +273,7 @@ pub fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let jobs = JobPool::new(resolve_sim_threads(&Args::current(), config.sim_threads));
-    let runner = Runner::<A>::new(config, jobs);
+    let runner = Runner::<A>::new(config);
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -335,7 +292,7 @@ pub fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
 struct InitArtifacts<A: App> {
     rd: RenderDevice,
     shader_db: ShaderDb,
-    watcher: Option<AssetWatcher>,
+    watcher: Option<FileWatcher>,
     ui: UiIntegration,
     app: A,
 }
@@ -346,24 +303,24 @@ const UI_PASS_SAMPLE_COUNT: u32 = 1;
 fn setup_after_device<A: App>(
     win: &Arc<Window>,
     rd: RenderDevice,
-    jobs: &JobPool,
+    runtime: &Runtime,
 ) -> anyhow::Result<InitArtifacts<A>> {
     let mut shader_db = ShaderDb::new(rd.device.clone());
 
-    let mut watcher = match AssetWatcher::new() {
+    let mut watcher = match FileWatcher::new() {
         Ok(w) => Some(w),
         Err(e) => {
-            tracing::warn!("AssetWatcher disabled: {e}");
+            tracing::warn!("FileWatcher disabled: {e}");
             None
         }
     };
 
     let mut ctx = SetupCtx {
+        runtime,
         rd: &rd,
         shader_db: &mut shader_db,
         watcher: watcher.as_mut(),
         time: 0.0,
-        sim_threads: jobs.threads(),
     };
     let app = A::setup(&mut ctx).map_err(|e| e.context("App::setup"))?;
 
@@ -425,19 +382,16 @@ fn attach_canvas_to_dom(win: &winit::window::Window) -> anyhow::Result<()> {
 }
 
 struct Runner<A: App> {
+    runtime: Runtime,
     config: RunConfig,
 
-    jobs: JobPool,
+    commands: command::CommandQueue,
     timestep: FixedTimestep,
     input: InputState,
     start: Instant,
 
     window: Option<Arc<Window>>,
-    rd: Option<RenderDevice>,
-    shader_db: Option<ShaderDb>,
-    watcher: Option<AssetWatcher>,
-    ui: Option<UiIntegration>,
-    app: Option<A>,
+    artifacts: Option<InitArtifacts<A>>,
 
     /// Read at `begin_frame`; window events between frames see this frame's value.
     ui_capture: UiCapture,
@@ -453,7 +407,6 @@ struct Runner<A: App> {
 
     last_update_at: Option<Instant>,
 
-    tick_index: u64,
     last_redraw_at: Option<Instant>,
     render_error_streak: u32,
     surface_error_streak: u32,
@@ -465,21 +418,18 @@ struct Runner<A: App> {
 }
 
 impl<A: App> Runner<A> {
-    fn new(config: RunConfig, jobs: JobPool) -> Self {
+    fn new(config: RunConfig) -> Self {
         let timestep =
             FixedTimestep::new(config.fixed_hz).with_max_catch_up(config.max_ticks_per_frame);
         Self {
             config,
-            jobs,
+            runtime: Runtime::default(),
+            commands: command::CommandQueue::new(),
             timestep,
             input: InputState::default(),
             start: Instant::now(),
             window: None,
-            rd: None,
-            shader_db: None,
-            watcher: None,
-            ui: None,
-            app: None,
+            artifacts: None,
             ui_capture: UiCapture::default(),
             #[cfg(target_arch = "wasm32")]
             pending_init: None,
@@ -488,7 +438,6 @@ impl<A: App> Runner<A> {
             frame_count: 0,
             fps: 0.0,
             last_update_at: None,
-            tick_index: 0,
             last_redraw_at: None,
             render_error_streak: 0,
             surface_error_streak: 0,
@@ -515,11 +464,7 @@ impl<A: App> Runner<A> {
 
     fn install_init(&mut self, win: Arc<Window>, artifacts: InitArtifacts<A>) {
         self.window = Some(win.clone());
-        self.rd = Some(artifacts.rd);
-        self.shader_db = Some(artifacts.shader_db);
-        self.watcher = artifacts.watcher;
-        self.ui = Some(artifacts.ui);
-        self.app = Some(artifacts.app);
+        self.artifacts = Some(artifacts);
         self.minimized = false;
         self.start = Instant::now();
         self.last_fps_update = Instant::now();
@@ -607,8 +552,8 @@ impl<A: App> ApplicationHandler for Runner<A> {
         }
 
         let msaa = self.config.msaa_samples;
-        let jobs = self.jobs;
         let win_for_future = win.clone();
+        let runtime = self.runtime.clone();
         let cell: PendingInit<A> = std::rc::Rc::new(std::cell::RefCell::new(None));
         let cell_for_future = cell.clone();
 
@@ -620,7 +565,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 let rd = RenderDevice::new(win_for_future.clone(), msaa)
                     .await
                     .map_err(|e| anyhow::anyhow!("RenderDevice::new: {e:#}"))?;
-                setup_after_device::<A>(&win_for_future, rd, &jobs)
+                setup_after_device::<A>(&win_for_future, rd, &runtime)
             }
             .await;
             *cell_for_future.borrow_mut() = Some(result);
@@ -647,7 +592,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 return;
             }
         };
-        let artifacts = match setup_after_device::<A>(&win, rd, &self.jobs) {
+        let artifacts = match setup_after_device::<A>(&win, rd, &self.runtime) {
             Ok(a) => a,
             Err(e) => {
                 self.deferred_error = Some(e);
@@ -684,8 +629,8 @@ impl<A: App> ApplicationHandler for Runner<A> {
         }
 
         // egui first, so it claims hover, focus and clicks before Loam's routing.
-        if let Some(ui) = self.ui.as_mut() {
-            let _ = ui.handle_event(&win, &ev);
+        if let Some(artifacts) = self.artifacts.as_mut() {
+            let _ = artifacts.ui.handle_event(&win, &ev);
         }
 
         match &ev {
@@ -715,6 +660,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
             }
             WindowEvent::CursorLeft { .. } => self.input.cursor_invalidated(),
             WindowEvent::Focused(false) => {
+                self.runtime.request_release();
                 self.input.cursor_invalidated();
                 self.input.release_buttons();
             }
@@ -730,15 +676,19 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 match (was_minimized, self.minimized) {
                     (false, true) => elwt.set_control_flow(ControlFlow::Wait),
                     (true, false) => {
+                        let now = Instant::now();
+                        self.timestep.reset_clock(now);
+                        self.last_update_at = Some(now);
+                        self.last_redraw_at = None;
                         elwt.set_control_flow(ControlFlow::Poll);
-                        if let Some(rd) = &mut self.rd {
-                            rd.resize(*size);
+                        if let Some(artifacts) = &mut self.artifacts {
+                            artifacts.rd.resize(*size);
                         }
                         win.request_redraw();
                     }
                     (false, false) => {
-                        if let Some(rd) = &mut self.rd {
-                            rd.resize(*size);
+                        if let Some(artifacts) = &mut self.artifacts {
+                            artifacts.rd.resize(*size);
                         }
                     }
                     (true, true) => {}
@@ -754,27 +704,30 @@ impl<A: App> ApplicationHandler for Runner<A> {
 
         let now = self.time();
         let fps = self.fps;
-        let tick = self.tick_index;
+        let tick = self.timestep.tick();
         let ui_capture = self.ui_capture;
-        if let Some(app) = self.app.as_mut() {
-            if let Some(rd) = self.rd.as_ref() {
-                let mut ctx = FrameCtx {
-                    rd,
-                    input: FrameInput::default(),
-                    time: now,
-                    fps,
-                    n_ticks: 0,
-                    tick,
-                    dt: 0.0,
-                    ui_capture,
-                    _non_exhaustive: PhantomData,
-                };
-                app.on_event(&ev, &mut ctx);
-                // Mirror the wasm worker: keyboard events also reach `on_key`.
-                if let WindowEvent::KeyboardInput { event, .. } = &ev {
-                    if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
-                        app.on_key(code, event.state, &mut ctx);
-                    }
+        if let Some(InitArtifacts {
+            app, rd, shader_db, ..
+        }) = self.artifacts.as_mut()
+        {
+            let mut ctx = FrameCtx {
+                runtime: &self.runtime,
+                shader_db,
+                rd,
+                input: FrameInput::default(),
+                time: now,
+                fps,
+                n_ticks: 0,
+                tick,
+                dt: 0.0,
+                ui_capture,
+                _non_exhaustive: PhantomData,
+            };
+            app.on_event(&ev, &mut ctx);
+            // Mirror the wasm worker: keyboard events also reach `on_key`.
+            if let WindowEvent::KeyboardInput { event, .. } = &ev {
+                if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
+                    app.on_key(code, event.state, &mut ctx);
                 }
             }
         }
@@ -822,57 +775,48 @@ impl<A: App> Runner<A> {
             return;
         }
         // Read before the frame's work so the last scripted frame presents.
-        if script::exit_requested() {
+        if self.runtime.exit_requested() {
             elwt.exit();
             return;
         }
-        if let (Some(want_on), Some(rd)) = (frame_pacing::take_pending_vsync(), self.rd.as_mut()) {
-            let target = if want_on {
-                wgpu::PresentMode::Fifo
-            } else {
-                let modes = rd.supported_present_modes();
-                if modes.contains(&wgpu::PresentMode::Mailbox) {
-                    wgpu::PresentMode::Mailbox
-                } else if modes.contains(&wgpu::PresentMode::Immediate) {
-                    wgpu::PresentMode::Immediate
-                } else {
-                    rd.present_mode()
-                }
-            };
-            let _ = rd.set_present_mode(target);
-        }
+        let Some(InitArtifacts {
+            app,
+            rd,
+            shader_db,
+            watcher,
+            ui,
+        }) = self.artifacts.as_mut()
+        else {
+            return;
+        };
+        self.runtime.apply_present_mode(rd);
 
-        // Native only; the fallback covers platforms that support one grab mode.
-        #[cfg(not(target_arch = "wasm32"))]
         {
             use winit::window::CursorGrabMode;
-            let (pending_grab, pending_vis) = cursor::take_pending();
-            let mut applied = cursor::current_state();
+            let (pending_grab, pending_vis) = self.runtime.take_cursor_request();
+            let mut applied = self.runtime.cursor_state();
             if let Some(mode) = pending_grab {
-                let primary = match mode {
-                    cursor::GrabMode::None => CursorGrabMode::None,
-                    cursor::GrabMode::Confined => CursorGrabMode::Confined,
-                    cursor::GrabMode::Locked => CursorGrabMode::Locked,
-                };
-                if win.set_cursor_grab(primary).is_err() && mode != cursor::GrabMode::None {
-                    let fallback = match mode {
-                        cursor::GrabMode::Locked => CursorGrabMode::Confined,
-                        cursor::GrabMode::Confined => CursorGrabMode::Locked,
+                match cursor::apply_grab(mode, |mode| {
+                    win.set_cursor_grab(match mode {
                         cursor::GrabMode::None => CursorGrabMode::None,
-                    };
-                    let _ = win.set_cursor_grab(fallback);
+                        cursor::GrabMode::Confined => CursorGrabMode::Confined,
+                        cursor::GrabMode::Locked => CursorGrabMode::Locked,
+                    })
+                }) {
+                    Ok(mode) => applied.grab = mode,
+                    Err(error) => tracing::warn!(%error, "cursor grab rejected"),
                 }
-                applied.grab = mode;
             }
             if let Some(visible) = pending_vis {
                 win.set_cursor_visible(visible);
                 applied.visible = visible;
             }
             if pending_grab.is_some() || pending_vis.is_some() {
-                cursor::mark_applied(applied.grab, applied.visible);
+                self.runtime
+                    .mark_cursor_applied(applied.grab, applied.visible);
             }
             // After the grab transition: warping a still-Locked cursor is a no-op.
-            if cursor::take_pending_warp_center() {
+            if self.runtime.take_warp_center() {
                 let size = win.inner_size();
                 let center = winit::dpi::PhysicalPosition::new(
                     size.width as f64 / 2.0,
@@ -882,12 +826,10 @@ impl<A: App> Runner<A> {
             }
         }
 
-        let Some(rd) = self.rd.as_ref() else { return };
-
         // Anchor on the previous deadline, not the wake-up, so cadence stays locked.
         let now = Instant::now();
         let frame_anchor = if let (Some(period), Some(last)) =
-            (frame_pacing::target_period(), self.last_redraw_at)
+            (self.runtime.target_period(), self.last_redraw_at)
         {
             let deadline = last + period;
             if now < deadline {
@@ -913,32 +855,23 @@ impl<A: App> Runner<A> {
 
         let _frame_scope = loam_time::frame_trace::scope("frame");
 
-        // Drained before the ticks, stamped with the index they start from.
-        if let Some(app) = self.app.as_mut() {
-            command::apply_drained(app, rd, self.tick_index);
-        }
-
-        let n_ticks = if let Some(app) = self.app.as_mut() {
-            drive_fixed_ticks(
-                app,
-                &mut self.timestep,
-                &mut self.tick_index,
-                Instant::now(),
-                self.config.fixed_hz,
-                &self.jobs,
-            )
-        } else {
-            0
-        };
+        command::apply_drained(
+            app,
+            &self.runtime,
+            shader_db,
+            rd,
+            self.timestep.tick(),
+            self.start.elapsed().as_secs_f32(),
+            &mut self.commands,
+        );
+        let n_ticks = drive_fixed_ticks(app, &mut self.timestep, Instant::now());
 
         // Opened before `App::update` so input hit-tests the last build's layout.
-        let egui_ctx = if let Some(ui) = self.ui.as_mut() {
+        let egui_ctx = {
             let _scope = loam_time::frame_trace::scope("ui-begin");
             let ctx = ui.begin_frame(win.as_ref()).clone();
             self.ui_capture = UiCapture::read(&ctx);
-            Some(ctx)
-        } else {
-            None
+            ctx
         };
         let ui_capture = self.ui_capture;
         let input = self.input.take_frame();
@@ -950,14 +883,16 @@ impl<A: App> Runner<A> {
         };
         self.last_update_at = Some(now_inst);
 
-        if let Some(app) = self.app.as_mut() {
+        {
             let mut fctx = FrameCtx {
+                shader_db,
+                runtime: &self.runtime,
                 rd,
                 input,
                 time: self.start.elapsed().as_secs_f32(),
                 fps: self.fps,
                 n_ticks,
-                tick: self.tick_index,
+                tick: self.timestep.tick(),
                 dt,
                 ui_capture,
                 _non_exhaustive: PhantomData,
@@ -967,29 +902,25 @@ impl<A: App> Runner<A> {
                 app.update(&mut fctx);
             }
 
-            if let Some(egui_ctx) = egui_ctx.as_ref() {
+            {
                 let _scope = loam_time::frame_trace::scope("app-ui");
-                app.ui(egui_ctx, &mut fctx);
+                app.ui(&egui_ctx, &mut fctx);
             }
         }
 
         {
             let _scope = loam_time::frame_trace::scope("hot-reload");
-            let reload_events = self.watcher.as_mut().map(|w| w.poll()).unwrap_or_default();
+            let reload_events = watcher.as_mut().map(|w| w.poll()).unwrap_or_default();
             if !reload_events.is_empty() {
-                if let (Some(app), Some(shader_db), Some(rd)) =
-                    (self.app.as_mut(), self.shader_db.as_mut(), self.rd.as_ref())
-                {
-                    app.apply_shader_events(&reload_events, shader_db);
-                    let mut ctx = SetupCtx {
-                        rd,
-                        shader_db,
-                        watcher: self.watcher.as_mut(),
-                        time: self.start.elapsed().as_secs_f32(),
-                        sim_threads: self.jobs.threads(),
-                    };
-                    app.on_shader_reload(&mut ctx);
-                }
+                app.apply_shader_events(&reload_events, shader_db);
+                let mut ctx = SetupCtx {
+                    runtime: &self.runtime,
+                    rd,
+                    shader_db,
+                    watcher: watcher.as_mut(),
+                    time: self.start.elapsed().as_secs_f32(),
+                };
+                app.on_shader_reload(&mut ctx);
             }
         }
 
@@ -999,20 +930,18 @@ impl<A: App> Runner<A> {
             self.fps = self.frame_count as f32 / elapsed;
             self.frame_count = 0;
             self.last_fps_update = Instant::now();
-            if let Some(app) = self.app.as_ref() {
-                let title = app.title(self.fps);
-                #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
-                let title = match self.capture.status() {
-                    Some(status) => format!("{title} [{status}]").into(),
-                    None => title,
-                };
-                win.set_title(&title);
-            }
+            let title = app.title(self.fps);
+            #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+            let title = match self.capture.status() {
+                Some(status) => format!("{title} [{status}]").into(),
+                None => title,
+            };
+            win.set_title(&title);
         }
 
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         {
-            let requests = capture::drain_requests();
+            let requests = self.runtime.take_captures();
             if !requests.is_empty() {
                 let log = self.capture.apply_requests(requests);
                 for line in log {
@@ -1058,7 +987,7 @@ impl<A: App> Runner<A> {
                             label: Some("loam-app::frame"),
                         });
 
-                if let Some(app) = self.app.as_mut() {
+                {
                     let _scope = loam_time::frame_trace::scope("app-record");
                     let mut ctx = RenderCtx {
                         rd,
@@ -1091,7 +1020,7 @@ impl<A: App> Runner<A> {
                     capture_consume(&mut self.capture, rd, &frame.texture, true, capture_now);
                 }
 
-                if let Some(ui) = self.ui.as_mut() {
+                let mut callbacks = {
                     let _scope = loam_time::frame_trace::scope("ui-paint");
                     let viewport = (rd.surface_bundle.size.width, rd.surface_bundle.size.height);
                     let ui_swap_view =
@@ -1108,8 +1037,8 @@ impl<A: App> Runner<A> {
                         None,
                         win.as_ref(),
                         viewport,
-                    );
-                }
+                    )
+                };
 
                 // Before the post tap: the only pass that writes the swapchain here.
                 if rd.scene_view().is_some() {
@@ -1119,7 +1048,8 @@ impl<A: App> Runner<A> {
 
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
                 if do_capture && self.capture.wants_post() {
-                    rd.queue.submit(Some(encoder.finish()));
+                    rd.queue
+                        .submit(callbacks.drain(..).chain(Some(encoder.finish())));
                     encoder = rd
                         .device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1132,10 +1062,11 @@ impl<A: App> Runner<A> {
                     self.capture.advance_frame(capture_now);
                 }
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
-                capture::publish_status(self.capture.status());
+                self.runtime.publish_capture_status(self.capture.status());
 
+                rd.queue
+                    .submit(callbacks.drain(..).chain(Some(encoder.finish())));
                 if let Some(timer) = rd.gpu_timer.as_ref() {
-                    rd.queue.submit(Some(encoder.finish()));
                     let mut t_enc =
                         rd.device
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1143,8 +1074,6 @@ impl<A: App> Runner<A> {
                             });
                     timer.write_end_and_resolve(&mut t_enc);
                     rd.queue.submit(Some(t_enc.finish()));
-                } else {
-                    rd.queue.submit(Some(encoder.finish()));
                 }
 
                 {
@@ -1152,7 +1081,7 @@ impl<A: App> Runner<A> {
                     frame.present();
                 }
 
-                if let Some(timer) = self.rd.as_mut().and_then(|rd| rd.gpu_timer.as_mut()) {
+                if let Some(timer) = rd.gpu_timer.as_mut() {
                     timer.tick();
                 }
                 if let Some(err) = last_err {
@@ -1160,7 +1089,7 @@ impl<A: App> Runner<A> {
                     let budget = self.config.render_error_budget;
                     if budget > 0 && self.render_error_streak >= budget {
                         self.deferred_error = Some(err.context(format!(
-                            "App::render failed {budget} consecutive frames; aborting"
+                            "App::record failed {budget} consecutive frames; aborting"
                         )));
                         elwt.exit();
                         return;
@@ -1182,10 +1111,8 @@ impl<A: App> Runner<A> {
                     wgpu::SurfaceError::Lost
                     | wgpu::SurfaceError::Outdated
                     | wgpu::SurfaceError::Other => {
-                        if let Some(rd) = &mut self.rd {
-                            let size = rd.surface_bundle.size;
-                            rd.resize(size);
-                        }
+                        let size = rd.surface_bundle.size;
+                        rd.resize(size);
                     }
                     _ => {}
                 }
@@ -1239,14 +1166,11 @@ macro_rules! build_info {
 mod tests {
     use super::*;
     use std::time::Duration;
-
-    // Truncated as `FixedTimestep` stores it.
     const TICK: Duration = Duration::from_nanos(1_000_000_000 / 60);
 
     #[derive(Default)]
     struct TickRecorder {
         times: Vec<f32>,
-        workers: Vec<usize>,
     }
 
     impl App for TickRecorder {
@@ -1254,54 +1178,21 @@ mod tests {
             Ok(Self::default())
         }
 
-        fn tick(&mut self, _dt: f32, ctx: &mut TickCtx<'_>) {
+        fn tick(&mut self, _dt: f32, ctx: &mut TickCtx) {
             self.times.push(ctx.time);
-            self.workers.push(ctx.jobs.threads());
         }
     }
-
-    // The first offset only primes the accumulator.
-    fn drive(
-        base: Instant,
-        offsets: &[Duration],
-        max_catch_up: u32,
-    ) -> (Vec<f32>, FixedTimestep, u64) {
+    fn drive(base: Instant, offsets: &[Duration], max_catch_up: u32) -> (Vec<f32>, FixedTimestep) {
         let mut app = TickRecorder::default();
         let mut timestep = FixedTimestep::new(60).with_max_catch_up(max_catch_up);
-        let mut tick_index = 0u64;
-        let jobs = JobPool::new(1);
         for offset in offsets {
-            drive_fixed_ticks(
-                &mut app,
-                &mut timestep,
-                &mut tick_index,
-                base + *offset,
-                60,
-                &jobs,
-            );
+            drive_fixed_ticks(&mut app, &mut timestep, base + *offset);
         }
-        (app.times, timestep, tick_index)
+        (app.times, timestep)
     }
 
     fn tick_times(base: Instant, offsets: &[Duration], max_catch_up: u32) -> Vec<f32> {
         drive(base, offsets, max_catch_up).0
-    }
-
-    #[test]
-    fn tick_time_sequence_is_independent_of_wall_clock_offset() {
-        let offsets: Vec<Duration> = (0..=20).map(|k| TICK * k).collect();
-        let early = tick_times(Instant::now(), &offsets, 8);
-        let late = tick_times(Instant::now() + Duration::from_secs(3_600), &offsets, 8);
-
-        assert_eq!(
-            early.len(),
-            20,
-            "one tick per frame after the priming frame"
-        );
-        assert_eq!(
-            early, late,
-            "tick time must not shift with the run's wall-clock origin"
-        );
     }
 
     #[test]
@@ -1313,7 +1204,7 @@ mod tests {
         let smooth = tick_times(base, &one_per_frame, 10);
         let stuttered = tick_times(base, &ten_per_frame, 10);
 
-        let expected: Vec<f32> = (0..60).map(|i| i as f32 * (1.0 / 60.0)).collect();
+        let expected: Vec<f32> = (0..60).map(|i| i as f32 * TICK.as_secs_f32()).collect();
         assert_eq!(smooth, expected, "tick time is tick_index * dt from zero");
         assert_eq!(
             stuttered, expected,
@@ -1322,27 +1213,12 @@ mod tests {
     }
 
     #[test]
-    fn executed_ticks_equal_ticks_charged_to_the_accumulator() {
-        const BACKLOG: u32 = 10;
-        let offsets = [Duration::ZERO, TICK * BACKLOG];
-        let (times, timestep, tick_index) = drive(Instant::now(), &offsets, BACKLOG);
-
-        assert_eq!(
-            times.len() as u64,
-            timestep.tick(),
-            "every tick charged to the accumulator must have run App::tick"
-        );
-        assert_eq!(times.len(), BACKLOG as usize);
-        assert_eq!(tick_index, timestep.tick());
-    }
-
-    #[test]
     fn the_runner_caps_catch_up_in_the_accumulator_not_the_tick_loop() {
         let config = RunConfig {
             max_ticks_per_frame: 2,
             ..RunConfig::default()
         };
-        let mut runner = Runner::<TickRecorder>::new(config, JobPool::new(1));
+        let mut runner = Runner::<TickRecorder>::new(config);
         let base = Instant::now();
         runner.timestep.advance(base);
         let ticks = runner.timestep.advance(base + TICK * 10);
@@ -1355,13 +1231,11 @@ mod tests {
     }
 
     #[test]
-    fn timestep_tick_and_runner_index_stay_equal_across_a_stall() {
+    fn dropped_wall_time_does_not_skip_simulation_ticks() {
         for cap in [DEFAULT_MAX_TICKS_PER_FRAME, loam_time::DEFAULT_MAX_CATCH_UP] {
             let base = Instant::now();
             let mut app = TickRecorder::default();
             let mut timestep = FixedTimestep::new(60).with_max_catch_up(cap);
-            let mut tick_index = 0u64;
-            let jobs = JobPool::new(1);
 
             let steps = [
                 Duration::ZERO,
@@ -1376,19 +1250,7 @@ mod tests {
             let mut elapsed = Duration::ZERO;
             for step in steps {
                 elapsed += step;
-                drive_fixed_ticks(
-                    &mut app,
-                    &mut timestep,
-                    &mut tick_index,
-                    base + elapsed,
-                    60,
-                    &jobs,
-                );
-                assert_eq!(
-                    tick_index,
-                    timestep.tick(),
-                    "cap {cap}: runner tick_index diverged from the accumulator at {elapsed:?}"
-                );
+                drive_fixed_ticks(&mut app, &mut timestep, base + elapsed);
                 assert_eq!(
                     app.times.len() as u64,
                     timestep.tick(),
@@ -1399,215 +1261,9 @@ mod tests {
             let expected_ticks = 3 + u64::from(cap) + 3;
             assert_eq!(timestep.tick(), expected_ticks);
             let expected_times: Vec<f32> = (0..expected_ticks)
-                .map(|i| i as f32 * (1.0 / 60.0))
+                .map(|i| i as f32 * TICK.as_secs_f32())
                 .collect();
             assert_eq!(app.times, expected_times, "cap {cap}");
         }
-    }
-
-    #[test]
-    fn the_thread_budget_prefers_args_and_reads_zero_as_let_the_runner_pick() {
-        let picked = default_sim_threads();
-        assert!(picked >= 1, "the runner's own pick must be a legal budget");
-        let flagged = picked + 1;
-        let configured = picked + 2;
-        let flagged_arg = flagged.to_string();
-
-        let flag = |value: &str| Args::from_pairs([(SIM_THREADS_KEY, value)]);
-        assert_eq!(resolve_sim_threads(&flag(&flagged_arg), None), flagged);
-        assert_eq!(
-            resolve_sim_threads(&flag(&flagged_arg), Some(configured)),
-            flagged,
-            "the flag must win over RunConfig, not the other way round"
-        );
-        assert_eq!(
-            resolve_sim_threads(&Args::default(), Some(configured)),
-            configured
-        );
-        assert_eq!(resolve_sim_threads(&Args::default(), None), picked);
-        assert_eq!(resolve_sim_threads(&flag("0"), Some(configured)), picked);
-        assert_eq!(resolve_sim_threads(&Args::default(), Some(0)), picked);
-        assert_eq!(
-            resolve_sim_threads(&flag("many"), Some(configured)),
-            configured
-        );
-        assert_eq!(
-            resolve_sim_threads(
-                &Args::from_argv(["--threads", &flagged_arg]),
-                Some(configured)
-            ),
-            configured,
-            "a bare flag drops its value, so it must not read as a request"
-        );
-    }
-
-    #[test]
-    fn every_tick_of_a_run_sees_the_one_pool_the_runner_resolved() {
-        let budget = default_sim_threads() + 1;
-
-        let jobs = JobPool::new(resolve_sim_threads(
-            &Args::from_pairs([(SIM_THREADS_KEY, budget.to_string())]),
-            Some(budget + 1),
-        ));
-        let mut runner = Runner::<TickRecorder>::new(RunConfig::default(), jobs);
-        assert_eq!(
-            runner.jobs.threads(),
-            budget,
-            "the resolved budget must be what the runner stores"
-        );
-
-        let base = Instant::now();
-        let mut app = TickRecorder::default();
-        let mut tick_index = 0u64;
-        for frame in 0..=5u32 {
-            drive_fixed_ticks(
-                &mut app,
-                &mut runner.timestep,
-                &mut tick_index,
-                base + TICK * frame,
-                runner.config.fixed_hz,
-                &runner.jobs,
-            );
-        }
-
-        assert_eq!(app.workers.len(), 5, "the frames must have produced ticks");
-        assert_eq!(
-            app.workers,
-            vec![budget; app.workers.len()],
-            "the pool a tick borrows is the runner's, at the resolved budget"
-        );
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    enum FrameEvent {
-        Applied { stamp: u64, line: String },
-        Ticked(u64),
-    }
-
-    #[derive(Default)]
-    struct EventRecorder {
-        log: std::rc::Rc<std::cell::RefCell<Vec<FrameEvent>>>,
-    }
-
-    impl App for EventRecorder {
-        fn setup(_ctx: &mut SetupCtx<'_>) -> anyhow::Result<Self> {
-            Ok(Self::default())
-        }
-
-        fn tick(&mut self, _dt: f32, ctx: &mut TickCtx<'_>) {
-            self.log.borrow_mut().push(FrameEvent::Ticked(ctx.tick));
-        }
-    }
-
-    fn drive_with_commands(offsets: &[Duration], max_catch_up: u32) -> Vec<FrameEvent> {
-        let _held = command::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = command::drain(0);
-
-        let mut app = EventRecorder::default();
-        let log = app.log.clone();
-        let mut timestep = FixedTimestep::new(60).with_max_catch_up(max_catch_up);
-        let mut tick_index = 0u64;
-        let jobs = JobPool::new(1);
-        let base = Instant::now();
-        for (frame, offset) in offsets.iter().enumerate() {
-            for stamped in command::drain(tick_index) {
-                log.borrow_mut().push(FrameEvent::Applied {
-                    stamp: stamped.tick,
-                    line: stamped.command.name.clone(),
-                });
-            }
-            drive_fixed_ticks(
-                &mut app,
-                &mut timestep,
-                &mut tick_index,
-                base + *offset,
-                60,
-                &jobs,
-            );
-            command::submit_line(&format!("mark{frame}"));
-        }
-        let _ = command::drain(tick_index);
-        let events = log.borrow().clone();
-        events
-    }
-
-    #[test]
-    fn a_command_applies_after_the_previous_tick_and_before_the_one_it_is_stamped_for() {
-        let smooth: Vec<Duration> = (0..=40).map(|k| TICK * k).collect();
-        let stuttered: Vec<Duration> = (0..=8).map(|k| TICK * (k * 5)).collect();
-        let subtick: Vec<Duration> = (0..=40).map(|k| (TICK * 2 * k) / 3).collect();
-
-        for (name, offsets) in [
-            ("one tick per frame", smooth),
-            ("five ticks per frame", stuttered),
-            ("two thirds of a tick per frame", subtick),
-        ] {
-            let events = drive_with_commands(&offsets, 10);
-            assert!(
-                events
-                    .iter()
-                    .any(|e| matches!(e, FrameEvent::Applied { .. })),
-                "{name}: nothing was applied, so the assertions below are vacuous"
-            );
-            let mut last_tick: Option<u64> = None;
-            for (i, event) in events.iter().enumerate() {
-                match event {
-                    FrameEvent::Ticked(t) => last_tick = Some(*t),
-                    FrameEvent::Applied { stamp, line } => {
-                        assert_eq!(
-                            last_tick.map(|t| t + 1).unwrap_or(0),
-                            *stamp,
-                            "{name}: `{line}` is stamped {stamp} but the tick before it \
-                             was {last_tick:?}"
-                        );
-                        let next_tick = events[i + 1..].iter().find_map(|e| match e {
-                            FrameEvent::Ticked(t) => Some(*t),
-                            FrameEvent::Applied { .. } => None,
-                        });
-                        if let Some(next) = next_tick {
-                            assert_eq!(
-                                next, *stamp,
-                                "{name}: `{line}` stamped {stamp} must be applied before \
-                                 tick {stamp}, not before tick {next}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn commands_split_over_zero_tick_frames_reach_one_boundary_in_order() {
-        let offsets: Vec<Duration> = (0..=12).map(|k| (TICK * k) / 4).collect();
-        let events = drive_with_commands(&offsets, 10);
-
-        let batched: Vec<(u64, String)> = events
-            .iter()
-            .filter_map(|e| match e {
-                FrameEvent::Applied { stamp, line } => Some((*stamp, line.clone())),
-                FrameEvent::Ticked(_) => None,
-            })
-            .collect();
-        assert!(
-            batched.iter().any(|(stamp, _)| batched
-                .iter()
-                .filter(|(other, _)| other == stamp)
-                .count()
-                > 1),
-            "the pacing must produce at least one stamp carrying several commands"
-        );
-
-        let submitted: Vec<u32> = batched
-            .iter()
-            .map(|(_, line)| line.trim_start_matches("mark").parse().expect("markN"))
-            .collect();
-        let mut sorted = submitted.clone();
-        sorted.sort_unstable();
-        assert_eq!(submitted, sorted, "the queue reordered submissions");
-        assert!(
-            batched.windows(2).all(|w| w[0].0 <= w[1].0),
-            "stamps must be monotone: {batched:?}"
-        );
     }
 }

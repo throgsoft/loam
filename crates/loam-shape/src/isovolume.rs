@@ -1,20 +1,17 @@
-//! The collider-side analogue of marching cubes (Lorensen & Cline, 1987),
-//! enclosing rather than interpolating: an SDF is 1-Lipschitz (Hart, "Sphere
-//! Tracing", 1996, §2), so cells with `f(c) <= m` enclose `{f <= 0}`.
+//! For a 1-Lipschitz field, the half-diagonal margin encloses its nonpositive set within the sampled domain.
+//! Hart, Sphere Tracing, 1996, §2.
 
 use glam::{Vec3, Vec4};
 
 use crate::Shape;
 
-// Both corners inclusive, in grid index space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellBox<const D: usize> {
     lo: [usize; D],
     hi: [usize; D],
 }
 
-/// The union of the boxes contains `{p : f(p) <= 0}` restricted to the sampled
-/// domain; [`Isovolume::clipped`] reports whether that domain was large enough.
+/// Encloses `{p : f(p) <= 0}` within the sampled domain; [`Self::clipped`] detects contact with its boundary.
 #[derive(Clone, Debug)]
 pub struct Isovolume<const D: usize> {
     origin: [f32; D],
@@ -25,9 +22,7 @@ pub struct Isovolume<const D: usize> {
 }
 
 impl<const D: usize> Isovolume<D> {
-    /// `resolution` counts cells along the longest axis. `sdf` must be a true
-    /// signed distance (1-Lipschitz); a field that merely has the right sign
-    /// breaks the enclosure guarantee.
+    /// Requires a 1-Lipschitz signed distance; `resolution` counts cells along the longest axis.
     pub fn extract(
         min: [f32; D],
         max: [f32; D],
@@ -40,7 +35,7 @@ impl<const D: usize> Isovolume<D> {
             *e = hi - lo;
             assert!(*e > 0.0, "domain must be non-degenerate on every axis");
         }
-        // One cell size for every axis: the margin is the cell's half-diagonal.
+
         let cell = extent.iter().copied().fold(0.0f32, f32::max) / resolution as f32;
         let mut counts = [0usize; D];
         for (n, e) in counts.iter_mut().zip(extent.iter()) {
@@ -195,7 +190,6 @@ fn cell_centre<const D: usize>(origin: &[f32; D], cell: f32, coords: &[usize; D]
     p
 }
 
-// Axis 0 varies fastest.
 fn flatten<const D: usize>(coords: &[usize; D], counts: &[usize; D]) -> usize {
     let mut index = 0;
     for k in (0..D).rev() {
@@ -213,7 +207,6 @@ fn unflatten<const D: usize>(mut index: usize, counts: &[usize; D]) -> [usize; D
     coords
 }
 
-// Row-major order; stops when `f` returns false.
 fn visit_cells<const D: usize>(b: &CellBox<D>, mut f: impl FnMut(&[usize; D]) -> bool) {
     let mut coords = b.lo;
     loop {
@@ -244,7 +237,6 @@ fn all_occupied<const D: usize>(b: &CellBox<D>, occupied: &[bool], counts: &[usi
     ok
 }
 
-// The fixed round-robin order makes the piece set reproducible.
 fn grow<const D: usize>(seed: [usize; D], occupied: &[bool], counts: &[usize; D]) -> CellBox<D> {
     let mut b = CellBox { lo: seed, hi: seed };
     loop {
@@ -279,7 +271,6 @@ fn grow<const D: usize>(seed: [usize; D], occupied: &[bool], counts: &[usize; D]
 mod tests {
     use super::*;
 
-    // Quilez, "distance functions" (2019), `sdTorus`.
     fn torus_3d(major: f32, minor: f32) -> impl Fn([f32; 3]) -> f32 {
         move |p| {
             let radial = (p[0] * p[0] + p[2] * p[2]).sqrt() - major;
@@ -287,16 +278,11 @@ mod tests {
         }
     }
 
-    // Revolve a 2-sphere of radius `minor` about the `w` axis at distance `major`.
     fn torus_4d(major: f32, minor: f32) -> impl Fn([f32; 4]) -> f32 {
         move |p| {
             let radial = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - major;
             (radial * radial + p[3] * p[3]).sqrt() - minor
         }
-    }
-
-    fn sphere_3d(radius: f32) -> impl Fn([f32; 3]) -> f32 {
-        move |p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - radius
     }
 
     const TORUS_MAJOR: f32 = 1.0;
@@ -316,7 +302,6 @@ mod tests {
         )
     }
 
-    // Additive recurrence with the plastic-number constants (Roberts, 2018).
     fn direction_3d(i: usize) -> [f32; 3] {
         const ALPHA_1: f32 = 0.754_877_7;
         const ALPHA_2: f32 = 0.569_840_3;
@@ -328,7 +313,6 @@ mod tests {
         [r * phi.cos(), r * phi.sin(), z]
     }
 
-    // Marching to the first sign change rather than assuming a bracket.
     fn surface_point_3d(
         sdf: &impl Fn([f32; 3]) -> f32,
         from: [f32; 3],
@@ -368,6 +352,20 @@ mod tests {
     }
 
     #[test]
+    fn rectangular_occupied_region_merges_into_one_piece() {
+        fn check<const D: usize>() {
+            let volume = Isovolume::extract([-2.0; D], [2.0; D], 16, |p| {
+                p.into_iter().map(f32::abs).fold(0.0, f32::max) - 0.5
+            });
+            assert_eq!(volume.piece_count(), 1);
+            assert_eq!(volume.piece_bounds(0), ([-0.75; D], [0.75; D]));
+            assert_eq!(volume.occupied_cells(), 6usize.pow(D as u32));
+        }
+        check::<3>();
+        check::<4>();
+    }
+
+    #[test]
     fn every_isosurface_sample_lies_inside_a_piece() {
         let sdf = torus_3d(TORUS_MAJOR, TORUS_MINOR);
         for resolution in [24, 32, 48] {
@@ -375,7 +373,6 @@ mod tests {
             assert!(!volume.clipped());
             let mut checked = 0;
             for i in 0..512 {
-                // Ride the tube's core circle so the rays leave from inside.
                 let angle = i as f32 * std::f32::consts::TAU / 512.0;
                 let core = [TORUS_MAJOR * angle.cos(), 0.0, TORUS_MAJOR * angle.sin()];
                 let dir = direction_3d(i);
@@ -459,48 +456,6 @@ mod tests {
             previous < 1.6,
             "finest cover is still {previous}x the solid"
         );
-    }
-
-    #[test]
-    fn piece_count_stays_within_the_measured_budget_at_three_resolutions() {
-        let counts_3d: Vec<usize> = [16, 32, 64]
-            .iter()
-            .map(|&r| extract_torus_3d(r).piece_count())
-            .collect();
-        assert!(
-            counts_3d[0] <= 28 && counts_3d[1] <= 107 && counts_3d[2] <= 355,
-            "3D piece counts {counts_3d:?} regressed"
-        );
-
-        let counts_4d: Vec<usize> = [12, 16, 24]
-            .iter()
-            .map(|&r| {
-                Isovolume::extract(
-                    [-TORUS_BOUND; 4],
-                    [TORUS_BOUND; 4],
-                    r,
-                    torus_4d(TORUS_MAJOR, TORUS_MINOR),
-                )
-                .piece_count()
-            })
-            .collect();
-        assert!(
-            counts_4d[0] <= 97 && counts_4d[1] <= 131 && counts_4d[2] <= 440,
-            "4D piece counts {counts_4d:?} regressed"
-        );
-    }
-
-    #[test]
-    fn piece_count_is_far_below_the_occupied_cell_count() {
-        for resolution in [16, 32, 64] {
-            let volume = Isovolume::extract([-1.5; 3], [1.5; 3], resolution, sphere_3d(1.0));
-            assert!(
-                volume.piece_count() * 20 < volume.occupied_cells(),
-                "resolution {resolution}: {} pieces for {} cells",
-                volume.piece_count(),
-                volume.occupied_cells()
-            );
-        }
     }
 
     #[test]

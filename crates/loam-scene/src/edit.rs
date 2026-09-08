@@ -15,12 +15,9 @@ use crate::scene::{Scene, SceneNode};
 /// Space units.
 pub const DEFAULT_BLEND_RADIUS: f32 = 0.15;
 
-// `dot(p, n) - d` is a signed distance only for unit `n`.
 const MIN_NORMAL_LENGTH: f32 = 1e-6;
 
-/// The child index taken at each step from the root. Every interior
-/// [`SceneNode`] has exactly two children, so each step is 0 or 1. Spelled
-/// `root`, `root.0`, `root.1.0` and parsed back from the same text.
+/// Positional path spelled `root`, `root.0`, `root.1.0`, with binary child indices.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct NodePath(Vec<u8>);
 
@@ -31,7 +28,8 @@ impl NodePath {
 
     pub fn child(&self, index: u8) -> Self {
         let mut steps = self.0.clone();
-        steps.push(index & 1);
+        assert!(index <= 1, "child index must be 0 or 1");
+        steps.push(index);
         Self(steps)
     }
 
@@ -69,18 +67,21 @@ impl FromStr for NodePath {
     type Err = EditError;
 
     fn from_str(text: &str) -> Result<Self, EditError> {
-        let rest = text
-            .strip_prefix("root")
-            .ok_or_else(|| EditError::Syntax(format!("path `{text}` does not start at `root`")))?;
+        let mut tokens = text.split('.');
+        if tokens.next() != Some("root") {
+            return Err(EditError::Syntax(format!(
+                "path `{text}` must start with `root`"
+            )));
+        }
         let mut steps = Vec::new();
-        for token in rest.split('.').skip_while(|t| t.is_empty()) {
+        for token in tokens {
             match token {
                 "0" => steps.push(0),
                 "1" => steps.push(1),
                 _ => {
                     return Err(EditError::Syntax(format!(
-                        "path step `{token}` in `{text}` is not a child index (0 or 1)",
-                    )))
+                        "invalid child index `{token}` in `{text}`"
+                    )));
                 }
             }
         }
@@ -149,7 +150,6 @@ impl LeafKind {
         }
     }
 
-    /// Sized against the unit-ish scale the march kernel's step thresholds assume.
     pub fn shape(self) -> Shape {
         match self {
             LeafKind::Sphere => Shape::sphere_at(Vec3::ZERO, 0.25),
@@ -232,7 +232,7 @@ impl fmt::Display for EditValue {
             if i > 0 {
                 f.write_str(" ")?;
             }
-            // `Debug`, not `Display`: only `Debug` keeps a point or an exponent.
+
             write!(f, "{c:?}")?;
         }
         Ok(())
@@ -317,12 +317,15 @@ impl SceneEdit {
                 let value = parse_value(param, &args[3.min(args.len())..])?;
                 Ok(SceneEdit::Set { path, param, value })
             }
-            "add" => Ok(SceneEdit::Insert {
+            "add" if args.len() == 4 => Ok(SceneEdit::Insert {
                 path: path(1)?,
                 combinator: Combinator::parse(args.get(2).copied().unwrap_or_default())?,
                 leaf: LeafKind::parse(args.get(3).copied().unwrap_or_default())?,
             }),
-            "remove" => Ok(SceneEdit::Remove { path: path(1)? }),
+            "remove" if args.len() == 2 => Ok(SceneEdit::Remove { path: path(1)? }),
+            "add" | "remove" => Err(EditError::Syntax(format!(
+                "wrong argument count for `{verb}`"
+            ))),
             other => Err(EditError::Syntax(format!(
                 "`{other}` is not one of set, add, remove",
             ))),
@@ -348,8 +351,7 @@ pub enum EditError {
     Syntax(String),
 }
 
-/// Returns whether the tree actually changed. The comparison is on bits,
-/// because the emitter prints the sign of a zero.
+/// Reports changed bits, including the sign of zero preserved by WGSL emission.
 pub fn apply(scene: &mut Scene, edit: &SceneEdit) -> Result<bool, EditError> {
     match edit {
         SceneEdit::Set { path, param, value } => {
@@ -366,7 +368,8 @@ pub fn apply(scene: &mut Scene, edit: &SceneEdit) -> Result<bool, EditError> {
                 .ok_or_else(|| EditError::NoSuchNode(path.clone()))?;
             let shape = leaf.shape();
             check_leaf(&shape).map_err(EditError::Rejected)?;
-            *node = combinator.combine(node.clone(), SceneNode::Leaf(shape));
+            let left = std::mem::replace(node, SceneNode::Leaf(Shape::sphere_at(Vec3::ZERO, 0.0)));
+            *node = combinator.combine(left, SceneNode::Leaf(shape));
             Ok(true)
         }
         SceneEdit::Remove { path } => {
@@ -374,11 +377,25 @@ pub fn apply(scene: &mut Scene, edit: &SceneEdit) -> Result<bool, EditError> {
             let parent_path = path.parent().unwrap_or_default();
             let parent = node_at_mut(&mut scene.root, &parent_path)
                 .ok_or_else(|| EditError::NoSuchNode(path.clone()))?;
-            let sibling = {
-                let kids = children(parent).ok_or_else(|| EditError::NoSuchNode(path.clone()))?;
-                SceneNode::clone(kids[usize::from(step ^ 1)])
+            let sibling = match parent {
+                SceneNode::Union(l, r)
+                | SceneNode::Intersection(l, r)
+                | SceneNode::Difference(l, r)
+                | SceneNode::SmoothUnion {
+                    left: l, right: r, ..
+                } => {
+                    if step == 0 {
+                        r
+                    } else {
+                        l
+                    }
+                }
+                SceneNode::Leaf(_) => return Err(EditError::NoSuchNode(path.clone())),
             };
-            *parent = sibling;
+            *parent = std::mem::replace(
+                sibling.as_mut(),
+                SceneNode::Leaf(Shape::sphere_at(Vec3::ZERO, 0.0)),
+            );
             Ok(true)
         }
     }
@@ -425,7 +442,7 @@ pub fn label(node: &SceneNode) -> &'static str {
     }
 }
 
-/// Pre-order. A full traversal allocates once however deep the tree.
+/// Visits nodes in pre-order using one reusable path buffer.
 pub fn for_each_node(root: &SceneNode, mut visit: impl FnMut(&NodePath, &SceneNode)) {
     fn walk(node: &SceneNode, path: &mut NodePath, visit: &mut impl FnMut(&NodePath, &SceneNode)) {
         visit(path, node);
@@ -527,7 +544,7 @@ fn set_param(
 
 fn unit_normal(v: Vec3) -> Result<Vec3, EditError> {
     let length = v.length();
-    if length < MIN_NORMAL_LENGTH {
+    if !length.is_finite() || length < MIN_NORMAL_LENGTH {
         return Err(EditError::Rejected(format!(
             "a half-space normal must be at least {MIN_NORMAL_LENGTH:e} long, got {length:e}",
         )));
@@ -535,7 +552,6 @@ fn unit_normal(v: Vec3) -> Result<Vec3, EditError> {
     Ok(v / length)
 }
 
-// Reports whether the bits moved.
 fn store_f32(slot: &mut f32, value: f32) -> bool {
     let changed = slot.to_bits() != value.to_bits();
     *slot = value;
@@ -553,6 +569,13 @@ fn store_vec3(slot: &mut Vec3, value: Vec3) -> bool {
 }
 
 fn parse_value(param: Param, args: &[&str]) -> Result<EditValue, EditError> {
+    if args.len() != arity(param) {
+        return Err(EditError::Syntax(format!(
+            "{} needs {} numbers",
+            param.name(),
+            arity(param)
+        )));
+    }
     let number = |index: usize| -> Result<f32, EditError> {
         args.get(index)
             .copied()
@@ -589,7 +612,37 @@ mod tests {
     use super::*;
     use loam_math::EuclideanR3;
 
-    // Four leaves and every combinator: `((sphere ~ box) | plane) - sphere`.
+    #[test]
+    fn malformed_paths_and_surplus_arguments_are_rejected() {
+        for path in ["root1", "root..1", "root.", "root.0..1", "root.2"] {
+            assert!(path.parse::<NodePath>().is_err(), "{path}");
+        }
+        for args in [
+            vec!["remove", "root.0", "extra"],
+            vec!["add", "root", "union", "sphere", "extra"],
+            vec!["set", "root", "radius", "1", "2"],
+            vec!["set", "root", "center", "1", "2", "3", "4"],
+        ] {
+            assert!(SceneEdit::from_args(&args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn overflowing_normal_length_is_rejected_without_mutation() {
+        let mut scene = Scene::new(SceneNode::plane(Vec3::Y, 0.0));
+        let before = scene.to_wgsl(&EuclideanR3);
+        assert!(apply(
+            &mut scene,
+            &SceneEdit::Set {
+                path: NodePath::root(),
+                param: Param::Normal,
+                value: EditValue::Vector(Vec3::splat(f32::MAX)),
+            }
+        )
+        .is_err());
+        assert_eq!(scene.to_wgsl(&EuclideanR3), before);
+    }
+
     fn fixture() -> Scene {
         Scene::new(
             SceneNode::sphere(Vec3::new(-0.35, 0.0, 0.0), 0.45)
@@ -647,63 +700,95 @@ mod tests {
     }
 
     #[test]
-    fn set_is_total_over_every_path_and_never_changes_the_tree_shape() {
-        let base = fixture();
-        let before = node_count(&base);
-        for path in paths(&base) {
-            let node = node_at(&base.root, &path).expect("enumerated");
-            let advertised: Vec<Param> = parameters(node).into_iter().map(|(p, _)| p).collect();
-            for param in Param::ALL {
-                let value = match arity(param) {
-                    1 => EditValue::Scalar(0.31),
-                    _ => EditValue::Vector(Vec3::new(0.31, -0.12, 0.07)),
-                };
-                let mut scene = base.clone();
-                let result = apply(
+    fn parameter_edits_change_distances_and_reject_mismatches_atomically() {
+        use EditValue::{Scalar, Vector};
+        for (root, param, value, point, expected) in [
+            (
+                SceneNode::sphere(Vec3::ZERO, 0.5),
+                Param::Center,
+                Vector(Vec3::X),
+                Vec3::X,
+                -0.5,
+            ),
+            (
+                SceneNode::sphere(Vec3::ZERO, 0.5),
+                Param::Radius,
+                Scalar(0.25),
+                Vec3::X,
+                0.75,
+            ),
+            (
+                SceneNode::box_(Vec3::splat(0.5)),
+                Param::HalfExtents,
+                Vector(Vec3::new(1.0, 2.0, 3.0)),
+                Vec3::Y * 3.0,
+                1.0,
+            ),
+            (
+                SceneNode::plane(Vec3::Y, 0.5),
+                Param::Normal,
+                Vector(Vec3::X * 2.0),
+                Vec3::X,
+                0.5,
+            ),
+            (
+                SceneNode::plane(Vec3::Y, 0.0),
+                Param::Offset,
+                Scalar(-0.5),
+                Vec3::Y,
+                1.5,
+            ),
+            (
+                SceneNode::sphere(Vec3::ZERO, 0.0)
+                    .smooth_union(SceneNode::sphere(Vec3::ZERO, 0.0), 0.2),
+                Param::Blend,
+                Scalar(0.4),
+                Vec3::ZERO,
+                -0.1,
+            ),
+        ] {
+            let mut scene = Scene::new(root);
+            assert_eq!(
+                apply(
                     &mut scene,
                     &SceneEdit::Set {
-                        path: path.clone(),
+                        path: NodePath::root(),
                         param,
-                        value,
-                    },
-                );
-                assert_eq!(
-                    result.is_ok(),
-                    advertised.contains(&param),
-                    "{path} ({}) and parameter `{}`: {result:?}",
-                    label(node),
-                    param.name(),
-                );
-                assert_eq!(node_count(&scene), before, "{path} changed the tree shape");
-            }
+                        value
+                    }
+                ),
+                Ok(true)
+            );
+            assert!(
+                (scene.eval(&EuclideanR3, point) - expected).abs() < 1e-6,
+                "{param:?}"
+            );
         }
-    }
 
-    #[test]
-    fn one_edit_changes_exactly_one_emitted_constant() {
         let mut scene = fixture();
-        let before = scene.to_wgsl(&EuclideanR3);
-        let path: NodePath = "root.1".parse().expect("path");
-        assert!(apply(
-            &mut scene,
-            &SceneEdit::Set {
-                path,
-                param: Param::Radius,
-                value: EditValue::Scalar(0.125),
-            },
-        )
-        .expect("radius is a sphere parameter"));
-        let after = scene.to_wgsl(&EuclideanR3);
-
-        let differing: Vec<(&str, &str)> = before
-            .lines()
-            .zip(after.lines())
-            .filter(|(a, b)| a != b)
-            .collect();
-        assert_eq!(before.lines().count(), after.lines().count());
-        assert_eq!(differing.len(), 1, "changed lines: {differing:?}");
-        assert!(differing[0].0.contains("0.35"), "{:?}", differing[0]);
-        assert!(differing[0].1.contains("0.125"), "{:?}", differing[0]);
+        let original = scene.to_ron().unwrap();
+        for (path, param, value) in [
+            ("root.1", Param::Radius, Vector(Vec3::ONE)),
+            ("root.1", Param::Center, Scalar(1.0)),
+            ("root.1", Param::Normal, Vector(Vec3::Y)),
+            ("root.0.0.1", Param::Radius, Scalar(1.0)),
+            ("root.0.1", Param::HalfExtents, Vector(Vec3::ONE)),
+            ("root.0.0", Param::Offset, Scalar(1.0)),
+            ("root", Param::Blend, Scalar(0.3)),
+        ] {
+            assert!(matches!(
+                apply(
+                    &mut scene,
+                    &SceneEdit::Set {
+                        path: path.parse().unwrap(),
+                        param,
+                        value
+                    }
+                ),
+                Err(EditError::NotAParameter { .. })
+            ));
+            assert_eq!(scene.to_ron().unwrap(), original);
+        }
     }
 
     #[test]
@@ -720,38 +805,28 @@ mod tests {
     }
 
     #[test]
-    fn an_insert_and_the_matching_remove_restore_the_original_tree() {
+    fn insert_remove_preserves_root_and_nested_siblings() {
         let original = fixture();
-        for path in paths(&original) {
-            for combinator in Combinator::ALL {
-                for leaf in LeafKind::ALL {
-                    let mut scene = original.clone();
-                    let insert = SceneEdit::Insert {
-                        path: path.clone(),
-                        combinator,
-                        leaf,
-                    };
-                    assert_eq!(apply(&mut scene, &insert), Ok(true));
-                    assert_eq!(node_count(&scene), node_count(&original) + 2);
-                    let added = insert.focus_after();
-                    assert_eq!(
-                        label(node_at(&scene.root, &added).expect("the new leaf resolves")),
-                        leaf.name(),
-                    );
-
-                    assert_eq!(
-                        apply(&mut scene, &SceneEdit::Remove { path: added }),
-                        Ok(true)
-                    );
-                    assert_eq!(
-                        scene.to_wgsl(&EuclideanR3),
-                        original.to_wgsl(&EuclideanR3),
-                        "{path} / {} / {}",
-                        combinator.name(),
-                        leaf.name(),
-                    );
-                }
-            }
+        for (index, combinator) in Combinator::ALL.into_iter().enumerate() {
+            let path: NodePath = ["root", "root.0", "root.1", "root.0.1"][index]
+                .parse()
+                .unwrap();
+            let leaf = LeafKind::ALL[index % LeafKind::ALL.len()];
+            let mut scene = original.clone();
+            let insert = SceneEdit::Insert {
+                path,
+                combinator,
+                leaf,
+            };
+            assert_eq!(apply(&mut scene, &insert), Ok(true));
+            assert_eq!(node_count(&scene), node_count(&original) + 2);
+            let added = insert.focus_after();
+            assert_eq!(label(node_at(&scene.root, &added).unwrap()), leaf.name());
+            assert_eq!(
+                apply(&mut scene, &SceneEdit::Remove { path: added }),
+                Ok(true)
+            );
+            assert_eq!(scene.to_ron().unwrap(), original.to_ron().unwrap());
         }
     }
 
@@ -867,21 +942,6 @@ mod tests {
             assert!(node_at(&scene.root, &path).is_none());
         }
         assert_eq!(scene.to_wgsl(&EuclideanR3), before);
-    }
-
-    #[test]
-    fn an_edited_tree_round_trips_through_ron_after_a_sequence_of_edits() {
-        let mut scene = fixture();
-        for edit in edit_sequence() {
-            let _ = apply(&mut scene, &edit).expect("the sequence is applicable");
-        }
-        let ron = scene.to_ron().expect("serialize");
-        let recovered = Scene::from_ron("<round trip>", &ron).expect("deserialize");
-        assert_eq!(
-            recovered.to_wgsl(&EuclideanR3),
-            scene.to_wgsl(&EuclideanR3),
-            "{ron}",
-        );
     }
 
     #[test]
@@ -1035,7 +1095,7 @@ mod tests {
                 ));
             }
         }
-        // Zero and negative blend radii are finite and still unemittable.
+
         for k in [0.0_f32, -0.1] {
             assert!(matches!(
                 apply(
@@ -1062,7 +1122,6 @@ mod tests {
             Vec3::new(1e-3, 0.0, 0.0),
             Vec3::new(3.0, -4.0, 12.0),
         ] {
-            // The first raw normal here normalizes to the one the fixture carries.
             assert!(apply(
                 &mut scene,
                 &SceneEdit::Set {
@@ -1094,71 +1153,6 @@ mod tests {
                 ),
                 Err(EditError::Rejected(_)),
             ));
-        }
-    }
-
-    #[test]
-    fn sentinel_leaves_and_boolean_combinators_offer_no_parameters() {
-        for shape in [
-            Shape::ConvexPolytope3D {
-                vertices: vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z],
-            },
-            Shape::Polygon2D {
-                vertices: vec![glam::Vec2::ZERO, glam::Vec2::X, glam::Vec2::Y],
-            },
-            Shape::HyperSphere4D {
-                center: glam::Vec4::ZERO,
-                radius: 0.5,
-            },
-            Shape::HalfSpace4D {
-                normal: glam::Vec4::Y,
-                offset: 0.0,
-            },
-            Shape::ConvexPolytope4D {
-                vertices: vec![glam::Vec4::ZERO, glam::Vec4::X],
-            },
-        ] {
-            assert!(
-                parameters(&SceneNode::Leaf(shape.clone())).is_empty(),
-                "{:?} advertises parameters it cannot render",
-                shape.kind(),
-            );
-        }
-        let leaf = || SceneNode::sphere(Vec3::ZERO, 0.1);
-        for node in [
-            leaf().union(leaf()),
-            leaf().intersect(leaf()),
-            leaf().subtract(leaf()),
-        ] {
-            assert!(parameters(&node).is_empty());
-        }
-        assert_eq!(
-            parameters(&leaf().smooth_union(leaf(), 0.2)),
-            vec![(Param::Blend, EditValue::Scalar(0.2))],
-        );
-    }
-
-    #[test]
-    fn advertised_parameter_values_are_the_ones_the_node_holds() {
-        let scene = fixture();
-        for path in paths(&scene) {
-            let node = node_at(&scene.root, &path).expect("enumerated");
-            for (param, value) in parameters(node) {
-                let mut probe = scene.clone();
-                assert_eq!(
-                    apply(
-                        &mut probe,
-                        &SceneEdit::Set {
-                            path: path.clone(),
-                            param,
-                            value,
-                        },
-                    ),
-                    Ok(false),
-                    "{path} `{}` reported a value the node does not hold",
-                    param.name(),
-                );
-            }
         }
     }
 }

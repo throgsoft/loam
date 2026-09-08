@@ -20,3 +20,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 naga.workspace = true
+
+[lints]
+workspace = true

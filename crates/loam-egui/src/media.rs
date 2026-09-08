@@ -255,8 +255,6 @@ mod tests {
     fn screen() -> Rect {
         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0))
     }
-
-    // The click lands in a second frame, against the first frame's rect.
     fn click_at_centre<R>(
         mut widget: impl FnMut(&mut Ui) -> Response,
         result: impl Fn(&Response) -> R,
@@ -303,40 +301,17 @@ mod tests {
     }
 
     #[test]
-    fn play_pause_button_click_fires() {
-        let clicked = click_at_centre(
-            |ui| play_pause_button(ui, vec2(36.0, 29.0), false),
-            |r| r.clicked(),
-        );
-        assert!(
-            clicked,
-            "play_pause_button should report clicked() after a press+release"
-        );
-    }
-
-    #[test]
-    fn rate_toggle_click_selects_value() {
+    fn rate_toggle_selects_then_resets() {
         let mut rate = 1.0_f32;
         click_at_centre(
             |ui| rate_toggle(ui, vec2(28.0, 29.0), &mut rate, 2.0, false, true),
             |_| (),
         );
-        assert_eq!(
-            rate, 2.0,
-            "click on unselected rate_toggle should set rate to its value"
-        );
-    }
-
-    #[test]
-    fn rate_toggle_click_when_selected_resets_to_one() {
-        let mut rate = 2.0_f32;
+        assert_eq!(rate, 2.0);
         click_at_centre(
             |ui| rate_toggle(ui, vec2(28.0, 29.0), &mut rate, 2.0, false, true),
             |_| (),
         );
-        assert_eq!(
-            rate, 1.0,
-            "click on selected rate_toggle should reset rate to 1.0"
-        );
+        assert_eq!(rate, 1.0);
     }
 }

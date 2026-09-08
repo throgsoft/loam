@@ -4,12 +4,9 @@ members = [
   "crates/loam-shape",
   "crates/loam-scene",
   "crates/loam-time",
-  "crates/loam-shader",
   "crates/loam-render",
-  "crates/loam-asset",
   "crates/loam-input",
   "crates/loam-camera",
-  "crates/loam-player",
   "crates/loam-physics",
   "crates/loam-app",
   "crates/loam-text",
@@ -30,6 +27,12 @@ version = "0.1.0"
 authors = ["Zach Humes <humesze@proton.me>"]
 repository = "https://github.com/throgsoft/loam"
 
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 [workspace.dependencies]
 anyhow = "1"
 thiserror = "1"
@@ -46,11 +49,7 @@ bytemuck = { version = "1", features = ["derive"] }
 notify = "6"
 pollster = "0.3"
 
-# `web-time` is a drop-in for `std::time::Instant` / `Duration`: on native it re-exports
-# the std types verbatim; on wasm32 it backs `Instant` with `performance.now()`. Used in
-# place of `std::time::Instant` anywhere the runtime needs wall-clock-ish timing (event
-# loop, FixedTimestep, FPS bookkeeping). Calling `std::time::Instant::now` on wasm32
-# panics, so the swap is mandatory for the browser runtime.
+# `std::time::Instant::now` panics on wasm32.
 web-time = "1"
 
 [package]
@@ -70,22 +69,15 @@ loam-math      = { path = "crates/loam-math",    version = "0.1.0" }
 loam-scene     = { path = "crates/loam-scene",   version = "0.1.0" }
 loam-shape     = { path = "crates/loam-shape",   version = "0.1.0" }
 loam-time      = { path = "crates/loam-time",    version = "0.1.0" }
-loam-shader    = { path = "crates/loam-shader",  version = "0.1.0" }
 loam-render    = { path = "crates/loam-render",  version = "0.1.0" }
-loam-asset     = { path = "crates/loam-asset",   version = "0.1.0" }
 loam-input     = { path = "crates/loam-input",   version = "0.1.0" }
 loam-camera    = { path = "crates/loam-camera",  version = "0.1.0" }
-loam-player    = { path = "crates/loam-player",  version = "0.1.0" }
 loam-physics   = { path = "crates/loam-physics", version = "0.1.0" }
 loam-app       = { path = "crates/loam-app",     version = "0.1.0" }
 loam-text      = { path = "crates/loam-text",    version = "0.1.0" }
 
-[dev-dependencies]
-# `tests/workspace_manifests.rs` reads every member manifest to gate
-# publishability; parsing them beats scanning lines that a table-form dep
-# declaration would slip past. `toml_edit` rather than `toml` because the
-# build graph already resolves it, so the gate costs no new crates.
-toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
-
 [features]
 default = []
+
+[lints]
+workspace = true

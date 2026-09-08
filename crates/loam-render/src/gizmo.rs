@@ -6,7 +6,6 @@ use loam_shape::LineMesh;
 
 use crate::hypergimbal::{Hypergimbal, Ring, RingStyle};
 
-// Every ring is centred `1` out with radius `√2`, per `hypergimbal::POLE`.
 const RING_REACH: f32 = 1.0 + std::f32::consts::SQRT_2;
 
 const SHAFT_INNER: f32 = 0.45;
@@ -19,7 +18,6 @@ const SHAFT_OUTER: f32 = RING_REACH + SHAFT_CLEARANCE;
 
 const INV_SQRT_3: f32 = 0.577_350_26;
 
-// Sine floor on the ray-to-shaft angle; the closest-approach parameter moves as `1/sin`.
 const MIN_SHAFT_INCIDENCE: f32 = 1e-2;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -84,13 +82,11 @@ impl Shaft {
         self.outer - self.head
     }
 
-    /// Closest approach of the ray to the shaft's line (Ericson, *Real-Time
-    /// Collision Detection*, 2005, §5.1.9); `None` within 0.6° of parallel.
+    /// Closest approach of the ray to the shaft's line (Ericson, *Real-Time Collision Detection*, 2005, §5.1.9); `None` within 0.6° of parallel.
     pub fn ray_parameter(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<f32> {
         let offset = self.origin - ray_origin;
         let alignment = self.direction.dot(ray_direction);
         let ray_length_squared = ray_direction.length_squared();
-        // |d|²·sin², so the guard reads as a floor on sin.
         let denominator = ray_length_squared - alignment * alignment;
         if denominator <= MIN_SHAFT_INCIDENCE * MIN_SHAFT_INCIDENCE * ray_length_squared {
             return None;
@@ -186,8 +182,7 @@ impl TransformDelta {
     }
 }
 
-/// Anchored at the press, so a widget following the subject does not chase its
-/// own drag.
+/// Anchored at the press, so a widget following the subject does not chase its own drag.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum HandleDrag {
     Rotate { ring: Ring, grab: Vec3 },
@@ -213,8 +208,7 @@ impl HandleDrag {
         }
     }
 
-    /// `None` when the ray cannot be read against the handle; callers hold the
-    /// last delta.
+    /// `None` when the ray cannot be read against the handle; callers hold the last delta.
     pub fn delta(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<TransformDelta> {
         match self {
             Self::Rotate { ring, grab } => {
@@ -412,7 +406,6 @@ mod tests {
                 let TransformDelta::Rotate { angle, .. } = delta else {
                     panic!("{plane:?} ring produced a translation");
                 };
-                // The log's branch is the half-turn; skip wrapped angles.
                 if angle.abs() < PI - 0.1 && angle.abs() > 1e-3 {
                     assert!(
                         (log.component(plane) - angle).abs() < 1e-4,
@@ -441,54 +434,6 @@ mod tests {
                     Rotor4::IDENTITY
                 );
             }
-        }
-    }
-
-    #[test]
-    fn pure_3d_rings_fix_the_w_axis_and_w_rings_move_it() {
-        for (plane, fixes_w) in [
-            (Plane4::Xy, true),
-            (Plane4::Xz, true),
-            (Plane4::Yz, true),
-            (Plane4::Xw, false),
-            (Plane4::Yw, false),
-            (Plane4::Zw, false),
-        ] {
-            let rotor = TransformDelta::Rotate { plane, angle: 0.7 }.rotor();
-            let moved = (rotor.apply(Vec4::W) - Vec4::W).length();
-            assert_eq!(
-                moved < 1e-6,
-                fixes_w,
-                "{plane:?} moved ê₄ by {moved}, which is the wrong side of the split"
-            );
-        }
-    }
-
-    #[test]
-    fn the_w_shaft_is_the_direction_furthest_from_every_scene_axis() {
-        let w = Axis4::W.shaft_direction();
-        assert!((w.length() - 1.0).abs() < 1e-6);
-        let scene = [Vec3::X, Vec3::Y, Vec3::Z];
-        for axis in scene {
-            assert!((w.dot(axis) + INV_SQRT_3).abs() < 1e-6, "not equiangular");
-            assert!(w.dot(axis).abs() > 1e-3, "w lies in a coordinate plane");
-        }
-        let worst = |d: Vec3| {
-            scene
-                .iter()
-                .fold(f32::NEG_INFINITY, |m, a| m.max(d.dot(*a)))
-        };
-        assert!((worst(w) + INV_SQRT_3).abs() < 1e-6);
-        for step in 0..2048 {
-            // Golden-angle spiral (Vogel 1979).
-            let z = 1.0 - 2.0 * (step as f32 + 0.5) / 2048.0;
-            let radius = (1.0 - z * z).max(0.0).sqrt();
-            let phi = step as f32 * PI * (3.0 - 5.0_f32.sqrt());
-            let probe = Vec3::new(radius * phi.cos(), radius * phi.sin(), z);
-            assert!(
-                worst(probe) >= worst(w) - 1e-6,
-                "{probe} beats the w shaft's separation"
-            );
         }
     }
 

@@ -1,4 +1,3 @@
-// Quad-expanded antialiased discs; the disc is the inscribed circle of the [-1, 1]² quad.
 
 struct CameraUniform {
     view_projection: mat4x4<f32>,
@@ -24,7 +23,6 @@ fn vs_main(
     let p_clip = camera.view_projection * vec4<f32>(pos, 1.0);
     let p_ndc  = p_clip.xyz / p_clip.w;
 
-    // Corner bit 0 is +x, bit 1 is +y; same pattern as line_raster.
     let dx = select(-1.0, 1.0, corner == 1u || corner == 3u);
     let dy = select(-1.0, 1.0, corner >= 2u);
 

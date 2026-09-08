@@ -1,6 +1,4 @@
-//! A baked collider grid evaluates the scene SDF once per cell, so the
-//! evaluators must never touch the heap. Pinned with a counting global
-//! allocator, which is process-wide and lives in its own test binary.
+//! Scene evaluation must not allocate.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,18 +11,22 @@ static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 struct CountingAllocator;
 
+// SAFETY: Methods preserve the System allocator contract; atomic bookkeeping cannot unwind.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: The caller supplies a valid nonzero allocation layout.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: The caller supplies a live System allocation and its original layout.
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: The caller supplies a live System allocation, its layout, and a valid new size.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -47,7 +49,6 @@ fn evaluating_a_scene_never_touches_the_heap() {
             .subtract(SceneNode4::hypersphere(Vec4::new(0.3, 0.1, 0.0, 0.1), 0.2)),
     );
 
-    // Warm every lazily initialised path (formatting, TLS) before arming the counter.
     let mut checksum = scene.eval(&EuclideanR3, Vec3::ZERO)
         + scene.eval(&HyperbolicH3, Vec3::ZERO)
         + scene4.eval(Vec3::ZERO, 0.0, true);
@@ -69,7 +70,7 @@ fn evaluating_a_scene_never_touches_the_heap() {
             }
         }
     }
-    let allocations = ALLOCATIONS.load(Ordering::Relaxed) - before;
+    let allocations = ALLOCATIONS.load(Ordering::Relaxed).wrapping_sub(before);
 
     assert!(
         checksum.is_finite(),

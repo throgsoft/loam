@@ -7,7 +7,7 @@ pub(crate) static TOTAL_ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TOTAL_DEALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ALLOC_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// Counts `Layout::size()`, not the aligned size, so it reads low.
+/// Counts requested bytes; allocator overhead is excluded.
 pub struct CountingAllocator<A: GlobalAlloc> {
     inner: A,
 }
@@ -18,25 +18,29 @@ impl<A: GlobalAlloc> CountingAllocator<A> {
     }
 }
 
+// SAFETY: Methods preserve the inner allocator contract; atomic bookkeeping cannot unwind.
 unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOC_INSTALLED.store(true, Ordering::Relaxed);
         TOTAL_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
         TOTAL_ALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
-        self.inner.alloc(layout)
+        // SAFETY: The caller supplies a valid nonzero allocation layout.
+        unsafe { self.inner.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         TOTAL_DEALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
         TOTAL_DEALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
-        self.inner.dealloc(ptr, layout);
+        // SAFETY: The caller supplies a live inner allocation and its original layout.
+        unsafe { self.inner.dealloc(ptr, layout) };
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         ALLOC_INSTALLED.store(true, Ordering::Relaxed);
         TOTAL_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
         TOTAL_ALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
-        self.inner.alloc_zeroed(layout)
+        // SAFETY: The caller supplies a valid nonzero allocation layout.
+        unsafe { self.inner.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -45,7 +49,8 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         TOTAL_DEALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
         TOTAL_ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
         TOTAL_ALLOC_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
-        self.inner.realloc(ptr, layout, new_size)
+        // SAFETY: The caller supplies a live inner allocation, its layout, and a valid new size.
+        unsafe { self.inner.realloc(ptr, layout, new_size) }
     }
 }
 
@@ -65,7 +70,7 @@ pub struct AllocDelta {
     pub dealloc_count: u64,
 }
 
-/// `None` when no [`CountingAllocator`] has been installed.
+/// Process-wide counters are sampled independently; `None` precedes the first allocation.
 pub fn current_snapshot() -> Option<AllocSnapshot> {
     if !ALLOC_INSTALLED.load(Ordering::Relaxed) {
         return None;

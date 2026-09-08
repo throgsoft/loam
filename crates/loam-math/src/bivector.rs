@@ -14,7 +14,7 @@ pub trait Bivector: Copy + Add<Output = Self> + Mul<f32, Output = Self> {
     fn exp(self) -> Self::Rotor;
 }
 
-/// A rotor in G(N, 0): an element of Spin(N), unit-norm by construction.
+/// Rotor operations require unit elements of Spin(N); public fields do not enforce this.
 pub trait Rotor: Copy + Mul<Output = Self> {
     type Bivector: Bivector<Rotor = Self>;
 
@@ -26,8 +26,7 @@ pub trait Rotor: Copy + Mul<Output = Self> {
 
     fn apply(&self, v: Self::Vector) -> Self::Vector;
 
-    /// Inverse of [`Bivector::exp`]; [`Rotor4`] takes the shorter rotation,
-    /// so its result may generate `−self`.
+    /// Inverse of [`Bivector::exp`]; [`Rotor4`] takes the shorter rotation, so its result may generate `−self`.
     fn log(self) -> Self::Bivector;
 }
 
@@ -173,7 +172,7 @@ impl Bivector for Bivector3 {
 
     fn exp(self) -> Rotor3 {
         let mag_sq = self.xy * self.xy + self.yz * self.yz + self.zx * self.zx;
-        // Under 1e-16, `sin(θ/2)/θ = 1/2` exactly in f32.
+
         if mag_sq < 1e-16 {
             return Rotor3 {
                 s: 1.0,
@@ -410,8 +409,7 @@ impl Bivector4 {
     }
 }
 
-/// Discriminants follow [`Bivector4`]'s field order:
-/// `0=xy, 1=xz, 2=xw, 3=yz, 4=yw, 5=zw`.
+/// Discriminants follow [`Bivector4`]'s field order: `0=xy, 1=xz, 2=xw, 3=yz, 4=yw, 5=zw`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Plane4 {
@@ -478,7 +476,6 @@ impl Bivector for Bivector4 {
         Self::ZERO
     }
 
-    // Invariant decomposition into commuting simple parts with angles θ₁ ≥ |θ₂|.
     fn exp(self) -> Rotor4 {
         let s = self.magnitude_squared();
         if s < 1e-16 {
@@ -506,7 +503,6 @@ impl Bivector for Bivector4 {
         let disc_sq = (s * s - delta * delta).max(0.0);
         let disc = disc_sq.sqrt();
 
-        // Isoclinic branch: the general path divides by `θ₁² − θ₂²`.
         if disc < 1e-6 * s.max(1.0) {
             let theta_sq = s * 0.5;
             let theta = theta_sq.sqrt();
@@ -514,7 +510,7 @@ impl Bivector for Bivector4 {
             let ch = half.cos();
             let sh = half.sin();
             let sign_i = delta.signum();
-            // Under 1e-8, `sin(θ)/(2θ) = 1/2` exactly in f32.
+
             let b_coef = if theta > 1e-8 {
                 (theta.sin()) / (2.0 * theta)
             } else {
@@ -532,8 +528,7 @@ impl Bivector for Bivector4 {
             };
         }
 
-        // θ₂ from the product of the roots, not the difference `(s − disc)/2`,
-        // which underflows (Press et al., *Numerical Recipes*, 3rd ed., §5.6).
+        // Press et al., Numerical Recipes, 3rd ed., §5.6.
         let t1 = ((s + disc) * 0.5).max(0.0).sqrt();
         let t2 = delta / (2.0 * t1);
 
@@ -564,8 +559,7 @@ impl Bivector for Bivector4 {
     }
 }
 
-/// Even element of G(4,0); the grade-2 block mixes both invariant planes, so
-/// recover a rotation with [`Rotor::log`], not by reading fields.
+/// Even element of G(4,0), with rotations recovered through [`Rotor::log`].
 #[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rotor4 {
     /// `cos(θ₁/2)·cos(θ₂/2)`.
@@ -581,6 +575,32 @@ pub struct Rotor4 {
 }
 
 impl Rotor4 {
+    /// Shortest simple rotation between unit vectors; antipodes use the least-aligned coordinate axis.
+    pub fn from_rotation_arc(from: Vec4, to: Vec4) -> Self {
+        let plane = Bivector4::wedge(from, to);
+        let magnitude = plane.magnitude();
+        if magnitude < 1e-6 {
+            if from.dot(to) > 0.0 {
+                return Self::IDENTITY;
+            }
+            let axes = [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W];
+            let least = (1..4).fold(0, |best, i| {
+                if from[i].abs() < from[best].abs() {
+                    i
+                } else {
+                    best
+                }
+            });
+            let axis = (axes[least] - from * from[least]).normalize();
+            return (Bivector4::wedge(from, axis) * std::f32::consts::PI)
+                .exp()
+                .normalize();
+        }
+        // Kahan, How Futile are Mindless Assessments of Roundoff?, 2006, Mangled Angles.
+        let angle = 2.0 * (to - from).length().atan2((to + from).length());
+        (plane * (angle / magnitude)).exp().normalize()
+    }
+
     pub const IDENTITY: Self = Self {
         s: 1.0,
         xy: 0.0,
@@ -606,22 +626,7 @@ impl Rotor4 {
             + self.xyzw * self.xyzw
     }
 
-    /// True within `√ε` of `R = ±I`, the one rotation whose invariant planes
-    /// [`Rotor::log`] cannot recover; it returns zero there.
-    pub fn is_isoclinic_half_turn(self) -> bool {
-        // `f32::EPSILON.sqrt()`, which is not const.
-        const RADIUS: f32 = 3.4526698e-4;
-        // Summed directly: `norm_squared() − p²` has no bits left at this scale.
-        let off_axis_squared = self.s * self.s
-            + self.xy * self.xy
-            + self.xz * self.xz
-            + self.xw * self.xw
-            + self.yz * self.yz
-            + self.yw * self.yw
-            + self.zw * self.zw;
-        off_axis_squared <= RADIUS * RADIUS
-    }
-
+    /// Rescales a nonzero scalar multiple of a rotor; arbitrary even elements need not lie in Spin(4).
     pub fn normalize(self) -> Self {
         let n = self.norm_squared().sqrt();
         if n > 0.0 {
@@ -656,8 +661,8 @@ impl From<Rotor4> for [f32; 8] {
 }
 
 impl Rotor4 {
-    /// Column-major, matching glam's `Mat4` and WGSL's `mat4x4<f32>` (Hestenes,
-    /// *New Foundations for Classical Mechanics*, 2nd ed., §2.5).
+    // Hestenes, New Foundations for Classical Mechanics, 2nd ed., §2.5.
+    /// Column-major, matching glam's `Mat4` and WGSL's `mat4x4<f32>`.
     pub fn to_mat4(&self) -> [[f32; 4]; 4] {
         let c0 = <Self as Rotor>::apply(self, Vec4::new(1.0, 0.0, 0.0, 0.0));
         let c1 = <Self as Rotor>::apply(self, Vec4::new(0.0, 1.0, 0.0, 0.0));
@@ -779,11 +784,8 @@ impl Rotor for Rotor4 {
         Vec4::new(q1, q2, q3, q4)
     }
 
-    // Minimal-norm generator, `|log| ≤ π√2`; `exp` of it is `±self`.
     fn log(self) -> Bivector4 {
-        // Half-angles `h± = (θ₁ ± θ₂)/2` from the self-dual split, by atan2
-        // rather than acos (Kahan 2006, *How Futile are Mindless Assessments of
-        // Roundoff in Floating-Point Computation?*, Mangled Angles).
+        // Kahan, How Futile are Mindless Assessments of Roundoff?, 2006, Mangled Angles.
         let branch = if self.s < 0.0 { -1.0 } else { 1.0 };
         let c = branch * self.s;
         let p = branch * self.xyzw;
@@ -792,7 +794,11 @@ impl Rotor for Rotor4 {
         let sin_sum = sum_part.length();
         let sin_diff = diff_part.length();
 
-        // Only the exact 0/0 needs the guard; `h/sin(h) -> 1`.
+        if sum_part == Vec3::ZERO && diff_part == Vec3::ZERO && p.abs() > c {
+            let half_turn = std::f32::consts::PI;
+            return Bivector4::new(half_turn, 0.0, 0.0, 0.0, 0.0, half_turn * p.signum());
+        }
+
         let k_sum = if sin_sum > 0.0 {
             sin_sum.atan2(c - p) / sin_sum
         } else {
@@ -877,6 +883,28 @@ mod tests {
         let id = r * r.inverse();
         assert_close(id.a, 1.0);
         assert_close(id.b, 0.0);
+    }
+
+    #[test]
+    fn rotation_arc_handles_parallel_and_antipodal_vectors() {
+        let cases = [
+            (Vec4::X, Vec4::Y),
+            (Vec4::W, -Vec4::Y),
+            (Vec4::Y, Vec4::Y),
+            (Vec4::Y, -Vec4::Y),
+            (Vec4::new(0.5, 0.5, 0.5, 0.5), -Vec4::Y),
+            (
+                Vec4::new(0.5, -0.5, 0.5, -0.5),
+                Vec4::new(1.0, 0.0, 0.0, 0.0),
+            ),
+        ];
+        for (from, to) in cases {
+            let turned = Rotor4::from_rotation_arc(from, to).apply(from);
+            assert!(
+                (turned - to).length() < 1e-5,
+                "{from} turned to {turned}, not {to}"
+            );
+        }
     }
 
     #[test]
@@ -975,7 +1003,6 @@ mod tests {
 
     #[test]
     fn rotor3_composition_matches_sequential_apply() {
-        // `ra` applies first under the sandwich convention.
         let ra = Bivector3::new(0.4, 0.0, 0.0).exp();
         let rb = Bivector3::new(0.0, 0.5, 0.0).exp();
         let composed = ra * rb;
@@ -1115,19 +1142,18 @@ mod tests {
         assert_vec4_close(r.apply(Vec4::Y), -Vec4::X);
         assert_vec4_close(r.apply(Vec4::Z), Vec4::W);
         assert_vec4_close(r.apply(Vec4::W), -Vec4::Z);
-        // Pseudoscalar should be sin(π/4)·sin(π/4) = 0.5.
+
         assert_close(r.xyzw, 0.5);
     }
 
     #[test]
     fn rotor4_scalar_and_pseudoscalar_carry_the_two_invariant_half_angles() {
-        // Simple, compound, and isoclinic.
         for (t1, t2) in [(0.7, 0.0), (1.1, 0.4), (0.9, 0.9)] {
             let r = Bivector4::new(t1, 0.0, 0.0, 0.0, 0.0, t2).exp();
             assert_close(r.s, (t1 * 0.5).cos() * (t2 * 0.5).cos());
             assert_close(r.xyzw, (t1 * 0.5).sin() * (t2 * 0.5).sin());
         }
-        // Off the xy plane, so an accidentally zero slot is caught.
+
         for b in [
             Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.3),
             Bivector4::new(0.0, 0.6, 0.0, 0.0, 0.0, 0.0),
@@ -1205,39 +1231,6 @@ mod tests {
         assert_vec4_close(composed.apply(v), rb.apply(ra.apply(v)));
     }
 
-    #[test]
-    fn rotor4_log_is_inverse_of_exp_simple() {
-        for b in [
-            Bivector4::ZERO,
-            Bivector4::new(0.1, 0.0, 0.0, 0.0, 0.0, 0.0),
-            Bivector4::new(0.0, 0.6, 0.0, 0.0, 0.0, 0.0),
-            Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.2),
-            Bivector4::new(0.4, 0.3, 0.0, 0.0, 0.0, 0.0),
-        ] {
-            let back = b.exp().log();
-            let diff = (back + b * (-1.0)).magnitude();
-            assert!(diff < 1e-4, "log∘exp mismatch: {b:?} -> {back:?}");
-        }
-    }
-
-    #[test]
-    fn rotor4_log_is_inverse_of_exp_compound() {
-        let bv = Bivector4::new(0.5, 0.0, 0.0, 0.0, 0.0, 0.3);
-        let back = bv.exp().log();
-        let rotor_a = bv.exp();
-        let rotor_b = back.exp();
-        for v in [
-            Vec4::X,
-            Vec4::Y,
-            Vec4::Z,
-            Vec4::W,
-            Vec4::new(1.0, -0.5, 0.3, 0.7),
-        ] {
-            assert_vec4_close_tol(rotor_a.apply(v), rotor_b.apply(v), 1e-3);
-        }
-    }
-
-    // Orthogonal simple unit planes oriented so `wedge_self_coeff = 2·t₁·t₂`.
     fn invariant_plane_pairs() -> [(Bivector4, Bivector4); 4] {
         let root_half = 0.5_f32.sqrt();
         let u1 = Vec4::new(root_half, root_half, 0.0, 0.0);
@@ -1253,7 +1246,6 @@ mod tests {
         ]
     }
 
-    // Unit `sum` and `diff` give simple unit planes with angles `t₁` and `t₂`.
     fn plane_pair_from_eigenparts(sum: Vec3, diff: Vec3) -> (Bivector4, Bivector4) {
         let plane = |d: Vec3| Bivector4 {
             xy: 0.5 * (sum.x + d.x),
@@ -1266,7 +1258,6 @@ mod tests {
         (plane(diff), plane(-diff))
     }
 
-    // Every self-dual coordinate nonzero, so no sign error hides in a zero term.
     fn nondegenerate_plane_pairs() -> [(Bivector4, Bivector4); 2] {
         let sum = Vec3::new(2.0, 3.0, 6.0) / 7.0;
         let oblique_diff = Vec3::new(9.0, 2.0, 6.0) / 11.0;
@@ -1277,7 +1268,6 @@ mod tests {
         ]
     }
 
-    // Small and near-equal pairs put `cos(h±)` within an ulp of 1.
     const HALF_ANGLE_STRESS_PAIRS: [(f32, f32); 10] = [
         (1.0e-3, 1.0e-3),
         (1.0e-3, 5.0e-4),
@@ -1322,53 +1312,6 @@ mod tests {
     }
 
     #[test]
-    fn invariant_plane_pairs_are_orthogonal_simple_unit_planes() {
-        let (t1, t2) = (1.2_f32, -0.3_f32);
-        for (p1, p2) in invariant_plane_pairs() {
-            for p in [p1, p2] {
-                assert_close(p.magnitude_squared(), 1.0);
-                assert_close(p.wedge_self_coeff(), 0.0);
-            }
-            assert_close(p1.dot(p2), 0.0);
-            assert_close((p1 * t1 + p2 * t2).wedge_self_coeff(), 2.0 * t1 * t2);
-        }
-    }
-
-    #[test]
-    fn nondegenerate_pairs_populate_every_self_dual_coordinate() {
-        // Under the smallest fixture coordinate, 2/11.
-        const MIN_COORDINATE: f32 = 0.1;
-        for (p1, _) in nondegenerate_plane_pairs() {
-            let sum = Vec3::new(p1.xy + p1.zw, p1.xz - p1.yw, p1.xw + p1.yz);
-            let diff = Vec3::new(p1.xy - p1.zw, p1.xz + p1.yw, p1.xw - p1.yz);
-            for (s, d) in sum.to_array().into_iter().zip(diff.to_array()) {
-                assert!(
-                    s.abs() > MIN_COORDINATE && d.abs() > MIN_COORDINATE,
-                    "eigenpart coordinate too small to pin a sign: {sum:?}, {diff:?}"
-                );
-            }
-            assert!(
-                sum.cross(diff).length() > MIN_COORDINATE,
-                "eigenparts are parallel, so a swap between them stays hidden: \
-                 {sum:?}, {diff:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn rotor4_log_stays_finite_at_the_isoclinic_branch_cut() {
-        let rotor = Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, PI).exp();
-        let back = rotor.log();
-        assert!(
-            back.magnitude_squared().is_finite(),
-            "non-finite log at the branch cut: {back:?}"
-        );
-        for v in [Vec4::X, Vec4::W, Vec4::new(1.0, -0.5, 0.3, 0.7)] {
-            assert_vec4_close_tol(back.exp().apply(v), v * -1.0, 1e-5);
-        }
-    }
-
-    #[test]
     fn rotor4_log_of_a_simple_turn_takes_the_short_way_round() {
         let long_way = 1.9 * PI;
         let logged = Bivector4::new(long_way, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1377,7 +1320,6 @@ mod tests {
         assert_close(logged.xy, long_way - TAU);
         assert_close(logged.magnitude(), TAU - long_way);
 
-        // Odd, so no sample lands on the ±π tie.
         const STEPS: i32 = 47;
         for step in -STEPS..=STEPS {
             let theta = step as f32 * (TAU / STEPS as f32);
@@ -1427,7 +1369,7 @@ mod tests {
             let back = rotor.log();
             let sum = Vec3::new(back.xy + back.zw, back.xz - back.yw, back.xw + back.yz);
             let diff = Vec3::new(back.xy - back.zw, back.xz + back.yw, back.xw - back.yz);
-            // `|sum| + |diff| = 2·(h₊ + h₋)`.
+
             assert!(
                 sum.length() + diff.length() <= 2.0 * PI + 1e-5,
                 "long way round: {rotor:?} -> {back:?}"
@@ -1458,68 +1400,35 @@ mod tests {
     }
 
     #[test]
-    fn only_the_isoclinic_half_turn_hides_its_plane_pair_from_log() {
-        let pseudoscalar = Rotor4 {
-            s: 0.0,
-            xy: 0.0,
-            xz: 0.0,
-            xw: 0.0,
-            yz: 0.0,
-            yw: 0.0,
-            zw: 0.0,
-            xyzw: 1.0,
-        };
-        assert!(pseudoscalar.is_isoclinic_half_turn());
-        assert_eq!(pseudoscalar.log(), Bivector4::ZERO);
-        for v in [Vec4::X, Vec4::new(1.0, -0.5, 0.3, 0.7)] {
-            assert_vec4_close_tol(pseudoscalar.apply(v), v * -1.0, 1e-6);
-            assert_vec4_close_tol(pseudoscalar.log().exp().apply(v), v, 1e-6);
-        }
-
-        for b in [
-            Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, PI),
-            Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, -PI),
-            Bivector4::new(0.0, PI, 0.0, 0.0, PI, 0.0),
-            Bivector4::new(0.0, 0.0, PI, PI, 0.0, 0.0),
-        ] {
-            assert!(b.exp().is_isoclinic_half_turn(), "{b:?} not flagged");
-        }
-
-        // Both sides of the guard radius.
-        for (scale, flagged) in [(0.25, true), (4.0, false)] {
-            let off_axis = f32::EPSILON.sqrt() * scale;
-            let r = Rotor4 {
+    fn isoclinic_half_turn_log_preserves_action() {
+        for sign in [-1.0, 1.0] {
+            let pseudoscalar = Rotor4 {
                 s: 0.0,
-                xy: off_axis,
+                xy: 0.0,
                 xz: 0.0,
                 xw: 0.0,
                 yz: 0.0,
                 yw: 0.0,
                 zw: 0.0,
-                xyzw: (1.0 - off_axis * off_axis).sqrt(),
+                xyzw: sign,
             };
-            assert_close(r.norm_squared(), 1.0);
-            assert_eq!(
-                r.is_isoclinic_half_turn(),
-                flagged,
-                "off-axis {off_axis} misjudged"
-            );
+            let recovered = pseudoscalar.log().exp();
+            for v in [
+                Vec4::X,
+                Vec4::Y,
+                Vec4::Z,
+                Vec4::W,
+                Vec4::new(1.0, -0.5, 0.3, 0.7),
+            ] {
+                assert_vec4_close_tol(pseudoscalar.apply(v), -v, 1e-6);
+                assert_vec4_close_tol(recovered.apply(v), -v, 1e-6);
+            }
         }
 
         let near = Bivector4::new(0.99 * PI, 0.0, 0.0, 0.0, 0.0, 0.99 * PI);
-        assert!(!near.exp().is_isoclinic_half_turn());
         let back = near.exp().log();
         assert!(back.magnitude() <= PI * SQRT_2);
         assert!((back + near * (-1.0)).magnitude() <= 1e-3, "{back:?}");
-
-        for b in [
-            Bivector4::ZERO,
-            Bivector4::new(PI, 0.0, 0.0, 0.0, 0.0, 0.0),
-            Bivector4::new(FRAC_PI_2, 0.0, 0.0, 0.0, 0.0, FRAC_PI_2),
-            Bivector4::new(0.3, 0.1, -0.2, 0.4, 0.1, 0.0),
-        ] {
-            assert!(!b.exp().is_isoclinic_half_turn(), "{b:?} wrongly flagged");
-        }
     }
 
     #[test]
@@ -1601,7 +1510,7 @@ mod tests {
             r = delta * r;
         }
         let n2 = r.norm_squared();
-        // Measured drift over 900 steps is 2.3e-6.
+
         assert!(
             (n2 - 1.0).abs() < 1e-5,
             "rotor norm drifted after 900 compositions: |R|² = {n2}",

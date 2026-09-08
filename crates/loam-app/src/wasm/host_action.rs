@@ -1,6 +1,4 @@
-//! The OffscreenCanvas-in-Worker architecture has no DOM access, so browser
-//! APIs that need it (Pointer Lock, Fullscreen, Clipboard) must round-trip to
-//! the main thread.
+//! Workers submit DOM pointer-lock requests to the main thread.
 
 use std::cell::RefCell;
 
@@ -8,17 +6,13 @@ use wasm_bindgen::JsValue;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostAction {
-    /// The transition is confirmed asynchronously via
-    /// `InputMessage::PointerLockChanged(true)`.
+    /// Takes effect after `InputMessage::PointerLockChanged(true)`.
     PointerLockRequest,
-    /// The browser also auto-releases on Esc or tab switch; both paths
-    /// round-trip back via `PointerLockChanged`.
+
     PointerLockRelease,
 }
 
 impl HostAction {
-    // Source of truth for the wire format; `main_launcher`'s dispatch matches
-    // the same literals.
     const fn kind_str(self) -> &'static str {
         match self {
             HostAction::PointerLockRequest => "pointer_lock_request",

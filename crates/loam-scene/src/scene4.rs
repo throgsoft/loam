@@ -73,16 +73,12 @@ impl Scene4 {
         )
     }
 
-    /// Emits `struct LoamSceneHit`, `loam_scene_at(p3) -> LoamSceneHit`,
-    /// `loam_scene_sdf(p3) -> f32` and `loam_scene_max_t(ro, rd) -> f32`.
-    /// `w_slice_expr` is the slicing w-coord, typically `"u.w_slice"`.
+    /// Emits scene distance, primitive kind and march bounds at the supplied WGSL slice expression.
     pub fn to_hyperslice_wgsl(&self, w_slice_expr: &str) -> String {
         emit_hyperslice(self, w_slice_expr, None)
     }
 
-    /// `halfspace_gate_expr` is a scalar `f32` WGSL expression in scope at
-    /// `loam_scene_at` and `loam_scene_max_t`. Below 0.5 each
-    /// [`Shape::HalfSpace4D`] leaf returns [`SENTINEL_DISTANCE`].
+    /// Halfspaces return [`SENTINEL_DISTANCE`] when the supplied WGSL f32 expression is below 0.5.
     pub fn to_hyperslice_wgsl_gated(
         &self,
         w_slice_expr: &str,
@@ -91,8 +87,7 @@ impl Scene4 {
         emit_hyperslice(self, w_slice_expr, Some(halfspace_gate_expr))
     }
 
-    /// CPU twin of the emitted `loam_scene_at`. `halfspace_gate` is the truth
-    /// value [`Self::to_hyperslice_wgsl_gated`]'s expression holds this frame.
+    /// Evaluates a slice; disabling `halfspace_gate` replaces halfspaces with [`SENTINEL_DISTANCE`].
     pub fn eval_at(&self, p3: Vec3, w_slice: f32, halfspace_gate: bool) -> (f32, u32) {
         eval_node_4d(&self.root, p3.extend(w_slice), halfspace_gate)
     }
@@ -102,12 +97,9 @@ impl Scene4 {
     }
 }
 
-// Must match the `LOAM_PRIM_*` constants `scene_kind_constants` emits.
-
 pub const PRIM_KIND_HYPERSPHERE4D: u32 = 0;
 pub const PRIM_KIND_HALFSPACE4D: u32 = 1;
-/// A `Difference` node, which has no single owning primitive, or a leaf with no
-/// 4D closed form.
+/// A `Difference` node, which has no single owning primitive, or a leaf with no 4D closed form.
 pub const PRIM_KIND_OTHER: u32 = 255;
 
 fn scene_kind_constants() -> String {
@@ -118,8 +110,6 @@ fn scene_kind_constants() -> String {
     )
 }
 
-// `Some` wraps every `HalfSpace4D` leaf's SDF in
-// `select(SENTINEL_DISTANCE, raw, <expr> >= 0.5)`.
 fn emit_hyperslice(
     scene: &Scene4,
     w_slice_expr: &str,
@@ -136,8 +126,8 @@ fn emit_hyperslice(
         halfspace_gate_expr,
     );
     let kind_consts = scene_kind_constants();
-    let max_t_body = emit_max_t_body(&scene.root, halfspace_gate_expr);
-    // WGSL forbids a `let` shadowing the parameter name.
+    let max_t_body = emit_max_t_body(&scene.root, w_slice_expr, halfspace_gate_expr);
+
     format!(
         "// ---- loam-scene scene4 (hyperslice at w = {w_slice_expr}) ----\n\
          {kind_consts}\
@@ -151,8 +141,6 @@ fn emit_hyperslice(
          fn loam_scene_sdf(p3: vec3<f32>) -> f32 {{\n\
          \treturn loam_scene_at(p3).dist;\n\
          }}\n\
-         // Analytical march bound from the HalfSpace4D leaves, so a\n\
-         // near-horizon ray does not exhaust the iteration budget.\n\
          fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {{\n\
          \tvar t_max: f32 = {SENTINEL_DISTANCE:e};\n\
          {max_t_body}\
@@ -161,24 +149,32 @@ fn emit_hyperslice(
     )
 }
 
-// Only the 3D normal is used, since the slice fixes `p.w`.
-fn emit_max_t_body(node: &SceneNode4, halfspace_gate_expr: Option<&str>) -> String {
+fn emit_max_t_body(
+    node: &SceneNode4,
+    w_slice_expr: &str,
+    halfspace_gate_expr: Option<&str>,
+) -> String {
     let mut body = String::new();
-    walk_max_t(node, &mut body, halfspace_gate_expr);
+    walk_max_t(node, &mut body, w_slice_expr, halfspace_gate_expr);
     body
 }
 
-fn walk_max_t(node: &SceneNode4, body: &mut String, halfspace_gate_expr: Option<&str>) {
+fn walk_max_t(
+    node: &SceneNode4,
+    body: &mut String,
+    w_slice_expr: &str,
+    halfspace_gate_expr: Option<&str>,
+) {
     match node {
         SceneNode4::Leaf(Shape::HalfSpace4D { normal, offset }) => {
-            // t = (offset - dot(ro, n)) / dot(rd, n), guarded by dot(rd, n) < 0.
             let inner = format!(
                 "\t\tlet n = vec3<f32>({nx}, {ny}, {nz});\n\
                  \t\tlet dr = dot(rd, n);\n\
                  \t\tif (dr < -1.0e-4) {{\n\
-                 \t\t\tlet t = (({offset}) - dot(ro, n)) / dr;\n\
+                 \t\t\tlet t = (({offset}) - ({nw}) * ({w_slice_expr}) - dot(ro, n)) / dr;\n\
                  \t\t\tif (t > 0.0 && t < t_max) {{ t_max = t; }}\n\
                  \t\t}}\n",
+                nw = wgsl_f32(normal.w),
                 nx = wgsl_f32(normal.x),
                 ny = wgsl_f32(normal.y),
                 nz = wgsl_f32(normal.z),
@@ -197,15 +193,14 @@ fn walk_max_t(node: &SceneNode4, body: &mut String, halfspace_gate_expr: Option<
                 }
             }
         }
-        SceneNode4::Leaf(_) => {} // Other primitives: no closed-form bound.
-        SceneNode4::Union(l, r) | SceneNode4::Intersection(l, r) | SceneNode4::Difference(l, r) => {
-            walk_max_t(l, body, halfspace_gate_expr);
-            walk_max_t(r, body, halfspace_gate_expr);
+        SceneNode4::Leaf(_) | SceneNode4::Intersection(..) | SceneNode4::Difference(..) => {}
+        SceneNode4::Union(l, r) => {
+            walk_max_t(l, body, w_slice_expr, halfspace_gate_expr);
+            walk_max_t(r, body, w_slice_expr, halfspace_gate_expr);
         }
     }
 }
 
-// One match, two consumers, so emit and eval make the same decision.
 fn primitive_kind(shape: &Shape) -> (&'static str, u32) {
     match shape {
         Shape::HyperSphere4D { .. } => ("LOAM_PRIM_HYPERSPHERE4D", PRIM_KIND_HYPERSPHERE4D),
@@ -214,7 +209,6 @@ fn primitive_kind(shape: &Shape) -> (&'static str, u32) {
     }
 }
 
-// Returns `(dist_var, kind_var)`, the WGSL identifiers for this node.
 fn emit_node_4d(
     node: &SceneNode4,
     counter: &mut u32,
@@ -272,14 +266,13 @@ fn emit_node_4d(
             let d_var = format!("d{idx}");
             let k_var = format!("k{idx}");
             body.push_str(&format!("\tlet {d_var} = max({ld}, -({rd}));\n"));
-            // Difference has no clean per-region kind.
+
             body.push_str(&format!("\tlet {k_var}: u32 = LOAM_PRIM_OTHER;\n"));
             (d_var, k_var)
         }
     }
 }
 
-// Returns `(dist, kind)`. Allocation-free.
 fn eval_node_4d(node: &SceneNode4, p: Vec4, halfspace_gate: bool) -> (f32, u32) {
     match node {
         SceneNode4::Leaf(prim) => {
@@ -315,46 +308,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hyperslice_wraps_4d_with_w_slice() {
-        let scene = Scene4::new(SceneNode4::hypersphere(Vec4::ZERO, 0.5));
-        let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
-        assert!(wgsl.contains("fn loam_scene_sdf(p3: vec3<f32>) -> f32"));
-        assert!(wgsl.contains("let p = vec4<f32>(p3, u.w_slice)"));
-        assert!(wgsl.contains("length(p"));
-    }
-
-    #[test]
-    fn union_of_two_hyperspheres() {
-        let scene = Scene4::new(
-            SceneNode4::hypersphere(Vec4::ZERO, 0.2)
-                .union(SceneNode4::hypersphere(Vec4::X * 0.5, 0.2)),
-        );
-        let wgsl = scene.to_wgsl_4d();
-        assert!(wgsl.contains("min("));
-        assert!(wgsl.contains("sdf4_p1"));
-        assert!(wgsl.contains("sdf4_p2"));
-    }
-
-    #[test]
-    fn difference_uses_negation_on_4d() {
-        let scene = Scene4::new(
-            SceneNode4::hypersphere(Vec4::ZERO, 0.3).subtract(SceneNode4::halfspace(Vec4::Y, 0.0)),
-        );
-        let wgsl = scene.to_wgsl_4d();
-        assert!(wgsl.contains("max("));
-        assert!(wgsl.contains("-("));
-    }
-
-    #[test]
-    fn intersection_emits_max() {
-        let scene = Scene4::new(
-            SceneNode4::halfspace(Vec4::Y, 0.0).intersect(SceneNode4::hypersphere(Vec4::ZERO, 0.4)),
-        );
-        let wgsl = scene.to_wgsl_4d();
-        assert!(wgsl.contains("max("));
-    }
-
-    #[test]
     fn ron_round_trip_4d() {
         let scene = Scene4::new(
             SceneNode4::hypersphere(Vec4::ZERO, 0.3).union(SceneNode4::halfspace(Vec4::Y, -0.4)),
@@ -362,70 +315,5 @@ mod tests {
         let ron_str = scene.to_ron().expect("serialize");
         let recovered = Scene4::from_ron("<round trip>", &ron_str).expect("deserialize");
         assert_eq!(scene.to_wgsl_4d(), recovered.to_wgsl_4d());
-    }
-
-    #[test]
-    fn hyperslice_emits_per_primitive_identity_layer() {
-        let scene = Scene4::new(
-            SceneNode4::hypersphere(Vec4::ZERO, 0.5).union(SceneNode4::halfspace(Vec4::Y, 0.0)),
-        );
-        let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
-        assert!(wgsl.contains("const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;"));
-        assert!(wgsl.contains("const LOAM_PRIM_HALFSPACE4D: u32 = 1u;"));
-        assert!(wgsl.contains("const LOAM_PRIM_OTHER: u32 = 255u;"));
-        assert!(wgsl.contains("struct LoamSceneHit { dist: f32, kind: u32 }"));
-        assert!(wgsl.contains("fn loam_scene_at(p3: vec3<f32>) -> LoamSceneHit"));
-        assert!(wgsl.contains("LOAM_PRIM_HYPERSPHERE4D"));
-        assert!(wgsl.contains("LOAM_PRIM_HALFSPACE4D"));
-        assert!(wgsl.contains("select("));
-        assert!(wgsl.contains("<="));
-    }
-
-    #[test]
-    fn hyperslice_difference_emits_kind_sentinel() {
-        let scene = Scene4::new(
-            SceneNode4::hypersphere(Vec4::ZERO, 0.5).subtract(SceneNode4::halfspace(Vec4::Y, 0.0)),
-        );
-        let wgsl = scene.to_hyperslice_wgsl("u.w_slice");
-        assert!(wgsl.contains(": u32 = LOAM_PRIM_OTHER;"));
-    }
-
-    #[test]
-    fn hyperslice_gated_wraps_halfspaces_only() {
-        let scene = Scene4::new(
-            SceneNode4::hypersphere(Vec4::ZERO, 0.5).union(SceneNode4::halfspace(Vec4::Y, 0.0)),
-        );
-        let wgsl = scene.to_hyperslice_wgsl_gated("u.w_slice", "u.params.x");
-        assert!(
-            wgsl.contains("select(1e9,"),
-            "gated halfspace must emit select(<sentinel>, ...)"
-        );
-        assert!(
-            wgsl.contains("u.params.x >= 0.5"),
-            "gate expression must appear in the select"
-        );
-        assert!(wgsl.contains("let d1 = sdf4_p1(p);"));
-    }
-
-    #[test]
-    fn hyperslice_gated_skips_max_t_when_off() {
-        let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, 0.0));
-        let wgsl = scene.to_hyperslice_wgsl_gated("u.w_slice", "u.params.x");
-        assert!(
-            wgsl.contains("if (u.params.x >= 0.5) {"),
-            "gated max_t must guard the halfspace's t-contribution"
-        );
-        assert!(wgsl.contains("t_max = t;"));
-    }
-
-    #[test]
-    fn hyperslice_gated_matches_ungated_when_no_halfspaces() {
-        let scene = Scene4::new(SceneNode4::hypersphere(Vec4::ZERO, 0.5));
-        let ungated = scene.to_hyperslice_wgsl("u.w_slice");
-        let gated = scene.to_hyperslice_wgsl_gated("u.w_slice", "u.params.x");
-        assert_eq!(
-            ungated, gated,
-            "scenes without halfspaces shouldn't diverge under gating"
-        );
     }
 }

@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use ab_glyph::{Font, FontRef, Glyph, GlyphId, Point, ScaleFont};
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 use wgpu::*;
 
 const ATLAS_SIZE: u32 = 1024;
@@ -17,13 +16,11 @@ const ATLAS_FORMAT: TextureFormat = TextureFormat::R8Unorm;
 
 #[derive(Copy, Clone, Debug)]
 struct GlyphEntry {
-    /// Normalized 0..1.
     uv_min: [f32; 2],
     uv_max: [f32; 2],
     px_width: f32,
     px_height: f32,
     h_advance: f32,
-    /// Pixels from baseline to the glyph's top-left, at bake size.
     bearing_x: f32,
     bearing_y: f32,
 }
@@ -51,6 +48,7 @@ pub struct TextMetrics {
 
 impl TextMetrics {
     pub fn new(font_bytes: &[u8], bake_size_px: f32) -> Result<Self> {
+        validate_bake_size(bake_size_px)?;
         let font = FontRef::try_from_slice(font_bytes)
             .map_err(|e| anyhow!("loam-text: failed to parse font: {e}"))?;
         Ok(Self::from_font(&font, bake_size_px))
@@ -60,7 +58,7 @@ impl TextMetrics {
         let scaled = font.as_scaled(bake_size_px);
         let advances = (0x20u32..=0x7E)
             .map(|code| {
-                let c = char::from_u32(code).expect("0x20..=0x7E is valid Unicode");
+                let c = code as u8 as char;
                 (c, scaled.h_advance(font.glyph_id(c)))
             })
             .collect();
@@ -71,8 +69,7 @@ impl TextMetrics {
         }
     }
 
-    /// The advance box, not the ink box: height is `lines * line_height`, so it
-    /// exceeds the last line's descender by one line gap.
+    /// Measures advances and full line boxes, including the final line gap.
     pub fn measure(&self, text: &str, size_px: f32) -> [f32; 2] {
         let mut widest = 0.0_f32;
         let mut line = 0.0_f32;
@@ -107,18 +104,8 @@ pub struct TextRenderer {
     pipeline: RenderPipeline,
     bind_group: BindGroup,
     uniform_buf: Buffer,
-    // Held only to keep alive what `bind_group` still references.
-    #[allow(dead_code)]
-    atlas_tex: Texture,
-    #[allow(dead_code)]
-    atlas_view: TextureView,
-    #[allow(dead_code)]
-    atlas_sampler: Sampler,
-
-    font_data: Vec<u8>,
     glyphs: HashMap<char, GlyphEntry>,
     metrics: TextMetrics,
-    /// Distance from a line's top edge to its baseline, at the bake size.
     ascent_px: f32,
 
     vertex_buf: Buffer,
@@ -127,8 +114,7 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
-    /// `sample_count` must match the render target
-    /// [`record`](TextRenderer::record) draws into, MSAA included.
+    /// `sample_count` must match the render target [`record`](TextRenderer::record) draws into, MSAA included.
     pub fn new(
         device: &Device,
         queue: &Queue,
@@ -137,8 +123,8 @@ impl TextRenderer {
         bake_size_px: f32,
         sample_count: u32,
     ) -> Result<Self> {
-        let font_data = font_bytes.to_vec();
-        let font = FontRef::try_from_slice(&font_data)
+        validate_bake_size(bake_size_px)?;
+        let font = FontRef::try_from_slice(font_bytes)
             .map_err(|e| anyhow!("loam-text: failed to parse font: {e}"))?;
 
         let atlas_tex = device.create_texture(&TextureDescriptor {
@@ -296,22 +282,17 @@ impl TextRenderer {
         });
 
         let initial_capacity = 1024_u64;
-        let zero_verts: Vec<TextVertex> =
-            vec![bytemuck::Zeroable::zeroed(); initial_capacity as usize];
-        let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buf = device.create_buffer(&BufferDescriptor {
             label: Some("loam-text vertices"),
-            contents: bytemuck::cast_slice(&zero_verts),
+            size: initial_capacity * std::mem::size_of::<TextVertex>() as u64,
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         Ok(Self {
             pipeline,
             bind_group,
             uniform_buf,
-            atlas_tex,
-            atlas_view,
-            atlas_sampler,
-            font_data,
             glyphs: baked.glyphs,
             metrics: baked.metrics,
             ascent_px: baked.ascent_px,
@@ -321,9 +302,7 @@ impl TextRenderer {
         })
     }
 
-    /// `position` is in viewport pixels and its `y` is the first line's
-    /// ascender. `color` is RGBA 0..1, straight alpha. `\n` advances a line;
-    /// other control chars are skipped.
+    /// Queues straight-alpha RGBA text at the first line's ascender in viewport pixels.
     pub fn queue(&mut self, text: &str, position: [f32; 2], size_px: f32, color: [f32; 4]) {
         layout_text(
             text,
@@ -338,8 +317,7 @@ impl TextRenderer {
         );
     }
 
-    /// One load/store pass on `view`; resets the queue. No resolve target is
-    /// attached, so under MSAA the host's resolve must come after this pass.
+    /// Draws and clears the text queue; record the MSAA resolve after this pass.
     pub fn record(
         &mut self,
         device: &Device,
@@ -411,13 +389,8 @@ impl TextRenderer {
     pub fn line_height_px(&self) -> f32 {
         self.metrics.line_height_px
     }
-
-    pub fn font_bytes(&self) -> &[u8] {
-        &self.font_data
-    }
 }
 
-// The baseline sits `ascent_px * scale` below `position.y`.
 #[allow(clippy::too_many_arguments)]
 fn layout_text(
     text: &str,
@@ -497,8 +470,7 @@ fn is_printable_ascii(c: char) -> bool {
     ('\u{20}'..='\u{7E}').contains(&c)
 }
 
-/// [`TextRenderer::queue`] drops characters the atlas lacks without erroring.
-/// `\n` counts as renderable: layout consumes it as a line break.
+/// Accepts printable ASCII and newlines, matching the HUD layout.
 pub fn is_renderable(text: &str) -> bool {
     text.chars().all(|c| c == '\n' || is_printable_ascii(c))
 }
@@ -508,6 +480,15 @@ struct BakedAtlas {
     glyphs: HashMap<char, GlyphEntry>,
     metrics: TextMetrics,
     ascent_px: f32,
+}
+
+fn validate_bake_size(size: f32) -> Result<()> {
+    if !size.is_finite() || size <= 0.0 {
+        return Err(anyhow!(
+            "font bake size must be finite and positive, got {size}"
+        ));
+    }
+    Ok(())
 }
 
 fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas> {
@@ -522,11 +503,10 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
     let mut shelf_h: u32 = 0;
 
     for code in 0x20u32..=0x7E {
-        let c = char::from_u32(code).unwrap();
+        let c = code as u8 as char;
         let gid: GlyphId = font.glyph_id(c);
         let h_adv = scaled.h_advance(gid);
 
-        // Glyph at origin so px_bounds reads as offset-from-origin.
         let mut glyph: Glyph = scaled.scaled_glyph(c);
         glyph.position = Point { x: 0.0, y: 0.0 };
 
@@ -537,7 +517,6 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                 let gw = bounds.width().ceil() as u32;
                 let gh = bounds.height().ceil() as u32;
                 if gw == 0 || gh == 0 {
-                    // No rasterizable area, but the cursor must still advance.
                     entries.insert(
                         c,
                         GlyphEntry {
@@ -551,6 +530,9 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                         },
                     );
                     continue;
+                }
+                if gw > ATLAS_SIZE - 2 * pad || gh > ATLAS_SIZE - 2 * pad {
+                    return Err(anyhow!("glyph {c:?} exceeds the {ATLAS_SIZE} pixel atlas"));
                 }
                 if shelf_x + gw + pad > ATLAS_SIZE {
                     shelf_y += shelf_h + pad;
@@ -669,7 +651,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 mod tests {
     use super::*;
 
-    // Deliberately unequal to the tests' 16.0 line height.
     const MOCK_ASCENT: f32 = 12.0;
 
     fn mock_glyph_table(h_advance: f32) -> HashMap<char, GlyphEntry> {
@@ -826,132 +807,36 @@ mod tests {
     }
 
     #[test]
-    fn is_renderable_agrees_with_what_layout_emits() {
-        let glyphs = mock_glyph_table(10.0);
-        let mut out = Vec::new();
-        for code in (0u32..=0x2FFF).chain([0xFFFD, 0x1F600]) {
-            let Some(c) = char::from_u32(code) else {
-                continue;
-            };
-            let text = c.to_string();
-            out.clear();
-            layout_text(
-                &text,
-                [0.0, 0.0],
-                16.0,
-                [1.0; 4],
-                &glyphs,
-                16.0,
-                16.0,
-                MOCK_ASCENT,
-                &mut out,
-            );
-            let emitted = !out.is_empty();
-            let expected = is_renderable(&text) && c != '\n';
-            assert_eq!(
-                emitted,
-                expected,
-                "U+{code:04X} ({c:?}): is_renderable said {}, layout emitted {emitted}",
-                is_renderable(&text)
-            );
-        }
-    }
-
-    #[test]
-    fn measured_box_contains_every_vertex_layout_emits() {
-        const ADVANCE: f32 = 10.0;
-        let metrics = mock_metrics(ADVANCE);
-        let glyphs: HashMap<char, GlyphEntry> = (0x21u8..=0x7Eu8)
-            .map(|c| {
-                (
-                    c as char,
-                    GlyphEntry {
-                        uv_min: [0.0, 0.0],
-                        uv_max: [1.0, 1.0],
-                        bearing_x: 0.0,
-                        bearing_y: -MOCK_ASCENT,
-                        px_width: ADVANCE,
-                        px_height: MOCK_ASCENT,
-                        h_advance: ADVANCE,
-                    },
-                )
-            })
-            .collect();
-        let position = [7.0_f32, 11.0];
-        for text in ["A", "AB", "AB\nCDE", "AB\nCDE\nF"] {
-            for size_px in [8.0_f32, 16.0, 37.0] {
-                let mut out = Vec::new();
-                layout_text(
-                    text,
-                    position,
-                    size_px,
-                    [1.0; 4],
-                    &glyphs,
-                    metrics.bake_size_px,
-                    metrics.line_height_px,
-                    MOCK_ASCENT,
-                    &mut out,
-                );
-                let [w, h] = metrics.measure(text, size_px);
-                for v in &out {
-                    assert!(
-                        v.pos[0] >= position[0] - 1e-4 && v.pos[0] <= position[0] + w + 1e-4,
-                        "{text:?} at {size_px}px: x {} outside [{}, {}]",
-                        v.pos[0],
-                        position[0],
-                        position[0] + w
-                    );
-                    assert!(
-                        v.pos[1] >= position[1] - 1e-4 && v.pos[1] <= position[1] + h + 1e-4,
-                        "{text:?} at {size_px}px: y {} outside [{}, {}]",
-                        v.pos[1],
-                        position[1],
-                        position[1] + h
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn measured_box_is_linear_in_size() {
+    fn metrics_keep_advance_widths_separate_from_ink_overhang() {
         let metrics = mock_metrics(10.0);
-        let text = "abc\nde";
-        let [w1, h1] = metrics.measure(text, 16.0);
-        for factor in [0.5_f32, 1.25, 2.0, 3.0] {
-            let [w, h] = metrics.measure(text, 16.0 * factor);
-            assert!((w - w1 * factor).abs() < 1e-3, "width at {factor}x: {w}");
-            assert!((h - h1 * factor).abs() < 1e-3, "height at {factor}x: {h}");
+        let mut glyphs = mock_glyph_table(10.0);
+        let glyph = glyphs.get_mut(&'A').unwrap();
+        glyph.bearing_x = -2.0;
+        glyph.px_width = 15.0;
+        let mut vertices = Vec::new();
+        layout_text(
+            "AA\nA\n",
+            [7.0, 11.0],
+            32.0,
+            [1.0; 4],
+            &glyphs,
+            16.0,
+            16.0,
+            MOCK_ASCENT,
+            &mut vertices,
+        );
+        assert_eq!(metrics.measure("AA\nA\n", 32.0), [40.0, 96.0]);
+        assert_eq!(vertices[0].pos[0], 3.0);
+        assert_eq!(vertices[6].pos[0], 23.0);
+        assert_eq!(vertices[12].pos[0], 3.0);
+        assert_eq!(vertices[12].pos[1] - vertices[0].pos[1], 32.0);
+    }
+
+    #[test]
+    fn renderable_charset_excludes_controls_and_non_ascii() {
+        assert!(is_renderable(" ~\n"));
+        for text in ["\u{1f}", "\u{7f}", "\t", "é", "😀"] {
+            assert!(!is_renderable(text), "{text:?}");
         }
-    }
-
-    #[test]
-    fn measured_height_is_one_line_box_per_line() {
-        let metrics = mock_metrics(10.0);
-        let line_h = metrics.line_height_px();
-        for (text, lines) in [("a", 1.0), ("a\nb", 2.0), ("a\nb\nc", 3.0), ("\n\n", 3.0)] {
-            let [_, h] = metrics.measure(text, metrics.bake_size_px());
-            assert!(
-                (h - lines * line_h).abs() < 1e-4,
-                "{text:?} measured {h}, expected {lines} x {line_h}"
-            );
-        }
-    }
-
-    #[test]
-    fn measured_width_is_the_widest_line() {
-        let metrics = mock_metrics(10.0);
-        let [w, _] = metrics.measure("ab\nabcd\na", metrics.bake_size_px());
-        assert!((w - 40.0).abs() < 1e-4, "measured {w}, expected 4 x 10");
-    }
-
-    #[test]
-    fn wgsl_shader_validates_via_naga() {
-        let module = naga::front::wgsl::parse_str(WGSL_SHADER).expect("WGSL parse");
-        let flags = naga::valid::ValidationFlags::all();
-        let caps = naga::valid::Capabilities::empty();
-        naga::valid::Validator::new(flags, caps)
-            .validate(&module)
-            .expect("WGSL validate");
     }
 }

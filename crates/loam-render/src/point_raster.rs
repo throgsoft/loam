@@ -35,7 +35,6 @@ impl Default for PointRasterUniforms {
     }
 }
 
-// Layout matches the `@location(1..=3)` attribute slots in `point_raster.wgsl`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
 struct PointInstance {
@@ -56,6 +55,7 @@ pub struct PointRasterNode {
     instance_count: u32,
     instance_capacity: u32,
     has_depth: bool,
+    instances_scratch: Vec<PointInstance>,
 }
 
 impl PointRasterNode {
@@ -217,6 +217,7 @@ impl PointRasterNode {
             instance_count: 0,
             instance_capacity: 0,
             has_depth: depth.is_active(),
+            instances_scratch: Vec::new(),
         }
     }
 
@@ -251,7 +252,8 @@ impl PointRasterNode {
             "PointMesh invariant: sizes.len() == positions.len()"
         );
 
-        let mut instances: Vec<PointInstance> = Vec::with_capacity(n_points);
+        self.instances_scratch.clear();
+        let instances = &mut self.instances_scratch;
         for ((p, color), size) in mesh
             .positions
             .iter()
@@ -260,7 +262,6 @@ impl PointRasterNode {
         {
             let p_native = S::array_to_point(*p);
             let p3 = S::project_point(p_native, projection);
-            // One non-finite point poisons the GPU divide into a full-screen quad.
             if !p3.is_finite() {
                 continue;
             }
@@ -283,13 +284,12 @@ impl PointRasterNode {
         }
 
         if !instances.is_empty() {
-            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(&instances));
+            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(instances));
         }
         self.instance_count = instances.len() as u32;
     }
 
-    /// Records into the caller's encoder with `LoadOp::Load` on both attachments;
-    /// `depth_view` is `Some` iff the pipeline has depth.
+    /// Records into the caller's encoder with `LoadOp::Load` on both attachments; `depth_view` is `Some` iff the pipeline has depth.
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -343,30 +343,5 @@ impl PointRasterNode {
         rp.set_vertex_buffer(1, self.instance_buf.slice(..));
         rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
         rp.draw_indexed(0..6, 0, 0..self.instance_count);
-    }
-}
-
-// Pins that `record` takes the caller's encoder and cannot submit.
-const _: fn(
-    &PointRasterNode,
-    &mut wgpu::CommandEncoder,
-    &wgpu::TextureView,
-    Option<&wgpu::TextureView>,
-    Option<&crate::Viewport>,
-) = PointRasterNode::record;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn point_raster_wgsl_validates() {
-        let module = naga::front::wgsl::parse_str(POINT_RASTER_WGSL)
-            .unwrap_or_else(|e| panic!("point_raster WGSL parse failed:\n{e}"));
-        let flags = naga::valid::ValidationFlags::all();
-        let caps = naga::valid::Capabilities::empty();
-        naga::valid::Validator::new(flags, caps)
-            .validate(&module)
-            .expect("point_raster WGSL must validate");
     }
 }

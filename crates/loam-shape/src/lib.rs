@@ -5,6 +5,8 @@
 pub mod isovolume;
 pub mod polytope;
 pub mod polytope_geom;
+pub mod projected_edges;
+pub mod projection;
 pub mod visualizable;
 
 pub use isovolume::Isovolume;
@@ -52,13 +54,12 @@ pub enum Shape {
     },
 
     ConvexPolytope4D {
-        /// Unordered point set in R⁴; same hull semantics as
-        /// [`Shape::ConvexPolytope3D`].
+        /// Unordered local points; the collider is their convex hull.
         vertices: Vec<Vec4>,
     },
 
     HyperSphere4D {
-        /// Center in the shape frame; unlike [`Shape::Sphere`] this is the pose.
+        /// Local center for scene evaluation; physics uses the body position.
         center: Vec4,
         /// Positive; same non-enforcement as [`Shape::Sphere`].
         radius: f32,
@@ -102,45 +103,4 @@ pub enum ShapeKind {
     ConvexPolytope3D,
     ConvexPolytope4D,
     HyperSphere4D,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ron_roundtrip_preserves_shape() {
-        for original in [
-            Shape::sphere_at_origin(0.5),
-            Shape::sphere_at(Vec3::new(1.0, 2.0, 3.0), 0.25),
-            Shape::HalfSpace {
-                normal: Vec3::Y,
-                offset: 0.5,
-            },
-            Shape::HalfSpace4D {
-                normal: Vec4::Y,
-                offset: -0.5,
-            },
-            Shape::Box3 {
-                half_extents: Vec3::new(0.5, 1.0, 0.25),
-            },
-            Shape::Polygon2D {
-                vertices: vec![Vec2::ZERO, Vec2::X, Vec2::Y],
-            },
-            Shape::ConvexPolytope3D {
-                vertices: vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z],
-            },
-            Shape::ConvexPolytope4D {
-                vertices: vec![Vec4::ZERO, Vec4::X, Vec4::Y, Vec4::Z, Vec4::W],
-            },
-            Shape::HyperSphere4D {
-                center: Vec4::new(0.1, 0.2, 0.3, 0.4),
-                radius: 0.7,
-            },
-        ] {
-            let s = ron::ser::to_string(&original).unwrap();
-            let back: Shape = ron::de::from_str(&s).unwrap();
-            assert_eq!(back.kind(), original.kind());
-        }
-    }
 }

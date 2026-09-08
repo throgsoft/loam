@@ -17,3 +17,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 approx = "0.5"
+
+[lints]
+workspace = true

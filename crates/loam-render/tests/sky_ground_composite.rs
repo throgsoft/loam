@@ -17,7 +17,6 @@ const SIZE: u32 = 64;
 const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 
-// Red against a ground near 0.2 linear, so one channel separates them.
 const QUAD_COLOR: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
 const ABOVE: Vec3 = Vec3::new(0.0, 0.5, 0.0);

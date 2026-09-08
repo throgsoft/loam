@@ -7,7 +7,6 @@ pub struct UiIntegration {
     ctx: egui::Context,
     winit_state: egui_winit::State,
     renderer: Renderer,
-    pixels_per_point: f32,
 }
 
 impl UiIntegration {
@@ -35,12 +34,10 @@ impl UiIntegration {
                 ..Default::default()
             },
         );
-        let pixels_per_point = window.scale_factor() as f32;
         Self {
             ctx,
             winit_state,
             renderer,
-            pixels_per_point,
         }
     }
 
@@ -115,7 +112,7 @@ impl UiIntegration {
                 egui::Stroke::new(1.0, egui::Color32::WHITE),
             );
         });
-        self.paint(
+        let callbacks = self.paint(
             device,
             queue,
             &mut encoder,
@@ -125,19 +122,17 @@ impl UiIntegration {
             (1, 1),
         );
 
-        queue.submit(Some(encoder.finish()));
+        queue.submit(callbacks.into_iter().chain(Some(encoder.finish())));
     }
 
     /// Refreshes the hit test [`crate::UiCapture`] reads; call before `App::update`.
     pub fn begin_frame(&mut self, window: &Window) -> &egui::Context {
         let raw_input = self.winit_state.take_egui_input(window);
-        self.pixels_per_point = window.scale_factor() as f32;
         self.ctx.begin_pass(raw_input);
         &self.ctx
     }
 
-    /// Loads the attachment, so the scene must already be in `view`. `viewport`
-    /// is in pixels; `resolve_target` is `Some` only when `view` is multisampled.
+    /// Loads `view`; submit returned callback buffers before the finished encoder.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &mut self,
@@ -148,7 +143,7 @@ impl UiIntegration {
         resolve_target: Option<&wgpu::TextureView>,
         window: &Window,
         viewport: (u32, u32),
-    ) {
+    ) -> Vec<wgpu::CommandBuffer> {
         let full_output = self.ctx.end_pass();
 
         self.winit_state
@@ -156,18 +151,19 @@ impl UiIntegration {
 
         let primitives = self
             .ctx
-            .tessellate(full_output.shapes, self.pixels_per_point);
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
 
         let screen = ScreenDescriptor {
             size_in_pixels: [viewport.0, viewport.1],
-            pixels_per_point: self.pixels_per_point,
+            pixels_per_point: full_output.pixels_per_point,
         };
 
         for (id, image_delta) in &full_output.textures_delta.set {
             self.renderer
                 .update_texture(device, queue, *id, image_delta);
         }
-        self.renderer
+        let callbacks = self
+            .renderer
             .update_buffers(device, queue, encoder, &primitives, &screen);
 
         {
@@ -194,5 +190,6 @@ impl UiIntegration {
         for id in &full_output.textures_delta.free {
             self.renderer.free_texture(id);
         }
+        callbacks
     }
 }
