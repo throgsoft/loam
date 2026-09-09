@@ -12,9 +12,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use loam_render::device::{FeatureRequest, RenderDevice};
 use loam_render::present::Presenter;
 use loam_runtime::host::{HostConfig, HostError};
-use loam_runtime::{
-    ActionEvent, ActionId, Input, Key, Pointer, PointerPhase, Records, Session, Stores,
-};
+use loam_runtime::{ActionEvent, Input, Key, Pointer, PointerPhase, Records, Session, Stores};
 use loam_time::FixedTimestep;
 
 const BACKGROUND: wgpu::Color = wgpu::Color {
@@ -49,9 +47,7 @@ struct Host<A: Stores> {
     window: Option<Arc<Window>>,
     device: Option<RenderDevice>,
     presenter: Option<Presenter>,
-    pointers: Vec<Pointer>,
-    actions: Vec<ActionEvent>,
-    held: Vec<ActionId>,
+    input: Input,
     cursor: [f32; 2],
     dragging: bool,
     failure: Option<HostError>,
@@ -70,9 +66,7 @@ impl<A: Stores> Host<A> {
             window: None,
             device: None,
             presenter: None,
-            pointers: Vec::new(),
-            actions: Vec::new(),
-            held: Vec::new(),
+            input: Input::default(),
             cursor: [0.0; 2],
             dragging: false,
             failure: None,
@@ -106,35 +100,52 @@ impl<A: Stores> Host<A> {
             },
             _ => return,
         };
+        self.on_action(key, event.state.is_pressed());
+    }
+
+    fn on_action(&mut self, key: Key, pressed: bool) {
         let Some(action) = self.config.bindings.action(key) else {
             return;
         };
-        let pressed = event.state.is_pressed();
-        if pressed == self.held.contains(&action) {
+        if pressed == self.input.held.contains(&action) {
             return;
         }
         if pressed {
-            self.held.push(action);
+            self.input.held.push(action);
         } else {
-            self.held.retain(|held| *held != action);
+            self.input.held.retain(|held| *held != action);
         }
-        self.actions.push(ActionEvent { action, pressed });
+        self.input.actions.push(ActionEvent { action, pressed });
+    }
+
+    fn on_pointer(&mut self, ndc: [f32; 2], delta: [f32; 2], phase: PointerPhase) {
+        self.input.pointers.push(Pointer {
+            id: 0,
+            ndc,
+            delta,
+            phase,
+            time: self.started.elapsed().as_secs_f64(),
+        });
+    }
+
+    fn reclaim_input(&mut self) {
+        self.input = self.session.take_input();
+        self.input.pointers.clear();
+        self.input.actions.clear();
     }
 
     fn frame(&mut self, elwt: &ActiveEventLoop) {
-        let (Some(device), Some(presenter)) = (self.device.as_mut(), self.presenter.as_mut())
+        let Some(size) = self
+            .device
+            .as_ref()
+            .map(|device| device.surface_bundle.size)
         else {
             return;
         };
-        let size = device.surface_bundle.size;
         if size.width == 0 || size.height == 0 {
             return;
         }
-        let input = Input {
-            pointers: std::mem::take(&mut self.pointers),
-            actions: std::mem::take(&mut self.actions),
-            held: self.held.clone(),
-        };
+        let input = std::mem::take(&mut self.input);
         if let Err(error) = self.session.boundary(input) {
             return self.stop(elwt, error.into());
         }
@@ -143,6 +154,11 @@ impl<A: Stores> Host<A> {
                 return self.stop(elwt, error.into());
             }
         }
+        self.reclaim_input();
+        let (Some(device), Some(presenter)) = (self.device.as_mut(), self.presenter.as_mut())
+        else {
+            return;
+        };
         let eye = {
             let root = self.session.views().root();
             let image = self.session.views_mut().get_mut(root);
@@ -240,13 +256,7 @@ impl<A: Stores> ApplicationHandler for Host<A> {
                 let delta = [ndc[0] - self.cursor[0], ndc[1] - self.cursor[1]];
                 self.cursor = ndc;
                 if self.dragging {
-                    self.pointers.push(Pointer {
-                        id: 0,
-                        ndc,
-                        delta,
-                        phase: PointerPhase::Moved,
-                        time: self.started.elapsed().as_secs_f64(),
-                    });
+                    self.on_pointer(ndc, delta, PointerPhase::Moved);
                 }
             }
             WindowEvent::MouseInput {
@@ -255,17 +265,12 @@ impl<A: Stores> ApplicationHandler for Host<A> {
                 ..
             } => {
                 self.dragging = state.is_pressed();
-                self.pointers.push(Pointer {
-                    id: 0,
-                    ndc: self.cursor,
-                    delta: [0.0; 2],
-                    phase: if self.dragging {
-                        PointerPhase::Began
-                    } else {
-                        PointerPhase::Ended
-                    },
-                    time: self.started.elapsed().as_secs_f64(),
-                });
+                let phase = if self.dragging {
+                    PointerPhase::Began
+                } else {
+                    PointerPhase::Ended
+                };
+                self.on_pointer(self.cursor, [0.0; 2], phase);
             }
             WindowEvent::RedrawRequested => self.frame(elwt),
             _ => {}
@@ -276,5 +281,89 @@ impl<A: Stores> ApplicationHandler for Host<A> {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loam_runtime::{ActionId, Bindings, SimConfig};
+
+    use super::*;
+
+    mod alloc_probe {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static BYTES: Cell<usize> = const { Cell::new(0) };
+        }
+
+        pub struct Counting;
+
+        // SAFETY: Methods preserve System contracts; const TLS and wrapping Cell updates cannot unwind.
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(layout.size())));
+                // SAFETY: The caller supplies a valid nonzero allocation layout.
+                unsafe { System.alloc(layout) }
+            }
+
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                // SAFETY: The caller supplies a live System allocation and its original layout.
+                unsafe { System.dealloc(ptr, layout) }
+            }
+
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(new_size)));
+                // SAFETY: The caller supplies a live System allocation, its layout, and a valid new size.
+                unsafe { System.realloc(ptr, layout, new_size) }
+            }
+        }
+
+        pub fn bytes_allocated_by(body: impl FnOnce()) -> usize {
+            let before = BYTES.with(Cell::get);
+            body();
+            BYTES.with(Cell::get).wrapping_sub(before)
+        }
+    }
+
+    #[global_allocator]
+    static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
+
+    const WALK: ActionId = ActionId(0);
+
+    loam_runtime::stores! {
+        #[derive(Default)]
+        pub struct Empty {}
+    }
+
+    #[test]
+    fn a_warmed_frame_with_input_allocates_in_the_hosts_input_conversion() {
+        let bindings = Bindings::new().key(Key::Letter('w'), WALK);
+        let session = Session::new(Empty::default(), SimConfig::default());
+        let mut host = Host::new(session, HostConfig::new("input", bindings));
+        let cycle = |host: &mut Host<Empty>| {
+            host.on_action(Key::Letter('w'), true);
+            host.on_pointer([0.1, 0.2], [0.01, 0.0], PointerPhase::Began);
+            host.on_pointer([0.2, 0.2], [0.1, 0.0], PointerPhase::Moved);
+            host.on_action(Key::Letter('w'), false);
+            let input = std::mem::take(&mut host.input);
+            host.session.boundary(input).unwrap();
+            host.session.tick().unwrap();
+            host.reclaim_input();
+        };
+        for _ in 0..8 {
+            cycle(&mut host);
+        }
+
+        let bytes = alloc_probe::bytes_allocated_by(|| {
+            for _ in 0..16 {
+                cycle(&mut host);
+            }
+        });
+        assert_eq!(
+            bytes, 0,
+            "16 warmed frames of input asked the allocator for {bytes} bytes"
+        );
     }
 }

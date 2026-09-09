@@ -617,7 +617,9 @@ impl<S: DomainSpace> TypedDomain<S> {
     }
 
     pub fn view_mut(&mut self, id: ViewId) -> Option<&mut ViewSpec<S>> {
-        self.views.get_mut(id.index())
+        let spec = self.views.get_mut(id.index())?;
+        spec.revision = spec.revision.wrapping_add(1);
+        Some(spec)
     }
 
     pub fn fields(&self) -> Option<&Store<Field>> {
@@ -680,14 +682,15 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             .poses
             .get(spec.eye)
             .ok_or(DomainError::Stale(spec.eye))?;
-        if !self.poses.changed_since(&into.poses)
-            && !self.instances.changed_since(&into.attachments)
-        {
+        let moved = self.poses.changed_since(&mut into.poses);
+        let attached = self.instances.changed_since(&mut into.attachments);
+        if !moved && !attached && into.revision == spec.revision {
             into.instances.restamp(stamp);
             return Ok(());
         }
         self.poses.catch_up(&mut into.poses);
         self.instances.catch_up(&mut into.attachments);
+        into.revision = spec.revision;
         let origin = self.space.origin();
         let space = &self.space;
         let poses = &self.poses;

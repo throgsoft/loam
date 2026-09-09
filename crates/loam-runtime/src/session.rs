@@ -484,6 +484,10 @@ impl<A: Stores> Session<A> {
         Ok(())
     }
 
+    pub fn take_input(&mut self) -> Input {
+        std::mem::take(&mut self.input)
+    }
+
     pub fn results(&self) -> &[CommandResult] {
         &self.results
     }

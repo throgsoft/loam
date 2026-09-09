@@ -565,3 +565,91 @@ fn publish_overwrites_a_record_buffer_the_renderer_still_holds() {
     let second = records.publish(&mut session).unwrap();
     assert!(second.sequence > first.sequence);
 }
+
+#[test]
+fn a_view_change_alone_republishes_the_old_segments() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let geometry = session.prepare(PreparedGeometry::Lines4 {
+        segments: vec![[[0.0; 4], [1.0, 0.0, 0.0, 0.0]]],
+    });
+    let material = session.add_material(Material::lines([1.0; 4], 1.0));
+    let root = session.views().root();
+    let (view, far) = session.dispatch(|d| {
+        let near = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
+        let far = d
+            .spawn(SpawnBundle::new().at(r4, at([0.0, 4.0, 0.0, 0.0])))
+            .unwrap();
+        d.spawn(
+            SpawnBundle::new()
+                .at(r4, at([0.0; 4]))
+                .instance(Instance::new(geometry, material)),
+        )
+        .unwrap();
+        let view = d
+            .domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, near, DropW));
+        (view, far)
+    });
+
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    let [first] = publication.views[0].records.segments() else {
+        panic!("one segment expected");
+    };
+    assert_eq!(first.start, [0.0; 3]);
+
+    session
+        .domains_mut()
+        .typed(r4)
+        .unwrap()
+        .view_mut(view)
+        .unwrap()
+        .eye = far;
+    session.publish(&mut publication).unwrap();
+    let [second] = publication.views[0].records.segments() else {
+        panic!("one segment expected");
+    };
+    assert_eq!(second.start, [0.0, -4.0, 0.0]);
+}
+
+#[test]
+fn an_idle_view_rebuilds_when_its_cursor_expires_at_a_boundary() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let geometry = session.prepare(PreparedGeometry::Lines4 {
+        segments: Vec::new(),
+    });
+    let material = session.add_material(Material::flat([1.0; 4]));
+    let root = session.views().root();
+    session.dispatch(|d| {
+        let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, DropW));
+        d.spawn(
+            SpawnBundle::new()
+                .at(r4, at([1.0, 2.0, 3.0, 4.0]))
+                .instance(Instance::new(geometry, material)),
+        )
+        .unwrap();
+    });
+
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    let built = publication.views[0].records.built();
+    for step in 0..24 {
+        session.boundary(Input::default()).unwrap();
+        session.publish(&mut publication).unwrap();
+        assert_eq!(
+            publication.views[0].records.built(),
+            built,
+            "boundary {step} rebuilt an idle view"
+        );
+    }
+}

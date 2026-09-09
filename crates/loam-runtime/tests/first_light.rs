@@ -2,9 +2,9 @@ use std::f32::consts::FRAC_PI_2;
 
 use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3H, Iso4Flat, IsometryGroup, Space};
 use loam_runtime::{
-    ChartId, ChartPose, DomainBuilder, DomainError, DomainHandle, DomainSpace, Entity, Instance,
-    Klein, LogCapacity, Material, Pose, PreparedGeometry, Projection4, Publication, Session,
-    SimConfig, SpawnBundle, ViewMapping, ViewSpec,
+    ChartId, ChartPose, DomainBuilder, DomainError, DomainHandle, DomainSpace, Entity, Eye,
+    Instance, Klein, LogCapacity, Material, Orbit, Pose, PreparedGeometry, Projection4,
+    Publication, Session, SimConfig, SpawnBundle, ViewMapping, ViewSpec,
 };
 
 type Vec3 = <EuclideanR3 as Space>::Point;
@@ -275,4 +275,31 @@ fn walk_leaving_the_envelope_is_reported_as_within_it() {
     );
     assert_eq!(domain.poses.get(walker).unwrap().0, Iso3H::IDENTITY);
     assert_eq!(domain.walk(walker, Vec3::X * 8.0, 1.0), Ok(()));
+}
+
+#[test]
+fn looking_at_mirrors_the_eye_basis_or_the_orbit_sits_on_the_wrong_side_of_its_target() {
+    let close = |got: [f32; 3], want: [f32; 3]| {
+        assert!(
+            got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 1e-6),
+            "{got:?} is not {want:?}"
+        );
+    };
+
+    let eye = Eye::looking_at([0.0, 0.0, 5.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    close(eye.forward, [0.0, 0.0, -1.0]);
+    close(eye.right, [1.0, 0.0, 0.0]);
+    close(eye.up, [0.0, 1.0, 0.0]);
+
+    let orbit = Orbit {
+        target: [1.0, 2.0, 3.0],
+        yaw: FRAC_PI_2,
+        pitch: 0.0,
+        distance: 4.0,
+    };
+    let turned = orbit.eye();
+    close(turned.position, [5.0, 2.0, 3.0]);
+    close(turned.forward, [-1.0, 0.0, 0.0]);
+    close(turned.right, [0.0, 0.0, -1.0]);
+    close(turned.up, [0.0, 1.0, 0.0]);
 }

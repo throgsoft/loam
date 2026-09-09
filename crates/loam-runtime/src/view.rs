@@ -249,6 +249,7 @@ pub struct ViewSpec<S: DomainSpace> {
     pub image: ImageSpaceId,
     pub eye: Entity,
     pub mapping: Box<dyn ViewMapping<S>>,
+    pub(crate) revision: u32,
 }
 
 impl<S: DomainSpace> ViewSpec<S> {
@@ -257,6 +258,7 @@ impl<S: DomainSpace> ViewSpec<S> {
             image,
             eye,
             mapping: Box::new(mapping),
+            revision: 0,
         }
     }
 }
@@ -475,6 +477,7 @@ pub struct ViewRecords {
     pub(crate) segments: Vec<SegmentRecord>,
     pub(crate) poses: Cursor,
     pub(crate) attachments: Cursor,
+    pub(crate) revision: u32,
     pub(crate) built: Stamp,
 }
 
