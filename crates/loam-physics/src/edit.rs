@@ -6,7 +6,9 @@ pub enum EditError {
     NotFinite,
     InvalidMass,
     InvalidInertia,
+    /// Also a half-space on a body with mass.
     UnsupportedCollider,
+    /// The world's narrowphase registrations differ from the snapshot's.
     RegistrationMismatch,
 }
 

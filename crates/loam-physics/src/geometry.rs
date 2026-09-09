@@ -58,6 +58,7 @@ pub struct GeometryStore {
 }
 
 impl GeometryStore {
+    /// A shape equal to one already held shares its entry, and the duplicate joins the released pool.
     pub fn prepare(&mut self, shape: Collider) -> ColliderRef {
         let kind = shape.kind();
         let shared = self.entries.iter().position(|entry| {

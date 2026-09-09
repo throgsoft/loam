@@ -35,6 +35,7 @@ impl<S: PhysicsSpace> Clone for RigidBody<S> {
 
 impl<S: PhysicsSpace> Copy for RigidBody<S> {}
 
+/// A body before its collider is prepared; [`crate::World::push_body`] turns it into a row.
 pub struct BodyDef<S: PhysicsSpace> {
     position: S::Point,
     velocity: S::Vector,

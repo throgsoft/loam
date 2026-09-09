@@ -154,6 +154,7 @@ impl<S: PhysicsSpace> World<S> {
         &self.geometry
     }
 
+    /// Pops the newest of the last two released shapes so its buffer can be reused.
     pub fn reclaim_geometry(&mut self) -> Option<Collider> {
         self.geometry.take_released()
     }
@@ -173,6 +174,7 @@ impl<S: PhysicsSpace> World<S> {
         Ok(())
     }
 
+    /// Drops the body's contacts.
     pub fn set_pose(
         &mut self,
         id: BodyId,
@@ -214,6 +216,7 @@ impl<S: PhysicsSpace> World<S> {
         Ok(())
     }
 
+    /// Drops the body's contacts.
     pub fn set_mass_properties(
         &mut self,
         id: BodyId,
@@ -232,6 +235,7 @@ impl<S: PhysicsSpace> World<S> {
         Ok(())
     }
 
+    /// Drops the body's contacts.
     pub fn set_collider(
         &mut self,
         id: BodyId,
@@ -317,6 +321,7 @@ impl<S: PhysicsSpace> World<S> {
         self.manifolds.retain(|&(a, b), _| a != id && b != id);
     }
 
+    /// Yields each body spawned, integrated, or edited since the last drain, skipping despawned ones.
     pub fn drain_dirty(&mut self) -> DirtyDrain<'_, S> {
         let Self { bodies, dirty, .. } = self;
         dirty.drain(bodies)
@@ -333,6 +338,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
+    /// Refuses, unchanged, a world whose narrowphase registrations differ from the snapshot's.
     pub fn restore(&mut self, state: &WorldState<S>) -> Result<(), EditError> {
         if self.narrowphase.registrations() != state.registrations {
             return Err(EditError::RegistrationMismatch);
