@@ -191,6 +191,7 @@ impl From<DomainError> for PublishError {
     }
 }
 
+/// The one record buffer a session publishes into.
 pub struct Records<A: Stores> {
     idle: Option<Publication<A>>,
 }
@@ -210,6 +211,7 @@ impl<A: Stores> Records<A> {
         Ok(buffer.stamp)
     }
 
+    /// Until the buffer is released, [`Self::publish`] returns [`PublishError::Borrowed`].
     pub fn lend(&mut self) -> Option<Publication<A>> {
         self.idle.take()
     }

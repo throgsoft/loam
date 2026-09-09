@@ -27,6 +27,7 @@ pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
 };
 
+/// `ReversedZ` follows the [`view`] depth contract; `StandardZ` serves a standard perspective matrix.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DepthConvention {
     StandardZ,

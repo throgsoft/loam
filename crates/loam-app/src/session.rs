@@ -24,6 +24,7 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+/// Owns the window, device, and loop; the session stays a CPU value.
 pub fn run<A: Stores>(session: Session<A>, config: HostConfig) -> Result<(), HostError> {
     let event_loop = EventLoop::new().map_err(failed)?;
     event_loop.set_control_flow(ControlFlow::Poll);

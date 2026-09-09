@@ -28,6 +28,7 @@ fn vs_main(
     var ca = start_color;
     var cb = end_color;
 
+    // Both conventions put the eye distance in w, so one w test clips under either projection.
     if (a.w < NEAR_W && b.w < NEAR_W) {
         var culled: VsOut;
         culled.clip       = vec4<f32>(0.0, 0.0, -1.0, 1.0);

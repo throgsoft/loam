@@ -153,6 +153,7 @@ pub trait DomainSpace:
 
     fn chart_point(&self, point: Self::Point) -> ChartPoint;
 
+    /// Reads the leading coordinates the space has and ignores the rest.
     fn local_point(&self, coordinates: [f32; 4]) -> Self::Point;
 
     fn chart_pose(&self, pose: &Self::Iso) -> ChartPose;

@@ -31,6 +31,7 @@ impl Presenter {
         }
     }
 
+    /// Skips a view whose records were built by a publication it already uploaded.
     pub fn upload(
         &mut self,
         device: &Device,

@@ -729,6 +729,7 @@ impl<T> Store<T> {
         }
     }
 
+    /// An untracked store or an expired cursor counts as changed.
     pub fn changed_since(&self, cursor: &Cursor) -> bool {
         let Some(tracking) = &self.tracking else {
             return true;

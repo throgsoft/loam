@@ -454,6 +454,7 @@ pub struct InstanceRecord {
     pub image_point: [f32; 3],
 }
 
+/// Instance vertex layout of `loam-render`'s `line_raster.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct SegmentRecord {
@@ -482,6 +483,7 @@ impl ViewRecords {
         &self.segments
     }
 
+    /// The publication that last rebuilt these records; a skipped rebuild keeps it.
     pub fn built(&self) -> Stamp {
         self.built
     }

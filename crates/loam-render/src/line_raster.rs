@@ -343,6 +343,7 @@ fn depth_state(
     depth.format().map(|format| DepthStencilState {
         format,
         depth_write_enabled: depth.writes(),
+        // Equal depth passes so coplanar outlines survive the filled surface.
         depth_compare: match convention {
             crate::DepthConvention::StandardZ => CompareFunction::LessEqual,
             crate::DepthConvention::ReversedZ => crate::view::DEPTH_COMPARE,
