@@ -9,7 +9,7 @@ use super::WorkContext;
 use crate::args::Args;
 use crate::capture::CaptureRequest;
 
-/// Runs each frame between publication and presentation; `sections` are the previous frame's, since the presenter clears them at upload.
+/// Runs each frame between publication and presentation, with capture control; `sections` are the previous frame's, since the presenter clears them at upload.
 pub struct FrameHook<'a, A: Stores> {
     pub session: &'a mut Session<A>,
     pub sections: &'a [Section],
@@ -18,6 +18,7 @@ pub struct FrameHook<'a, A: Stores> {
     pub capture: CaptureControl<'a>,
 }
 
+/// Queues capture starts and stops that the host drains at the end of the same frame.
 pub struct CaptureControl<'a> {
     requests: &'a mut Vec<CaptureRequest>,
 }

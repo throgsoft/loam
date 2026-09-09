@@ -152,7 +152,7 @@ impl Layer {
     }
 }
 
-/// An egui pass after the scene that writes color and no depth; it lives here because loam-egui does not depend on loam-render.
+/// An egui pass after the scene that reads scene colour and writes its own `DEBUG_LAYER` resource, so it records after every pass that writes the scene; it lives here because loam-egui does not depend on loam-render.
 #[derive(Clone)]
 pub struct DebugLayer {
     shared: Rc<RefCell<Layer>>,
