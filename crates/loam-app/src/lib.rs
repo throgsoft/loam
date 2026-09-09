@@ -32,7 +32,6 @@ pub use loam_egui::egui;
 
 #[derive(Clone)]
 pub struct WasmConfig {
-    /// Must carry `data-mode="manual"`; anything else auto-launches on load.
     pub host_id: String,
     pub button_id: String,
     pub canvas_id: String,
