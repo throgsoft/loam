@@ -11,7 +11,8 @@ keywords = ["text", "overlay", "glyph", "wgpu", "gamedev"]
 categories = ["game-development", "graphics"]
 
 [dependencies]
-loam-shape = { path = "../loam-shape", version = "0.1.0" }
+loam-shape  = { path = "../loam-shape",  version = "0.1.0" }
+loam-render = { path = "../loam-render", version = "0.1.0" }
 wgpu       = { workspace = true }
 bytemuck   = { workspace = true }
 ab_glyph   = "0.2"

@@ -477,3 +477,17 @@ impl AppCommand<Playground> for SetRate {
         Ok(Outcome::Done)
     }
 }
+
+pub(crate) struct ToggleHud;
+
+impl AppCommand<Playground> for ToggleHud {
+    fn name(&self) -> &'static str {
+        "hud"
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        let shown = *dispatch.app.hud.get();
+        dispatch.app.hud.set(!shown);
+        Ok(Outcome::Done)
+    }
+}

@@ -66,6 +66,7 @@ mod color;
 mod composer;
 mod consts;
 mod gimbal;
+mod hud;
 mod mode;
 mod points;
 mod projection;
@@ -82,7 +83,7 @@ use gimbal::Gimbal;
 use mode::{
     ClearComposer, ClearDraft, CommitDraft, DraftPlane, DropTerm, Mode, PushTerm, SetActive,
     SetColorMode, SetMode, SetProjection, SetRate, SetRunning, SetScrub, SetShape, SetSlice,
-    SetStrip, Spin, ToggleGimbal, TogglePlane, TogglePoints, TurnRow,
+    SetStrip, Spin, ToggleGimbal, ToggleHud, TogglePlane, TogglePoints, TurnRow,
 };
 use projection::Family;
 use strip::{Cell, Strip};
@@ -94,6 +95,7 @@ const NEXT_MODE: ActionId = ActionId(3);
 const RESET: ActionId = ActionId(4);
 const GIMBAL: ActionId = ActionId(5);
 const STRIP: ActionId = ActionId(6);
+const HUD: ActionId = ActionId(7);
 const PLANE: [ActionId; 6] = [
     ActionId(10),
     ActionId(11),
@@ -134,6 +136,7 @@ loam_runtime::stores! {
         projection: Value<Family>,
         pointer: Value<Option<Pointer>>,
         gimbal: Value<bool>,
+        hud: Value<bool>,
         points: Value<bool>,
         color: Value<ColorMode>,
         strip: Value<Strip>,
@@ -157,6 +160,7 @@ pub(crate) enum Intent {
     ClearTerms,
     Scrub(f32),
     Gimbal,
+    Hud,
     Turn(loam_math::Rotor4),
     Color(ColorMode),
     Points,
@@ -337,6 +341,9 @@ fn install_systems(
             if ctx.input.pressed(GIMBAL) {
                 ctx.commands.app(ToggleGimbal);
             }
+            if ctx.input.pressed(HUD) {
+                ctx.commands.app(ToggleHud);
+            }
             if ctx.input.pressed(STRIP) {
                 let mut strip = *ctx.app.strip.get();
                 strip.on = !strip.on;
@@ -476,6 +483,7 @@ fn submit(
         Intent::ClearTerms => commands.app(ClearComposer),
         Intent::Scrub(scrub) => commands.app(SetScrub { scrub, domain }),
         Intent::Gimbal => commands.app(ToggleGimbal),
+        Intent::Hud => commands.app(ToggleHud),
         Intent::Turn(rotor) => commands.app(TurnRow { rotor, domain }),
         Intent::Color(mode) => commands.app(SetColorMode { mode }),
         Intent::Points => commands.app(TogglePoints),
@@ -506,6 +514,7 @@ pub(crate) fn bindings() -> Bindings {
         .key(Key::Letter('r'), RESET)
         .key(Key::Letter('g'), GIMBAL)
         .key(Key::Letter('f'), STRIP)
+        .key(Key::Letter('h'), HUD)
         .key(Key::Letter('e'), SLICE_UP)
         .key(Key::Letter('q'), SLICE_DOWN);
     for (index, action) in PLANE.into_iter().enumerate() {
@@ -519,6 +528,7 @@ pub(crate) struct Frame {
     hyperslice: HyperslicePass,
     rings: LinePass,
     cloud: PointPass,
+    hud: loam_text::TextPass,
 }
 
 impl Frame {
@@ -528,6 +538,7 @@ impl Frame {
             hyperslice: HyperslicePass::new(scene::shader_source()),
             rings: LinePass::new("gimbal"),
             cloud: PointPass::new("points"),
+            hud: hud::pass(),
         }
     }
 
@@ -537,6 +548,7 @@ impl Frame {
             Box::new(self.hyperslice.clone()),
             Box::new(self.rings.clone()),
             Box::new(self.cloud.clone()),
+            Box::new(self.hud.clone()),
         ]
     }
 }
@@ -667,6 +679,8 @@ fn main() -> Result<(), HostError> {
     let hyperslice = frame.hyperslice.clone();
     let rings = frame.rings.clone();
     let cloud = frame.cloud.clone();
+    let readout = frame.hud.clone();
+    let mut lines = String::new();
     let turn_intents = intents.clone();
     let mut gimbal = Gimbal::default();
     let ui_intents = intents.clone();
@@ -849,6 +863,16 @@ fn main() -> Result<(), HostError> {
             gimbal.enabled = gimbal.enabled && !strip.on;
             rings.publish(&eye, gimbal.rings(scratch.center));
             cloud.publish(&eye, scratch.cloud.records());
+            let shown = *hook.session.app.hud.get();
+            let seat = hook.ui.map_or(hud::Seat::default(), |context| {
+                hud::Seat::in_panel(context.available_rect(), context.pixels_per_point())
+            });
+            hud::publish(
+                &readout,
+                shown.then(|| readout_of(hook.session)).as_ref(),
+                seat,
+                &mut lines,
+            );
             if let Some(context) = hook.ui {
                 ui::draw(context, hook.session, &mut panel, &ui_intents);
                 if !strip.on {
@@ -858,6 +882,15 @@ fn main() -> Result<(), HostError> {
             }
         });
     launch(booted.session, app)
+}
+
+fn readout_of(session: &Session<Playground>) -> hud::Readout {
+    hud::Readout {
+        slice: *session.app.slice.get(),
+        rate: session.app.spin.get().rate,
+        bodies: session.app.slots.len(),
+        planes: session.app.spin.get().planes,
+    }
 }
 
 fn turn_of(session: &Session<Playground>) -> Bivector4 {
@@ -1580,7 +1613,8 @@ mod tests {
                 && lines[5].contains("sky-ground")
                 && lines[5].contains("present-draw")
                 && lines[5].contains("triangles")
-                && lines[5].contains("hyperslice"),
+                && lines[5].contains("hyperslice")
+                && lines[5].ends_with("hud"),
             "the report does not list the frame's sections: {}",
             lines[5]
         );

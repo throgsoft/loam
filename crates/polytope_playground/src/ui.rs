@@ -58,13 +58,22 @@ pub(crate) fn draw(
                 }
             });
             playback(ui, app.spin.get().running, app.spin.get().rate, intents);
-            if ui
-                .selectable_label(*app.gimbal.get(), "gimbal")
-                .on_hover_text("drag a ring to turn the whole row")
-                .clicked()
-            {
-                push(intents, Intent::Gimbal);
-            }
+            ui.horizontal(|ui| {
+                if ui
+                    .selectable_label(*app.gimbal.get(), "gimbal")
+                    .on_hover_text("drag a ring to turn the whole row")
+                    .clicked()
+                {
+                    push(intents, Intent::Gimbal);
+                }
+                if ui
+                    .selectable_label(*app.hud.get(), "readout")
+                    .on_hover_text("the text readout in the corner")
+                    .clicked()
+                {
+                    push(intents, Intent::Hud);
+                }
+            });
 
             if *app.mode.get() == Mode::Compose {
                 ui.separator();
