@@ -1196,20 +1196,22 @@ impl<A: Stores> Session<A> {
             input,
             prepared,
             flight,
+            work,
+            work_head,
             wait,
             ..
         } = self;
         let Some(Entry::System(system)) = phases.entries_mut(phase).get_mut(index) else {
             return Ok(true);
         };
-        if let Some(work) = system.access().awaited() {
-            if let Some(order) = flight.outstanding(work) {
+        if let Some(awaited) = system.access().awaited() {
+            if let Some(order) = flight.outstanding(&work[*work_head..], awaited) {
                 *wait = Some(Wait {
                     entry: EntryId {
                         phase,
                         index: index as u32,
                     },
-                    work,
+                    work: awaited,
                     request: order.request,
                     tick: order.tick,
                 });
@@ -1655,6 +1657,54 @@ mod tests {
         );
         assert_eq!(session.work_stats().delayed, 0);
         assert_eq!(session.work_stats().discarded, 0);
+    }
+
+    #[test]
+    fn a_warmed_tick_allocates_while_an_entry_waits_for_the_item_it_awaits() {
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let grid = session.register_bulk(BulkSpec {
+            name: "grid",
+            element_size: 4,
+            count: 64,
+            readback: Readback::Required,
+            snapshot: SnapshotPolicy::Derived,
+            schedule: Schedule::InStep,
+        });
+        session.work(
+            Phase::Simulation,
+            WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
+        );
+        session.system(
+            Phase::Simulation,
+            "consume",
+            Access::new().awaits("reduce"),
+            |_app: &mut Quiet| {},
+        );
+        let rows = [0u8; 256];
+        let cycle = |session: &mut Session<Quiet>| {
+            session.boundary(Input::default()).unwrap();
+            session.tick().unwrap();
+            let mut ordered = None;
+            session.issue_work(|order| ordered = Some(order.request));
+            let request = ordered.expect("the tick ordered the work item");
+            session.land_readback(request, Some(&rows));
+            session.tick().unwrap();
+            session.release_readback(request);
+        };
+        for _ in 0..8 {
+            cycle(&mut session);
+        }
+
+        let bytes = bytes_allocated_by(|| {
+            for _ in 0..16 {
+                cycle(&mut session);
+            }
+        });
+        assert_eq!(
+            bytes, 0,
+            "16 warmed ticks that hold an entry on a work item asked the allocator for {bytes} bytes"
+        );
+        assert_eq!(session.current_tick(), Tick(24));
     }
 
     crate::stores! {

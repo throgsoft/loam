@@ -279,11 +279,12 @@ impl InFlight {
         }
     }
 
-    pub(crate) fn outstanding(&self, work: &str) -> Option<WorkOrder> {
+    pub(crate) fn outstanding(&self, planned: &[WorkOrder], work: &str) -> Option<WorkOrder> {
         self.slots
             .iter()
             .filter(|slot| !slot.landed)
             .filter_map(|slot| slot.order)
+            .chain(planned.iter().copied())
             .find(|order| order.name == work && order.readback == Readback::Required)
     }
 

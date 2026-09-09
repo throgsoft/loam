@@ -105,7 +105,7 @@ impl Access {
         self
     }
 
-    /// The entry does not run until the named work item's required readback has landed, failed, or been cancelled.
+    /// The entry holds from the tick that plans the named item, when its readback is required, until the rows land, fail, or are cancelled.
     pub fn awaits(mut self, work: &'static str) -> Self {
         self.awaits = Some(work);
         self
@@ -263,7 +263,7 @@ pub enum Schedule {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Readback {
     None,
-    /// An entry that awaits the item waits until the result lands, fails, or is cancelled, and `snapshot` refuses while it is outstanding.
+    /// An entry that awaits the item holds from the tick the order is planned for until the result lands, fails, or is cancelled; `snapshot` refuses only while an issued order is unlanded, not a planned one.
     Required,
     /// Never holds an entry; the landed result carries the tick that produced it.
     Optional,

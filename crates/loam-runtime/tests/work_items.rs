@@ -114,13 +114,11 @@ fn a_full_queue_overwrites_an_unread_result_instead_of_refusing_the_next_submiss
     assert_eq!(issue(&mut session).len(), 1);
 }
 
-#[test]
-fn a_dependent_entry_runs_although_its_required_readback_has_not_landed() {
-    let mut session = Session::new(Paired::default(), SimConfig::default());
+fn consumed(session: &mut Session<Paired>, schedule: Schedule) {
     let grid = session.register_bulk(field("grid", Readback::Required, SnapshotPolicy::Derived));
     session.work(
         Phase::Simulation,
-        WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
+        WorkItem::new("reduce", schedule, Readback::Required).writes(grid),
     );
     session.system(
         Phase::Simulation,
@@ -128,31 +126,106 @@ fn a_dependent_entry_runs_although_its_required_readback_has_not_landed() {
         Access::new().writes::<u32>().awaits("reduce"),
         |app: &mut Paired| app.cpu.set(*app.cpu.get() + 1),
     );
+}
 
-    session.boundary(Input::default()).unwrap();
-    session.tick().unwrap();
-    let [(_, _, _, request)] = issue(&mut session)[..] else {
-        panic!("the first tick issued no work");
-    };
-    assert_eq!(*session.app.cpu.get(), 1);
+#[test]
+fn a_dependent_entry_runs_on_the_tick_that_planned_the_item_it_awaits() {
+    let mut session = Session::new(Paired::default(), SimConfig::default());
+    consumed(&mut session, Schedule::InStep);
 
     session.boundary(Input::default()).unwrap();
     session.tick().unwrap();
     let wait = session
         .waiting()
-        .expect("the session ran the dependent entry");
-    assert_eq!(
-        (wait.work, wait.request, wait.tick),
-        ("reduce", request, Tick(0))
-    );
+        .expect("the first tick ran the dependent entry");
+    assert_eq!((wait.work, wait.tick), ("reduce", Tick(0)));
+    assert_eq!(*session.app.cpu.get(), 0);
+    assert_eq!(session.current_tick(), Tick(0));
+
+    let [(_, _, _, request)] = issue(&mut session)[..] else {
+        panic!("the first tick issued no work");
+    };
+    assert_eq!(wait.request, request);
+    session.land_readback(request, Some(&[1, 0, 0, 0]));
+    session.tick().unwrap();
+
+    assert_eq!(session.waiting(), None);
+    assert_eq!(*session.app.cpu.get(), 1);
+    assert_eq!(session.current_tick(), Tick(1));
+}
+
+#[test]
+fn a_dependent_entry_runs_on_the_tick_an_ahead_item_is_planned_for() {
+    let mut session = Session::new(Paired::default(), SimConfig::default());
+    consumed(&mut session, Schedule::Ahead);
+    let mut publication = Publication::default();
+
+    session.boundary(Input::default()).unwrap();
+    session.tick().unwrap();
+    let [(_, _, _, first)] = issue(&mut session)[..] else {
+        panic!("the first tick issued no work");
+    };
+    session.land_readback(first, Some(&[1, 0, 0, 0]));
+    session.tick().unwrap();
     assert_eq!(*session.app.cpu.get(), 1);
     assert_eq!(session.current_tick(), Tick(1));
 
-    session.land_readback(request, Some(&[1, 0, 0, 0]));
+    session.release_readback(first);
+    session.publish(&mut publication).unwrap();
     session.tick().unwrap();
-    assert_eq!(session.waiting(), None);
+    let wait = session
+        .waiting()
+        .expect("the second tick ran the dependent entry");
+    assert_eq!((wait.work, wait.tick), ("reduce", Tick(1)));
+    assert_eq!(*session.app.cpu.get(), 1);
+
+    let second = issue(&mut session);
+    assert_eq!(
+        second[..],
+        [("reduce", Tick(1), Schedule::Ahead, wait.request)]
+    );
+    session.land_readback(wait.request, Some(&[2, 0, 0, 0]));
+    session.tick().unwrap();
     assert_eq!(*session.app.cpu.get(), 2);
     assert_eq!(session.current_tick(), Tick(2));
+}
+
+#[test]
+fn cancelling_the_work_leaves_a_dependent_entry_waiting_for_a_landing() {
+    let mut session = Session::new(Paired::default(), SimConfig::default());
+    consumed(&mut session, Schedule::InStep);
+
+    session.boundary(Input::default()).unwrap();
+    session.tick().unwrap();
+    assert!(session.waiting().is_some());
+
+    session.cancel_work();
+    session.tick().unwrap();
+    assert_eq!(session.waiting(), None);
+    assert!(session.work_list().is_empty());
+    assert_eq!(*session.app.cpu.get(), 1);
+    assert_eq!(session.current_tick(), Tick(1));
+}
+
+#[test]
+fn a_restore_keeps_the_dependency_of_the_order_it_cancelled() {
+    let mut session = Session::new(Paired::default(), SimConfig::default());
+    consumed(&mut session, Schedule::InStep);
+    let captured = session.snapshot().unwrap();
+
+    session.boundary(Input::default()).unwrap();
+    session.tick().unwrap();
+    assert!(session.waiting().is_some());
+
+    session.restore(&captured).unwrap();
+    assert_eq!(session.waiting(), None);
+    assert!(session.work_list().is_empty());
+
+    session.tick().unwrap();
+    let [replanned] = session.work_list() else {
+        panic!("the restored tick planned no work");
+    };
+    assert_eq!((replanned.name, replanned.tick), ("reduce", Tick(0)));
 }
 
 #[test]
