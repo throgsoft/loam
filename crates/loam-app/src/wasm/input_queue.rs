@@ -142,24 +142,3 @@ pub fn drain_messages_into(batch: &mut VecDeque<InputMessage>) {
     batch.clear();
     MESSAGE_QUEUE.with(|q| std::mem::swap(&mut *q.borrow_mut(), batch));
 }
-
-/// Converts DOM coordinates to `FrameInput::cursor_pos` units.
-pub fn physical_cursor(x: f32, y: f32, device_pixel_ratio: f32) -> (f64, f64) {
-    (
-        (x * device_pixel_ratio) as f64,
-        (y * device_pixel_ratio) as f64,
-    )
-}
-
-pub fn pointer_button(
-    input: &mut loam_input::InputState,
-    x: f32,
-    y: f32,
-    dpr: f32,
-    button: winit::event::MouseButton,
-    state: winit::event::ElementState,
-) {
-    let (x, y) = physical_cursor(x, y, dpr);
-    input.cursor_moved(x, y);
-    input.mouse_input(button, state);
-}

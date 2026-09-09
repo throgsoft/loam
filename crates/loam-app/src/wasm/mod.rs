@@ -1,15 +1,11 @@
 //! Requires WebGPU, transferable OffscreenCanvas, and module workers.
 
-pub mod host_action;
 pub mod input_queue;
 pub mod launch;
 pub mod main_launcher;
 pub mod messages;
-pub mod modifier_sync;
 
 pub use main_launcher::launch_on_click;
-
-pub use launch::{is_manual_mode, js_heap_sampler};
 
 use anyhow::{anyhow, Result};
 use wasm_bindgen::{JsCast, JsValue};
