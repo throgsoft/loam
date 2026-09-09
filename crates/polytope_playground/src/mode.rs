@@ -1,6 +1,7 @@
 use loam_math::{Bivector, Bivector4, EuclideanR4, Plane4, Rotor, Rotor4};
 use loam_runtime::{AppCommand, Dispatch, DomainHandle, Outcome, Rejection};
 
+use crate::color::ColorMode;
 use crate::composer::Term;
 use crate::consts::{BASE_ROTATION_RATE, W_RANGE};
 use crate::projection::Family;
@@ -341,6 +342,35 @@ impl AppCommand<Playground> for ToggleGimbal {
     fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
         let shown = *dispatch.app.gimbal.get();
         dispatch.app.gimbal.set(!shown);
+        Ok(Outcome::Done)
+    }
+}
+
+pub(crate) struct SetColorMode {
+    pub(crate) mode: ColorMode,
+}
+
+impl AppCommand<Playground> for SetColorMode {
+    fn name(&self) -> &'static str {
+        self.mode.name()
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        dispatch.app.color.set(self.mode);
+        Ok(Outcome::Done)
+    }
+}
+
+pub(crate) struct TogglePoints;
+
+impl AppCommand<Playground> for TogglePoints {
+    fn name(&self) -> &'static str {
+        "points"
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        let shown = *dispatch.app.points.get();
+        dispatch.app.points.set(!shown);
         Ok(Outcome::Done)
     }
 }

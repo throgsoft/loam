@@ -1,6 +1,7 @@
 use loam_app::egui;
 use loam_runtime::Session;
 
+use crate::color::ColorMode;
 use crate::composer::{parse_term, Composer};
 use crate::consts::W_RANGE;
 use crate::mode::Mode;
@@ -82,6 +83,26 @@ pub(crate) fn draw(
             {
                 push(intents, Intent::Slice(slice));
             }
+
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                ui.label("colour");
+                for mode in ColorMode::ALL {
+                    if ui
+                        .selectable_label(*app.color.get() == mode, mode.name())
+                        .clicked()
+                    {
+                        push(intents, Intent::Color(mode));
+                    }
+                }
+                if ui
+                    .selectable_label(*app.points.get(), "points")
+                    .on_hover_text("vertices and cell centres")
+                    .clicked()
+                {
+                    push(intents, Intent::Points);
+                }
+            });
 
             ui.separator();
             ui.label("projection");

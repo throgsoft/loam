@@ -7,13 +7,13 @@ use loam_app::session::{launch, FrameHook, SessionApp};
 use loam_math::{Bivector, EuclideanR4, Iso4Flat};
 use loam_render::pass::{FramePass, PassOrder, PassSchedule};
 use loam_render::raymarch::BodyUniform;
-use loam_render::{DepthConvention, HyperslicePass, LinePass, SkyGroundPass};
+use loam_render::{DepthConvention, HyperslicePass, LinePass, PointPass, SkyGroundPass};
 use loam_runtime::host::{run_headless, HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, Bindings, Command, Commands, Ctx, DomainBuilder, DomainHandle, Domains,
-    Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId, Orbit, Phase,
-    PhysicsConfig, Pointer, PointerPhase, Pose, PreparedGeometry, PreparedId, Rejection, Section4,
-    SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
+    EdgeShading, Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId, Orbit,
+    PaletteId, Phase, PhysicsConfig, Pointer, PointerPhase, Pose, PreparedGeometry, PreparedId,
+    Rejection, Section4, SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
 };
 
 #[cfg(test)]
@@ -59,10 +59,12 @@ mod alloc_probe {
 static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 
 mod catalog;
+mod color;
 mod composer;
 mod consts;
 mod gimbal;
 mod mode;
+mod points;
 mod projection;
 mod scene;
 mod section;
@@ -70,13 +72,14 @@ mod toy;
 mod ui;
 
 use catalog::ShapeEntry;
+use color::ColorMode;
 use composer::{Composer, Term};
 use consts::{BODY_SIZE, BODY_X_SPACING, BODY_Y, GRAVITY, W_SCRUB_RATE};
 use gimbal::Gimbal;
 use mode::{
     ClearComposer, ClearDraft, CommitDraft, DraftPlane, DropTerm, Mode, PushTerm, SetActive,
-    SetMode, SetProjection, SetRunning, SetScrub, SetSlice, Spin, ToggleGimbal, TogglePlane,
-    TurnRow,
+    SetColorMode, SetMode, SetProjection, SetRunning, SetScrub, SetSlice, Spin, ToggleGimbal,
+    TogglePlane, TogglePoints, TurnRow,
 };
 use projection::Family;
 
@@ -125,6 +128,8 @@ loam_runtime::stores! {
         projection: Value<Family>,
         pointer: Value<Option<Pointer>>,
         gimbal: Value<bool>,
+        points: Value<bool>,
+        color: Value<ColorMode>,
         floor: Value<bool>,
     }
 }
@@ -146,6 +151,8 @@ pub(crate) enum Intent {
     Scrub(f32),
     Gimbal,
     Turn(loam_math::Rotor4),
+    Color(ColorMode),
+    Points,
 }
 
 pub(crate) type Intents = Arc<Mutex<Vec<Intent>>>;
@@ -186,6 +193,19 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
             })
         })
         .collect();
+    let shades: Vec<Option<Shades>> = row
+        .iter()
+        .map(|entry| {
+            entry.shape.polytope4().map(|polytope| {
+                let topology = polytope.topology();
+                Shades {
+                    gradient: session.add_palette(color::vertex_gradient_colors(topology)),
+                    unique: session.add_palette(color::unique_edge_colors(topology.edges)),
+                    extent: color::w_extent(topology, BODY_SIZE),
+                }
+            })
+        })
+        .collect();
     let materials: Vec<MaterialId> = row
         .iter()
         .map(|entry| {
@@ -222,7 +242,7 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
         Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
     session.app.floor.set(true);
 
-    install_systems(&mut session, domain, layers, intents);
+    install_systems(&mut session, domain, layers, shades, intents);
     session.set_initial()?;
     Ok(Boot { session, domain })
 }
@@ -233,10 +253,32 @@ struct Layers {
     projection: ViewId,
 }
 
+#[derive(Clone, Copy)]
+struct Shades {
+    gradient: PaletteId,
+    unique: PaletteId,
+    extent: f32,
+}
+
+impl Shades {
+    fn of(self, mode: ColorMode) -> EdgeShading {
+        match mode {
+            ColorMode::VertexGradient => EdgeShading::Palette(self.gradient),
+            ColorMode::UniqueEdge => EdgeShading::Palette(self.unique),
+            ColorMode::WDepth => EdgeShading::Depth {
+                back: color::W_DEPTH_BACK,
+                front: color::W_DEPTH_FRONT,
+                extent: self.extent,
+            },
+        }
+    }
+}
+
 fn install_systems(
     session: &mut Session<Playground>,
     domain: DomainHandle<EuclideanR4>,
     layers: Layers,
+    shades: Vec<Option<Shades>>,
     intents: &Intents,
 ) {
     let queued = intents.clone();
@@ -318,6 +360,31 @@ fn install_systems(
         },
     );
 
+    let mut painted: Option<ColorMode> = None;
+    session.system(
+        Phase::Dispatch,
+        "shading",
+        Access::new().reads::<Slot>().domain(domain.id()),
+        move |app: &mut Playground, domains: &mut Domains| {
+            let mode = *app.color.get();
+            if painted == Some(mode) {
+                return;
+            }
+            let Ok(r4) = domains.typed(domain) else {
+                return;
+            };
+            for (entity, slot) in app.slots.iter() {
+                let Some(shades) = shades.get(slot.index).copied().flatten() else {
+                    continue;
+                };
+                if let Some(instance) = r4.instances.get_mut(entity) {
+                    instance.shading = shades.of(mode);
+                }
+            }
+            painted = Some(mode);
+        },
+    );
+
     let mut shown: Option<(Family, Option<loam_shape::polytope::Polytope4>)> = None;
     session.system(
         Phase::Dispatch,
@@ -384,6 +451,8 @@ fn submit(commands: &mut Commands<Playground>, domain: DomainHandle<EuclideanR4>
         Intent::Scrub(scrub) => commands.app(SetScrub { scrub, domain }),
         Intent::Gimbal => commands.app(ToggleGimbal),
         Intent::Turn(rotor) => commands.app(TurnRow { rotor, domain }),
+        Intent::Color(mode) => commands.app(SetColorMode { mode }),
+        Intent::Points => commands.app(TogglePoints),
     };
 }
 
@@ -407,6 +476,7 @@ pub(crate) struct Frame {
     hyperslice: HyperslicePass,
     cut: LinePass,
     rings: LinePass,
+    cloud: PointPass,
 }
 
 impl Frame {
@@ -416,6 +486,7 @@ impl Frame {
             hyperslice: HyperslicePass::new(scene::shader_source()),
             cut: LinePass::new("section"),
             rings: LinePass::new("gimbal"),
+            cloud: PointPass::new("points"),
         }
     }
 
@@ -425,6 +496,7 @@ impl Frame {
             Box::new(self.hyperslice.clone()),
             Box::new(self.cut.clone()),
             Box::new(self.rings.clone()),
+            Box::new(self.cloud.clone()),
         ]
     }
 }
@@ -455,16 +527,18 @@ struct Scratch {
     bodies: Vec<BodyUniform>,
     segments: Vec<SegmentRecord>,
     cutter: section::Cutter,
+    cloud: points::Cloud,
 }
 
-impl Default for Scratch {
-    fn default() -> Self {
+impl Scratch {
+    fn new(row: &[ShapeEntry]) -> Self {
         Self {
             center: glam::Vec3::ZERO,
             slots: Vec::new(),
             bodies: Vec::new(),
             segments: Vec::new(),
             cutter: section::Cutter::new(SECTION_COLOR, SECTION_WIDTH_PX),
+            cloud: points::Cloud::new(row.iter().filter_map(|entry| entry.shape.polytope4())),
         }
     }
 }
@@ -475,6 +549,8 @@ fn collect(
     slice: f32,
     scratch: &mut Scratch,
 ) {
+    let mode = *session.app.color.get();
+    let cloud_on = *session.app.points.get();
     scratch.slots.clear();
     scratch.slots.extend(
         session
@@ -485,6 +561,7 @@ fn collect(
     );
     scratch.bodies.clear();
     scratch.segments.clear();
+    scratch.cloud.clear();
     let mut sum = glam::Vec3::ZERO;
     let Ok(r4) = session.domains_mut().typed(domain) else {
         return;
@@ -505,6 +582,11 @@ fn collect(
             slice,
             &mut scratch.segments,
         );
+        if cloud_on {
+            scratch
+                .cloud
+                .append(polytope, pose.0.rotation, pose.0.translation, mode);
+        }
     }
     scratch.center = sum / scratch.slots.len().max(1) as f32;
 }
@@ -525,6 +607,7 @@ fn main() -> Result<(), HostError> {
     let hyperslice = frame.hyperslice.clone();
     let cut = frame.cut.clone();
     let rings = frame.rings.clone();
+    let cloud = frame.cloud.clone();
     let turn_intents = intents.clone();
     let mut gimbal = Gimbal::default();
     let ui_intents = intents.clone();
@@ -533,10 +616,11 @@ fn main() -> Result<(), HostError> {
     let spin_intents = intents.clone();
     let shape_intents = intents.clone();
     let projection_intents = intents.clone();
+    let color_intents = intents.clone();
     let formula_intents = intents.clone();
     let scrub_intents = intents.clone();
     let domain = booted.domain;
-    let mut scratch = Scratch::default();
+    let mut scratch = Scratch::new(&row);
     let mut panel = ui::Panel::default();
     let mut orbit = Orbit::around([0.0, BODY_Y, 0.0], 9.0);
     orbit.pitch = -0.25;
@@ -621,6 +705,20 @@ fn main() -> Result<(), HostError> {
             },
         )
         .command(
+            "colour",
+            "choose how edges and points are coloured (vertex | edge | w-depth)",
+            move |args, _submit, out| {
+                match args.first().copied().and_then(ColorMode::from_token) {
+                    Some(mode) => {
+                        push(&color_intents, Intent::Color(mode));
+                        out.line(format!("colour: {} requested", mode.name()));
+                    }
+                    None => out.line("usage: colour vertex | edge | w-depth"),
+                }
+                Ok(())
+            },
+        )
+        .command(
             "formula",
             "add a term to the composer sequence, or clear it, or drop one",
             move |args, _submit, out| {
@@ -682,6 +780,7 @@ fn main() -> Result<(), HostError> {
             hyperslice.publish(scene::uniforms(&eye, slice, floor), &scratch.bodies);
             cut.publish(&eye, &scratch.segments);
             rings.publish(&eye, gimbal.rings(scratch.center));
+            cloud.publish(&eye, scratch.cloud.records());
             if let Some(context) = hook.ui {
                 ui::draw(context, hook.session, &mut panel, &ui_intents);
             }
@@ -1013,7 +1112,7 @@ mod tests {
     fn a_warmed_frame_asks_the_allocator_for_nothing() {
         let (mut booted, _intents) = one_slot();
         let mut records = Records::default();
-        let mut scratch = Scratch::default();
+        let mut scratch = Scratch::new(&[CELL24]);
         let frame =
             |booted: &mut Boot, records: &mut Records<Playground>, scratch: &mut Scratch| {
                 booted
