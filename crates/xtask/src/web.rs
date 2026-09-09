@@ -3,13 +3,21 @@ use std::process::Command;
 
 pub struct Options {
     pub bin: String,
+    pub package: Option<String>,
     pub release: bool,
     pub public_url: String,
+}
+
+impl Options {
+    fn package(&self) -> &str {
+        self.package.as_deref().unwrap_or(&self.bin)
+    }
 }
 
 pub fn parse(args: &[String]) -> Result<Options, String> {
     let mut opts = Options {
         bin: "polytope_playground".to_string(),
+        package: None,
         release: false,
         public_url: "/".to_string(),
     };
@@ -18,6 +26,9 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         match arg.as_str() {
             "--release" => opts.release = true,
             "--bin" => opts.bin = args.next().cloned().ok_or("--bin needs a name")?,
+            "--package" => {
+                opts.package = Some(args.next().cloned().ok_or("--package needs a name")?);
+            }
             "--public-url" => {
                 opts.public_url = args.next().cloned().ok_or("--public-url needs a path")?;
             }
@@ -37,7 +48,8 @@ pub fn run(opts: &Options) -> Result<(), String> {
     let status = Command::new(cargo)
         .current_dir(&root)
         .args(["build", "--target", "wasm32-unknown-unknown"])
-        .args(["-p", &opts.bin, "--no-default-features"])
+        .args(["-p", opts.package(), "--bin", &opts.bin])
+        .arg("--no-default-features")
         .args(opts.release.then_some("--release"))
         .status()
         .map_err(|e| format!("run cargo: {e}"))?;
@@ -104,7 +116,12 @@ fn render_page(root: &Path, opts: &Options) -> Result<String, String> {
     let read = |path: PathBuf| {
         std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
     };
-    let template = read(root.join("crates").join(&opts.bin).join("index.html"))?;
+    let own = root.join("crates").join(opts.package()).join("index.html");
+    let template = read(if own.exists() {
+        own
+    } else {
+        root.join("crates/loam-app/static/session_page.html")
+    })?;
     let loader = read(root.join("crates/loam-app/static/page_loader.html"))?;
     let hash = git_hash(root)?;
     Ok(template

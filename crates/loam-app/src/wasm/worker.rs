@@ -705,14 +705,14 @@ impl<A: App + 'static> WorkerRunner<A> {
     }
 }
 
-fn worker_scope() -> Result<DedicatedWorkerGlobalScope> {
+pub(crate) fn worker_scope() -> Result<DedicatedWorkerGlobalScope> {
     js_sys::global()
         .dyn_into::<DedicatedWorkerGlobalScope>()
         .map_err(|_| anyhow!("not running in a DedicatedWorkerGlobalScope"))
 }
 
 // Main ends the loader state on this message.
-fn post_failure(scope: &DedicatedWorkerGlobalScope, message: &str) {
+pub(crate) fn post_failure(scope: &DedicatedWorkerGlobalScope, message: &str) {
     let msg = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &msg,
@@ -729,7 +729,7 @@ fn post_failure(scope: &DedicatedWorkerGlobalScope, message: &str) {
     }
 }
 
-pub(super) fn install_logging_idempotent() {
+pub(crate) fn install_logging_idempotent() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         std::panic::set_hook(Box::new(|info| {
