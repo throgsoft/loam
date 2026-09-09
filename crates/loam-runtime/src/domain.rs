@@ -698,6 +698,11 @@ pub trait Facility<S: DomainSpace>: Any + Send + 'static {
 
     fn snapshot(&self) -> Box<dyn Any + Send>;
 
+    /// Refuses whatever `restore` would refuse, changing nothing; the session calls it on every facility before the first one restores.
+    fn check_restore(&self, _from: &(dyn Any + Send)) -> Result<(), RestoreError> {
+        Ok(())
+    }
+
     fn restore(&mut self, from: &(dyn Any + Send)) -> Result<(), RestoreError>;
 
     fn release(&mut self, _entity: Entity) {}
@@ -814,6 +819,9 @@ pub trait Domain: Send + 'static {
     fn release(&mut self, entity: Entity);
 
     fn snapshot(&self) -> DomainSnapshot;
+
+    /// Refuses whatever `restore` would refuse, changing nothing.
+    fn check_restore(&self, from: &DomainSnapshot) -> Result<(), RestoreError>;
 
     fn restore(&mut self, from: &DomainSnapshot, scene: SceneId) -> Result<(), RestoreError>;
 
@@ -1149,7 +1157,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         }))
     }
 
-    fn restore(&mut self, from: &DomainSnapshot, scene: SceneId) -> Result<(), RestoreError> {
+    fn check_restore(&self, from: &DomainSnapshot) -> Result<(), RestoreError> {
         let from = from
             .0
             .downcast_ref::<TypedSnapshot<S>>()
@@ -1160,6 +1168,18 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         {
             return Err(RestoreError::Domain(self.id));
         }
+        for (facility, snapshot) in self.facilities.iter().zip(&from.facilities) {
+            facility.check_restore(snapshot.as_ref())?;
+        }
+        Ok(())
+    }
+
+    fn restore(&mut self, from: &DomainSnapshot, scene: SceneId) -> Result<(), RestoreError> {
+        self.check_restore(from)?;
+        let from = from
+            .0
+            .downcast_ref::<TypedSnapshot<S>>()
+            .ok_or(RestoreError::Domain(self.id))?;
         for (facility, snapshot) in self.facilities.iter_mut().zip(&from.facilities) {
             facility.restore(snapshot.as_ref())?;
         }
@@ -1168,6 +1188,11 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         StoreField::restore(&mut self.instances, &from.instances, scene);
         if let (Some(fields), Some(snapshot)) = (&mut self.fields, &from.fields) {
             StoreField::restore(fields, snapshot, scene);
+            for field in fields.rows_mut_untracked() {
+                for operand in &mut field.operands {
+                    *operand = Entity::new(scene, operand.key());
+                }
+            }
         }
         for (view, target) in self.views.iter_mut().zip(&from.targets) {
             view.eye = Entity::new(scene, view.eye.key());

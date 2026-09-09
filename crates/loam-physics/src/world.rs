@@ -490,8 +490,8 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    /// Refuses, unchanged, a world whose narrowphase registrations differ from the snapshot's.
-    pub fn restore(&mut self, state: &WorldState<S>) -> Result<(), EditError> {
+    /// Refuses a world whose narrowphase registrations or field anchors differ from the snapshot's.
+    pub fn check_restore(&self, state: &WorldState<S>) -> Result<(), EditError> {
         if self.narrowphase.registrations() != state.registrations {
             return Err(EditError::RegistrationMismatch);
         }
@@ -504,6 +504,12 @@ impl<S: PhysicsSpace> World<S> {
         {
             return Err(EditError::FieldMismatch);
         }
+        Ok(())
+    }
+
+    /// Refuses, unchanged, whatever `check_restore` refuses.
+    pub fn restore(&mut self, state: &WorldState<S>) -> Result<(), EditError> {
+        self.check_restore(state)?;
         self.bodies = state.bodies.clone();
         self.geometry = state.geometry.clone();
         self.manifolds = state.manifolds.clone();
