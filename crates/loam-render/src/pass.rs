@@ -34,13 +34,6 @@ pub struct FrameTarget<'a> {
     pub size: (u32, u32),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct FrameFormat {
-    pub color: TextureFormat,
-    pub depth: TextureFormat,
-    pub sample_count: u32,
-}
-
 pub trait FramePass {
     fn name(&self) -> &'static str;
 
