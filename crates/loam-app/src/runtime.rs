@@ -22,6 +22,7 @@ pub(crate) struct RuntimeState {
     pub period: Cell<Option<Duration>>,
     pub vsync: Cell<Option<bool>>,
     pub exit: Cell<bool>,
+    pub assets: RefCell<crate::assets::Assets>,
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     pub captures: RefCell<Vec<CaptureRequest>>,
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]

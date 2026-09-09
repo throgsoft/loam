@@ -14,13 +14,13 @@ use super::modifier_sync::{ModifierFlags, ModifierSync};
 use super::worker_ui::WorkerUi;
 use crate::{App, FrameCtx, RenderCtx, SetupCtx, SimConfig, UiCapture};
 use loam_input::{InputState, Pointer};
-use loam_render::device::RenderDevice;
+use loam_render::device::{FeatureRequest, GpuContext, RenderDevice};
 use loam_render::shader::ShaderDb;
 use loam_time::FixedTimestep;
 use winit::event::{ElementState, MouseScrollDelta};
 
 /// Installs message and animation callbacks for the worker lifetime.
-pub fn run<A: App + 'static>() -> Result<()> {
+pub fn run<A: App + 'static>(request: FeatureRequest) -> Result<()> {
     install_logging_idempotent();
 
     tracing::debug!("loam_app::wasm::worker::run: entry");
@@ -30,7 +30,7 @@ pub fn run<A: App + 'static>() -> Result<()> {
 
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         tracing::debug!("loam_app::wasm::worker: message handler firing");
-        if let Err(e) = handle_message::<A>(&scope_for_handler, event) {
+        if let Err(e) = handle_message::<A>(&scope_for_handler, event, &request) {
             tracing::error!("loam_app::wasm::worker: message handler failed: {e:#}");
         }
     }) as Box<dyn FnMut(MessageEvent)>);
@@ -58,6 +58,7 @@ pub fn run<A: App + 'static>() -> Result<()> {
 fn handle_message<A: App + 'static>(
     scope: &DedicatedWorkerGlobalScope,
     event: MessageEvent,
+    request: &FeatureRequest,
 ) -> Result<()> {
     let data: JsValue = event.data();
 
@@ -124,6 +125,7 @@ fn handle_message<A: App + 'static>(
                 .unwrap_or_default()
         };
         crate::args::set_query_override(read_str("search"), read_str("hash"));
+        let asset_base = read_str("assets");
         let sim = SimConfig::decode(|key| messages::read_f64_field(&data, key))
             .context("init message sim config")?;
 
@@ -133,11 +135,21 @@ fn handle_message<A: App + 'static>(
             sim.fixed_hz
         );
         let scope_for_render = scope.clone();
+        let scope_for_failure = scope.clone();
+        let init = WorkerInit {
+            canvas,
+            width,
+            height,
+            device_pixel_ratio: dpr,
+            sim,
+            request: request.clone(),
+            asset_base,
+        };
         wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) =
-                init_renderer::<A>(scope_for_render, canvas, width, height, dpr, sim).await
-            {
-                tracing::error!("loam_app::wasm::worker: init_renderer failed: {e:#}");
+            if let Err(e) = init_renderer::<A>(scope_for_render, init).await {
+                let message = format!("initialization failed: {e:#}");
+                tracing::error!("loam_app::wasm::worker: {message}");
+                post_failure(&scope_for_failure, &message);
             }
         });
         return Ok(());
@@ -154,13 +166,19 @@ fn handle_message<A: App + 'static>(
     Ok(())
 }
 
-async fn init_renderer<A: App + 'static>(
-    scope: DedicatedWorkerGlobalScope,
+struct WorkerInit {
     canvas: OffscreenCanvas,
     width: u32,
     height: u32,
     device_pixel_ratio: f32,
     sim: SimConfig,
+    request: FeatureRequest,
+    asset_base: String,
+}
+
+async fn init_renderer<A: App + 'static>(
+    scope: DedicatedWorkerGlobalScope,
+    init: WorkerInit,
 ) -> Result<()> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::BROWSER_WEBGPU,
@@ -168,30 +186,22 @@ async fn init_renderer<A: App + 'static>(
     });
 
     // Clone is a JsValue ref-count bump, not a pixel copy.
-    let canvas_for_runner = canvas.clone();
     let surface = instance
-        .create_surface(wgpu::SurfaceTarget::OffscreenCanvas(canvas))
+        .create_surface(wgpu::SurfaceTarget::OffscreenCanvas(init.canvas.clone()))
         .context("create_surface from OffscreenCanvas")?;
 
-    let size = winit::dpi::PhysicalSize::new(width, height);
-    let rd = RenderDevice::from_surface(instance, surface, size, 1)
+    let size = winit::dpi::PhysicalSize::new(init.width, init.height);
+    let context = GpuContext::new(instance, init.request.clone(), Some(&surface))
         .await
-        .context("RenderDevice::from_surface")?;
+        .context("GpuContext::new")?;
+    let rd = RenderDevice::attach(context, surface, size, 1).context("RenderDevice::attach")?;
     tracing::info!(
         "loam_app::wasm::worker: RenderDevice ready (target_format={:?}, sample_count={})",
         rd.target_format(),
         rd.sample_count()
     );
 
-    let runner = WorkerRunner::<A>::setup(
-        rd,
-        canvas_for_runner,
-        width,
-        height,
-        device_pixel_ratio,
-        sim,
-    )
-    .context("WorkerRunner::setup")?;
+    let runner = WorkerRunner::<A>::setup(rd, init).context("WorkerRunner::setup")?;
 
     // Main promotes the launch overlay to `.ready` on this message.
     {
@@ -222,9 +232,23 @@ async fn init_renderer<A: App + 'static>(
         if PAUSED.with(|p| p.get()) {
             return;
         }
+        let loss = runner_for_closure.borrow().rd.take_device_loss();
+        if let Some(loss) = loss {
+            let runner = runner_for_closure.clone();
+            let scope = scope_for_closure.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let presentation = runner.borrow_mut().rd.recover().await;
+                let error = crate::device_loss_error(&loss, presentation);
+                tracing::error!("loam_app::wasm::worker: {error:#}");
+                post_failure(&scope, &format!("{error:#}"));
+            });
+            return;
+        }
         if let Err(e) = runner_for_closure.borrow_mut().frame() {
-            tracing::error!("loam_app::wasm::worker: frame failed: {e:#}");
+            let message = format!("frame failed: {e:#}");
+            tracing::error!("loam_app::wasm::worker: {message}");
             // Stop the loop on error: one log line, not 60 per second.
+            post_failure(&scope_for_closure, &message);
             return;
         }
         let cb_ref = raf_cb_for_closure.borrow();
@@ -330,18 +354,22 @@ struct WorkerRunner<A: App + 'static> {
     last_redraw_anchor: Option<web_time::Instant>,
     timestep: FixedTimestep,
     commands: crate::command::CommandQueue,
+    asset_events: Vec<crate::assets::AssetEvent>,
 }
 
 impl<A: App + 'static> WorkerRunner<A> {
-    fn setup(
-        rd: RenderDevice,
-        canvas: OffscreenCanvas,
-        width_px: u32,
-        height_px: u32,
-        device_pixel_ratio: f32,
-        sim: SimConfig,
-    ) -> Result<Self> {
+    fn setup(rd: RenderDevice, init: WorkerInit) -> Result<Self> {
+        let WorkerInit {
+            canvas,
+            width: width_px,
+            height: height_px,
+            device_pixel_ratio,
+            sim,
+            asset_base,
+            ..
+        } = init;
         let runtime = crate::Runtime::default();
+        runtime.set_asset_base(&asset_base);
         let mut shader_db = ShaderDb::new(rd.device.clone());
         let mut ctx = SetupCtx {
             runtime: &runtime,
@@ -380,6 +408,7 @@ impl<A: App + 'static> WorkerRunner<A> {
             last_redraw_anchor: None,
             timestep: sim.timestep(),
             commands: crate::command::CommandQueue::new(),
+            asset_events: Vec::new(),
         })
     }
 
@@ -470,6 +499,7 @@ impl<A: App + 'static> WorkerRunner<A> {
                         rd: &self.rd,
                         input: loam_input::FrameInput::default(),
                         pointers: &[],
+                        assets: &[],
                         time: self.start.elapsed().as_secs_f32(),
                         fps: 0.0,
                         n_ticks: 0,
@@ -545,6 +575,8 @@ impl<A: App + 'static> WorkerRunner<A> {
         while let Some(msg) = self.messages.pop_front() {
             self.apply_message(msg);
         }
+        self.asset_events.clear();
+        self.runtime.pump_assets(&mut self.asset_events);
 
         let now = web_time::Instant::now();
         let dt = match self.last_update_at {
@@ -579,6 +611,7 @@ impl<A: App + 'static> WorkerRunner<A> {
                 rd: &self.rd,
                 input,
                 pointers: self.input.pointers(),
+                assets: &self.asset_events,
                 time: self.start.elapsed().as_secs_f32(),
                 fps: 0.0,
                 n_ticks,
@@ -678,10 +711,33 @@ fn worker_scope() -> Result<DedicatedWorkerGlobalScope> {
         .map_err(|_| anyhow!("not running in a DedicatedWorkerGlobalScope"))
 }
 
+// Main ends the loader state on this message.
+fn post_failure(scope: &DedicatedWorkerGlobalScope, message: &str) {
+    let msg = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &msg,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str("error"),
+    );
+    let _ = js_sys::Reflect::set(
+        &msg,
+        &JsValue::from_str("message"),
+        &JsValue::from_str(message),
+    );
+    if let Err(e) = scope.post_message(&msg) {
+        tracing::error!("loam_app::wasm::worker: post error failed: {e:?}");
+    }
+}
+
 pub(super) fn install_logging_idempotent() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        console_error_panic_hook::set_once();
+        std::panic::set_hook(Box::new(|info| {
+            console_error_panic_hook::hook(info);
+            if let Ok(scope) = worker_scope() {
+                post_failure(&scope, &format!("worker panic: {info}"));
+            }
+        }));
         tracing_wasm::set_as_global_default();
     });
 }

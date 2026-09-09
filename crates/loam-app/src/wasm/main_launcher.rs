@@ -68,6 +68,7 @@ fn spawn_worker_for_preview(
         .transfer_control_to_offscreen()
         .map_err(|e| anyhow!("transfer_control_to_offscreen: {e:?}"))?;
 
+    let asset_base = asset_base_url(&document)?;
     let js_url = read_wasm_bundle_url()?;
     let (js_path, query) = js_url.split_once('?').unwrap_or((js_url.as_str(), ""));
     let wasm_url = format!(
@@ -139,6 +140,7 @@ fn spawn_worker_for_preview(
             &JsValue::from_str(&search),
         );
         let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("hash"), &JsValue::from_str(&hash));
+        set_msg_string(&msg, "assets", &asset_base);
         sim.encode(|key, value| set_msg_f64(&msg, key, value));
 
         let transfer = js_sys::Array::new();
@@ -160,6 +162,7 @@ fn spawn_worker_for_preview(
 
     install_preview_progress_handler(&worker)?;
     install_preview_ready_handler(&worker, button_id)?;
+    install_worker_failure_handler(&worker, button_id)?;
 
     install_embed_lifecycle(&worker, host_id, button_id).context("install_embed_lifecycle")?;
 
@@ -657,7 +660,7 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
             return;
         };
         if let Some(loader) = document.get_element_by_id("loam-page-loader") {
-            loader.remove();
+            let _ = loader.set_attribute("hidden", "");
         }
         if let Some(overlay) = document.get_element_by_id(&button_id_owned) {
             overlay.set_class_name("loam-demo-launch ready");
@@ -668,6 +671,82 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
         .map_err(|e| anyhow!("worker.addEventListener('message') for preview_ready: {e:?}"))?;
     cb.forget();
     Ok(())
+}
+
+// A blob-URL worker resolves relative fetches against the blob, so main sends the page's absolute base.
+fn asset_base_url(document: &web_sys::Document) -> Result<String> {
+    let page = document
+        .base_uri()
+        .map_err(|e| anyhow!("document.baseURI: {e:?}"))?
+        .unwrap_or_default();
+    let url = web_sys::Url::new_with_base(&format!("{}/", crate::assets::ASSET_DIR), &page)
+        .map_err(|e| anyhow!("asset base URL: {e:?}"))?;
+    Ok(url.href())
+}
+
+fn install_worker_failure_handler(worker: &Worker, button_id: &str) -> Result<()> {
+    let button_for_message = button_id.to_string();
+    let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
+        let data: JsValue = event.data();
+        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
+            .ok()
+            .and_then(|v| v.as_string());
+        if kind.as_deref() != Some("error") {
+            return;
+        }
+        let message = js_sys::Reflect::get(&data, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "worker error".to_owned());
+        show_worker_failure(&message, &button_for_message);
+    }) as Box<dyn FnMut(MessageEvent)>);
+    worker
+        .add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref())
+        .map_err(|e| anyhow!("worker.addEventListener('message') for error: {e:?}"))?;
+    on_message.forget();
+
+    // A panic traps the worker; the trap arrives here without the panic text.
+    let button_for_error = button_id.to_string();
+    let on_error = Closure::wrap(Box::new(move |event: web_sys::ErrorEvent| {
+        show_worker_failure(
+            &format!("worker error: {}", event.message()),
+            &button_for_error,
+        );
+    }) as Box<dyn FnMut(web_sys::ErrorEvent)>);
+    worker
+        .add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref())
+        .map_err(|e| anyhow!("worker.addEventListener('error'): {e:?}"))?;
+    on_error.forget();
+    Ok(())
+}
+
+fn show_worker_failure(message: &str, button_id: &str) {
+    tracing::error!("loam_app::wasm: {message}");
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(text) = document.get_element_by_id("loam-page-loader-message") else {
+        return;
+    };
+    if !text.has_attribute("hidden") {
+        return;
+    }
+    text.set_text_content(Some(message));
+    let _ = text.remove_attribute("hidden");
+    if let Some(track) = document
+        .query_selector("#loam-page-loader .loam-progress-track")
+        .ok()
+        .flatten()
+    {
+        let _ = track.set_attribute("hidden", "");
+    }
+    if let Some(loader) = document.get_element_by_id("loam-page-loader") {
+        let _ = loader.remove_attribute("hidden");
+        let _ = loader.set_attribute("aria-busy", "false");
+    }
+    if let Some(overlay) = document.get_element_by_id(button_id) {
+        overlay.remove();
+    }
 }
 
 fn install_host_action_handler(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
