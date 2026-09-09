@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use loam_render::device::{FeatureRequest, GpuContext, MissingGpuCapability};
+use loam_render::gpu_timer::SectionTimer;
 use loam_render::pass::{FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR};
 use loam_render::present::Presenter;
 use loam_render::{DepthConvention, GpuTime};
@@ -215,4 +216,42 @@ fn a_timed_pass_reports_a_positive_gpu_duration_gpu_probe() {
         (true, GpuTime::Unavailable) => panic!("the timer never reported a duration"),
         (false, gpu) => assert_eq!(gpu, GpuTime::Unavailable),
     }
+}
+
+#[test]
+#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+fn an_unresolved_frame_maps_nothing_while_the_previous_map_is_pending_gpu_probe() {
+    let gpu = pollster::block_on(GpuContext::new(
+        Instance::default(),
+        FeatureRequest::default(),
+        None,
+    ))
+    .expect("gpu context");
+    let Some(mut timer) = SectionTimer::new(&gpu.device, &gpu.queue) else {
+        assert!(
+            !gpu.device
+                .features()
+                .contains(loam_render::device::GPU_TIMER_FEATURES),
+            "a device with timestamps must yield a section timer"
+        );
+        return;
+    };
+
+    let mut frame = || {
+        timer.begin_frame();
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor { label: None });
+        if let Some(slot) = timer.open(&mut encoder, "probe") {
+            timer.close(&mut encoder, slot);
+        }
+        timer.resolve(&mut encoder);
+        drop(encoder);
+        timer.after_submit()
+    };
+    assert!(frame(), "the first frame resolved and must map its results");
+    assert!(
+        !frame(),
+        "the second frame resolved nothing and must not map over a pending map"
+    );
 }

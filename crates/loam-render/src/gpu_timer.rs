@@ -173,6 +173,7 @@ pub struct SectionTimer {
     map_buffer: Buffer,
     timestamp_period_ns: f32,
     open: usize,
+    resolved: Option<usize>,
     names: [&'static str; MAX_SECTIONS],
     in_flight: Arc<AtomicBool>,
     last: Arc<Mutex<SectionResults>>,
@@ -212,6 +213,7 @@ impl SectionTimer {
             map_buffer,
             timestamp_period_ns: queue.get_timestamp_period(),
             open: 0,
+            resolved: None,
             names: [""; MAX_SECTIONS],
             in_flight: Arc::new(AtomicBool::new(false)),
             last: Arc::new(Mutex::new(SectionResults {
@@ -259,15 +261,15 @@ impl SectionTimer {
         );
         encoder.copy_buffer_to_buffer(&self.resolve_buffer, 0, &self.map_buffer, 0, bytes);
         self.in_flight.store(true, Ordering::Release);
+        self.resolved = Some(self.open);
     }
 
-    pub fn after_submit(&mut self) {
-        if !self.in_flight.load(Ordering::Acquire) {
-            return;
-        }
-        let bytes = SECTION_BYTES * self.open as u64;
+    pub fn after_submit(&mut self) -> bool {
+        let Some(open) = self.resolved.take() else {
+            return false;
+        };
+        let bytes = SECTION_BYTES * open as u64;
         let names = self.names;
-        let open = self.open;
         let buffer = self.map_buffer.clone();
         let reader = buffer.clone();
         let period_ns = self.timestamp_period_ns;
@@ -300,6 +302,7 @@ impl SectionTimer {
                 }
                 flag.store(false, Ordering::Release);
             });
+        true
     }
 }
 

@@ -13,6 +13,8 @@ pub type ResourceId = &'static str;
 pub const SCENE_COLOR: ResourceId = "scene-color";
 pub const SCENE_DEPTH: ResourceId = "scene-depth";
 
+const SCENE_OUTPUTS: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PassOrder {
     BeforeScene,
@@ -58,6 +60,10 @@ pub enum PassError {
     Cycle {
         pass: &'static str,
     },
+    SceneOutput {
+        pass: &'static str,
+        resource: ResourceId,
+    },
 }
 
 impl fmt::Display for PassError {
@@ -74,6 +80,10 @@ impl fmt::Display for PassError {
             Self::Cycle { pass } => write!(
                 f,
                 "pass `{pass}` both follows and precedes a registered pass"
+            ),
+            Self::SceneOutput { pass, resource } => write!(
+                f,
+                "pass `{pass}` runs before the scene draw, which writes `{resource}`"
             ),
         }
     }
@@ -117,10 +127,6 @@ impl PassSchedule {
         self.convention
     }
 
-    pub fn set_timer(&mut self, timer: Option<SectionTimer>) {
-        self.timer = timer;
-    }
-
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.passes.iter().map(|pass| pass.name())
     }
@@ -137,6 +143,19 @@ impl PassSchedule {
                     pass: pass.name(),
                     declared,
                     frame: self.convention,
+                });
+            }
+        }
+        if pass.order() == PassOrder::BeforeScene {
+            if let Some(resource) = pass
+                .reads()
+                .iter()
+                .chain(pass.writes())
+                .find(|id| SCENE_OUTPUTS.contains(id))
+            {
+                return Err(PassError::SceneOutput {
+                    pass: pass.name(),
+                    resource,
                 });
             }
         }
@@ -256,6 +275,7 @@ mod tests {
         reads: &'static [ResourceId],
         writes: &'static [ResourceId],
         convention: Option<DepthConvention>,
+        order: PassOrder,
     }
 
     impl FramePass for Probe {
@@ -272,7 +292,7 @@ mod tests {
         }
 
         fn order(&self) -> PassOrder {
-            PassOrder::AfterScene
+            self.order
         }
 
         fn depth_convention(&self) -> Option<DepthConvention> {
@@ -296,6 +316,7 @@ mod tests {
             reads,
             writes,
             convention: None,
+            order: PassOrder::AfterScene,
         })
     }
 
@@ -319,6 +340,7 @@ mod tests {
             reads: &[],
             writes: &[SCENE_DEPTH],
             convention: Some(DepthConvention::StandardZ),
+            order: PassOrder::AfterScene,
         }));
         assert_eq!(
             refused,
@@ -329,5 +351,36 @@ mod tests {
             })
         );
         assert_eq!(schedule.names().count(), 0);
+    }
+
+    #[test]
+    fn a_pass_reading_the_scene_before_the_scene_draws_it_is_refused_at_registration() {
+        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        let refused = schedule.register(Box::new(Probe {
+            name: "early readback",
+            reads: &[SCENE_COLOR],
+            writes: &[],
+            convention: None,
+            order: PassOrder::BeforeScene,
+        }));
+        assert_eq!(
+            refused,
+            Err(PassError::SceneOutput {
+                pass: "early readback",
+                resource: SCENE_COLOR,
+            })
+        );
+        assert_eq!(schedule.names().count(), 0);
+    }
+
+    #[test]
+    fn two_passes_each_reading_the_others_output_refuse_the_second_as_a_cycle() {
+        const LEFT: ResourceId = "left";
+        const RIGHT: ResourceId = "right";
+        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        schedule.register(probe("left", &[RIGHT], &[LEFT])).unwrap();
+        let refused = schedule.register(probe("right", &[LEFT], &[RIGHT]));
+        assert_eq!(refused, Err(PassError::Cycle { pass: "right" }));
+        assert_eq!(schedule.names().collect::<Vec<_>>(), ["left"]);
     }
 }

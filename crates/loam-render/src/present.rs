@@ -7,7 +7,6 @@ use wgpu::{
 
 use crate::depth::DepthBuffer;
 use crate::device::{GpuContext, MissingGpuCapability};
-use crate::gpu_timer::SectionTimer;
 use crate::pass::{FramePass, FrameTarget, PassError, PassOrder, PassSchedule, Section};
 use crate::view::{DEPTH_CLEAR, DEPTH_FORMAT};
 use crate::{DepthConvention, DepthMode, LineRasterNode};
@@ -40,8 +39,6 @@ impl Presenter {
     pub fn attach(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
         self.depth = None;
         self.views.clear();
-        self.schedule
-            .set_timer(SectionTimer::new(&gpu.device, &gpu.queue));
         self.schedule.rebuild(gpu)
     }
 
