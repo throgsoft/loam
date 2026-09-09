@@ -151,6 +151,7 @@ struct ConstraintUnit {
     dense: (usize, usize),
 }
 
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FieldId(u32);
 
@@ -280,7 +281,10 @@ impl<S: PhysicsSpace> World<S> {
         let Some(entry) = self.fields.get(field.0 as usize) else {
             return Err(EditError::StaleHandle);
         };
-        if entry.anchor == body || self.bodies.get(body).is_none() {
+        if entry.anchor == body {
+            return Err(EditError::AnchorBindsOwnField);
+        }
+        if self.bodies.get(body).is_none() {
             return Err(EditError::StaleHandle);
         }
         if let Err(at) = self.field_bindings.binary_search(&(body, field)) {
@@ -480,6 +484,8 @@ impl<S: PhysicsSpace> World<S> {
             geometry: self.geometry.clone(),
             manifolds: self.manifolds.clone(),
             time: self.time,
+            field_bindings: self.field_bindings.clone(),
+            field_anchors: self.fields.iter().map(|entry| entry.anchor).collect(),
             registrations: self.narrowphase.registrations().to_vec(),
         }
     }
@@ -489,10 +495,21 @@ impl<S: PhysicsSpace> World<S> {
         if self.narrowphase.registrations() != state.registrations {
             return Err(EditError::RegistrationMismatch);
         }
+        if self.fields.len() != state.field_anchors.len()
+            || self
+                .fields
+                .iter()
+                .zip(&state.field_anchors)
+                .any(|(entry, &anchor)| entry.anchor != anchor)
+        {
+            return Err(EditError::FieldMismatch);
+        }
         self.bodies = state.bodies.clone();
         self.geometry = state.geometry.clone();
         self.manifolds = state.manifolds.clone();
         self.time = state.time;
+        self.field_bindings.clear();
+        self.field_bindings.extend_from_slice(&state.field_bindings);
         self.dirty.mark_every(&self.bodies);
         self.pair_order.clear();
         self.constraints.clear();

@@ -139,10 +139,12 @@ mod tests {
     use loam_shape::field::{DistanceField, FieldKind};
 
     use super::*;
+    use crate::body::BodyId;
     use crate::collider::Collider;
+    use crate::edit::EditError;
     use crate::euclidean_r3::{halfspace_body_r3, sphere_body_r3};
     use crate::manifold::PENETRATION_SLOP;
-    use crate::world::World;
+    use crate::world::{FieldId, World};
 
     struct Ground;
 
@@ -207,9 +209,9 @@ mod tests {
         world
     }
 
-    #[test]
-    fn a_sphere_dropped_onto_an_exact_half_space_field_rests_at_the_analytic_height() {
-        const RADIUS: f32 = 0.5;
+    const RADIUS: f32 = 0.5;
+
+    fn ground_world() -> (World<EuclideanR3>, BodyId, FieldId, BodyId) {
         let mut world = World::new(EuclideanR3);
         register_field_contacts(&mut world.field_narrowphase);
         world.gravity = Some(Vec3::new(0.0, -9.8, 0.0));
@@ -222,6 +224,16 @@ mod tests {
             sphere_body_r3(Vec3::new(0.0, 2.0, 0.0), Vec3::ZERO, RADIUS, 1.0).expect("ball"),
         );
         world.bodies[ball].restitution = 0.0;
+        (world, anchor, field, ball)
+    }
+
+    #[test]
+    fn a_sphere_dropped_onto_an_exact_half_space_field_rests_at_the_analytic_height() {
+        let (mut world, anchor, field, ball) = ground_world();
+        assert_eq!(
+            world.bind_field(anchor, field),
+            Err(EditError::AnchorBindsOwnField)
+        );
         world.bind_field(ball, field).expect("binding");
 
         for _ in 0..600 {
@@ -232,6 +244,38 @@ mod tests {
             (rest - (RADIUS - PENETRATION_SLOP)).abs() < 1.0e-3,
             "the ball rests at {rest}, not at radius minus the solver slop"
         );
+    }
+
+    #[test]
+    fn a_binding_made_after_a_snapshot_is_gone_after_the_restore() {
+        let (mut world, _, field, ball) = ground_world();
+        let saved = world.snapshot();
+        world.bind_field(ball, field).expect("binding");
+        assert_eq!(world.field_bindings().len(), 1);
+        world.restore(&saved).expect("restore");
+        assert!(
+            world.field_bindings().is_empty(),
+            "the binding survived a restore that predates it"
+        );
+    }
+
+    #[test]
+    fn a_restore_whose_field_list_differs_is_refused_and_leaves_the_world_alone() {
+        let (mut world, _, field, ball) = ground_world();
+        world.bind_field(ball, field).expect("binding");
+        for _ in 0..60 {
+            world.step(1.0 / 240.0);
+        }
+        let saved = world.snapshot();
+        let second = world.push_body(halfspace_body_r3(Vec3::Y, -8.0).expect("anchor"));
+        world
+            .insert_field(second, Box::new(Ground))
+            .expect("field handle");
+        let height = world.bodies[ball].position.y;
+
+        assert_eq!(world.restore(&saved), Err(EditError::FieldMismatch));
+        assert_eq!(world.bodies[ball].position.y, height);
+        assert_eq!(world.field_bindings().len(), 1);
     }
 
     #[test]

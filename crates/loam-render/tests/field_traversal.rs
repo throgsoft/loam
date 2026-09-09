@@ -368,11 +368,24 @@ async fn request_device() -> (Device, Queue) {
         .expect("wgpu device")
 }
 
-fn gpu_counts(device: &Device, queue: &Queue, program: &FieldProgram) -> [f64; 4] {
+fn gpu_counts(
+    device: &Device,
+    queue: &Queue,
+    program: &FieldProgram,
+    specialize: bool,
+) -> [f64; 4] {
     let mut node = loam_render::FieldMarchNode::counting(device, 1);
     node.uniforms_mut().resolution = [PROBE as f32; 2];
     node.uniforms_mut().fov_y_tan = 0.4;
     node.set_program(queue, program);
+    if specialize {
+        node.specialize_after(1);
+        node.boundary();
+        assert!(
+            node.is_specialized(),
+            "the counting node did not specialize"
+        );
+    }
 
     let size = Extent3d {
         width: PROBE,
@@ -458,8 +471,8 @@ fn the_gpu_hierarchy_evaluates_fewer_primitives_than_the_unculled_kernel_gpu_pro
         let mut flat = culled.clone();
         flat.nodes.clear();
 
-        let unculled = gpu_counts(&device, &queue, &flat);
-        let hierarchy = gpu_counts(&device, &queue, culled);
+        let unculled = gpu_counts(&device, &queue, &flat, false);
+        let hierarchy = gpu_counts(&device, &queue, culled, false);
         assert!(unculled[3] > 0.0, "{name}: no ray hit the field");
         assert_eq!(
             hierarchy[3], unculled[3],
@@ -477,4 +490,40 @@ fn the_gpu_hierarchy_evaluates_fewer_primitives_than_the_unculled_kernel_gpu_pro
             unculled[3], unculled[2], hierarchy[2], hierarchy[0], hierarchy[1],
         );
     }
+}
+
+#[test]
+#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+fn the_specialized_kernel_keeps_the_hierarchys_culling_gpu_probe() {
+    let (device, queue) = pollster::block_on(request_device());
+    let built = compiled(&centers(1000), RADIUS);
+    let culled = built.program();
+    let mut flat = culled.clone();
+    flat.nodes.clear();
+
+    let unculled = gpu_counts(&device, &queue, &flat, false);
+    let interpreted = gpu_counts(&device, &queue, culled, false);
+    let specialized = gpu_counts(&device, &queue, culled, true);
+    assert_eq!(
+        specialized[3], interpreted[3],
+        "the specialized kernel changed which pixels hit the field"
+    );
+    assert!(
+        (specialized[2] - interpreted[2]).abs() <= 0.05 * interpreted[2],
+        "the specialized kernel evaluated {} primitives per ray, the hierarchy interpreter {}",
+        specialized[2],
+        interpreted[2]
+    );
+    assert!(
+        specialized[2] * 4.0 < unculled[2],
+        "the specialized kernel evaluated {} primitives per ray against {} unculled",
+        specialized[2],
+        unculled[2]
+    );
+    println!(
+        "balanced, 1000 primitives, GPU {PROBE}x{PROBE}, {} hit rays: \
+         unculled {} evals/ray; hierarchy interpreter {} evals/ray; \
+         specialized {} evals/ray {} visits/ray {} skips/ray",
+        interpreted[3], unculled[2], interpreted[2], specialized[2], specialized[0], specialized[1],
+    );
 }

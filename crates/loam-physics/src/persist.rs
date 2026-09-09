@@ -10,7 +10,7 @@ use crate::world::World;
 pub const PERSIST_SCHEMA: &str = "loam.physics.world";
 
 /// Bump on any change to the saved layout.
-pub const PERSIST_VERSION: u32 = 1;
+pub const PERSIST_VERSION: u32 = 2;
 
 pub const PERSIST_CODEC: &str = "ron";
 
@@ -46,6 +46,8 @@ pub enum PersistError {
     Codec { found: String },
     #[error("the saved narrowphase registrations are not this world's")]
     Registrations,
+    #[error("the saved field anchors are not this world's")]
+    Fields,
 }
 
 impl<S> World<S>
@@ -91,7 +93,9 @@ where
         }
         let mut state = document.state;
         state.registrations = header.registrations;
-        self.restore(&state)
-            .map_err(|_| PersistError::Registrations)
+        self.restore(&state).map_err(|error| match error {
+            crate::edit::EditError::FieldMismatch => PersistError::Fields,
+            _ => PersistError::Registrations,
+        })
     }
 }

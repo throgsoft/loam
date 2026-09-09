@@ -9,6 +9,8 @@ pub enum EditError {
     UnsupportedCollider,
     DynamicHalfSpace,
     DynamicFieldAnchor,
+    AnchorBindsOwnField,
+    FieldMismatch,
     /// The world's narrowphase registrations differ from the snapshot's.
     RegistrationMismatch,
 }
@@ -23,6 +25,8 @@ impl fmt::Display for EditError {
             Self::UnsupportedCollider => "the space cannot use this collider",
             Self::DynamicHalfSpace => "a half-space collider needs zero mass",
             Self::DynamicFieldAnchor => "a field anchor body needs zero mass",
+            Self::AnchorBindsOwnField => "a field's anchor cannot bind that field to itself",
+            Self::FieldMismatch => "the world's field anchors are not the snapshot's",
             Self::RegistrationMismatch => "the narrowphase registrations are not the snapshot's",
         };
         f.write_str(text)

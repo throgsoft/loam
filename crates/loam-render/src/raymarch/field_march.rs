@@ -116,52 +116,128 @@ const COUNTS_ENTRY: &str = "\n@fragment\nfn fs_counts(@builtin(position) frag_po
                             f32(loam_field_evals), shaded.depth);\n}\n";
 
 pub fn field_march_wgsl() -> String {
-    format!(
-        "{}{}{}",
-        prelude(false),
-        include_str!("field_march.wgsl"),
-        include_str!("field_shade.wgsl"),
-    )
+    interpreted_module(false)
 }
 
 pub fn field_march_counting_wgsl() -> String {
+    interpreted_module(true)
+}
+
+fn interpreted_module(counting: bool) -> String {
     format!(
-        "{}{}{}{COUNTS_ENTRY}",
-        prelude(true),
+        "{}{}{INTERPRETED_HOOKS}{}{}{}",
+        prelude(counting),
         include_str!("field_march.wgsl"),
+        include_str!("field_walk.wgsl"),
         include_str!("field_shade.wgsl"),
+        if counting { COUNTS_ENTRY } else { "" },
     )
 }
 
 pub fn field_specialized_wgsl(program: &FieldProgram) -> String {
+    specialized_module(&program.program, false)
+}
+
+fn specialized_module(program: &[u32], counting: bool) -> String {
     format!(
-        "{}{}{}",
-        prelude(false),
-        specialized_sdf(&program.program),
+        "{}{}{}{WHOLE_PROGRAM_HOOK}{}{}{}",
+        prelude(counting),
+        include_str!("field_march.wgsl"),
+        specialized_cuts(program),
+        include_str!("field_walk.wgsl"),
         include_str!("field_shade.wgsl"),
+        if counting { COUNTS_ENTRY } else { "" },
     )
 }
 
-fn far_sdf() -> String {
-    "fn loam_field_sdf(p3: vec3<f32>) -> f32 {\n    return LOAM_FIELD_FAR;\n}\n".to_string()
+const INTERPRETED_HOOKS: &str = "\nfn loam_field_leaf(node: LoamFieldNode, p: vec4<f32>) -> f32 {\n    return loam_field_range(node.start, node.end, p);\n}\n\nfn loam_field_all(p: vec4<f32>) -> f32 {\n    return loam_field_range(0u, u.program_len, p);\n}\n";
+
+const WHOLE_PROGRAM_HOOK: &str = "\nfn loam_field_all(p: vec4<f32>) -> f32 {\n    return loam_field_range(0u, u.program_len, p);\n}\n";
+
+const FAR_CUTS: &str = "fn loam_field_leaf(node: LoamFieldNode, p: vec4<f32>) -> f32 {\n    \
+                        return LOAM_FIELD_FAR;\n}\n";
+
+#[derive(Clone, Copy)]
+struct Produced {
+    start: usize,
+    end: usize,
+    op: u32,
+    left: usize,
+    right: usize,
 }
 
-fn specialized_sdf(program: &[u32]) -> String {
+fn union_cuts(program: &[u32]) -> Option<Vec<(usize, usize)>> {
     if program.is_empty() || !program.len().is_multiple_of(2) {
-        return far_sdf();
+        return None;
     }
-    let mut body = String::from("fn loam_field_sdf(p3: vec3<f32>) -> f32 {\n");
-    body.push_str("    let p0 = vec4<f32>(p3, u.w_slice);\n");
+    let mut arena: Vec<Produced> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut poses: Vec<usize> = Vec::new();
+    for (offset, word) in program.chunks_exact(2).enumerate() {
+        let index = offset * 2;
+        match word[0] {
+            OP_SPHERE | OP_BOX | OP_HALFSPACE | OP_HYPERSPHERE | OP_HALFSPACE4 => {
+                stack.push(arena.len());
+                arena.push(Produced {
+                    start: index,
+                    end: index + 2,
+                    op: word[0],
+                    left: usize::MAX,
+                    right: usize::MAX,
+                });
+            }
+            OP_UNION | OP_INTERSECTION | OP_SUBTRACTION | OP_SMOOTH_UNION => {
+                let (right, left) = (stack.pop()?, stack.pop()?);
+                stack.push(arena.len());
+                arena.push(Produced {
+                    start: arena[left].start,
+                    end: index + 2,
+                    op: word[0],
+                    left,
+                    right,
+                });
+            }
+            OP_PUSH_POSE => poses.push(index),
+            OP_POP_POSE => {
+                let opened = poses.pop()?;
+                let top = *stack.last()?;
+                arena[top].start = opened;
+                arena[top].end = index + 2;
+                arena[top].op = OP_POP_POSE;
+            }
+            _ => return None,
+        }
+    }
+    if stack.len() != 1 || !poses.is_empty() {
+        return None;
+    }
+    let mut cuts = Vec::new();
+    let mut pending = vec![stack[0]];
+    while let Some(node) = pending.pop() {
+        if arena[node].op == OP_UNION {
+            pending.push(arena[node].right);
+            pending.push(arena[node].left);
+        } else {
+            cuts.push((arena[node].start, arena[node].end));
+        }
+    }
+    cuts.sort_unstable();
+    Some(cuts)
+}
+
+fn straight_line(program: &[u32], cut: (usize, usize), name: &str) -> Option<String> {
+    let range = program.get(cut.0..cut.1)?;
+    if range.is_empty() || !range.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut body = format!("fn {name}(p0: vec4<f32>) -> f32 {{\n");
     let mut values: Vec<u32> = Vec::new();
     let mut poses: Vec<u32> = vec![0];
     let mut next_value = 0u32;
     let mut next_pose = 1u32;
-    for (index, word) in program.chunks_exact(2).enumerate() {
+    for (offset, word) in range.chunks_exact(2).enumerate() {
         let (op, arg) = (word[0], word[1]);
-        let point = match poses.last() {
-            Some(&point) => point,
-            None => return far_sdf(),
-        };
+        let point = *poses.last()?;
         match op {
             OP_SPHERE | OP_BOX | OP_HALFSPACE | OP_HYPERSPHERE | OP_HALFSPACE4 => {
                 body.push_str(&format!(
@@ -171,16 +247,14 @@ fn specialized_sdf(program: &[u32]) -> String {
                 next_value += 1;
             }
             OP_UNION | OP_INTERSECTION | OP_SUBTRACTION | OP_SMOOTH_UNION => {
-                let (Some(b), Some(a)) = (values.pop(), values.pop()) else {
-                    return far_sdf();
-                };
+                let (b, a) = (values.pop()?, values.pop()?);
                 let expression = match op {
                     OP_UNION => format!("min(v{a}, v{b})"),
                     OP_INTERSECTION => format!("max(v{a}, v{b})"),
                     OP_SUBTRACTION => format!("max(v{a}, -v{b})"),
                     _ => format!(
                         "loam_field_smooth_min(v{a}, v{b}, bitcast<f32>(loam_field_prog[{}u]))",
-                        index * 2 + 1
+                        cut.0 + offset * 2 + 1
                     ),
                 };
                 body.push_str(&format!("    let v{next_value} = {expression};\n"));
@@ -189,7 +263,7 @@ fn specialized_sdf(program: &[u32]) -> String {
             }
             OP_PUSH_POSE => {
                 if poses.len() > MAX_POSE_DEPTH {
-                    return far_sdf();
+                    return None;
                 }
                 body.push_str(&format!(
                     "    let p{next_pose} = loam_field_local(loam_field_prims[{arg}u], p{point});\n"
@@ -200,19 +274,58 @@ fn specialized_sdf(program: &[u32]) -> String {
             OP_POP_POSE => {
                 poses.pop();
                 if poses.is_empty() {
-                    return far_sdf();
+                    return None;
                 }
             }
-            _ => return far_sdf(),
+            _ => return None,
         }
     }
     match values.as_slice() {
         [root] => {
             body.push_str(&format!("    return v{root};\n}}\n"));
-            body
+            Some(body)
         }
-        _ => far_sdf(),
+        _ => None,
     }
+}
+
+fn dispatch(starts: &[usize], lo: usize, hi: usize, depth: usize, out: &mut String) {
+    let pad = "    ".repeat(depth + 1);
+    if hi - lo == 1 {
+        out.push_str(&format!("{pad}return loam_field_cut_{lo}(p0);\n"));
+        return;
+    }
+    let mid = lo + (hi - lo) / 2;
+    out.push_str(&format!("{pad}if (start < {}u) {{\n", starts[mid]));
+    dispatch(starts, lo, mid, depth + 1, out);
+    out.push_str(&format!("{pad}}} else {{\n"));
+    dispatch(starts, mid, hi, depth + 1, out);
+    out.push_str(&format!("{pad}}}\n"));
+}
+
+fn specialized_cuts(program: &[u32]) -> String {
+    let Some(cuts) = union_cuts(program) else {
+        return FAR_CUTS.to_string();
+    };
+    if cuts.is_empty() {
+        return FAR_CUTS.to_string();
+    }
+    let mut body = String::new();
+    for (index, &cut) in cuts.iter().enumerate() {
+        match straight_line(program, cut, &format!("loam_field_cut_{index}")) {
+            Some(text) => body.push_str(&text),
+            None => return FAR_CUTS.to_string(),
+        }
+    }
+    let starts: Vec<usize> = cuts.iter().map(|cut| cut.0).collect();
+    body.push_str("fn loam_field_cut(start: u32, p0: vec4<f32>) -> f32 {\n");
+    dispatch(&starts, 0, starts.len(), 0, &mut body);
+    body.push_str("    return LOAM_FIELD_FAR;\n}\n\n");
+    body.push_str(
+        "fn loam_field_leaf(node: LoamFieldNode, p: vec4<f32>) -> f32 {\n    \
+         return loam_field_cut(node.start, p);\n}\n",
+    );
+    body
 }
 
 fn same_structure(previous: &[u32], next: &[u32]) -> bool {
@@ -584,13 +697,7 @@ impl FieldMarchNode {
                 && self.specialized.is_none()
                 && self.pending.is_none()
             {
-                let wgsl = format!(
-                    "{}{}{}{}",
-                    prelude(self.counting),
-                    specialized_sdf(&self.words),
-                    include_str!("field_shade.wgsl"),
-                    if self.counting { COUNTS_ENTRY } else { "" },
-                );
+                let wgsl = specialized_module(&self.words, self.counting);
                 self.pending = Some(self.structure_revision);
                 self.builder
                     .submit(&self.device, self.structure_revision, wgsl);
