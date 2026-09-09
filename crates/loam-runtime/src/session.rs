@@ -1,5 +1,9 @@
 use loam_shape::polytope::Polytope4Topology;
 
+use crate::bulk::{
+    Bulk, BulkAction, BulkCheckpoint, BulkError, BulkId, BulkSnapshot, BulkSpec, InFlight, Landed,
+    Landing, SnapshotPolicy, Wait, WorkOrder, WorkStats,
+};
 use crate::command::{
     Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
 };
@@ -9,7 +13,8 @@ use crate::domain::{
 use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
 use crate::input::Input;
 use crate::phase::{
-    Access, Ctx, Entry, EntryId, Order, Phase, Phases, Step, System, SystemEntry, Tick, WorkItem,
+    Access, Ctx, Entry, EntryId, Order, Phase, Phases, Schedule, Step, System, SystemEntry, Tick,
+    WorkItem,
 };
 use crate::store::SchemaId;
 use crate::stores::Stores;
@@ -22,6 +27,7 @@ pub struct SimConfig {
     pub max_ticks_per_frame: u32,
     pub overlap: bool,
     pub seed: u64,
+    pub work_queue: u32,
 }
 
 impl SimConfig {
@@ -38,6 +44,7 @@ impl Default for SimConfig {
             max_ticks_per_frame: 4,
             overlap: false,
             seed: 0,
+            work_queue: 4,
         }
     }
 }
@@ -54,6 +61,7 @@ pub struct Growth {
     pub commands: usize,
     pub spawned: usize,
     pub despawned: usize,
+    pub bulk_elements: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -228,6 +236,7 @@ pub struct SessionSnapshot<A: Stores> {
     pub tick: Tick,
     pub config: SimConfig,
     pub next_request: RequestId,
+    pub bulk: BulkSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -236,6 +245,9 @@ pub enum RestoreError {
     NoInitial,
     Schema(SchemaId),
     Domain(DomainId),
+    Readback(&'static str),
+    NoCheckpoint(&'static str),
+    CheckpointTick(&'static str),
 }
 
 /// The simulation entry `Session::new` registers; `system_at` places app entries around it.
@@ -257,6 +269,16 @@ pub struct Session<A: Stores> {
     tick: Tick,
     sequence: u64,
     initial: Option<SessionSnapshot<A>>,
+    bulk: Bulk,
+    checkpoints: Vec<Option<BulkCheckpoint>>,
+    restore_plan: Vec<(BulkId, BulkAction)>,
+    flight: InFlight,
+    work: Vec<WorkOrder>,
+    work_head: usize,
+    ahead_for: Vec<EntryId>,
+    ahead_tick: Tick,
+    stats: WorkStats,
+    wait: Option<Wait>,
 }
 
 impl<A: Stores> Session<A> {
@@ -295,6 +317,16 @@ impl<A: Stores> Session<A> {
             tick: Tick::default(),
             sequence: 0,
             initial: None,
+            bulk: Bulk::default(),
+            checkpoints: Vec::new(),
+            restore_plan: Vec::new(),
+            flight: InFlight::new(config.work_queue),
+            work: Vec::new(),
+            work_head: 0,
+            ahead_for: Vec::new(),
+            ahead_tick: Tick::default(),
+            stats: WorkStats::default(),
+            wait: None,
         }
     }
 
@@ -389,6 +421,134 @@ impl<A: Stores> Session<A> {
         self.phases.push(phase, Entry::Work(item))
     }
 
+    pub fn register_bulk(&mut self, spec: BulkSpec) -> BulkId {
+        let id = self.bulk.register(spec);
+        self.checkpoints.resize(self.bulk.len(), None);
+        id
+    }
+
+    pub fn remove_bulk(&mut self, id: BulkId) -> bool {
+        if !self.bulk.remove(id) {
+            return false;
+        }
+        self.flight.cancel_bulk(id);
+        if let Some(slot) = self.checkpoints.get_mut(id.index()) {
+            *slot = None;
+        }
+        true
+    }
+
+    pub fn bulk(&self) -> &Bulk {
+        &self.bulk
+    }
+
+    pub fn work_list(&self) -> &[WorkOrder] {
+        &self.work[self.work_head..]
+    }
+
+    pub fn work_stats(&self) -> WorkStats {
+        WorkStats {
+            discarded: self.flight.discarded(),
+            ..self.stats
+        }
+    }
+
+    pub fn issue_work(&mut self, mut execute: impl FnMut(&WorkOrder)) -> usize {
+        let mut issued = 0;
+        while let Some(order) = self.work.get(self.work_head).copied() {
+            let full = {
+                let Session { phases, flight, .. } = self;
+                let writes = match phases
+                    .entries(order.entry.phase)
+                    .get(order.entry.index as usize)
+                {
+                    Some(Entry::Work(item)) => item.write_set(),
+                    _ => &[][..],
+                };
+                !flight.submit(order, writes)
+            };
+            if full {
+                self.stats.delayed += 1;
+                return issued;
+            }
+            self.work_head += 1;
+            self.stats.issued += 1;
+            execute(&order);
+            issued += 1;
+        }
+        self.work.clear();
+        self.work_head = 0;
+        issued
+    }
+
+    pub fn land_readback(&mut self, request: RequestId, rows: &[u8]) -> Landing {
+        self.flight.land(request, rows)
+    }
+
+    pub fn readbacks(&self) -> impl Iterator<Item = Landed<'_>> {
+        self.flight.landed()
+    }
+
+    pub fn release_readback(&mut self, request: RequestId) -> bool {
+        self.flight.release(request)
+    }
+
+    pub fn waiting(&self) -> Option<Wait> {
+        self.wait
+    }
+
+    pub fn cancel_work(&mut self) {
+        self.flight.cancel_all();
+        self.work.clear();
+        self.work_head = 0;
+        self.ahead_for.clear();
+        self.wait = None;
+    }
+
+    pub fn checkpoint(&mut self, id: BulkId, tick: Tick, rows: &[u8]) -> Result<(), BulkError> {
+        if !self.bulk.is_live(id) {
+            return Err(if id.index() < self.bulk.len() {
+                BulkError::Removed(id)
+            } else {
+                BulkError::Unknown(id)
+            });
+        }
+        self.checkpoints.resize(self.bulk.len(), None);
+        match &mut self.checkpoints[id.index()] {
+            Some(existing) => {
+                existing.tick = tick;
+                existing.rows.clear();
+                existing.rows.extend_from_slice(rows);
+            }
+            slot => {
+                *slot = Some(BulkCheckpoint {
+                    tick,
+                    rows: rows.to_vec(),
+                })
+            }
+        }
+        Ok(())
+    }
+
+    pub fn checkpoint_rows(&self, id: BulkId) -> Option<&[u8]> {
+        Some(self.checkpoints.get(id.index())?.as_ref()?.rows.as_slice())
+    }
+
+    pub fn apply_restore(&mut self, mut apply: impl FnMut(BulkId, BulkAction, &[u8])) -> usize {
+        let mut plan = std::mem::take(&mut self.restore_plan);
+        let applied = plan.len();
+        for (id, action) in plan.drain(..) {
+            let rows = self
+                .checkpoints
+                .get(id.index())
+                .and_then(|slot| slot.as_ref())
+                .map_or(&[][..], |checkpoint| checkpoint.rows.as_slice());
+            apply(id, action, rows);
+        }
+        self.restore_plan = plan;
+        applied
+    }
+
     pub fn entries(&self, phase: Phase) -> &[Entry<A>] {
         self.phases.entries(phase)
     }
@@ -412,18 +572,33 @@ impl<A: Stores> Session<A> {
 
     /// Commits deferred commands, runs each dispatch entry and then its commands, and counts what grew; runs while paused.
     pub fn boundary(&mut self, input: Input) -> Result<Growth, DomainError> {
-        self.input = input;
-        self.results.clear();
         let mut growth = Growth::default();
-        self.commit(&mut growth);
+        let mut index = match self.wait.take() {
+            Some(wait) if wait.entry.phase == Phase::Dispatch => wait.entry.index as usize,
+            Some(wait) => {
+                self.wait = Some(wait);
+                return Ok(growth);
+            }
+            None => {
+                self.input = input;
+                self.results.clear();
+                self.commit(&mut growth);
+                self.plan(Phase::Dispatch, self.tick);
+                0
+            }
+        };
         let step = Step {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
         };
-        for index in 0..self.phases.entries(Phase::Dispatch).len() {
-            self.run_entry(Phase::Dispatch, index, step)?;
+        while index < self.phases.entries(Phase::Dispatch).len() {
+            if !self.run_entry(Phase::Dispatch, index, step)? {
+                return Ok(growth);
+            }
             self.commit(&mut growth);
+            index += 1;
         }
+        growth.bulk_elements = self.bulk.take_growth();
         self.app.boundary();
         for domain in self.domains.iter_mut() {
             domain.boundary();
@@ -440,15 +615,112 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             dt,
         };
-        for index in 0..self.phases.entries(Phase::Simulation).len() {
-            self.run_entry(Phase::Simulation, index, step)?;
+        let mut index = match self.wait.take() {
+            Some(wait) if wait.entry.phase == Phase::Simulation => wait.entry.index as usize,
+            Some(wait) => {
+                self.wait = Some(wait);
+                return Ok(());
+            }
+            None => {
+                self.plan(Phase::Simulation, step.tick);
+                0
+            }
+        };
+        while index < self.phases.entries(Phase::Simulation).len() {
+            if !self.run_entry(Phase::Simulation, index, step)? {
+                return Ok(());
+            }
+            index += 1;
         }
         self.tick = Tick(self.tick.0 + 1);
         Ok(())
     }
 
+    fn plan(&mut self, phase: Phase, tick: Tick) {
+        let Session {
+            phases,
+            commands,
+            work,
+            ahead_for,
+            ahead_tick,
+            stats,
+            ..
+        } = self;
+        for (index, entry) in phases.entries(phase).iter().enumerate() {
+            let Entry::Work(item) = entry else {
+                continue;
+            };
+            let entry = EntryId {
+                phase,
+                index: index as u32,
+            };
+            if item.schedule == Schedule::Ahead {
+                if *ahead_tick == tick && ahead_for.contains(&entry) {
+                    continue;
+                }
+                stats.fallbacks += 1;
+            }
+            work.push(WorkOrder {
+                entry,
+                name: item.name,
+                schedule: Schedule::InStep,
+                readback: item.readback,
+                tick,
+                request: commands.reserve_request(),
+            });
+        }
+    }
+
+    fn plan_ahead(&mut self, tick: Tick) {
+        let Session {
+            phases,
+            bulk,
+            flight,
+            commands,
+            work,
+            ahead_for,
+            ahead_tick,
+            ..
+        } = self;
+        ahead_for.clear();
+        *ahead_tick = tick;
+        for phase in [Phase::Dispatch, Phase::Simulation] {
+            for (index, entry) in phases.entries(phase).iter().enumerate() {
+                let Entry::Work(item) = entry else {
+                    continue;
+                };
+                if item.schedule != Schedule::Ahead {
+                    continue;
+                }
+                let entry = EntryId {
+                    phase,
+                    index: index as u32,
+                };
+                let ready = item
+                    .read_set()
+                    .iter()
+                    .all(|id| bulk.is_live(*id) && !flight.writes_pending(*id));
+                if !ready {
+                    continue;
+                }
+                ahead_for.push(entry);
+                work.push(WorkOrder {
+                    entry,
+                    name: item.name,
+                    schedule: Schedule::Ahead,
+                    readback: item.readback,
+                    tick,
+                    request: commands.reserve_request(),
+                });
+            }
+        }
+    }
+
     /// Stamps every record buffer with the tick and a sequence that advances while paused.
     pub fn publish(&mut self, into: &mut Publication<A>) -> Result<(), DomainError> {
+        self.plan_ahead(self.tick);
+        self.plan(Phase::Publication, self.tick);
+        self.plan(Phase::Presentation, self.tick);
         self.sequence += 1;
         let stamp = Stamp {
             tick: self.tick,
@@ -502,6 +774,18 @@ impl<A: Stores> Session<A> {
         if !self.commands.is_empty() || self.entities().has_reservations() {
             return Err(RestoreError::Pending);
         }
+        if let Some(order) = self.flight.any_required() {
+            return Err(RestoreError::Readback(order.name));
+        }
+        for (id, spec) in self.bulk.iter() {
+            if spec.snapshot != SnapshotPolicy::Authoritative {
+                continue;
+            }
+            let checkpoint = self.checkpoints.get(id.index()).and_then(Option::as_ref);
+            if checkpoint.is_some_and(|checkpoint| checkpoint.tick != self.tick) {
+                return Err(RestoreError::CheckpointTick(spec.name));
+            }
+        }
         Ok(SessionSnapshot {
             app: self.app.snapshot(),
             entities: self.entities().snapshot(),
@@ -513,6 +797,7 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             config: self.config,
             next_request: self.commands.next_request(),
+            bulk: self.bulk.snapshot(&self.checkpoints),
         })
     }
 
@@ -522,6 +807,41 @@ impl<A: Stores> Session<A> {
             let first = from.domains.len().min(self.domains.len());
             return Err(RestoreError::Domain(DomainId::new(first)));
         }
+        for (index, spec) in from.bulk.specs.iter().enumerate() {
+            let authoritative = spec.snapshot == SnapshotPolicy::Authoritative;
+            if !from.bulk.live[index] || !authoritative {
+                continue;
+            }
+            if from
+                .bulk
+                .checkpoints
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_none()
+            {
+                return Err(RestoreError::NoCheckpoint(spec.name));
+            }
+        }
+        self.flight.cancel_all();
+        self.bulk.restore(&from.bulk);
+        self.checkpoints.clear();
+        self.checkpoints.extend_from_slice(&from.bulk.checkpoints);
+        self.restore_plan.clear();
+        for (index, spec) in from.bulk.specs.iter().enumerate() {
+            if !from.bulk.live[index] {
+                continue;
+            }
+            let action = match spec.snapshot {
+                SnapshotPolicy::Authoritative => BulkAction::Replace,
+                SnapshotPolicy::Reinitializable => BulkAction::Reinitialize,
+                SnapshotPolicy::Derived => continue,
+            };
+            self.restore_plan.push((BulkId::new(index), action));
+        }
+        self.wait = None;
+        self.work.clear();
+        self.work_head = 0;
+        self.ahead_for.clear();
         self.commands.cancel_into(&mut self.results);
         self.commands.restore(&from.entities, from.next_request);
         let scene = self.scene();
@@ -584,7 +904,7 @@ impl<A: Stores> Session<A> {
         self.batch = batch;
     }
 
-    fn run_entry(&mut self, phase: Phase, index: usize, step: Step) -> Result<(), DomainError> {
+    fn run_entry(&mut self, phase: Phase, index: usize, step: Step) -> Result<bool, DomainError> {
         let Session {
             app,
             domains,
@@ -594,11 +914,27 @@ impl<A: Stores> Session<A> {
             results,
             input,
             prepared,
+            flight,
+            wait,
             ..
         } = self;
         let Some(Entry::System(system)) = phases.entries_mut(phase).get_mut(index) else {
-            return Ok(());
+            return Ok(true);
         };
+        if let Some(work) = system.access().awaited() {
+            if let Some(order) = flight.outstanding(work) {
+                *wait = Some(Wait {
+                    entry: EntryId {
+                        phase,
+                        index: index as u32,
+                    },
+                    work,
+                    request: order.request,
+                    tick: order.tick,
+                });
+                return Ok(false);
+            }
+        }
         system.run(Ctx {
             app,
             domains,
@@ -608,7 +944,8 @@ impl<A: Stores> Session<A> {
             input,
             prepared: prepared.as_slice(),
             step,
-        })
+        })?;
+        Ok(true)
     }
 }
 
@@ -620,9 +957,71 @@ mod tests {
     use crate::command::SpawnBundle;
     use crate::domain::{Instance, Pose};
     use crate::entity::Entity;
+    use crate::phase::Readback;
     use crate::store::tests::alloc_probe::bytes_allocated_by;
     use crate::store::{LogCapacity, Store};
     use crate::view::{DepthEnvelope, DomainRay, ImageRay, ViewMapping, ViewSpec};
+
+    crate::stores! {
+        #[derive(Default)]
+        pub struct Quiet {}
+    }
+
+    #[test]
+    fn a_warmed_tick_allocates_while_it_orders_its_work_items() {
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let grid = session.register_bulk(BulkSpec {
+            name: "grid",
+            element_size: 4,
+            count: 64,
+            readback: Readback::Optional,
+            snapshot: SnapshotPolicy::Derived,
+            schedule: Schedule::InStep,
+        });
+        session.work(
+            Phase::Simulation,
+            WorkItem::new("step", Schedule::InStep, Readback::Optional).writes(grid),
+        );
+        session.work(
+            Phase::Simulation,
+            WorkItem::new("blur", Schedule::Ahead, Readback::Optional).reads(grid),
+        );
+        let rows = [0u8; 256];
+        let mut publication = Publication::default();
+        let mut requests: Vec<RequestId> = Vec::with_capacity(8);
+        let cycle = |session: &mut Session<Quiet>,
+                     publication: &mut Publication<Quiet>,
+                     requests: &mut Vec<RequestId>| {
+            session.boundary(Input::default()).unwrap();
+            session.tick().unwrap();
+            let settle = |session: &mut Session<Quiet>, requests: &mut Vec<RequestId>| {
+                requests.clear();
+                session.issue_work(|order| requests.push(order.request));
+                for request in requests.iter() {
+                    session.land_readback(*request, &rows);
+                    session.release_readback(*request);
+                }
+            };
+            settle(session, requests);
+            session.publish(publication).unwrap();
+            settle(session, requests);
+        };
+        for _ in 0..8 {
+            cycle(&mut session, &mut publication, &mut requests);
+        }
+
+        let bytes = bytes_allocated_by(|| {
+            for _ in 0..16 {
+                cycle(&mut session, &mut publication, &mut requests);
+            }
+        });
+        assert_eq!(
+            bytes, 0,
+            "16 warmed ticks of work ordering asked the allocator for {bytes} bytes"
+        );
+        assert_eq!(session.work_stats().delayed, 0);
+        assert_eq!(session.work_stats().discarded, 0);
+    }
 
     crate::stores! {
         #[derive(Default)]
@@ -682,6 +1081,7 @@ mod tests {
                         commands: 2,
                         spawned: 1,
                         despawned: 1,
+                        bulk_elements: 0,
                     }
                 );
             }

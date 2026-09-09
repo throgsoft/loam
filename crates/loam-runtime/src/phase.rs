@@ -1,5 +1,6 @@
 use std::any::TypeId;
 
+use crate::bulk::BulkId;
 use crate::command::{CommandResult, Commands};
 use crate::domain::{DomainError, DomainId, Domains};
 use crate::input::Input;
@@ -66,6 +67,7 @@ pub struct Access {
     every_domain: bool,
     views: bool,
     commands: bool,
+    awaits: Option<&'static str>,
 }
 
 impl Access {
@@ -103,6 +105,11 @@ impl Access {
         self
     }
 
+    pub fn awaits(mut self, work: &'static str) -> Self {
+        self.awaits = Some(work);
+        self
+    }
+
     pub fn read_set(&self) -> &[StoreId] {
         &self.reads
     }
@@ -125,6 +132,10 @@ impl Access {
 
     pub fn submits_commands(&self) -> bool {
         self.commands
+    }
+
+    pub fn awaited(&self) -> Option<&'static str> {
+        self.awaits
     }
 }
 
@@ -255,11 +266,43 @@ pub enum Readback {
 }
 
 /// Ordered by the session, executed by the host's GPU context.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkItem {
     pub name: &'static str,
     pub schedule: Schedule,
     pub readback: Readback,
+    reads: Vec<BulkId>,
+    writes: Vec<BulkId>,
+}
+
+impl WorkItem {
+    pub fn new(name: &'static str, schedule: Schedule, readback: Readback) -> Self {
+        Self {
+            name,
+            schedule,
+            readback,
+            reads: Vec::new(),
+            writes: Vec::new(),
+        }
+    }
+
+    pub fn reads(mut self, id: BulkId) -> Self {
+        self.reads.push(id);
+        self
+    }
+
+    pub fn writes(mut self, id: BulkId) -> Self {
+        self.writes.push(id);
+        self
+    }
+
+    pub fn read_set(&self) -> &[BulkId] {
+        &self.reads
+    }
+
+    pub fn write_set(&self) -> &[BulkId] {
+        &self.writes
+    }
 }
 
 pub enum Entry<A> {

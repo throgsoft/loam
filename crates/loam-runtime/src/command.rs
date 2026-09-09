@@ -122,6 +122,12 @@ impl<A: Stores> Commands<A> {
         RequestId(self.next)
     }
 
+    pub(crate) fn reserve_request(&mut self) -> RequestId {
+        let id = RequestId(self.next);
+        self.next += 1;
+        id
+    }
+
     pub(crate) fn restore(&mut self, entities: &EntitiesSnapshot, next: RequestId) {
         self.entities.restore(entities);
         self.next = self.next.max(next.0);

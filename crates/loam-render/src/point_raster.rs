@@ -37,10 +37,10 @@ impl Default for PointRasterUniforms {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
-struct PointInstance {
-    pos: [f32; 3],
-    radius_px: f32,
-    color: [f32; 4],
+pub struct PointInstance {
+    pub pos: [f32; 3],
+    pub radius_px: f32,
+    pub color: [f32; 4],
 }
 
 /// Construct once per `RenderDevice`.
@@ -282,6 +282,12 @@ impl PointRasterNode {
             queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(instances));
         }
         self.instance_count = instances.len() as u32;
+    }
+
+    pub fn draw_buffer(&mut self, instances: Buffer, count: u32) {
+        self.instance_buf = instances;
+        self.instance_capacity = 0;
+        self.instance_count = count;
     }
 
     /// Records into the caller's encoder with `LoadOp::Load` on both attachments; `depth_view` is `Some` iff the pipeline has depth.
