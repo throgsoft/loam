@@ -1275,34 +1275,80 @@ mod tests {
     }
 
     #[test]
-    fn a_warmed_frame_asks_the_allocator_for_nothing() {
-        let (mut booted, _intents) = one_slot();
+    fn a_warmed_frame_with_every_overlay_on_asks_the_allocator_for_nothing() {
+        let (mut booted, intents) = one_slot();
+        push(&intents, Intent::Points);
+        push(&intents, Intent::Gimbal);
+        push(&intents, Intent::Hud);
+        push(&intents, Intent::Color(ColorMode::WDepth));
+        push(
+            &intents,
+            Intent::Strip(Strip {
+                on: true,
+                w: true,
+                t: true,
+                ..Strip::default()
+            }),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        assert!(booted.session.results().iter().all(|r| r.outcome.is_ok()));
+
         let mut records = Records::default();
         let mut scratch = Scratch::new(&[CELL24]);
-        let frame =
-            |booted: &mut Boot, records: &mut Records<Playground>, scratch: &mut Scratch| {
-                booted
-                    .session
-                    .boundary(Input::default())
-                    .expect("the boundary ran");
-                booted.session.tick().expect("the tick ran");
-                records.publish(&mut booted.session).expect("published");
-                let publication = records.lend().expect("the buffer is free");
-                records.release(publication);
-                collect(&mut booted.session, booted.domain, scratch);
-            };
+        let mut gimbal = Gimbal::default();
+        gimbal.enabled = true;
+        let mut lines = String::new();
+        let frame = |booted: &mut Boot,
+                     records: &mut Records<Playground>,
+                     scratch: &mut Scratch,
+                     gimbal: &mut Gimbal,
+                     lines: &mut String| {
+            booted
+                .session
+                .boundary(Input::default())
+                .expect("the boundary ran");
+            booted.session.tick().expect("the tick ran");
+            records.publish(&mut booted.session).expect("published");
+            let publication = records.lend().expect("the buffer is free");
+            records.release(publication);
+            collect(&mut booted.session, booted.domain, scratch);
+            fill_strip(
+                &{ *booted.session.app.strip.get() },
+                turn_of(&booted.session),
+                HEADLESS_FRAME,
+                0.0,
+                scratch,
+            );
+            gimbal.rings(scratch.center);
+            hud::write_readout(lines, &readout_of(&booted.session));
+        };
         for _ in 0..16 {
-            frame(&mut booted, &mut records, &mut scratch);
+            frame(
+                &mut booted,
+                &mut records,
+                &mut scratch,
+                &mut gimbal,
+                &mut lines,
+            );
         }
 
         let calls = alloc_probe::allocations_in(|| {
             for _ in 0..16 {
-                frame(&mut booted, &mut records, &mut scratch);
+                frame(
+                    &mut booted,
+                    &mut records,
+                    &mut scratch,
+                    &mut gimbal,
+                    &mut lines,
+                );
             }
         });
         assert_eq!(
             calls, 0,
-            "sixteen warmed frames of boundary, tick, publication, and collection asked the allocator {calls} times"
+            "sixteen warmed frames of boundary, tick, publication, collection, strip, gimbal, and readout asked the allocator {calls} times"
         );
     }
 
