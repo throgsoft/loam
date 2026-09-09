@@ -10,8 +10,10 @@ use loam_shape::field::DistanceField;
 
 use loam_math::hyperbolic::{in_poincare_ball, poincare_to_hyperboloid};
 use loam_math::{
-    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Space, WgslSpace,
+    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Space, WPlane,
+    WgslSpace,
 };
+use loam_shape::polytope::{polytope_section_faces_append, polytope_section_perimeter_append};
 
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
@@ -24,8 +26,9 @@ use crate::session::{
 };
 use crate::store::{LogCapacity, Store, StoreField, StoreSnapshot};
 use crate::view::{
-    self, DomainRay, ImageRay, ImageSpaceId, InstanceRecord, Pick, Rigid, SegmentRecord, Vec3,
-    Vec4, ViewId, ViewMapping, ViewRecords, ViewSpec, ViewSummary, ViewTarget, Views,
+    self, DomainRay, ImageRay, ImageSpaceId, InstanceRecord, Pick, Rigid, SegmentRecord,
+    TriangleRecord, Vec3, Vec4, ViewId, ViewMapping, ViewRecords, ViewSpec, ViewSummary,
+    ViewTarget, Views,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -129,6 +132,8 @@ pub struct Instance {
     pub geometry: PreparedId,
     pub material: MaterialId,
     pub shading: EdgeShading,
+    /// The perimeter's line material; `None` publishes no section for a geometry that could be cut.
+    pub section: Option<MaterialId>,
 }
 
 impl Instance {
@@ -137,11 +142,17 @@ impl Instance {
             geometry,
             material,
             shading: EdgeShading::Material,
+            section: None,
         }
     }
 
     pub fn shaded(mut self, shading: EdgeShading) -> Self {
         self.shading = shading;
+        self
+    }
+
+    pub fn sectioned(mut self, perimeter: MaterialId) -> Self {
+        self.section = Some(perimeter);
         self
     }
 }
@@ -555,7 +566,118 @@ fn push_segments<S: DomainSpace>(
                 push(index, [a[0], a[1], a[2], 0.0], [b[0], b[1], b[2], 0.0]);
             }
         }
+        PreparedGeometry::Polytope4 { polytope, scale } => {
+            let topology = polytope.topology();
+            for (index, &[a, b]) in topology.edges.iter().enumerate() {
+                push(
+                    index,
+                    (topology.vertices[a as usize] * *scale).to_array(),
+                    (topology.vertices[b as usize] * *scale).to_array(),
+                );
+            }
+        }
         PreparedGeometry::Mesh3 { .. } => {}
+    }
+}
+
+/// Cuts the entity's cells on the map's own hyperplane and appends the perimeter and the fill in image space.
+fn push_section<S: DomainSpace>(
+    space: &S,
+    mapping: &dyn ViewMapping<S>,
+    eye: &Pose<S>,
+    pose: &Pose<S>,
+    library: &Library<'_>,
+    instance: &Instance,
+    into: &mut ViewRecords,
+) {
+    let Some(PreparedGeometry::Polytope4 { polytope, scale }) =
+        library.geometry.get(instance.geometry.index())
+    else {
+        return;
+    };
+    let (Some(perimeter_material), Some(cut)) = (instance.section, mapping.section(eye, pose))
+    else {
+        return;
+    };
+    let Some(place) = mapping.image_local(space, eye, pose, space.origin()) else {
+        return;
+    };
+    let relative = space.iso_compose(space.iso_inverse(eye.0), pose.0);
+    let base = Vec4::from(
+        space
+            .chart_point(space.iso_apply(relative, space.origin()))
+            .coordinates,
+    );
+    let topology = polytope.topology();
+    let scratch = &mut into.scratch;
+    scratch.rotated.clear();
+    scratch
+        .rotated
+        .extend(topology.vertices.iter().map(|vertex| {
+            Vec4::from(
+                space
+                    .chart_point(
+                        space.iso_apply(relative, space.local_point((*vertex * *scale).to_array())),
+                    )
+                    .coordinates,
+            ) - base
+        }));
+    let plane = WPlane::new(cut.offset);
+    let placed = |point: [f32; 3]| {
+        [
+            point[0] * cut.scale + place[0],
+            point[1] * cut.scale + place[1],
+            point[2] * cut.scale + place[2],
+        ]
+    };
+
+    let (edge_color, width_px) = library.line_style(perimeter_material);
+    scratch.perimeter.segments.clear();
+    scratch.perimeter.colors.clear();
+    scratch.perimeter.widths.clear();
+    polytope_section_perimeter_append(
+        topology.edges,
+        topology.cells,
+        &scratch.rotated,
+        plane,
+        &mut scratch.cut,
+        &mut scratch.perimeter,
+    );
+    for (start, end) in &scratch.perimeter.segments {
+        into.segments.push(SegmentRecord {
+            start: placed(*start),
+            _pad0: 0.0,
+            end: placed(*end),
+            _pad1: 0.0,
+            start_color: edge_color,
+            end_color: edge_color,
+            width_px,
+            _pad2: [0.0; 3],
+        });
+    }
+
+    let (fill_color, _) = library.line_style(instance.material);
+    scratch.faces.vertices.clear();
+    scratch.faces.colors.clear();
+    scratch.faces.indices.clear();
+    polytope_section_faces_append(
+        topology.edges,
+        topology.cells,
+        &scratch.rotated,
+        plane,
+        fill_color,
+        &mut scratch.cut,
+        &mut scratch.faces,
+    );
+    for [a, b, c] in &scratch.faces.indices {
+        into.triangles.push(TriangleRecord {
+            vertices: [
+                placed(scratch.faces.vertices[*a as usize]),
+                placed(scratch.faces.vertices[*b as usize]),
+                placed(scratch.faces.vertices[*c as usize]),
+            ],
+            color: fill_color,
+        });
     }
 }
 
@@ -869,8 +991,15 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let space = &self.space;
         let poses = &self.poses;
         let mapping = spec.mapping.as_ref();
+        into.segments.clear();
+        into.triangles.clear();
+        for (entity, instance) in self.instances.iter() {
+            let Some(pose) = poses.get(entity) else {
+                continue;
+            };
+            push_section(space, mapping, eye, pose, &library, instance, into);
+        }
         let segments = &mut into.segments;
-        segments.clear();
         let records = self.instances.iter().filter_map(|(entity, instance)| {
             let pose = poses.get(entity)?;
             let image_point = mapping.image_local(space, eye, pose, origin)?;

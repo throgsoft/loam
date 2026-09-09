@@ -7,13 +7,16 @@ use loam_app::session::{launch, FrameHook, SessionApp};
 use loam_math::{Bivector, EuclideanR4, Iso4Flat};
 use loam_render::pass::{FramePass, PassOrder, PassSchedule};
 use loam_render::raymarch::BodyUniform;
-use loam_render::{DepthConvention, HyperslicePass, LinePass, PointPass, SkyGroundPass};
+use loam_render::{
+    DepthConvention, FragmentShading, HyperslicePass, LinePass, PointPass, SkyGroundPass,
+    TriangleFeed,
+};
 use loam_runtime::host::{run_headless, HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, Bindings, Command, Commands, Ctx, DomainBuilder, DomainHandle, Domains,
     Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId, Orbit, Phase,
     PhysicsConfig, Pointer, PointerPhase, Pose, PreparedGeometry, PreparedId, Rejection, Section4,
-    SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
+    Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
 };
 
 #[cfg(test)]
@@ -67,7 +70,6 @@ mod mode;
 mod points;
 mod projection;
 mod scene;
-mod section;
 mod toy;
 mod ui;
 
@@ -186,6 +188,7 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
             ),
     );
     let root = session.views().root();
+    let cut = session.add_material(Material::lines(SECTION_COLOR, SECTION_WIDTH_PX));
     let cards = prepare_catalog(&mut session);
 
     let layers = session.dispatch(|d| -> Result<Layers, Rejection> {
@@ -200,7 +203,8 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
                 });
             if let Some(card) = card_of(entry) {
                 if let Some(geometry) = cards[card].geometry {
-                    bundle = bundle.instance(Instance::new(geometry, cards[card].material));
+                    bundle = bundle
+                        .instance(Instance::new(geometry, cards[card].material).sectioned(cut));
                 }
             }
             d.spawn(bundle)?;
@@ -208,7 +212,11 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
         let eye = d.spawn(SpawnBundle::new().at(domain, Pose(Iso4Flat::IDENTITY)))?;
         let r4 = d.domains.typed(domain)?;
         let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
-        let projection = r4.add_view(ViewSpec::new(root, eye, Family::default().mapping(None, 0)));
+        let projection = r4.add_view(ViewSpec::new(
+            root,
+            eye,
+            Family::default().mapping(None, 0, 0.0),
+        ));
         Ok(Layers {
             section,
             projection,
@@ -218,7 +226,7 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
         Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
     session.app.floor.set(true);
 
-    install_systems(&mut session, domain, layers, cards, intents);
+    install_systems(&mut session, domain, layers, cards, cut, intents);
     session.set_initial()?;
     Ok(Boot { session, domain })
 }
@@ -250,7 +258,10 @@ fn prepare_catalog(session: &mut Session<Playground>) -> Vec<Card> {
             let polytope = entry.shape.polytope4();
             Card {
                 geometry: polytope.map(|polytope| {
-                    session.prepare(PreparedGeometry::edges_of(polytope.topology(), BODY_SIZE))
+                    session.prepare(PreparedGeometry::Polytope4 {
+                        polytope,
+                        scale: BODY_SIZE,
+                    })
                 }),
                 material,
                 shades: polytope.map(|polytope| {
@@ -271,6 +282,7 @@ fn install_systems(
     domain: DomainHandle<EuclideanR4>,
     layers: Layers,
     cards: Vec<Card>,
+    cut: MaterialId,
     intents: &Intents,
 ) {
     let queued = intents.clone();
@@ -289,7 +301,7 @@ fn install_systems(
                 std::mem::swap(&mut *held, &mut drained);
             }
             for intent in drained.drain(..) {
-                submit(commands, domain, &submitted, intent);
+                submit(commands, domain, &submitted, cut, intent);
             }
         },
     );
@@ -378,20 +390,21 @@ fn install_systems(
         },
     );
 
-    let mut shown: Option<(Family, Option<loam_shape::polytope::Polytope4>)> = None;
+    let mut shown: Option<(Family, Option<loam_shape::polytope::Polytope4>, f32)> = None;
     session.system(
         Phase::Dispatch,
         "projection view",
         Access::new().domain(domain.id()),
         move |app: &mut Playground, domains: &mut Domains| {
             let family = *app.projection.get();
+            let slice = *app.slice.get();
             let active = *app.active.get();
             let subject = app
                 .slots
                 .iter()
                 .find(|(_, slot)| slot.index == active)
                 .and_then(|(_, slot)| slot.entry.shape.polytope4());
-            if shown == Some((family, subject)) {
+            if shown == Some((family, subject, slice)) {
                 return;
             }
             let Ok(r4) = domains.typed(domain) else {
@@ -400,8 +413,8 @@ fn install_systems(
             let Some(spec) = r4.view_mut(layers.projection) else {
                 return;
             };
-            spec.mapping = Box::new(family.mapping(subject, 0));
-            shown = Some((family, subject));
+            spec.mapping = Box::new(family.mapping(subject, 0, slice));
+            shown = Some((family, subject, slice));
         },
     );
 
@@ -431,6 +444,7 @@ fn submit(
     commands: &mut Commands<Playground>,
     domain: DomainHandle<EuclideanR4>,
     cards: &[Card],
+    cut: MaterialId,
     intent: Intent,
 ) {
     match intent {
@@ -461,6 +475,7 @@ fn submit(
                 geometry: cards[card].geometry,
                 material: cards[card].material,
                 shades: cards[card].shades,
+                cut,
                 domain,
             })
         }
@@ -485,7 +500,6 @@ pub(crate) fn bindings() -> Bindings {
 pub(crate) struct Frame {
     sky: SkyGroundPass,
     hyperslice: HyperslicePass,
-    cut: LinePass,
     rings: LinePass,
     cloud: PointPass,
 }
@@ -495,7 +509,6 @@ impl Frame {
         Self {
             sky: SkyGroundPass::new(scene::ground(true)),
             hyperslice: HyperslicePass::new(scene::shader_source()),
-            cut: LinePass::new("section"),
             rings: LinePass::new("gimbal"),
             cloud: PointPass::new("points"),
         }
@@ -505,22 +518,28 @@ impl Frame {
         vec![
             Box::new(self.sky.clone()),
             Box::new(self.hyperslice.clone()),
-            Box::new(self.cut.clone()),
             Box::new(self.rings.clone()),
             Box::new(self.cloud.clone()),
         ]
     }
 }
 
+/// The presenter registers its own section-fill pass before the application's, so the report builds the schedule the same way.
+fn scheduled(frame: &Frame) -> Vec<Box<dyn FramePass>> {
+    let mut passes: Vec<Box<dyn FramePass>> =
+        vec![TriangleFeed::default().pass(FragmentShading::FaceNormalLambert)];
+    passes.extend(frame.passes());
+    passes
+}
+
 pub(crate) fn frame_sections(frame: &Frame) -> Vec<&'static str> {
     let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-    for pass in frame.passes() {
+    for pass in scheduled(frame) {
         if schedule.register(pass).is_err() {
             return Vec::new();
         }
     }
-    let before = frame
-        .passes()
+    let before = scheduled(frame)
         .iter()
         .filter(|pass| pass.order() == PassOrder::BeforeScene)
         .count();
@@ -536,8 +555,6 @@ struct Scratch {
     center: glam::Vec3,
     slots: Vec<(Entity, ShapeEntry)>,
     bodies: Vec<BodyUniform>,
-    segments: Vec<SegmentRecord>,
-    cutter: section::Cutter,
     cloud: points::Cloud,
     anchors: Vec<(usize, &'static str, glam::Vec3)>,
 }
@@ -548,8 +565,6 @@ impl Scratch {
             center: glam::Vec3::ZERO,
             slots: Vec::new(),
             bodies: Vec::new(),
-            segments: Vec::new(),
-            cutter: section::Cutter::new(SECTION_COLOR, SECTION_WIDTH_PX),
             cloud: points::Cloud::new(row.iter().filter_map(|entry| entry.shape.polytope4())),
             anchors: Vec::new(),
         }
@@ -559,7 +574,6 @@ impl Scratch {
 fn collect(
     session: &mut Session<Playground>,
     domain: DomainHandle<EuclideanR4>,
-    slice: f32,
     scratch: &mut Scratch,
 ) {
     let mode = *session.app.color.get();
@@ -581,7 +595,6 @@ fn collect(
             .map(|(_, slot)| (slot.index, slot.entry.label, glam::Vec3::ZERO)),
     );
     scratch.bodies.clear();
-    scratch.segments.clear();
     scratch.cloud.clear();
     let mut sum = glam::Vec3::ZERO;
     let Ok(r4) = session.domains_mut().typed(domain) else {
@@ -600,13 +613,6 @@ fn collect(
         let Some(polytope) = entry.shape.polytope4() else {
             continue;
         };
-        scratch.cutter.cut(
-            polytope,
-            pose.0.rotation,
-            pose.0.translation,
-            slice,
-            &mut scratch.segments,
-        );
         if cloud_on {
             scratch
                 .cloud
@@ -630,7 +636,6 @@ fn main() -> Result<(), HostError> {
     let grabbed = Arc::new(AtomicBool::new(false));
     let sky = frame.sky.clone();
     let hyperslice = frame.hyperslice.clone();
-    let cut = frame.cut.clone();
     let rings = frame.rings.clone();
     let cloud = frame.cloud.clone();
     let turn_intents = intents.clone();
@@ -800,10 +805,9 @@ fn main() -> Result<(), HostError> {
 
             let slice = *hook.session.app.slice.get();
             let floor = *hook.session.app.floor.get();
-            collect(hook.session, domain, slice, &mut scratch);
+            collect(hook.session, domain, &mut scratch);
             sky.publish(&eye, scene::ground(floor));
             hyperslice.publish(scene::uniforms(&eye, slice, floor), &scratch.bodies);
-            cut.publish(&eye, &scratch.segments);
             rings.publish(&eye, gimbal.rings(scratch.center));
             cloud.publish(&eye, scratch.cloud.records());
             if let Some(context) = hook.ui {
@@ -906,6 +910,14 @@ fn report(booted: &mut Boot, frame: &Frame, config: &HostConfig) -> Result<Vec<S
                 .views
                 .iter()
                 .map(|view| view.records.segments().len())
+                .sum::<usize>()
+        ),
+        format!(
+            "section fills: {} triangles",
+            publication
+                .views
+                .iter()
+                .map(|view| view.records.triangles().len())
                 .sum::<usize>()
         ),
         format!("sections: {}", frame_sections(frame).join(", ")),
@@ -1013,7 +1025,12 @@ mod tests {
 
     #[test]
     fn the_published_wireframe_carries_every_edge_of_the_24_cell() {
-        let (mut booted, _intents) = one_slot();
+        let (mut booted, intents) = one_slot();
+        push(&intents, Intent::Slice(consts::W_RANGE));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
         let mut records = Records::default();
         let counts = published(&mut booted.session, &mut records, |publication| {
             publication
@@ -1025,7 +1042,7 @@ mod tests {
         assert_eq!(
             counts,
             [96, 96],
-            "the 24-cell has 96 edges in each of the section and projection layers"
+            "with the slice clear of the body, each layer carries the 24-cell's 96 edges alone"
         );
     }
 
@@ -1149,7 +1166,7 @@ mod tests {
                 records.publish(&mut booted.session).expect("published");
                 let publication = records.lend().expect("the buffer is free");
                 records.release(publication);
-                collect(&mut booted.session, booted.domain, 0.0, scratch);
+                collect(&mut booted.session, booted.domain, scratch);
             };
         for _ in 0..16 {
             frame(&mut booted, &mut records, &mut scratch);
@@ -1237,6 +1254,7 @@ mod tests {
             .next()
             .expect("the row has a slot");
 
+        push(&intents, Intent::Slice(consts::W_RANGE));
         push(&intents, Intent::Shape(0, 0));
         booted
             .session
@@ -1394,6 +1412,26 @@ mod tests {
     }
 
     #[test]
+    fn the_tesseract_row_reports_the_fill_of_both_cut_layers_at_w_zero() {
+        const TESSERACT: ShapeEntry = ShapeEntry {
+            shape: RaymarchShape::Polytope(Polytope4::Tesseract),
+            body_color: [0.30, 0.55, 0.95],
+            label: "8-cell",
+            long_name: "tesseract",
+        };
+        let intents = Intents::default();
+        let mut booted = boot(&[TESSERACT], &intents).expect("the session boots");
+        let frame = Frame::new();
+        let config = HostConfig::new("polytope playground", bindings());
+        let lines = report(&mut booted, &frame, &config).expect("the headless run");
+        assert_eq!(
+            lines[3], "section fills: 48 triangles",
+            "the six cells that straddle w = 0 each fan into four triangles, in the drop-w cut and in the projected cap: {}",
+            lines[3]
+        );
+    }
+
+    #[test]
     fn the_headless_report_names_the_active_polytope_and_the_frames_sections() {
         let (mut booted, _intents) = one_slot();
         let frame = Frame::new();
@@ -1405,13 +1443,13 @@ mod tests {
             lines[1]
         );
         assert!(
-            lines[3].contains("present-clear")
-                && lines[3].contains("sky-ground")
-                && lines[3].contains("present-draw")
-                && lines[3].contains("hyperslice")
-                && lines[3].contains("section"),
+            lines[4].contains("present-clear")
+                && lines[4].contains("sky-ground")
+                && lines[4].contains("present-draw")
+                && lines[4].contains("triangles")
+                && lines[4].contains("hyperslice"),
             "the report does not list the frame's sections: {}",
-            lines[3]
+            lines[4]
         );
         assert!(
             lines[0].contains("xy 0.4950") && lines[0].contains("zw 0.4950"),

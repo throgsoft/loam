@@ -1,5 +1,5 @@
 use glam::Vec2;
-use loam_runtime::{Eye, PublishedView, Stamp};
+use loam_runtime::{Eye, PublishedView, Rigid, Stamp};
 use wgpu::{
     Color, CommandEncoder, Device, LoadOp, Operations, Queue, RenderPassColorAttachment,
     RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureFormat, TextureView,
@@ -10,8 +10,9 @@ use crate::device::{GpuContext, MissingGpuCapability};
 use crate::pass::{
     FrameFormat, FramePass, FrameTarget, PassError, PassOrder, PassSchedule, Section,
 };
+use crate::triangle_pass::TriangleFeed;
 use crate::view::{DEPTH_CLEAR, DEPTH_FORMAT};
-use crate::{DepthConvention, DepthMode, LineRasterNode};
+use crate::{DepthConvention, DepthMode, FragmentShading, LineRasterNode};
 
 struct ViewLines {
     node: LineRasterNode,
@@ -23,17 +24,22 @@ pub struct Presenter {
     sample_count: u32,
     depth: Option<DepthBuffer>,
     views: Vec<ViewLines>,
+    fills: TriangleFeed,
     schedule: PassSchedule,
 }
 
 impl Presenter {
     pub fn new(format: TextureFormat, sample_count: u32) -> Self {
+        let fills = TriangleFeed::default();
+        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        let _ = schedule.register(fills.pass(FragmentShading::FaceNormalLambert));
         Self {
             format,
             sample_count,
             depth: None,
             views: Vec::new(),
-            schedule: PassSchedule::new(DepthConvention::ReversedZ),
+            fills,
+            schedule,
         }
     }
 
@@ -89,6 +95,7 @@ impl Presenter {
             });
         }
         self.views.truncate(views.len());
+        let mut rebuilt = false;
         for (slot, view) in self.views.iter_mut().zip(views) {
             slot.node.set_camera(
                 queue,
@@ -100,8 +107,27 @@ impl Presenter {
                 continue;
             }
             slot.uploaded = built;
+            rebuilt = true;
             slot.node
                 .upload_segments(device, queue, view.records.segments());
+        }
+        self.fills.set_view(eye, Rigid::IDENTITY);
+        if rebuilt {
+            self.fills.edit(|mesh| {
+                mesh.vertices.clear();
+                mesh.colors.clear();
+                mesh.indices.clear();
+                for view in views {
+                    for triangle in view.records.triangles() {
+                        let base = mesh.vertices.len() as u32;
+                        for corner in triangle.vertices {
+                            mesh.vertices.push(view.placement.apply(corner));
+                            mesh.colors.push(triangle.color);
+                        }
+                        mesh.indices.push([base, base + 1, base + 2]);
+                    }
+                }
+            });
         }
     }
 

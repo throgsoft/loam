@@ -387,6 +387,7 @@ pub(crate) struct SetShape {
     pub(crate) geometry: Option<PreparedId>,
     pub(crate) material: MaterialId,
     pub(crate) shades: Option<Shades>,
+    pub(crate) cut: MaterialId,
     pub(crate) domain: DomainHandle<EuclideanR4>,
 }
 
@@ -417,7 +418,11 @@ impl AppCommand<Playground> for SetShape {
             let shading = self
                 .shades
                 .map_or(EdgeShading::Material, |shades| shades.of(mode));
-            bundle = bundle.instance(Instance::new(geometry, self.material).shaded(shading));
+            bundle = bundle.instance(
+                Instance::new(geometry, self.material)
+                    .shaded(shading)
+                    .sectioned(self.cut),
+            );
         }
         let spawned = dispatch.spawn(bundle)?;
         if *dispatch.app.mode.get() == Mode::Toybox {

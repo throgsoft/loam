@@ -107,6 +107,11 @@ pub enum PreparedGeometry {
         positions: Vec<[f32; 3]>,
         indices: Vec<u32>,
     },
+    /// Edges for the wireframe and cells for the section, at canonical coordinates times `scale`.
+    Polytope4 {
+        polytope: loam_shape::polytope::Polytope4,
+        scale: f32,
+    },
 }
 
 impl PreparedGeometry {
@@ -140,6 +145,15 @@ impl PreparedGeometry {
             }
             Self::Mesh3 { positions, .. } => {
                 farthest(positions.iter().map(|point| point.as_slice()))
+            }
+            Self::Polytope4 { polytope, scale } => {
+                polytope
+                    .topology()
+                    .vertices
+                    .iter()
+                    .map(|vertex| vertex.length())
+                    .fold(0.0, f32::max)
+                    * scale
             }
         }
     }
@@ -1268,6 +1282,91 @@ mod tests {
         records.publish(&mut session).expect("published");
         let publication = records.lend().expect("the buffer is free");
         publication.views[0].records.segments().to_vec()
+    }
+
+    #[test]
+    fn the_tesseract_cut_at_w_zero_publishes_the_square_caps_of_its_six_straddling_cells() {
+        use crate::view::{Eye, Section4, Vec4, ViewId};
+
+        const SIZE: f32 = 0.7;
+        const LIFT: f32 = 0.2;
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Polytope4 {
+            polytope: loam_shape::polytope::Polytope4::Tesseract,
+            scale: SIZE,
+        });
+        let body = session.add_material(Material::lines([1.0; 4], 1.0));
+        let cut = session.add_material(Material::lines([1.0, 0.85, 0.35, 1.0], 2.0));
+        let root = session.views().root();
+        let view = session
+            .dispatch(|d| -> Result<ViewId, Rejection> {
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))?;
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(
+                            r4,
+                            Pose(Iso4Flat::from_translation(Vec4::new(0.0, 0.0, -4.0, 0.0))),
+                        )
+                        .instance(Instance::new(geometry, body).sectioned(cut)),
+                )?;
+                Ok(d.domains
+                    .typed(r4)?
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 })))
+            })
+            .expect("the view registered");
+        session.views_mut().root_mut().eye = Eye::default();
+
+        let mut records = Records::default();
+        let read = |session: &mut Session<Quiet>, records: &mut Records<Quiet>| {
+            records.publish(session).expect("published");
+            let publication = records.lend().expect("the buffer is free");
+            let view = &publication.views[0];
+            let read = (
+                view.records.triangles().len(),
+                view.records.segments().len(),
+                view.records.built(),
+            );
+            records.release(publication);
+            read
+        };
+
+        let (triangles, segments, built) = read(&mut session, &mut records);
+        assert_eq!(
+            triangles, 24,
+            "the six cells that straddle w = 0 each cut to a square, and each square fans around its centroid into four triangles, not {triangles}"
+        );
+        assert_eq!(
+            segments,
+            32 + 24,
+            "the wireframe's 32 edges and the cut cube's 24 perimeter segments came to {segments}"
+        );
+        assert_eq!(
+            read(&mut session, &mut records).2,
+            built,
+            "an unchanged source and view rebuilt the section"
+        );
+
+        session
+            .dispatch(|d| -> Result<(), Rejection> {
+                d.domains
+                    .typed(r4)?
+                    .view_mut(view)
+                    .ok_or(Rejection::Unsupported("view"))?
+                    .mapping = Box::new(Section4 { w: LIFT });
+                Ok(())
+            })
+            .expect("the slice moved");
+        let (lifted, _, moved) = read(&mut session, &mut records);
+        assert_ne!(
+            moved, built,
+            "a new slice left the section at its old build"
+        );
+        assert_eq!(
+            lifted, 24,
+            "the cut at w = {LIFT} still meets six cells, not {lifted}"
+        );
     }
 
     #[test]

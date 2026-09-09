@@ -1,6 +1,6 @@
 use glam::{Vec3, Vec4};
 use loam_math::{EuclideanR4, IsometryGroup, Projection, RasterizableSpace, Rotor};
-use loam_runtime::{DepthEnvelope, DomainRay, ImageRay, Pose, ViewMapping};
+use loam_runtime::{DepthEnvelope, DomainRay, ImageRay, Pose, SectionCut, ViewMapping};
 use loam_shape::polytope::Polytope4;
 use loam_shape::projection::SchlegelParams;
 
@@ -41,7 +41,7 @@ impl Family {
             .find(|family| family.name() == token)
     }
 
-    pub(crate) fn mapping(self, subject: Option<Polytope4>, cell: u32) -> Projected {
+    pub(crate) fn mapping(self, subject: Option<Polytope4>, cell: u32, slice: f32) -> Projected {
         let projection = match self {
             Family::Perspective => Projection::Perspective4D {
                 focal_distance: PERSPECTIVE_FOCAL,
@@ -63,6 +63,7 @@ impl Family {
         Projected {
             name: self.name(),
             projection,
+            slice,
         }
     }
 }
@@ -76,6 +77,7 @@ pub(crate) fn schlegel_params(polytope: Polytope4, cell: u32) -> Option<Schlegel
 pub(crate) struct Projected {
     name: &'static str,
     projection: Projection<4>,
+    slice: f32,
 }
 
 impl Projected {
@@ -111,6 +113,18 @@ impl ViewMapping<EuclideanR4> for Projected {
         placed.is_finite().then(|| placed.to_array())
     }
 
+    fn section(&self, eye: &Pose<EuclideanR4>, pose: &Pose<EuclideanR4>) -> Option<SectionCut> {
+        let Projection::Perspective4D { focal_distance } = self.projection else {
+            return None;
+        };
+        let inverse = EuclideanR4.iso_inverse(eye.0);
+        let depth = focal_distance - self.slice;
+        (depth > 0.0).then(|| SectionCut {
+            offset: self.slice - EuclideanR4.iso_apply(inverse, pose.0.translation).w,
+            scale: focal_distance / depth,
+        })
+    }
+
     fn lift(&self, _eye: &Pose<EuclideanR4>, _ray: &ImageRay) -> Option<DomainRay<EuclideanR4>> {
         None
     }
@@ -134,7 +148,7 @@ mod tests {
     const OFFSET: Vec4 = Vec4::new(1.8, 0.9, 0.0, 0.0);
 
     fn placed(family: Family, local: Vec4) -> Vec3 {
-        let mapping = family.mapping(Some(Polytope4::Tesseract), 0);
+        let mapping = family.mapping(Some(Polytope4::Tesseract), 0, 0.0);
         let image = mapping
             .image_local(
                 &EuclideanR4,
