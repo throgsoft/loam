@@ -37,14 +37,28 @@ jobs:
             pkg-config
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  platform-cfg:
+    name: cfg(target_arch = "wasm32") only in loam-app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: grep crates/ for target_arch = "wasm32" outside the allowed paths
+        run: |
+          ! grep -rn --include='*.rs' --exclude-dir=loam-app 'target_arch = "wasm32"' crates/ \
+            | grep -v -e '^crates/loam-console/src/lib.rs:' -e '^crates/hero/src/main.rs:'
+
   test:
     name: test
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux deps for wgpu/winit + lavapipe (software Vulkan)
+        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -52,10 +66,13 @@ jobs:
             libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
             mesa-vulkan-drivers \
             pkg-config
+      - name: cargo build --workspace --all-targets
+        run: cargo build --workspace --all-targets
       - name: cargo test --workspace --all-targets
         run: cargo test --workspace --all-targets
       # Adapter probes use lavapipe; font fixtures are in the repository.
       - name: cargo test gpu_probe -- --include-ignored
+        if: matrix.os == 'ubuntu-latest'
         env:
           WGPU_BACKEND: vulkan
         run: cargo test --workspace gpu_probe -- --include-ignored
@@ -89,3 +106,13 @@ jobs:
       # Apply the target to the repository-pinned toolchain.
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo build --target wasm32-unknown-unknown -p polytope_playground --no-default-features
+
+  wasm-session:
+    name: wasm32 build (session crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo build --target wasm32-unknown-unknown -p loam-math -p loam-shape -p loam-scene -p loam-physics -p loam-time
