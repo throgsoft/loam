@@ -22,6 +22,8 @@ pub const MAX_PROGRAM_WORDS: usize = 1 << 20;
 
 pub const FIELD_FAR: f32 = 1e9;
 
+pub const FIELD_PROGRAM_ERROR: f32 = 1e-4;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FieldOp {
     Sphere { radius: f32 },
@@ -96,6 +98,8 @@ pub struct FieldPrimitive {
 pub struct FieldCounts {
     pub primitive_evals: u64,
     pub instructions: u64,
+    pub node_visits: u64,
+    pub node_skips: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +124,260 @@ pub struct FieldCost {
 impl FieldCost {
     pub fn is_idle(self) -> bool {
         self == FieldCost::default()
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct FieldNode {
+    pub center: [f32; 4],
+    pub radius: f32,
+    pub start: u32,
+    pub end: u32,
+    pub escape: u32,
+}
+
+impl FieldNode {
+    pub fn is_bounded(self) -> bool {
+        self.radius >= 0.0
+    }
+
+    pub fn is_leaf(self) -> bool {
+        self.end != 0
+    }
+
+    pub fn lower_bound(self, point: [f32; 4]) -> f32 {
+        let mut sum = 0.0;
+        for (at, center) in point.iter().zip(self.center) {
+            let d = at - center;
+            sum += d * d;
+        }
+        sum.sqrt() - self.radius
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Ball {
+    center: [f32; 4],
+    radius: f32,
+}
+
+const UNBOUNDED: Ball = Ball {
+    center: [0.0; 4],
+    radius: -1.0,
+};
+
+impl Ball {
+    fn bounded(self) -> bool {
+        self.radius >= 0.0
+    }
+
+    fn expanded(self, by: f32) -> Self {
+        if !self.bounded() {
+            return UNBOUNDED;
+        }
+        Ball {
+            center: self.center,
+            radius: self.radius + by.abs(),
+        }
+    }
+
+    fn smaller(self, other: Self) -> Self {
+        match (self.bounded(), other.bounded()) {
+            (true, true) if other.radius < self.radius => other,
+            (true, _) => self,
+            (false, true) => other,
+            _ => UNBOUNDED,
+        }
+    }
+
+    fn enclosing(self, other: Self) -> Self {
+        if !self.bounded() || !other.bounded() {
+            return UNBOUNDED;
+        }
+        let mut delta = [0.0f32; 4];
+        let mut sum = 0.0;
+        for ((slot, to), from) in delta.iter_mut().zip(other.center).zip(self.center) {
+            *slot = to - from;
+            sum += *slot * *slot;
+        }
+        let gap = sum.sqrt();
+        if gap + other.radius <= self.radius {
+            return self;
+        }
+        if gap + self.radius <= other.radius {
+            return other;
+        }
+        let radius = 0.5 * (gap + self.radius + other.radius);
+        let along = (radius - self.radius) / gap;
+        let mut center = self.center;
+        for (slot, step) in center.iter_mut().zip(delta) {
+            *slot += step * along;
+        }
+        Ball { center, radius }
+    }
+
+    fn through(self, prim: &FieldPrimitive) -> Self {
+        if !self.bounded() {
+            return UNBOUNDED;
+        }
+        let mut center = prim.translation;
+        for (axis, slot) in center.iter_mut().enumerate() {
+            for (component, column) in self.center.iter().zip(prim.frame) {
+                *slot += column[axis] * component;
+            }
+        }
+        Ball {
+            center,
+            radius: self.radius,
+        }
+    }
+}
+
+fn primitive_ball(op: u32, prim: &FieldPrimitive) -> Ball {
+    let r = prim.params;
+    match op {
+        OP_SPHERE | OP_HYPERSPHERE => Ball {
+            center: prim.translation,
+            radius: r[0].abs(),
+        },
+        OP_BOX => Ball {
+            center: prim.translation,
+            radius: (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt(),
+        },
+        _ => UNBOUNDED,
+    }
+}
+
+fn subtree_ball(primitives: &[FieldPrimitive], range: &[u32]) -> Ball {
+    if !range.len().is_multiple_of(2) {
+        return UNBOUNDED;
+    }
+    let mut stack = [UNBOUNDED; MAX_STACK];
+    let mut poses = [0u32; MAX_POSE_DEPTH];
+    let mut sp = 0usize;
+    let mut pp = 0usize;
+    for word in range.chunks_exact(2) {
+        let (op, arg) = (word[0], word[1]);
+        match op {
+            OP_SPHERE | OP_BOX | OP_HALFSPACE | OP_HYPERSPHERE | OP_HALFSPACE4 => {
+                let Some(prim) = primitives.get(arg as usize) else {
+                    return UNBOUNDED;
+                };
+                if sp == MAX_STACK {
+                    return UNBOUNDED;
+                }
+                stack[sp] = primitive_ball(op, prim);
+                sp += 1;
+            }
+            OP_UNION | OP_INTERSECTION | OP_SUBTRACTION | OP_SMOOTH_UNION => {
+                if sp < 2 {
+                    return UNBOUNDED;
+                }
+                let b = stack[sp - 1];
+                let a = stack[sp - 2];
+                sp -= 1;
+                stack[sp - 1] = match op {
+                    OP_UNION => a.enclosing(b),
+                    OP_INTERSECTION => a.smaller(b),
+                    OP_SUBTRACTION => a,
+                    _ => a.enclosing(b).expanded(f32::from_bits(arg)),
+                };
+            }
+            OP_PUSH_POSE => {
+                if pp == MAX_POSE_DEPTH {
+                    return UNBOUNDED;
+                }
+                poses[pp] = arg;
+                pp += 1;
+            }
+            OP_POP_POSE => {
+                if pp == 0 || sp == 0 {
+                    return UNBOUNDED;
+                }
+                pp -= 1;
+                let Some(prim) = primitives.get(poses[pp] as usize) else {
+                    return UNBOUNDED;
+                };
+                stack[sp - 1] = stack[sp - 1].through(prim);
+            }
+            _ => return UNBOUNDED,
+        }
+    }
+    if sp == 1 {
+        stack[0]
+    } else {
+        UNBOUNDED
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Cut {
+    start: u32,
+    end: u32,
+    implicit: bool,
+    ball: Ball,
+}
+
+fn widest_axis(leaves: &[Cut]) -> usize {
+    let mut widest = 0;
+    let mut spread = -1.0f32;
+    for axis in 0..4 {
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        for leaf in leaves {
+            lo = lo.min(leaf.ball.center[axis]);
+            hi = hi.max(leaf.ball.center[axis]);
+        }
+        if hi - lo > spread {
+            spread = hi - lo;
+            widest = axis;
+        }
+    }
+    widest
+}
+
+fn build_tree(leaves: &mut [Cut], out: &mut Vec<FieldNode>) {
+    if leaves.len() == 1 {
+        let leaf = leaves[0];
+        out.push(FieldNode {
+            center: leaf.ball.center,
+            radius: leaf.ball.radius,
+            start: leaf.start,
+            end: leaf.end,
+            escape: 0,
+        });
+        let at = out.len() - 1;
+        out[at].escape = out.len() as u32;
+        return;
+    }
+    let at = out.len();
+    out.push(FieldNode::default());
+    let axis = widest_axis(leaves);
+    let mid = leaves.len() / 2;
+    leaves.select_nth_unstable_by(mid, |a, b| {
+        a.ball.center[axis]
+            .total_cmp(&b.ball.center[axis])
+            .then(a.start.cmp(&b.start))
+    });
+    let (left, right) = leaves.split_at_mut(mid);
+    build_tree(left, out);
+    let right_at = out[at + 1].escape as usize;
+    build_tree(right, out);
+    let ball = ball_of(out[at + 1]).enclosing(ball_of(out[right_at]));
+    out[at] = FieldNode {
+        center: ball.center,
+        radius: ball.radius,
+        start: 0,
+        end: 0,
+        escape: out.len() as u32,
+    };
+}
+
+fn ball_of(node: FieldNode) -> Ball {
+    Ball {
+        center: node.center,
+        radius: node.radius,
     }
 }
 
@@ -238,6 +496,42 @@ fn run<const COUNT: bool>(
     Ok(stack[0])
 }
 
+fn traverse<const COUNT: bool>(
+    program: &[u32],
+    primitives: &[FieldPrimitive],
+    nodes: &[FieldNode],
+    point: [f32; 4],
+    tolerance: f32,
+    counts: &mut FieldCounts,
+) -> Result<f32, FieldError> {
+    if nodes.is_empty() {
+        return run::<COUNT>(program, primitives, point, counts);
+    }
+    let mut best = FIELD_FAR;
+    let mut index = 0usize;
+    while index < nodes.len() {
+        let node = nodes[index];
+        if COUNT {
+            counts.node_visits += 1;
+        }
+        if node.is_bounded() && node.lower_bound(point) > best + tolerance {
+            if COUNT {
+                counts.node_skips += 1;
+            }
+            index = node.escape as usize;
+            continue;
+        }
+        if node.is_leaf() {
+            let range = program
+                .get(node.start as usize..node.end as usize)
+                .ok_or(FieldError::Truncated)?;
+            best = best.min(run::<COUNT>(range, primitives, point, counts)?);
+        }
+        index += 1;
+    }
+    Ok(best)
+}
+
 pub fn evaluate(
     program: &[u32],
     primitives: &[FieldPrimitive],
@@ -253,6 +547,34 @@ pub fn evaluate_counted(
     counts: &mut FieldCounts,
 ) -> Result<f32, FieldError> {
     run::<true>(program, primitives, point, counts)
+}
+
+pub fn evaluate_bounded(
+    program: &[u32],
+    primitives: &[FieldPrimitive],
+    nodes: &[FieldNode],
+    point: [f32; 4],
+    tolerance: f32,
+) -> Result<f32, FieldError> {
+    traverse::<false>(
+        program,
+        primitives,
+        nodes,
+        point,
+        tolerance,
+        &mut FieldCounts::default(),
+    )
+}
+
+pub fn evaluate_bounded_counted(
+    program: &[u32],
+    primitives: &[FieldPrimitive],
+    nodes: &[FieldNode],
+    point: [f32; 4],
+    tolerance: f32,
+    counts: &mut FieldCounts,
+) -> Result<f32, FieldError> {
+    traverse::<true>(program, primitives, nodes, point, tolerance, counts)
 }
 
 const NONE: u32 = u32::MAX;
@@ -271,6 +593,14 @@ struct Node {
 }
 
 #[derive(Clone, Copy)]
+struct Frame {
+    node: u32,
+    cursor: u32,
+    start: u32,
+    cullable: bool,
+}
+
+#[derive(Clone, Copy)]
 struct Edge {
     operand: u32,
     operator: u32,
@@ -284,7 +614,9 @@ pub struct FieldCompiler {
     edges: Vec<Edge>,
     slots: Vec<u32>,
     roots: Vec<u32>,
-    dfs: Vec<(u32, u32)>,
+    dfs: Vec<Frame>,
+    cuts: Vec<Cut>,
+    ordered: Vec<Cut>,
     kinds: Vec<FieldKind>,
     work: Vec<u32>,
     touched: Vec<u32>,
@@ -309,6 +641,8 @@ impl FieldCompiler {
             slots: Vec::new(),
             roots: Vec::new(),
             dfs: Vec::new(),
+            cuts: Vec::new(),
+            ordered: Vec::new(),
             kinds: Vec::new(),
             work: Vec::new(),
             touched: Vec::new(),
@@ -512,14 +846,21 @@ impl FieldCompiler {
 
         self.kinds.clear();
         self.dfs.clear();
+        self.cuts.clear();
         let mut height = 0u32;
         let mut peak = 0u32;
         let mut pose_depth = 0usize;
         for index in 0..self.roots.len() {
-            self.dfs.push((self.roots[index], 0));
+            self.dfs.push(Frame {
+                node: self.roots[index],
+                cursor: 0,
+                start: self.program.program.len() as u32,
+                cullable: true,
+            });
             while !self.dfs.is_empty() {
                 let top = self.dfs.len() - 1;
-                let (node, cursor) = self.dfs[top];
+                let frame = self.dfs[top];
+                let (node, cursor) = (frame.node, frame.cursor);
                 let op = self.nodes[node as usize].op;
                 if cursor == 0 && matches!(op, FieldOp::Transform) {
                     let record = self.record_for(node, space, poses)?;
@@ -530,10 +871,15 @@ impl FieldCompiler {
                     }
                 }
                 if (cursor as usize) < op.operands() {
-                    self.dfs[top].1 = cursor + 1;
+                    self.dfs[top].cursor = cursor + 1;
                     let start = self.nodes[node as usize].edge_start;
                     let child = self.edges[(start + cursor) as usize].operand;
-                    self.dfs.push((child, 0));
+                    self.dfs.push(Frame {
+                        node: child,
+                        cursor: 0,
+                        start: self.program.program.len() as u32,
+                        cullable: frame.cullable && matches!(op, FieldOp::Union),
+                    });
                     continue;
                 }
                 match op {
@@ -565,6 +911,14 @@ impl FieldCompiler {
                         peak = peak.max(height);
                     }
                 }
+                if frame.cullable && !matches!(op, FieldOp::Union) {
+                    self.cuts.push(Cut {
+                        start: frame.start,
+                        end: self.program.program.len() as u32,
+                        implicit: self.kinds.last().copied() == Some(FieldKind::Implicit),
+                        ball: UNBOUNDED,
+                    });
+                }
                 self.dfs.pop();
             }
             if index > 0 {
@@ -581,6 +935,44 @@ impl FieldCompiler {
         self.program.stack = peak;
         self.program.kind = self.kinds.pop().unwrap_or(FieldKind::ExactDistance);
         Ok((self.program.program.len() / 2) as u32 + self.program.primitives.len() as u32)
+    }
+
+    fn rebuild_bounds(&mut self) -> u32 {
+        for cut in &mut self.cuts {
+            cut.ball = if cut.implicit {
+                UNBOUNDED
+            } else {
+                match self
+                    .program
+                    .program
+                    .get(cut.start as usize..cut.end as usize)
+                {
+                    Some(range) => subtree_ball(&self.program.primitives, range),
+                    None => UNBOUNDED,
+                }
+            };
+        }
+        let mut ordered = std::mem::take(&mut self.ordered);
+        ordered.clear();
+        ordered.extend(self.cuts.iter().copied().filter(|cut| cut.ball.bounded()));
+        let bounded = ordered.len();
+        ordered.extend(self.cuts.iter().copied().filter(|cut| !cut.ball.bounded()));
+        self.program.nodes.clear();
+        if bounded > 0 {
+            build_tree(&mut ordered[..bounded], &mut self.program.nodes);
+            for cut in &ordered[bounded..] {
+                let escape = self.program.nodes.len() as u32 + 1;
+                self.program.nodes.push(FieldNode {
+                    center: [0.0; 4],
+                    radius: UNBOUNDED.radius,
+                    start: cut.start,
+                    end: cut.end,
+                    escape,
+                });
+            }
+        }
+        self.ordered = ordered;
+        self.program.nodes.len() as u32
     }
 
     // Kahn 1962, "Topological sorting of large networks", CACM 5(11).
@@ -702,6 +1094,7 @@ impl FieldCompiler {
         } else {
             self.patch(space, poses)?
         };
+        cost.index_maintenance += self.rebuild_bounds();
         self.compiled = true;
         Ok(cost)
     }
@@ -908,7 +1301,7 @@ mod tests {
                 changed_inputs: 1,
                 affected_dependencies: 2,
                 program_layout: 1,
-                index_maintenance: 0,
+                index_maintenance: 5,
                 full_rebuild: false,
             }
         );
@@ -959,7 +1352,7 @@ mod tests {
             .operands = vec![right, left];
         let cost = fixture.compile().expect("operand edit");
         assert!(!cost.full_rebuild);
-        assert_eq!(cost.index_maintenance, 4);
+        assert_eq!(cost.index_maintenance, 7);
         assert!(cost.program_layout > 0);
     }
 
@@ -1116,6 +1509,247 @@ mod tests {
             bytes, 0,
             "32 warmed incremental compiles allocated {bytes} bytes"
         );
+    }
+
+    #[test]
+    fn a_smooth_union_bound_that_drops_its_radius_culls_the_blend_surface() {
+        let mut fixture = Fixture::new();
+        let left = fixture.spawn(-Vec3::X, FieldKind::ExactDistance, sphere(0.5), &[]);
+        let right = fixture.spawn(Vec3::X, FieldKind::ExactDistance, sphere(0.5), &[]);
+        let blend = fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::SmoothUnion { radius: 5.0 },
+            &[left, right],
+        );
+        let decoy = fixture.spawn(
+            Vec3::new(-9.0, 4.0, 0.0),
+            FieldKind::ExactDistance,
+            sphere(6.55),
+            &[],
+        );
+        fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Union,
+            &[blend, decoy],
+        );
+        fixture.compile().expect("compile");
+
+        let program = fixture.domain.field_program();
+        let probe = [0.0, 4.0, 0.0, 0.0];
+        let unculled = program.evaluate(probe).expect("eval").0;
+        let culled = program.evaluate_bounded(probe, 0.0).expect("eval").0;
+        assert!(
+            (unculled - (17.0f32.sqrt() - 1.75)).abs() < 1e-5,
+            "the blend value moved: {unculled}"
+        );
+        assert_eq!(
+            culled, unculled,
+            "the blend bulge reaches {unculled}, outside the unexpanded enclosing ball"
+        );
+    }
+
+    #[test]
+    fn a_posed_subtrees_bound_moves_with_its_transform() {
+        let mut fixture = Fixture::new();
+        let leaf = fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, sphere(0.5), &[]);
+        let placed = fixture.spawn(
+            Vec3::new(10.0, 0.0, 0.0),
+            FieldKind::ExactDistance,
+            FieldOp::Transform,
+            &[leaf],
+        );
+        let decoy = fixture.spawn(
+            Vec3::new(-20.0, 0.0, 0.0),
+            FieldKind::ExactDistance,
+            sphere(28.0),
+            &[],
+        );
+        fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Union,
+            &[decoy, placed],
+        );
+        fixture.compile().expect("compile");
+
+        let program = fixture.domain.field_program();
+        let probe = [10.0, 0.0, 0.0, 0.0];
+        let culled = program.evaluate_bounded(probe, 0.0).expect("eval").0;
+        assert!(
+            (culled + 0.5).abs() < 1e-6,
+            "the posed sphere reads {culled}, not -0.5, so its bound stayed at the origin"
+        );
+    }
+
+    #[test]
+    fn an_unbounded_subtree_stays_in_the_traversal_and_still_contributes() {
+        let mut fixture = Fixture::new();
+        let ball = fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, sphere(0.5), &[]);
+        let ground = fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::HalfSpace {
+                normal: [0.0, 1.0, 0.0],
+                offset: 0.0,
+            },
+            &[],
+        );
+        fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Union,
+            &[ball, ground],
+        );
+        fixture.compile().expect("compile");
+
+        let program = fixture.domain.field_program();
+        let probe = [0.0, -3.0, 0.0, 0.0];
+        let culled = program.evaluate_bounded(probe, 0.0).expect("eval").0;
+        assert!(
+            (culled + 3.0).abs() < 1e-6,
+            "the half-space reads {culled}, not -3.0, so the unbounded subtree was dropped"
+        );
+    }
+
+    #[test]
+    fn a_skipped_subtree_never_changes_the_value_the_unculled_program_returns() {
+        let mut fixture = Fixture::new();
+        let mut roots = Vec::new();
+        for i in 0..64 {
+            let t = i as f32;
+            roots.push(fixture.spawn(
+                Vec3::new((t * 0.37).sin() * 40.0, (t * 0.71).cos() * 40.0, t * 0.9),
+                FieldKind::ExactDistance,
+                sphere(0.4),
+                &[],
+            ));
+        }
+        let minuend = fixture.spawn(
+            Vec3::new(2.0, 0.0, 0.0),
+            FieldKind::ExactDistance,
+            sphere(1.0),
+            &[],
+        );
+        let subtrahend = fixture.spawn(
+            Vec3::new(0.0, 30.0, 0.0),
+            FieldKind::ExactDistance,
+            sphere(1.0),
+            &[],
+        );
+        roots.push(fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Subtraction,
+            &[minuend, subtrahend],
+        ));
+        let inner = fixture.spawn(
+            Vec3::new(5.0, 0.0, 0.0),
+            FieldKind::ExactDistance,
+            sphere(1.0),
+            &[],
+        );
+        let outer = fixture.spawn(
+            Vec3::new(5.0, 0.0, 0.0),
+            FieldKind::ExactDistance,
+            sphere(3.0),
+            &[],
+        );
+        roots.push(fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Intersection,
+            &[inner, outer],
+        ));
+        let mut level = roots;
+        while level.len() > 1 {
+            level = level
+                .chunks(2)
+                .map(|pair| {
+                    if pair.len() == 1 {
+                        pair[0]
+                    } else {
+                        fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, FieldOp::Union, pair)
+                    }
+                })
+                .collect();
+        }
+        fixture.compile().expect("compile");
+
+        let program = fixture.domain.field_program();
+        let mut counts = FieldCounts::default();
+        for i in 0..64 {
+            let t = i as f32;
+            let probe = [
+                (t * 0.29).cos() * 12.0,
+                (t * 0.53).sin() * 12.0,
+                t * 0.5 - 8.0,
+                0.0,
+            ];
+            let unculled = program.evaluate(probe).expect("eval").0;
+            let culled = evaluate_bounded_counted(
+                &program.program,
+                &program.primitives,
+                &program.nodes,
+                probe,
+                0.0,
+                &mut counts,
+            )
+            .expect("eval");
+            assert_eq!(culled, unculled, "probe {probe:?} changed under culling");
+        }
+        assert!(
+            counts.node_skips > 0,
+            "no subtree was skipped, so the traversal was never exercised"
+        );
+    }
+
+    #[test]
+    fn a_compiled_program_read_through_the_trait_gives_the_evaluators_separation() {
+        use loam_shape::field::DistanceField;
+
+        let mut fixture = Fixture::new();
+        let mut level: Vec<Entity> = (0..8)
+            .map(|i| {
+                let t = i as f32;
+                fixture.spawn(
+                    Vec3::new((t * 0.9).sin() * 3.0, (t * 1.3).cos() * 3.0, t * 0.6),
+                    FieldKind::ExactDistance,
+                    sphere(0.5),
+                    &[],
+                )
+            })
+            .collect();
+        while level.len() > 1 {
+            level = level
+                .chunks(2)
+                .map(|pair| {
+                    fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, FieldOp::Union, pair)
+                })
+                .collect();
+        }
+        fixture.compile().expect("compile");
+        let program = fixture.domain.field_program();
+        assert_eq!(program.field_kind(), FieldKind::ExactDistance);
+
+        let radius = 0.25f32;
+        for i in 0..16 {
+            let t = i as f32;
+            let probe = [(t * 0.41).cos() * 5.0, (t * 0.77).sin() * 5.0, t * 0.3, 0.0];
+            let predicted = program.evaluate(probe).expect("eval").0 - radius;
+            assert_eq!(
+                program.distance(probe) - radius,
+                predicted,
+                "probe {probe:?} read through the trait"
+            );
+            let gradient = program.gradient(probe);
+            let norm = gradient.iter().take(3).map(|c| c * c).sum::<f32>().sqrt();
+            assert!(
+                (norm - 1.0).abs() < 1e-2,
+                "probe {probe:?}: gradient norm {norm} on an exact field"
+            );
+        }
     }
 
     #[test]

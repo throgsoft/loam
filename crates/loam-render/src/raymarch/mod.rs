@@ -5,7 +5,10 @@
 mod field_march;
 mod hyperslice4d;
 mod polytope_data;
-pub use field_march::{field_march_wgsl, FieldMarchNode, FieldMarchUniforms, MarchMode};
+pub use field_march::{
+    field_march_counting_wgsl, field_march_wgsl, field_specialized_wgsl, FieldMarchNode,
+    FieldMarchUniforms, InlineBuilder, MarchMode, SpecializationBuilder, DEFAULT_SPECIALIZE_AFTER,
+};
 pub use hyperslice4d::{
     BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
     SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE, SHAPE_600CELL, SHAPE_CLIFFORD_TORUS,

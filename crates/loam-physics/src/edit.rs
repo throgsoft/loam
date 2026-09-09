@@ -8,6 +8,7 @@ pub enum EditError {
     InvalidInertia,
     UnsupportedCollider,
     DynamicHalfSpace,
+    DynamicFieldAnchor,
     /// The world's narrowphase registrations differ from the snapshot's.
     RegistrationMismatch,
 }
@@ -21,6 +22,7 @@ impl fmt::Display for EditError {
             Self::InvalidInertia => "the inertia is negative, not finite, or too small to invert",
             Self::UnsupportedCollider => "the space cannot use this collider",
             Self::DynamicHalfSpace => "a half-space collider needs zero mass",
+            Self::DynamicFieldAnchor => "a field anchor body needs zero mass",
             Self::RegistrationMismatch => "the narrowphase registrations are not the snapshot's",
         };
         f.write_str(text)

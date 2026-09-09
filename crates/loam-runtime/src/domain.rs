@@ -4,6 +4,10 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ops::Mul;
 
+pub use loam_shape::field::FieldKind;
+
+use loam_shape::field::DistanceField;
+
 use loam_math::hyperbolic::{in_poincare_ball, poincare_to_hyperboloid};
 use loam_math::{
     EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Space, WgslSpace,
@@ -11,7 +15,9 @@ use loam_math::{
 
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
-use crate::field::{self, FieldCompiler, FieldCost, FieldError, FieldOp, FieldPrimitive};
+use crate::field::{
+    self, FieldCompiler, FieldCost, FieldError, FieldNode, FieldOp, FieldPrimitive,
+};
 use crate::phase::Step;
 use crate::session::{Library, MaterialId, PreparedGeometry, PreparedId, RestoreError, Stamp};
 use crate::store::{LogCapacity, Store, StoreField, StoreSnapshot};
@@ -509,32 +515,6 @@ pub trait Facility<S: DomainSpace>: Send + 'static {
     fn restore(&mut self, from: &(dyn Any + Send)) -> Result<(), RestoreError>;
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FieldKind {
-    #[default]
-    ExactDistance,
-    ConservativeBound,
-    Implicit,
-}
-
-impl FieldKind {
-    fn rank(self) -> u8 {
-        match self {
-            FieldKind::ExactDistance => 0,
-            FieldKind::ConservativeBound => 1,
-            FieldKind::Implicit => 2,
-        }
-    }
-
-    pub fn weaker(self, other: Self) -> Self {
-        if other.rank() > self.rank() {
-            other
-        } else {
-            self
-        }
-    }
-}
-
 /// A primitive, or an operator over the entities it lists.
 #[derive(Clone, Debug)]
 pub struct Field {
@@ -548,6 +528,7 @@ pub struct Field {
 pub struct FieldProgram {
     pub primitives: Vec<FieldPrimitive>,
     pub program: Vec<u32>,
+    pub nodes: Vec<FieldNode>,
     pub stack: u32,
     pub kind: FieldKind,
 }
@@ -555,6 +536,36 @@ pub struct FieldProgram {
 impl FieldProgram {
     pub fn evaluate(&self, point: [f32; 4]) -> Result<(f32, FieldKind), FieldError> {
         field::evaluate(&self.program, &self.primitives, point).map(|value| (value, self.kind))
+    }
+
+    pub fn evaluate_bounded(
+        &self,
+        point: [f32; 4],
+        tolerance: f32,
+    ) -> Result<(f32, FieldKind), FieldError> {
+        field::evaluate_bounded(
+            &self.program,
+            &self.primitives,
+            &self.nodes,
+            point,
+            tolerance,
+        )
+        .map(|value| (value, self.kind))
+    }
+}
+
+impl DistanceField for FieldProgram {
+    fn field_kind(&self) -> FieldKind {
+        self.kind
+    }
+
+    fn distance(&self, point: [f32; 4]) -> f32 {
+        field::evaluate_bounded(&self.program, &self.primitives, &self.nodes, point, 0.0)
+            .unwrap_or(field::FIELD_FAR)
+    }
+
+    fn error(&self) -> f32 {
+        field::FIELD_PROGRAM_ERROR
     }
 }
 
