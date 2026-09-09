@@ -44,6 +44,7 @@ pub fn placement_matrix(placement: Rigid) -> Mat4 {
     )
 }
 
+/// The root projection after the placement, so a bridged record lands where its space is placed and keeps the root eye's depth.
 pub fn placed_view_projection(eye: &Eye, placement: Rigid) -> Mat4 {
     root_view_projection(eye) * placement_matrix(placement)
 }

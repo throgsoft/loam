@@ -621,6 +621,7 @@ impl<A: Stores> Session<A> {
         &self.bridges
     }
 
+    /// Checks the anchor, domain, view, and placement kind, and for a field domain the ray lift and step bound; then places a child space, links anchor to the view's eye, and retargets the view into it.
     pub fn bridge(&mut self, spec: BridgeSpec) -> Result<LinkId, BridgeError> {
         if self.entities().resolve(spec.anchor).is_none() {
             return Err(BridgeError::Stale(spec.anchor));
@@ -684,6 +685,7 @@ impl<A: Stores> Session<A> {
         self.drag
     }
 
+    /// Picks, refuses a view without a ray lift by name, and records a drag plane through the hit facing the root eye.
     pub fn grab(&mut self, ndc: [f32; 2], time: f64) -> Result<Pick, DragError> {
         let pick = self.pick(ndc).ok_or(DragError::NoPick)?;
         let domain = self
@@ -727,6 +729,7 @@ impl<A: Stores> Session<A> {
         Ok(pick)
     }
 
+    /// Meets the pointer ray with the drag plane, refusing a parallel ray as ambiguous, moves the entity's image point by the pointer delta, lifts it through the view's own map, and submits a `Move`.
     pub fn drag(&mut self, ndc: [f32; 2], time: f64) -> Result<ChartPoint, DragError> {
         let mut drag = self.drag.ok_or(DragError::NotGrabbed)?;
         let domain = self

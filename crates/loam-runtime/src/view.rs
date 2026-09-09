@@ -134,6 +134,7 @@ pub struct ImageSpace {
     pub eye: Eye,
 }
 
+/// A similarity of the root's R³: scale about the origin, then the pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rigid {
     pub pose: Iso3,
@@ -152,6 +153,7 @@ impl Rigid {
             .to_array()
     }
 
+    /// `self` after `inner`; the inner translation is scaled by the outer scale, so two similarities compose exactly.
     pub fn compose(&self, inner: &Rigid) -> Rigid {
         Rigid {
             pose: EuclideanR3.iso_compose(
@@ -193,10 +195,12 @@ impl Rigid {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Placement {
     Rigid(Rigid),
+    /// Declared by the kind of map that would need tessellation; refused for a raster view.
     Nonlinear(&'static str),
 }
 
 impl Placement {
+    /// A nonlinear side wins.
     pub fn compose(&self, inner: &Placement) -> Placement {
         match (self, inner) {
             (Placement::Rigid(outer), Placement::Rigid(inner)) => {
@@ -286,6 +290,7 @@ impl Views {
             .is_some_and(|placed| placed.live)
     }
 
+    /// The composed placement from `image` into the root, `None` for a space that was never placed or has been unplaced.
     pub fn to_root(&self, image: ImageSpaceId) -> Option<Placement> {
         let mut composed = Placement::Rigid(Rigid::IDENTITY);
         let mut current = image;
@@ -300,7 +305,7 @@ impl Views {
         Some(composed)
     }
 
-    /// The ray from `image`'s eye through a y-up NDC point.
+    /// The root eye's ray through a y-up NDC point, pulled into `image` through the inverse of its composed placement; a placed space has no eye of its own.
     pub fn ray(&self, image: ImageSpaceId, ndc: [f32; 2]) -> Option<ImageRay> {
         let root = self.root_ray(ndc)?;
         Some(self.to_root(image)?.rigid()?.inverse().ray(&root))
@@ -389,6 +394,7 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
 
     fn lift(&self, eye: &Pose<S>, ray: &ImageRay) -> Option<DomainRay<S>>;
 
+    /// True when `lift` recovers a domain ray from any image ray; a map without one refuses grabs and field bridges by name.
     fn ray_lift(&self) -> bool {
         true
     }

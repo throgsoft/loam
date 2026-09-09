@@ -713,6 +713,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         Ok(())
     }
 
+    /// Moves the origin to `point` by transvection, keeping the frame.
     pub fn move_to(&mut self, entity: Entity, point: ChartPoint) -> Result<(), DomainError> {
         finite(point.coordinates)?;
         let target = self.space.local_point(point.coordinates);
@@ -1139,7 +1140,7 @@ impl Domains {
             .ok_or(DomainError::SpaceMismatch(handle.id))
     }
 
-    /// The nearest hit by the root eye's projective depth across every view into `views`' root.
+    /// The nearest hit by the root eye's projective depth across every view whose image space reaches the root, each cast with the ray pulled into its space.
     pub fn pick(
         &self,
         views: &Views,

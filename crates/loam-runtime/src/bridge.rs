@@ -5,6 +5,7 @@ use crate::entity::Entity;
 use crate::store::StoreError;
 use crate::view::{ImageRay, ImageSpaceId, Placement, Vec3, ViewId};
 
+/// Linked from its anchor to the source view's eye; when either stops resolving, the next `dispatch` unlinks it and unplaces `image`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bridge {
     pub source: DomainId,
@@ -57,6 +58,7 @@ pub enum DragError {
     NoPick,
     NotGrabbed,
     NoLift(&'static str),
+    /// The pointer ray runs parallel to the drag plane, so no point on it is nearer than another.
     Ambiguous(&'static str),
     Domain(DomainError),
 }
@@ -86,6 +88,7 @@ pub struct DragRelease {
     pub entity: Entity,
     pub domain: DomainId,
     pub image: ImageSpaceId,
+    /// In the view's image space, per second.
     pub velocity: [f32; 3],
 }
 
