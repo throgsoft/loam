@@ -16,7 +16,7 @@ use crate::{DepthConvention, DepthMode, FragmentShading, LineRasterNode};
 
 struct ViewLines {
     node: LineRasterNode,
-    uploaded: Stamp,
+    uploaded: Option<(DomainId, ViewTarget, Stamp)>,
 }
 
 pub struct Presenter {
@@ -93,7 +93,7 @@ impl Presenter {
                     DepthConvention::ReversedZ,
                     self.sample_count,
                 ),
-                uploaded: Stamp::default(),
+                uploaded: None,
             });
         }
         self.views.truncate(views.len());
@@ -104,11 +104,11 @@ impl Presenter {
                 crate::view::placed_view_projection(eye, view.placement),
                 viewport,
             );
-            let built = view.records.built();
-            if slot.uploaded == built {
+            let published = (view.domain, view.target, view.records.built());
+            if slot.uploaded == Some(published) {
                 continue;
             }
-            slot.uploaded = built;
+            slot.uploaded = Some(published);
             rebuilt = true;
             slot.node
                 .upload_segments(device, queue, view.records.segments());
@@ -443,6 +443,73 @@ mod tests {
             presenter.fills.triangles(),
             24,
             "the dropped view left its section fills on screen"
+        );
+        records.release(published);
+    }
+
+    #[test]
+    fn dropping_the_first_of_two_equally_stamped_views_skips_the_survivors_lines() {
+        let mut session = Session::new(Spun::default(), SimConfig::default());
+        let white = session.add_material(Material::lines([1.0; 4], 1.0));
+        let root = session.views().root();
+        for (name, polytope) in [
+            ("wide", loam_shape::polytope::Polytope4::Tesseract),
+            ("narrow", loam_shape::polytope::Polytope4::Pentatope),
+        ] {
+            let domain = session.register_domain(
+                DomainBuilder::new(name, EuclideanR4).tracked(LogCapacity::default()),
+            );
+            let geometry = session.prepare(PreparedGeometry::Polytope4 {
+                polytope,
+                scale: 0.7,
+            });
+            session.dispatch(|d| {
+                let eye = d
+                    .spawn(SpawnBundle::new().at(domain, Pose(Iso4Flat::IDENTITY)))
+                    .expect("the eye spawned");
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(
+                            domain,
+                            Pose(Iso4Flat::from_translation(glam::Vec4::NEG_Z * 4.0)),
+                        )
+                        .instance(Instance::new(geometry, white))
+                        .row(0.0_f32),
+                )
+                .expect("the body spawned");
+                d.domains
+                    .typed(domain)
+                    .expect("the domain")
+                    .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+            });
+        }
+
+        let (device, queue) = noop_device();
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1);
+        let mut records = Records::<Spun>::default();
+        let eye = Eye::default();
+        records.publish(&mut session).expect("published");
+        let published = records.lend().expect("the buffer is free");
+        let dropped = &published.views[0].records;
+        let kept = &published.views[1].records;
+        assert!(
+            dropped.built() == kept.built() && dropped.segments().len() != kept.segments().len(),
+            "the probe needs two equally stamped views whose lines differ"
+        );
+        let survivor = kept.segments().len() as u32;
+
+        presenter.upload(&device, &queue, &eye, Vec2::splat(64.0), &published.views);
+        presenter.upload(
+            &device,
+            &queue,
+            &eye,
+            Vec2::splat(64.0),
+            &published.views[1..],
+        );
+        assert_eq!(
+            presenter.views[0].node.segment_count(),
+            survivor,
+            "the first slot still holds the dropped view's lines"
         );
         records.release(published);
     }
