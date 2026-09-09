@@ -8,10 +8,14 @@ pub use loam_shape::field::FieldKind;
 
 use loam_shape::field::DistanceField;
 
+use loam_math::blended::{
+    gauss_newton_log_checked, BlendedSpace, BlendingField, ConformallyFlat, GEODESIC_DEFAULT_STEPS,
+    LOG_MAX_ITERS, LOG_RESIDUAL_TOL,
+};
 use loam_math::hyperbolic::{in_poincare_ball, poincare_to_hyperboloid};
 use loam_math::{
-    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Rotor4, Space,
-    WPlane, WgslSpace,
+    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Mat3, Rotor4,
+    Space, WPlane, WgslSpace,
 };
 use loam_shape::polytope::{polytope_section_faces_append, polytope_section_perimeter_append};
 
@@ -188,15 +192,14 @@ pub enum DomainError {
     FieldArity(Entity),
 }
 
-/// A space a domain is built over; its poses cross the facade as chart data.
+/// A space a domain is built over, naming no isometry group; its poses cross the facade as chart data, and a space with a group implements `Homogeneous` as well.
 pub trait DomainSpace:
-    IsometryGroup<Vector: Mul<f32, Output = <Self as Space>::Vector>>
-    + WgslSpace
-    + Send
-    + Sync
-    + Sized
-    + 'static
+    Space<Vector: Mul<f32, Output = <Self as Space>::Vector>> + Send + Sync + Sized + 'static
 {
+    type Placement: Copy + Send + Sync + 'static;
+
+    type Relative: Copy + Send + Sync + 'static;
+
     fn origin(&self) -> Self::Point;
 
     /// Names the first non-finite coordinate or reports the chart boundary; nothing is clamped.
@@ -210,20 +213,163 @@ pub trait DomainSpace:
     /// Reads the leading coordinates the space has and ignores the rest.
     fn local_point(&self, coordinates: [f32; 4]) -> Self::Point;
 
-    fn chart_pose(&self, pose: &Self::Iso) -> ChartPose;
+    fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose;
 
-    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError>;
+    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Pose<Self>, DomainError>;
 
     fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError>;
 
-    /// Moves the origin to `to` along their geodesic, carrying the frame by parallel transport.
-    fn transvection(&self, to: Self::Point) -> Self::Iso;
-
-    /// Metric distance from the origin to a point at chart radius `radius`.
-    fn chart_reach(&self, radius: f32) -> f32;
+    /// Metric distance across a chart radius `radius` around `at`; H³ converts at the chart origin whatever `at` is, so a displaced landmark's pick radius is the origin's.
+    fn chart_reach(&self, at: Self::Point, radius: f32) -> f32;
 
     /// Arc length along `ray` into the metric ball of `radius` around `center`: zero from inside, `None` on a miss.
     fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32>;
+
+    /// What `place` needs from a pose, derived once per entity; a homogeneous space's isometry.
+    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement;
+
+    /// The point at `local` in the entity's frame, one isometry application per vertex on a homogeneous space.
+    fn place(&self, placement: &Self::Placement, local: Self::Point) -> Self::Point;
+
+    /// `point` in the entity's own frame; a blended chart refuses with `NoConvergence` when its log fails to converge and `ErrorBudget` when the metric error would exceed 1e-3, never returning a best guess.
+    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError>;
+
+    /// The eye-relative element prepared once per entity, so `place_relative` costs one application per vertex and no per-vertex inverse.
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError>;
+
+    /// `place` into the eye's frame through a prepared `relative`.
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError>;
+
+    /// Transports `tangent`, given in the entity's frame, to the point at `local`, refusing a transport that does not converge with `NoConvergence`.
+    fn carry(
+        &self,
+        pose: &Pose<Self>,
+        local: Self::Point,
+        tangent: Self::Vector,
+    ) -> Result<Self::Vector, DomainError>;
+
+    /// The pose at `to` with the frame carried from the pose's point: transvection on a homogeneous space, per-column transport on a conformally flat chart.
+    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError>;
+
+    /// The pose after `dt` along `tangent`, read in the pose's frame at its point: `ChartBoundary` past the chart, `InvalidCoordinate` for a non-finite step, `NoConvergence` when a transport fails, and never a best guess.
+    fn walk(
+        &self,
+        pose: &Pose<Self>,
+        tangent: Self::Vector,
+        dt: f32,
+    ) -> Result<Pose<Self>, DomainError> {
+        let step = self.carry(pose, self.origin(), tangent * dt)?;
+        let to = self.exp(pose.point, step);
+        self.check(to)?;
+        self.moved(pose, to)
+    }
+}
+
+/// A domain space with an isometry group: `iso_of` and `pose_of` convert a pose to and from a group element, the `homogeneous_` helpers implement the capabilities through it, and the physics facility requires it.
+pub trait Homogeneous: DomainSpace + IsometryGroup {
+    fn iso_of(&self, pose: &Pose<Self>) -> Self::Iso;
+
+    fn pose_of(&self, iso: Self::Iso) -> Pose<Self>;
+
+    /// Moves the origin to `to` along their geodesic, carrying the frame by parallel transport.
+    fn transvection(&self, to: Self::Point) -> Self::Iso;
+}
+
+#[cfg(test)]
+pub(crate) mod applied {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn bump() {
+        COUNT.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn taken() -> u64 {
+        COUNT.with(|count| count.replace(0))
+    }
+}
+
+pub fn homogeneous_place<S: Homogeneous>(
+    space: &S,
+    placement: &S::Iso,
+    local: S::Point,
+) -> S::Point {
+    #[cfg(test)]
+    applied::bump();
+    space.iso_apply(*placement, local)
+}
+
+pub fn homogeneous_local<S: Homogeneous>(
+    space: &S,
+    pose: &Pose<S>,
+    point: S::Point,
+) -> Result<S::Point, DomainError> {
+    #[cfg(test)]
+    applied::bump();
+    Ok(space.iso_apply(space.iso_inverse(space.iso_of(pose)), point))
+}
+
+pub fn homogeneous_carry<S: Homogeneous>(
+    space: &S,
+    pose: &Pose<S>,
+    local: S::Point,
+    tangent: S::Vector,
+) -> Result<S::Vector, DomainError> {
+    #[cfg(test)]
+    applied::bump();
+    Ok(space.iso_transport(space.iso_of(pose), local, tangent))
+}
+
+pub fn homogeneous_relative<S: Homogeneous>(
+    space: &S,
+    eye: &Pose<S>,
+    pose: &Pose<S>,
+) -> Result<S::Iso, DomainError> {
+    Ok(space.iso_compose(space.iso_inverse(space.iso_of(eye)), space.iso_of(pose)))
+}
+
+pub fn homogeneous_place_relative<S: Homogeneous>(
+    space: &S,
+    relative: &S::Iso,
+    local: S::Point,
+) -> Result<S::Point, DomainError> {
+    #[cfg(test)]
+    applied::bump();
+    Ok(space.iso_apply(*relative, local))
+}
+
+pub fn homogeneous_moved<S: Homogeneous>(
+    space: &S,
+    pose: &Pose<S>,
+    to: S::Point,
+) -> Result<Pose<S>, DomainError> {
+    space.check(to)?;
+    let frame = space.iso_compose(
+        space.iso_inverse(space.transvection(pose.point)),
+        space.iso_of(pose),
+    );
+    Ok(space.pose_of(space.iso_compose(space.transvection(to), frame)))
+}
+
+pub fn homogeneous_walk<S: Homogeneous>(
+    space: &S,
+    pose: &Pose<S>,
+    tangent: S::Vector,
+    dt: f32,
+) -> Result<Pose<S>, DomainError> {
+    let step = space.exp(space.origin(), tangent * dt);
+    space.check(step)?;
+    // Helgason, Differential Geometry, Lie Groups, and Symmetric Spaces, 1978, Ch. IV §3: the transvection along a geodesic is parallel transport along it.
+    let next = space.pose_of(space.iso_compose(space.iso_of(pose), space.transvection(step)));
+    space.check(next.point)?;
+    Ok(next)
 }
 
 const FRAME_TOLERANCE: f32 = 1e-3;
@@ -294,6 +440,10 @@ fn lorentz(a: Vec4, b: Vec4) -> f32 {
 }
 
 impl DomainSpace for EuclideanR4 {
+    type Placement = Iso4Flat;
+
+    type Relative = Iso4Flat;
+
     fn origin(&self) -> Self::Point {
         Vec4::ZERO
     }
@@ -317,20 +467,20 @@ impl DomainSpace for EuclideanR4 {
         Vec4::from_array(coordinates)
     }
 
-    fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
+    fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose {
         ChartPose {
             chart: ChartId(0),
-            coordinates: pose.translation.to_array(),
-            frame: pose.rotation.to_mat4(),
+            coordinates: pose.point.to_array(),
+            frame: pose.frame.to_mat4(),
         }
     }
 
-    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError> {
+    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Pose<Self>, DomainError> {
         finite(pose.coordinates)?;
-        let rotation = Rotor4::from_mat4(&pose.frame).ok_or(DomainError::InvalidFrame)?;
-        Ok(Iso4Flat {
-            rotation,
-            translation: Vec4::from_array(pose.coordinates),
+        let frame = Rotor4::from_mat4(&pose.frame).ok_or(DomainError::InvalidFrame)?;
+        Ok(Pose {
+            point: Vec4::from_array(pose.coordinates),
+            frame,
         })
     }
 
@@ -339,11 +489,7 @@ impl DomainSpace for EuclideanR4 {
         Ok(Vec4::from_array(tangent.vector))
     }
 
-    fn transvection(&self, to: Self::Point) -> Self::Iso {
-        Iso4Flat::from_translation(to)
-    }
-
-    fn chart_reach(&self, radius: f32) -> f32 {
+    fn chart_reach(&self, _at: Self::Point, radius: f32) -> f32 {
         radius
     }
 
@@ -354,9 +500,85 @@ impl DomainSpace for EuclideanR4 {
             offset.length_squared() - radius * radius,
         )
     }
+
+    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
+        self.iso_of(pose)
+    }
+
+    fn place(&self, placement: &Self::Placement, local: Self::Point) -> Self::Point {
+        homogeneous_place(self, placement, local)
+    }
+
+    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
+        homogeneous_local(self, pose, point)
+    }
+
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
+        homogeneous_relative(self, eye, pose)
+    }
+
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError> {
+        homogeneous_place_relative(self, relative, local)
+    }
+
+    fn carry(
+        &self,
+        pose: &Pose<Self>,
+        local: Self::Point,
+        tangent: Self::Vector,
+    ) -> Result<Self::Vector, DomainError> {
+        homogeneous_carry(self, pose, local, tangent)
+    }
+
+    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
+        homogeneous_moved(self, pose, to)
+    }
+
+    fn walk(
+        &self,
+        pose: &Pose<Self>,
+        tangent: Self::Vector,
+        dt: f32,
+    ) -> Result<Pose<Self>, DomainError> {
+        homogeneous_walk(self, pose, tangent, dt)
+    }
+}
+
+impl Homogeneous for EuclideanR4 {
+    fn iso_of(&self, pose: &Pose<Self>) -> Self::Iso {
+        Iso4Flat {
+            rotation: pose.frame,
+            translation: pose.point,
+        }
+    }
+
+    fn pose_of(&self, iso: Self::Iso) -> Pose<Self> {
+        Pose {
+            point: iso.translation,
+            frame: iso.rotation,
+        }
+    }
+
+    fn transvection(&self, to: Self::Point) -> Self::Iso {
+        Iso4Flat::from_translation(to)
+    }
+}
+
+impl From<Iso4Flat> for Pose<EuclideanR4> {
+    fn from(iso: Iso4Flat) -> Self {
+        EuclideanR4.pose_of(iso)
+    }
 }
 
 impl DomainSpace for HyperbolicH3 {
+    type Placement = Iso3H;
+
+    type Relative = Iso3H;
+
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
     }
@@ -383,9 +605,12 @@ impl DomainSpace for HyperbolicH3 {
         Vec3::from_slice(&coordinates[..3])
     }
 
-    fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
-        let position = self.iso_apply(*pose, Vec3::ZERO);
-        let rotation = self.iso_compose(self.iso_inverse(Iso3H::from_translation(position)), *pose);
+    fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose {
+        let position = pose.point;
+        let rotation = self.iso_compose(
+            self.iso_inverse(Iso3H::from_translation(position)),
+            pose.frame,
+        );
         let matrix = rotation.matrix;
         ChartPose {
             chart: ChartId(0),
@@ -398,7 +623,7 @@ impl DomainSpace for HyperbolicH3 {
         }
     }
 
-    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError> {
+    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Pose<Self>, DomainError> {
         finite(pose.coordinates)?;
         let position = Vec3::from_slice(&pose.coordinates[..3]);
         self.check(position)?;
@@ -407,7 +632,7 @@ impl DomainSpace for HyperbolicH3 {
         rotation.matrix.x_axis = x.extend(0.0);
         rotation.matrix.y_axis = y.extend(0.0);
         rotation.matrix.z_axis = z.extend(0.0);
-        Ok(self.iso_compose(Iso3H::from_translation(position), rotation))
+        Ok(self.pose_of(self.iso_compose(Iso3H::from_translation(position), rotation)))
     }
 
     fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
@@ -415,11 +640,7 @@ impl DomainSpace for HyperbolicH3 {
         Ok(Vec3::from_slice(&tangent.vector[..3]))
     }
 
-    fn transvection(&self, to: Self::Point) -> Self::Iso {
-        Iso3H::from_translation(to)
-    }
-
-    fn chart_reach(&self, radius: f32) -> f32 {
+    fn chart_reach(&self, _at: Self::Point, radius: f32) -> f32 {
         2.0 * radius.min(1.0).atanh()
     }
 
@@ -444,9 +665,82 @@ impl DomainSpace for HyperbolicH3 {
         }
         Some(entry)
     }
+
+    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
+        self.iso_of(pose)
+    }
+
+    fn place(&self, placement: &Self::Placement, local: Self::Point) -> Self::Point {
+        homogeneous_place(self, placement, local)
+    }
+
+    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
+        homogeneous_local(self, pose, point)
+    }
+
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
+        homogeneous_relative(self, eye, pose)
+    }
+
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError> {
+        homogeneous_place_relative(self, relative, local)
+    }
+
+    fn carry(
+        &self,
+        pose: &Pose<Self>,
+        local: Self::Point,
+        tangent: Self::Vector,
+    ) -> Result<Self::Vector, DomainError> {
+        homogeneous_carry(self, pose, local, tangent)
+    }
+
+    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
+        homogeneous_moved(self, pose, to)
+    }
+
+    fn walk(
+        &self,
+        pose: &Pose<Self>,
+        tangent: Self::Vector,
+        dt: f32,
+    ) -> Result<Pose<Self>, DomainError> {
+        homogeneous_walk(self, pose, tangent, dt)
+    }
+}
+
+impl Homogeneous for HyperbolicH3 {
+    fn iso_of(&self, pose: &Pose<Self>) -> Self::Iso {
+        pose.frame
+    }
+
+    fn pose_of(&self, iso: Self::Iso) -> Pose<Self> {
+        Pose {
+            point: self.iso_apply(iso, Vec3::ZERO),
+            frame: iso,
+        }
+    }
+
+    fn transvection(&self, to: Self::Point) -> Self::Iso {
+        Iso3H::from_translation(to)
+    }
+}
+
+impl From<Iso3H> for Pose<HyperbolicH3> {
+    fn from(iso: Iso3H) -> Self {
+        HyperbolicH3.pose_of(iso)
+    }
 }
 
 impl DomainSpace for EuclideanR3 {
+    type Placement = Iso3;
+
+    type Relative = Iso3;
+
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
     }
@@ -470,19 +764,21 @@ impl DomainSpace for EuclideanR3 {
         Vec3::from_slice(&coordinates[..3])
     }
 
-    fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
+    fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose {
         ChartPose {
             chart: ChartId(0),
-            coordinates: pose.translation.extend(0.0).to_array(),
-            frame: frame_of([Vec3::X, Vec3::Y, Vec3::Z].map(|axis| pose.rotation * axis)),
+            coordinates: pose.point.extend(0.0).to_array(),
+            frame: frame_of([Vec3::X, Vec3::Y, Vec3::Z].map(|axis| pose.frame * axis)),
         }
     }
 
-    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError> {
+    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Pose<Self>, DomainError> {
         finite(pose.coordinates)?;
-        let mut iso = rotation_of(frame_columns(&pose.frame)?);
-        iso.translation = Vec3::from_slice(&pose.coordinates[..3]);
-        Ok(iso)
+        let frame = rotation_of(frame_columns(&pose.frame)?).rotation;
+        Ok(Pose {
+            point: Vec3::from_slice(&pose.coordinates[..3]),
+            frame,
+        })
     }
 
     fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
@@ -490,11 +786,7 @@ impl DomainSpace for EuclideanR3 {
         Ok(Vec3::from_slice(&tangent.vector[..3]))
     }
 
-    fn transvection(&self, to: Self::Point) -> Self::Iso {
-        Iso3::from_translation(to)
-    }
-
-    fn chart_reach(&self, radius: f32) -> f32 {
+    fn chart_reach(&self, _at: Self::Point, radius: f32) -> f32 {
         radius
     }
 
@@ -505,6 +797,241 @@ impl DomainSpace for EuclideanR3 {
             offset.length_squared() - radius * radius,
         )
     }
+
+    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
+        self.iso_of(pose)
+    }
+
+    fn place(&self, placement: &Self::Placement, local: Self::Point) -> Self::Point {
+        homogeneous_place(self, placement, local)
+    }
+
+    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
+        homogeneous_local(self, pose, point)
+    }
+
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
+        homogeneous_relative(self, eye, pose)
+    }
+
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError> {
+        homogeneous_place_relative(self, relative, local)
+    }
+
+    fn carry(
+        &self,
+        pose: &Pose<Self>,
+        local: Self::Point,
+        tangent: Self::Vector,
+    ) -> Result<Self::Vector, DomainError> {
+        homogeneous_carry(self, pose, local, tangent)
+    }
+
+    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
+        homogeneous_moved(self, pose, to)
+    }
+
+    fn walk(
+        &self,
+        pose: &Pose<Self>,
+        tangent: Self::Vector,
+        dt: f32,
+    ) -> Result<Pose<Self>, DomainError> {
+        homogeneous_walk(self, pose, tangent, dt)
+    }
+}
+
+impl Homogeneous for EuclideanR3 {
+    fn iso_of(&self, pose: &Pose<Self>) -> Self::Iso {
+        Iso3 {
+            rotation: pose.frame,
+            translation: pose.point,
+        }
+    }
+
+    fn pose_of(&self, iso: Self::Iso) -> Pose<Self> {
+        Pose {
+            point: iso.translation,
+            frame: iso.rotation,
+        }
+    }
+
+    fn transvection(&self, to: Self::Point) -> Self::Iso {
+        Iso3::from_translation(to)
+    }
+}
+
+impl From<Iso3> for Pose<EuclideanR3> {
+    fn from(iso: Iso3) -> Self {
+        EuclideanR3.pose_of(iso)
+    }
+}
+
+const LOCAL_ERROR_BUDGET: f32 = 1.0e-3;
+
+impl<A, B, F> DomainSpace for BlendedSpace<A, B, F>
+where
+    A: Space<Point = Vec3, Vector = Vec3> + ConformallyFlat + Send + Sync + 'static,
+    B: Space<Point = Vec3, Vector = Vec3> + ConformallyFlat + Send + Sync + 'static,
+    F: BlendingField,
+{
+    type Placement = Pose<Self>;
+
+    type Relative = (Pose<Self>, Pose<Self>);
+
+    fn origin(&self) -> Self::Point {
+        Vec3::ZERO
+    }
+
+    fn check(&self, point: Self::Point) -> Result<(), DomainError> {
+        finite(point.extend(0.0).to_array())?;
+        self.valid_point(point)
+            .then_some(())
+            .ok_or(DomainError::ChartBoundary)
+    }
+
+    fn chart_dimension(&self) -> u32 {
+        3
+    }
+
+    fn chart_point(&self, point: Self::Point) -> ChartPoint {
+        ChartPoint {
+            chart: ChartId(0),
+            coordinates: point.extend(0.0).to_array(),
+        }
+    }
+
+    fn local_point(&self, coordinates: [f32; 4]) -> Self::Point {
+        Vec3::from_slice(&coordinates[..3])
+    }
+
+    fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose {
+        let relative = transported_frame(self, pose.point).inverse() * pose.frame;
+        ChartPose {
+            chart: ChartId(0),
+            coordinates: pose.point.extend(0.0).to_array(),
+            frame: frame_of([relative.x_axis, relative.y_axis, relative.z_axis]),
+        }
+    }
+
+    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Pose<Self>, DomainError> {
+        finite(pose.coordinates)?;
+        let point = Vec3::from_slice(&pose.coordinates[..3]);
+        self.check(point)?;
+        let [x, y, z] = frame_columns(&pose.frame)?;
+        let frame = transported_frame(self, point) * Mat3::from_cols(x, y, z);
+        Ok(Pose { point, frame })
+    }
+
+    fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
+        finite(tangent.vector)?;
+        Ok(Vec3::from_slice(&tangent.vector[..3]))
+    }
+
+    fn chart_reach(&self, at: Self::Point, radius: f32) -> f32 {
+        self.conformal_factor(at).sqrt() * radius
+    }
+
+    // Chart-flat: a straight chart ray against a chart-radius ball; no blended map lifts a ray yet, so nothing reaches it.
+    fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32> {
+        let unit = ray.direction.try_normalize()?;
+        let chart_radius = radius / self.conformal_factor(center).sqrt();
+        let offset = ray.origin - center;
+        let entry = view::ball_entry(
+            offset.dot(unit),
+            offset.length_squared() - chart_radius * chart_radius,
+        )?;
+        Some(entry / ray.direction.length())
+    }
+
+    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
+        *pose
+    }
+
+    fn place(&self, placement: &Self::Placement, local: Self::Point) -> Self::Point {
+        self.exp(placement.point, placement.frame * local)
+    }
+
+    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
+        self.check(point)?;
+        if self.conformal_factor(point).sqrt() * LOG_RESIDUAL_TOL > LOCAL_ERROR_BUDGET {
+            return Err(DomainError::ErrorBudget);
+        }
+        let (chart, failure) = gauss_newton_log_checked(
+            self,
+            pose.point,
+            point,
+            GEODESIC_DEFAULT_STEPS,
+            LOG_MAX_ITERS,
+        );
+        if failure.is_some() {
+            return Err(DomainError::NoConvergence);
+        }
+        let inverse = pose.frame.inverse();
+        if !inverse.is_finite() {
+            return Err(DomainError::InvalidFrame);
+        }
+        Ok(inverse * chart)
+    }
+
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
+        Ok((*eye, *pose))
+    }
+
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError> {
+        let (eye, pose) = relative;
+        self.local(eye, self.place(pose, local))
+    }
+
+    fn carry(
+        &self,
+        pose: &Pose<Self>,
+        local: Self::Point,
+        tangent: Self::Vector,
+    ) -> Result<Self::Vector, DomainError> {
+        let to = self.place(&self.prepare(pose), local);
+        self.check(to)?;
+        // Transports along the geodesic to `to` instead of solving the Jacobi equation; exact at the origin only.
+        let carried = self.parallel_transport(pose.point, to, pose.frame * tangent);
+        carried
+            .is_finite()
+            .then_some(carried)
+            .ok_or(DomainError::NoConvergence)
+    }
+
+    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
+        self.check(to)?;
+        let frame = Mat3::from_cols(
+            self.parallel_transport(pose.point, to, pose.frame.x_axis),
+            self.parallel_transport(pose.point, to, pose.frame.y_axis),
+            self.parallel_transport(pose.point, to, pose.frame.z_axis),
+        );
+        if !frame.is_finite() {
+            return Err(DomainError::NoConvergence);
+        }
+        Ok(Pose { point: to, frame })
+    }
+}
+
+fn transported_frame<S>(space: &S, to: S::Point) -> Mat3
+where
+    S: DomainSpace<Point = Vec3, Vector = Vec3, Frame = Mat3>,
+{
+    let origin = space.origin();
+    let base = space.frame_at(origin);
+    Mat3::from_cols(
+        space.parallel_transport(origin, to, base.x_axis),
+        space.parallel_transport(origin, to, base.y_axis),
+        space.parallel_transport(origin, to, base.z_axis),
+    )
 }
 
 fn image_of<S: DomainSpace>(
@@ -512,11 +1039,13 @@ fn image_of<S: DomainSpace>(
     mapping: &dyn ViewMapping<S>,
     eye: &Pose<S>,
     pose: &Pose<S>,
+    placement: &S::Placement,
+    relative: &S::Relative,
     local: [f32; 4],
 ) -> Option<[f32; 3]> {
     let local = space.local_point(local);
-    space.check(space.iso_apply(pose.0, local)).ok()?;
-    mapping.image_local(space, eye, pose, local)
+    space.check(space.place(placement, local)).ok()?;
+    mapping.image_local(space, eye, pose, relative, local)
 }
 
 fn lerp_color(back: [f32; 4], front: [f32; 4], t: f32) -> [f32; 4] {
@@ -544,8 +1073,12 @@ fn push_segments<S: DomainSpace>(
         EdgeShading::Palette(id) => library.palette(id),
         _ => &[],
     };
+    let placement = space.prepare(pose);
+    let Ok(relative) = space.relative(eye, pose) else {
+        return;
+    };
     let origin_depth = space
-        .chart_point(space.iso_apply(pose.0, space.origin()))
+        .chart_point(space.place(&placement, space.origin()))
         .coordinates[3];
     let depth_color = |local: [f32; 4]| match instance.shading {
         EdgeShading::Depth {
@@ -554,7 +1087,7 @@ fn push_segments<S: DomainSpace>(
             extent,
         } => {
             let depth = space
-                .chart_point(space.iso_apply(pose.0, space.local_point(local)))
+                .chart_point(space.place(&placement, space.local_point(local)))
                 .coordinates[3]
                 - origin_depth;
             Some(lerp_color(
@@ -567,8 +1100,8 @@ fn push_segments<S: DomainSpace>(
     };
     let mut push = |index: usize, a: [f32; 4], b: [f32; 4]| {
         let (Some(start), Some(end)) = (
-            image_of(space, mapping, eye, pose, a),
-            image_of(space, mapping, eye, pose, b),
+            image_of(space, mapping, eye, pose, &placement, &relative, a),
+            image_of(space, mapping, eye, pose, &placement, &relative, b),
         ) else {
             return;
         };
@@ -627,29 +1160,29 @@ fn push_section<S: DomainSpace>(
     else {
         return;
     };
-    let Some(place) = mapping.image_local(space, eye, pose, space.origin()) else {
+    let Ok(relative) = space.relative(eye, pose) else {
         return;
     };
-    let relative = space.iso_compose(space.iso_inverse(eye.0), pose.0);
-    let base = Vec4::from(
-        space
-            .chart_point(space.iso_apply(relative, space.origin()))
-            .coordinates,
-    );
+    let Some(place) = mapping.image_local(space, eye, pose, &relative, space.origin()) else {
+        return;
+    };
+    let Ok(origin) = space.place_relative(&relative, space.origin()) else {
+        return;
+    };
+    let base = Vec4::from(space.chart_point(origin).coordinates);
     let topology = polytope.topology();
     let scratch = &mut into.scratch;
     scratch.rotated.clear();
-    scratch
-        .rotated
-        .extend(topology.vertices.iter().map(|vertex| {
-            Vec4::from(
-                space
-                    .chart_point(
-                        space.iso_apply(relative, space.local_point((*vertex * *scale).to_array())),
-                    )
-                    .coordinates,
-            ) - base
-        }));
+    for vertex in topology.vertices.iter() {
+        let local = space.local_point((*vertex * *scale).to_array());
+        let Ok(placed) = space.place_relative(&relative, local) else {
+            scratch.rotated.clear();
+            return;
+        };
+        scratch
+            .rotated
+            .push(Vec4::from(space.chart_point(placed).coordinates) - base);
+    }
     let plane = WPlane::new(cut.offset);
     let placed = |point: [f32; 3]| {
         [
@@ -709,15 +1242,35 @@ fn push_section<S: DomainSpace>(
     }
 }
 
-pub struct Pose<S: IsometryGroup>(pub S::Iso);
+/// A point and a frame orthonormal in the metric at that point, implying no isometry; a homogeneous space converts through `Homogeneous::iso_of`.
+pub struct Pose<S: Space> {
+    pub point: S::Point,
+    pub frame: S::Frame,
+}
 
-impl<S: IsometryGroup> Clone for Pose<S> {
+impl<S: Space> Pose<S> {
+    /// The origin frame carried to `point` by `Space::frame_at`.
+    pub fn new(space: &S, point: S::Point) -> Self {
+        Self {
+            point,
+            frame: space.frame_at(point),
+        }
+    }
+}
+
+impl<S: Space + Default> Pose<S> {
+    pub fn at(point: S::Point) -> Self {
+        Self::new(&S::default(), point)
+    }
+}
+
+impl<S: Space> Clone for Pose<S> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<S: IsometryGroup> Copy for Pose<S> {}
+impl<S: Space> Copy for Pose<S> {}
 
 /// Engine-owned work inside one domain: `step` runs in the simulation phase's domain-step entry, `release` at dispatch before the stores forget the entity, and `apply` gets first offer of a chart command.
 pub trait Facility<S: DomainSpace>: Any + Send + 'static {
@@ -860,7 +1413,7 @@ pub trait Domain: Send + 'static {
 
     fn field_program(&self) -> &FieldProgram;
 
-    fn shader_prelude(&self) -> Cow<'static, str>;
+    fn shader_prelude(&self) -> Option<&str>;
 
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -877,6 +1430,7 @@ pub struct TypedDomain<S: DomainSpace> {
     targets: Vec<ViewTarget>,
     pub(crate) facilities: Vec<Box<dyn Facility<S>>>,
     compiler: FieldCompiler,
+    prelude: Option<Cow<'static, str>>,
 }
 
 impl<S: DomainSpace> TypedDomain<S> {
@@ -916,47 +1470,35 @@ impl<S: DomainSpace> TypedDomain<S> {
         self.fields.as_mut()
     }
 
-    /// Exponential along `velocity`, a chart tangent in the entity's own frame, for `dt`, with the frame carried by parallel transport.
+    /// `DomainSpace::walk` for `dt` along `velocity`, a tangent in the entity's frame at its point, with the frame carried by parallel transport.
     pub fn walk(
         &mut self,
         entity: Entity,
         velocity: S::Vector,
         dt: f32,
     ) -> Result<(), DomainError> {
+        let space = &self.space;
         let pose = self
             .poses
             .get_mut(entity)
             .ok_or(DomainError::Stale(entity))?;
-        let origin = self.space.origin();
-        let step = self.space.exp(origin, velocity * dt);
-        self.space.check(step)?;
-        // Helgason, Differential Geometry, Lie Groups, and Symmetric Spaces, 1978, Ch. IV §3: the transvection along a geodesic is parallel transport along it.
-        let next = self
-            .space
-            .iso_compose(pose.0, self.space.transvection(step));
-        self.space.check(self.space.iso_apply(next, origin))?;
-        pose.0 = next;
+        let next = space.walk(pose, velocity, dt)?;
+        *pose = next;
         Ok(())
     }
 
-    /// Moves the origin to `point` by transvection, keeping the frame.
+    /// `DomainSpace::moved` to `point`: transvection on a homogeneous space, per-column transport on a conformally flat chart.
     pub fn move_to(&mut self, entity: Entity, point: ChartPoint) -> Result<(), DomainError> {
         finite(point.coordinates)?;
         let target = self.space.local_point(point.coordinates);
         self.space.check(target)?;
-        let origin = self.space.origin();
+        let space = &self.space;
         let pose = self
             .poses
             .get_mut(entity)
             .ok_or(DomainError::Stale(entity))?;
-        let here = self.space.iso_apply(pose.0, origin);
-        let frame = self.space.iso_compose(
-            self.space.iso_inverse(self.space.transvection(here)),
-            pose.0,
-        );
-        pose.0 = self
-            .space
-            .iso_compose(self.space.transvection(target), frame);
+        let next = space.moved(pose, target)?;
+        *pose = next;
         Ok(())
     }
 }
@@ -1038,7 +1580,8 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let segments = &mut into.segments;
         let records = self.instances.iter().filter_map(|(entity, instance)| {
             let pose = poses.get(entity)?;
-            let image_point = mapping.image_local(space, eye, pose, origin)?;
+            let relative = space.relative(eye, pose).ok()?;
+            let image_point = mapping.image_local(space, eye, pose, &relative, origin)?;
             push_segments(space, mapping, eye, pose, &library, instance, segments);
             Some((
                 entity,
@@ -1046,7 +1589,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
                     entity,
                     geometry: instance.geometry,
                     material: instance.material,
-                    pose: space.chart_pose(&pose.0),
+                    pose: space.chart_pose(pose),
                     image_point,
                 },
             ))
@@ -1076,11 +1619,11 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             let Some(geometry) = prepared.get(instance.geometry.index()) else {
                 continue;
             };
-            let center = self.space.iso_apply(pose.0, origin);
+            let center = self.space.place(&self.space.prepare(pose), origin);
             let radius = geometry.bounding_radius();
             let hit = match &lifted {
                 Some(domain_ray) => {
-                    let reach = self.space.chart_reach(radius);
+                    let reach = self.space.chart_reach(center, radius);
                     self.space
                         .hit_ball(domain_ray, center, reach)
                         .map(|t| self.space.exp(domain_ray.origin, domain_ray.direction * t))
@@ -1125,8 +1668,9 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let spec = self.views.get(view.index())?;
         let eye = self.poses.get(spec.eye)?;
         let pose = self.poses.get(entity)?;
+        let relative = self.space.relative(eye, pose).ok()?;
         spec.mapping
-            .image_local(&self.space, eye, pose, self.space.origin())
+            .image_local(&self.space, eye, pose, &relative, self.space.origin())
     }
 
     fn lift_origin(&self, view: ViewId, ray: &ImageRay) -> Result<ChartPoint, DomainError> {
@@ -1242,7 +1786,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         }
         match command {
             ChartCommand::Place { entity, pose } => {
-                let placed = Pose(self.space.pose_from_chart(pose)?);
+                let placed = self.space.pose_from_chart(pose)?;
                 put_row(&mut self.poses, *entity, placed)?;
                 Ok(Outcome::Done)
             }
@@ -1279,8 +1823,8 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         self.compiler.program()
     }
 
-    fn shader_prelude(&self) -> Cow<'static, str> {
-        self.space.wgsl_impl()
+    fn shader_prelude(&self) -> Option<&str> {
+        self.prelude.as_deref()
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
@@ -1288,13 +1832,14 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     }
 }
 
-/// Registers only the facilities the domain uses.
+/// Registers only the facilities the domain uses, and the WGSL prelude through `marched`.
 pub struct DomainBuilder<S: DomainSpace> {
     name: &'static str,
     pub(crate) space: S,
     tracking: Option<LogCapacity>,
     fields: bool,
     facilities: Vec<Box<dyn Facility<S>>>,
+    prelude: Option<Cow<'static, str>>,
 }
 
 impl<S: DomainSpace> DomainBuilder<S> {
@@ -1305,6 +1850,7 @@ impl<S: DomainSpace> DomainBuilder<S> {
             tracking: None,
             fields: false,
             facilities: Vec::new(),
+            prelude: None,
         }
     }
 
@@ -1344,7 +1890,16 @@ impl<S: DomainSpace> DomainBuilder<S> {
             targets: Vec::new(),
             facilities: self.facilities,
             compiler: FieldCompiler::new(),
+            prelude: self.prelude,
         }
+    }
+}
+
+impl<S: DomainSpace + WgslSpace> DomainBuilder<S> {
+    /// Records the space's WGSL prelude; without it the domain is neither marched nor accepted as the field domain of a bridge.
+    pub fn marched(mut self) -> Self {
+        self.prelude = Some(self.space.wgsl_impl());
+        self
     }
 }
 
@@ -1467,5 +2022,141 @@ impl Domains {
             }
         }
         nearest
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loam_shape::polytope::Polytope4;
+
+    use super::*;
+    use crate::command::SpawnBundle;
+    use crate::session::{Material, Publication, Session, SimConfig};
+    use crate::store::LogCapacity;
+    use crate::view::{DepthEnvelope, Projection4, Section4};
+
+    crate::stores! {
+        #[derive(Default)]
+        pub struct Probe {
+            tags: Store<u8>,
+        }
+    }
+
+    const SEGMENTS: usize = 3;
+    const EYE_AT: Vec4 = Vec4::new(0.0, 0.0, 0.0, 2.0);
+    const OBJECT_AT: Vec4 = Vec4::new(0.0, 0.0, -4.0, 0.0);
+
+    struct Nonlinear(Projection4);
+
+    impl ViewMapping<EuclideanR4> for Nonlinear {
+        fn name(&self) -> &'static str {
+            "nonlinear"
+        }
+
+        fn image_point(&self, eye: &Pose<EuclideanR4>, point: Vec4) -> Option<[f32; 3]> {
+            self.0.image_point(eye, point)
+        }
+
+        fn image_local(
+            &self,
+            space: &EuclideanR4,
+            _eye: &Pose<EuclideanR4>,
+            _pose: &Pose<EuclideanR4>,
+            relative: &<EuclideanR4 as DomainSpace>::Relative,
+            local: Vec4,
+        ) -> Option<[f32; 3]> {
+            let origin = space.place_relative(relative, Vec4::ZERO).ok()?;
+            let point = space.place_relative(relative, local).ok()?;
+            let placed = (point - origin).truncate() + origin.truncate();
+            Some(placed.to_array())
+        }
+
+        fn lift(
+            &self,
+            _eye: &Pose<EuclideanR4>,
+            _ray: &ImageRay,
+        ) -> Option<DomainRay<EuclideanR4>> {
+            None
+        }
+
+        fn ray_lift(&self) -> bool {
+            false
+        }
+
+        fn depth_envelope(&self) -> DepthEnvelope {
+            self.0.depth_envelope()
+        }
+    }
+
+    fn stage(
+        geometry: PreparedGeometry,
+        mapping: impl ViewMapping<EuclideanR4>,
+        section: bool,
+    ) -> (Session<Probe>, u64) {
+        let mut session = Session::new(Probe::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let prepared = session.prepare(geometry);
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        session.dispatch(|d| {
+            let eye = d
+                .spawn(SpawnBundle::new().at(r4, Pose::at(EYE_AT)))
+                .expect("eye");
+            let mut instance = Instance::new(prepared, material);
+            if section {
+                instance = instance.sectioned(material);
+            }
+            d.spawn(
+                SpawnBundle::new()
+                    .at(r4, Pose::at(OBJECT_AT))
+                    .instance(instance),
+            )
+            .expect("object");
+            d.domains
+                .typed(r4)
+                .expect("the r4 domain")
+                .add_view(ViewSpec::new(root, eye, mapping));
+        });
+        let mut publication = Publication::default();
+        let _ = applied::taken();
+        session.publish(&mut publication).expect("publish");
+        (session, applied::taken())
+    }
+
+    fn lines() -> PreparedGeometry {
+        PreparedGeometry::Lines4 {
+            segments: (0..SEGMENTS)
+                .map(|i| {
+                    let x = 0.1 + i as f32 * 0.1;
+                    [[x, 0.0, 0.0, 0.0], [-x, 0.0, 0.0, 0.0]]
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_published_segment_vertex_costs_more_isometry_applications_than_it_did() {
+        let (_, applications) = stage(lines(), Section4 { w: 0.0 }, false);
+        assert_eq!(applications, 3 + 6 * SEGMENTS as u64);
+    }
+
+    #[test]
+    fn a_published_section_vertex_costs_more_isometry_applications_than_it_did() {
+        let polytope = || PreparedGeometry::Polytope4 {
+            polytope: Polytope4::Tesseract,
+            scale: 0.25,
+        };
+        let (_, plain) = stage(polytope(), Section4 { w: 0.0 }, false);
+        let (session, sectioned) = stage(polytope(), Section4 { w: 0.0 }, true);
+        let vertices = Polytope4::Tesseract.topology().vertices.len() as u64;
+        assert_eq!(session.domains().len(), 1);
+        assert_eq!(sectioned - plain, 3 + vertices);
+    }
+
+    #[test]
+    fn a_nonlinear_map_vertex_costs_more_isometry_applications_than_it_did() {
+        let (_, applications) = stage(lines(), Nonlinear(Projection4 { focal: 2.0 }), false);
+        assert_eq!(applications, 3 + 6 * SEGMENTS as u64);
     }
 }

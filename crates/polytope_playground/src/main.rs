@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use glam::Vec4;
 use loam_app::args::Args;
 use loam_app::session::{launch, FrameHook, SessionApp};
-use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat};
+use loam_math::{Bivector, Bivector4, EuclideanR4};
 use loam_render::pass::{FramePass, PassOrder, PassSchedule};
 use loam_render::raymarch::BodyUniform;
 use loam_render::{
@@ -205,13 +205,11 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
     let layers = session.dispatch(|d| -> Result<Layers, Rejection> {
         for (index, entry) in row.iter().enumerate() {
             let rest = rest_of(index, row.len());
-            let mut bundle = SpawnBundle::new()
-                .at(domain, Pose(Iso4Flat::from_translation(rest)))
-                .row(Slot {
-                    index,
-                    entry: *entry,
-                    rest,
-                });
+            let mut bundle = SpawnBundle::new().at(domain, Pose::at(rest)).row(Slot {
+                index,
+                entry: *entry,
+                rest,
+            });
             if let Some(card) = card_of(entry) {
                 if let Some(geometry) = cards[card].geometry {
                     bundle = bundle
@@ -220,7 +218,7 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
             }
             d.spawn(bundle)?;
         }
-        let eye = d.spawn(SpawnBundle::new().at(domain, Pose(Iso4Flat::IDENTITY)))?;
+        let eye = d.spawn(SpawnBundle::new().at(domain, Pose::at(Vec4::ZERO)))?;
         let r4 = d.domains.typed(domain)?;
         let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
         let projection = r4.add_view(ViewSpec::new(
@@ -453,7 +451,7 @@ fn install_systems(
             };
             for (entity, _) in app.slots.iter() {
                 if let Some(pose) = r4.poses.get_mut(entity) {
-                    pose.0.rotation = ((omega * step.dt).exp() * pose.0.rotation).normalize();
+                    pose.frame = ((omega * step.dt).exp() * pose.frame).normalize();
                 }
             }
         },
@@ -641,21 +639,19 @@ fn collect(
             continue;
         };
         if scratch.anchors.get(at).is_some_and(|held| held.0 == active) {
-            scratch.subject = pose.0.rotation;
+            scratch.subject = pose.frame;
         }
-        let center = pose.0.translation.truncate();
+        let center = pose.point.truncate();
         sum += center;
         if let Some(anchor) = scratch.anchors.get_mut(at) {
             anchor.2 = center;
         }
-        scratch.bodies.push(scene::body_of(entry, &pose.0));
+        scratch.bodies.push(scene::body_of(entry, pose));
         let Some(polytope) = entry.shape.polytope4() else {
             continue;
         };
         if cloud_on {
-            scratch
-                .cloud
-                .append(polytope, pose.0.rotation, pose.0.translation, mode);
+            scratch.cloud.append(polytope, pose.frame, pose.point, mode);
         }
     }
     scratch.center = sum / scratch.slots.len().max(1) as f32;
@@ -1222,13 +1218,7 @@ mod tests {
             .domains_mut()
             .typed(booted.domain)
             .expect("the r4 domain");
-        let height = r4
-            .poses
-            .get(entity)
-            .expect("the slot has a pose")
-            .0
-            .translation
-            .y;
+        let height = r4.poses.get(entity).expect("the slot has a pose").point.y;
         assert!(
             height < BODY_Y - 1e-3,
             "the facility stepped its world without writing the pose back: y is still {height}"
@@ -1263,7 +1253,7 @@ mod tests {
             .domains_mut()
             .typed(booted.domain)
             .expect("the r4 domain");
-        let at = r4.poses.get(entity).expect("pose").0.translation;
+        let at = r4.poses.get(entity).expect("pose").point;
         let expected = (EYE_BACK - BODY_SIZE) * NDC_X * HALF_FOV_TAN;
         assert!(
             (at.x - expected).abs() < 1e-4,
@@ -1405,7 +1395,7 @@ mod tests {
             .domains_mut()
             .typed(booted.domain)
             .expect("the r4 domain");
-        let pose = r4.poses.get(entity).expect("pose").0.translation;
+        let pose = r4.poses.get(entity).expect("pose").point;
         assert!(
             (pose.x - dragged).abs() < 1e-3,
             "the step overwrote the drag from a body that never moved: pose x {}",
@@ -1483,8 +1473,7 @@ mod tests {
             .poses
             .get_mut(entity)
             .expect("pose")
-            .0
-            .rotation = start.exp();
+            .frame = start.exp();
         push(&intents, Intent::Scrub(SCRUB));
         booted
             .session
@@ -1503,7 +1492,7 @@ mod tests {
             .domains_mut()
             .typed(booted.domain)
             .expect("the r4 domain");
-        let log: Bivector4 = r4.poses.get(entity).expect("pose").0.rotation.log();
+        let log: Bivector4 = r4.poses.get(entity).expect("pose").frame.log();
         assert!(
             (log.dot(axis) - SCRUB).abs() < 1e-4,
             "the scrub turned the slot by {} along the sequence, not {SCRUB}",
@@ -1539,13 +1528,7 @@ mod tests {
             .domains_mut()
             .typed(booted.domain)
             .expect("the r4 domain");
-        let turned = r4
-            .poses
-            .get(entity)
-            .expect("pose")
-            .0
-            .rotation
-            .apply(Vec4::X);
+        let turned = r4.poses.get(entity).expect("pose").frame.apply(Vec4::X);
         let expected = Vec4::new(ANGLE.cos(), 0.0, 0.0, ANGLE.sin());
         assert!(
             (turned - expected).length() < 1e-5,
@@ -1608,8 +1591,7 @@ mod tests {
             .poses
             .get(entity)
             .expect("pose")
-            .0
-            .rotation;
+            .frame;
         assert_ne!(
             turned,
             loam_math::Rotor4::IDENTITY,
@@ -1643,8 +1625,7 @@ mod tests {
             .poses
             .get(entity)
             .expect("pose")
-            .0
-            .rotation;
+            .frame;
         assert_eq!(
             held, turned,
             "an invisible gimbal turned the row under the filmstrip"

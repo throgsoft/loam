@@ -58,6 +58,11 @@ pub struct EuclideanR2;
 impl Space for EuclideanR2 {
     type Point = Vec2;
     type Vector = Vec2;
+    type Frame = Rotor2;
+
+    fn frame_at(&self, _at: Vec2) -> Rotor2 {
+        Rotor2::IDENTITY
+    }
 
     fn distance(&self, a: Vec2, b: Vec2) -> f32 {
         (a - b).length()

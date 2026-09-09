@@ -30,7 +30,7 @@ pub use command::{
 pub use domain::{
     ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent, Domain, DomainBuilder, DomainError,
     DomainHandle, DomainId, DomainSnapshot, DomainSpace, Domains, EdgeShading, Facility, Field,
-    FieldKind, FieldProgram, Instance, Pose, TypedDomain,
+    FieldKind, FieldProgram, Homogeneous, Instance, Pose, TypedDomain,
 };
 pub use entity::{Entities, EntitiesSnapshot, Entity, EntityKey, Epoch, RuntimeId, SceneId};
 pub use field::{

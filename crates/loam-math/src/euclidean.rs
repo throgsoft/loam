@@ -41,6 +41,11 @@ pub struct EuclideanR3;
 impl Space for EuclideanR3 {
     type Point = Vec3;
     type Vector = Vec3;
+    type Frame = Quat;
+
+    fn frame_at(&self, _at: Vec3) -> Quat {
+        Quat::IDENTITY
+    }
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         (a - b).length()

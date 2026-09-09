@@ -8,7 +8,7 @@ the runtime, and the hosts above everything. Platform code lives only in `loam-a
 
 | Crate | Owns | Loam dependencies |
 |---|---|---|
-| `loam-math` | Spaces, isometries, rotors, projections, geometry WGSL | none |
+| `loam-math` | Spaces, frames, isometries, rotors, projections, geometry WGSL | none |
 | `loam-shape` | Shapes, 4-polytope topology, cross-sections, isovolumes, the distance-field trait | `loam-math` |
 | `loam-scene` | CSG scenes, CPU evaluation, loading, edits, WGSL emission | `loam-math`, `loam-shape` |
 | `loam-time` | Fixed timestep, frame traces, replay data, timelines, the parallel shim | `loam-math` |
@@ -50,9 +50,14 @@ anything; then it cancels pending commands and work, replaces the state, rebases
 entity references the engine owns, such as a field's operands, and plans the bulk
 stores `apply_restore` refills; `set_initial` records the snapshot `Command::Reset`
 returns to. `DomainBuilder::new(name, space)` erases the space once, and `Domains::typed`
-downcasts a handle back to `TypedDomain<S>`. `ChartPose`, `ChartPoint`, and
+downcasts a handle back to `TypedDomain<S>`. A `Pose` is a point and a frame orthonormal
+in the metric at that point, never an isometry; `DomainSpace` names no group, a space with
+one implements `Homogeneous`, and `marched` records a `WgslSpace`'s prelude, without which
+a domain is neither marched nor bridged as a field domain. `ChartPose`, `ChartPoint`, and
 `ChartTangent` cross the erasure; `DomainSpace::pose_from_chart` and `tangent_from_chart`
-convert them, and `Space::chart_envelope` and `valid_point` bound them.
+convert them, and `Space::chart_envelope` and `valid_point` bound them. `DomainSpace::walk`
+carries the tangent, steps, checks, and moves the frame, refusing with `ChartBoundary`,
+`InvalidCoordinate`, or `NoConvergence` rather than returning a best guess.
 `ChartCommand::Place`, `Attach`, `Move`, and `Walk` reach a domain's facilities first; a
 facility that claims one applies it in its own world, and the domain applies the rest.
 
@@ -64,7 +69,11 @@ A view is a `ViewSpec` of a root image space, an eye entity, and an eye-relative
 and `Klein` takes an H³ domain through the Klein model so geodesics stay straight. Every
 mapping reports one projective depth, `projective_depth`, compared under
 `DepthConvention::ReversedZ` in a `Depth32Float` attachment, so passes from different
-mappings share a depth test. `Views::to_root` composes `Rigid` or `Nonlinear`
+mappings share a depth test. Publication prepares each entity once (`prepare`, `relative`)
+and places every vertex through `place` or `place_relative`, one isometry application each
+on a homogeneous space; `local` and `carry` take a point or a tangent into an entity's
+frame and refuse a blended chart's `NoConvergence` or `ErrorBudget` rather than guess.
+`Views::to_root` composes `Rigid` or `Nonlinear`
 placements from an image space to the root, `None` for an unplaced one; a `Bridge` from
 `Session::bridge` places a view's image space at an anchor entity of another domain and
 unplaces it when either end despawns. `Domains::pick` casts the ray `Views::ray` pulls
@@ -104,9 +113,9 @@ frame hook and share one state across clones; `TriangleFeed` uploads its mesh on
 `World<S>` validates edits: `set_pose`, `set_mass_properties`, and `set_collider` return
 an `EditError` for a stale handle or an invalid value and drop the body's contacts;
 `drain_dirty` yields each body spawned, integrated, edited, or restored since the last
-drain. The `Physics` facility gives a domain one world, writes every dirty body's pose
-into its entity's row each step, and claims `Place`, `Move`, and `Walk` for entities
-with a body. `BroadphaseBound::Certified` lets a space prune pairs by chart distance;
+drain. The `Physics` facility, which requires a `Homogeneous` space, gives a domain one
+world, writes every dirty body's pose into its entity's row each step, and claims
+`Place`, `Move`, and `Walk` for entities with a body. `BroadphaseBound::Certified` lets a space prune pairs by chart distance;
 `Unknown` tests every pair that passes the static and mask filters. The step solves
 contact islands through `loam_time::par::for_each_chunk` in chunks of
 `ISLANDS_PER_SOLVE_WORKER` once `par::install` has installed an executor.
@@ -133,8 +142,7 @@ fourth chart axis, so its ball never culls it. `evaluate` runs the program on th
 the same hits as the unculled walk. `FieldMarchNode` interprets the same program on the
 GPU and, after `DEFAULT_SPECIALIZE_AFTER` frames of an unchanged program, asks its
 `SpecializationBuilder` for a pipeline with the program inlined; `InlineBuilder` builds
-on the calling thread; [PERF.md](PERF.md) records the thousand-sphere costs, 21000
-evaluations per ray unculled against 784 through the hierarchy.
+on the calling thread, and [PERF.md](PERF.md) records the thousand-sphere costs.
 
 ## GPU work
 
@@ -150,8 +158,7 @@ for the tick that follows. `cancel_work` drops planned orders, orders in flight,
 the wait. `checkpoint` stores a bulk store's rows for a tick; a restore plans
 `BulkAction::Replace` from the checkpoint for an `Authoritative` store or
 `Reinitialize` for a `Reinitializable` one, which the host replays through
-`apply_restore`, and leaves a `Derived` store to its next tick. `loam-render` holds the
-GPU side in `BulkBuffers`, `ComputeWork`, and `Readbacks`.
+`apply_restore`, and leaves a `Derived` store to its next tick.
 
 ## Hosts
 
@@ -207,8 +214,11 @@ A threaded `SpecializationBuilder` is not installed and the host has no install 
 for one. Device recovery with an authoritative store needs `Session::checkpoint_tick`
 so the gate compares ticks without cloning the session, and an in-place pair capture so
 a frame with landings stays allocation-free; `Facility::check_restore` defaults to
-accept. No exit channel exists
-for a finished script or a stopped capture. The playground still lacks the Active colour
+accept. H³'s `chart_reach` converts at the chart origin whatever point it is given, so a
+displaced landmark's pick radius is the origin's; the blended `carry` transports along the
+geodesic instead of solving the Jacobi equation and is exact only at the origin, and the
+blended `hit_ball` is chart-flat and unreachable while no blended map lifts a ray. No exit
+channel exists for a finished script or a stopped capture. The playground still lacks the Active colour
 mode, the director timelines, composer drag-and-drop, arrow-key shortcuts (`Key` has no
 arrows), the gimbal's translate shafts, three simultaneous projections, conformal caps
 for the stereographic and Schlegel maps, a schedule-level viewport grid (the filmstrip

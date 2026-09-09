@@ -50,6 +50,11 @@ pub struct EuclideanR4;
 impl Space for EuclideanR4 {
     type Point = Vec4;
     type Vector = Vec4;
+    type Frame = Rotor4;
+
+    fn frame_at(&self, _at: Vec4) -> Rotor4 {
+        Rotor4::IDENTITY
+    }
 
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {
         (a - b).length()

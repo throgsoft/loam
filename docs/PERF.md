@@ -138,3 +138,40 @@ emit 68 us, 279 us, and 1.7 ms and pipeline build 1.17 s, 8.70 s, and
 334 KB, growing about as n^1.4. A first draft that emitted the whole
 program as a 1000-term min chain took 154 s to build before the no-tree
 case was delegated to the interpreter's range function.
+
+## Domain capabilities
+
+### Publication after the capability split, 2026-09-09, ecs b890d3e to unit11-domain-capabilities e19cde2
+
+The playground's warmed frame is the overlay allocation test,
+`cargo test -p polytope_playground a_warmed_frame_with_every_overlay_on`,
+timed over its sixteen warmed frames, ten runs per build, medians with
+the range in brackets. The first head, a48e896, is the split before the
+eye-relative element was hoisted out of the vertex loop.
+
+| build | ecs b890d3e | a48e896 | e19cde2 |
+|---|---|---|---|
+| debug, ms per frame | 0.2315 (0.2212 to 0.2442) | 0.2498 (0.2400 to 0.2673) | 0.2428 (0.2330 to 0.4646; a second batch 0.2408) |
+| release, ms per frame | 0.0622 (0.0608 to 0.0650) | 0.0679 (0.0657 to 0.0708) | 0.0584 (0.0549 to 0.0648) |
+
+Release is faster than ecs and debug sits inside the before range. The
+first head regressed both builds because publication computed the
+eye-relative element for every vertex; `DomainSpace::relative` now
+prepares it once per entity, and `place_relative` applies it per vertex.
+
+`twospace --headless N` prints the publish timings, 64 samples per run,
+debug build, with the r4 landmark dirty: ecs 39.5 us median, a48e896
+42.3 us, e19cde2 41.5 us over four runs (41.4, 41.6, 40.7, 43.3). The
+blended domain's publish, one entity with one segment, is 124 us median:
+each blended `local` runs one checked Gauss-Newton log, at most 12
+iterations of 7 integrations of 32 steps of 4 stages, 10752 right-hand
+side evaluations.
+
+Isometry applications per published entity are pinned by three tests in
+`crates/loam-runtime/src/domain.rs`, `cargo test -p loam-runtime
+costs_more_isometry_applications`, counting the `homogeneous_` helpers:
+a segment entity with S segments costs 3 + 6S (21 at S = 3, equal to
+ecs), a sectioned tesseract adds 3 + V for its V vertices (19, equal to
+ecs), and an entity under a nonlinear map costs 3 + 6S (21 against ecs's
+4 + 8S, 28), one application per vertex fewer. The CPU model and OS were
+not recorded.

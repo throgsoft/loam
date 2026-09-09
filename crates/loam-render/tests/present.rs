@@ -1,5 +1,5 @@
 use glam::{Vec2, Vec3, Vec4};
-use loam_math::{EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat};
+use loam_math::{EuclideanR4, HyperbolicH3, Iso3};
 use loam_render::present::Presenter;
 use loam_runtime::{
     BridgeSpec, DomainBuilder, Entity, Instance, Klein, LogCapacity, Material, Placement, Pose,
@@ -78,22 +78,22 @@ fn twospace() -> (Session<Landmarks>, [Entity; 2]) {
         let landmark4 = d
             .spawn(
                 SpawnBundle::new()
-                    .at(r4, Pose(Iso4Flat::from_translation(LANDMARK_R4)))
+                    .at(r4, Pose::at(LANDMARK_R4))
                     .instance(Instance::new(edges4, white)),
             )
             .unwrap();
         let landmark3 = d
             .spawn(
                 SpawnBundle::new()
-                    .at(h3, Pose(Iso3H::from_translation(LANDMARK_H3)))
+                    .at(h3, Pose::at(LANDMARK_H3))
                     .instance(Instance::new(edges3, white)),
             )
             .unwrap();
         let walker4 = d
-            .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+            .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
             .unwrap();
         let walker3 = d
-            .spawn(SpawnBundle::new().at(h3, Pose(Iso3H::IDENTITY)))
+            .spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO)))
             .unwrap();
         d.domains.typed(r4).unwrap().add_view(ViewSpec::new(
             root,
@@ -251,12 +251,12 @@ fn bridged() -> Session<Landmarks> {
     let root = session.views().root();
     let (section, anchor) = session.dispatch(|d| {
         let eye = d
-            .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+            .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
             .unwrap();
         let anchor = d
             .spawn(
                 SpawnBundle::new()
-                    .at(r4, Pose(Iso4Flat::from_translation(SECTION_AT)))
+                    .at(r4, Pose::at(SECTION_AT))
                     .instance(Instance::new(edges, white)),
             )
             .unwrap();

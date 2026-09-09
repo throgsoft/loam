@@ -29,6 +29,7 @@ pub enum BridgeError {
     UnknownImage(ImageSpaceId),
     Nonlinear(&'static str),
     NoRayLift(&'static str),
+    NoPrelude(&'static str),
     NoStepBound(&'static str, FieldKind),
     Domain(DomainError),
     Link(StoreError),
@@ -128,7 +129,7 @@ impl Drag {
 
 #[cfg(test)]
 mod tests {
-    use loam_math::{EuclideanR4, Iso3, Iso4Flat};
+    use loam_math::{EuclideanR4, Iso3};
 
     use super::*;
     use crate::command::SpawnBundle;
@@ -157,14 +158,11 @@ mod tests {
         let root = session.views().root();
         let (near, far, anchor) = session.dispatch(|d| {
             let eye = d
-                .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
                 .unwrap();
             d.spawn(
                 SpawnBundle::new()
-                    .at(
-                        r4,
-                        Pose(Iso4Flat::from_translation(Vec4::new(1.0, 0.0, -4.0, 0.0))),
-                    )
+                    .at(r4, Pose::at(Vec4::new(1.0, 0.0, -4.0, 0.0)))
                     .instance(Instance::new(stub, material)),
             )
             .unwrap();

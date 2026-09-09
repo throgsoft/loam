@@ -6,8 +6,8 @@ use loam_physics::{BodyDef, BodyId, EditError, Narrowphase, PhysicsSpace, World,
 
 use crate::command::{Outcome, Rejection};
 use crate::domain::{
-    ChartCommand, ChartPoint, ChartPose, ChartTangent, DomainBuilder, DomainError, DomainSpace,
-    Facility, Pose, TypedDomain,
+    ChartCommand, ChartPoint, ChartPose, ChartTangent, DomainBuilder, DomainError, Facility,
+    Homogeneous, Pose, TypedDomain,
 };
 use crate::entity::{Entity, EntityKey};
 use crate::phase::Step;
@@ -79,7 +79,7 @@ fn put<T: Copy>(slots: &mut Vec<Option<T>>, index: usize, value: Option<T>) {
 
 impl<S> Physics<S>
 where
-    S: DomainSpace + PhysicsSpace + Copy,
+    S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
     S::Point: Sub<Output = S::Vector>,
 {
@@ -175,7 +175,7 @@ where
 
 impl<S> Facility<S> for Physics<S>
 where
-    S: DomainSpace + PhysicsSpace + Copy,
+    S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
     S::Point: Sub<Output = S::Vector>,
 {
@@ -195,7 +195,8 @@ where
             let Some(pose) = poses.get_mut(Entity::new(scene, key)) else {
                 continue;
             };
-            pose.0 = space.iso_compose(space.transvection(row.position), row.orientation);
+            *pose =
+                space.pose_of(space.iso_compose(space.transvection(row.position), row.orientation));
         }
         Ok(())
     }
@@ -271,7 +272,7 @@ where
 
 impl<S> DomainBuilder<S>
 where
-    S: DomainSpace + PhysicsSpace + Copy,
+    S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
     S::Point: Sub<Output = S::Vector>,
 {
@@ -290,7 +291,7 @@ where
 
 impl<S> TypedDomain<S>
 where
-    S: DomainSpace + PhysicsSpace + Copy,
+    S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
     S::Point: Sub<Output = S::Vector>,
 {
@@ -309,7 +310,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use loam_math::{EuclideanR4, Iso4Flat};
+    use loam_math::EuclideanR4;
     use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
 
     use super::*;
@@ -343,10 +344,7 @@ mod tests {
         for index in 0..MOVING {
             let at = Vec4::new(index as f32 * 4.0, 10.0, 0.0, 0.0);
             let entity = entities.spawn();
-            domain
-                .poses
-                .insert(entity, Pose(Iso4Flat::from_translation(at)))
-                .expect("pose row");
+            domain.poses.insert(entity, Pose::at(at)).expect("pose row");
             domain.physics_mut().expect("physics").spawn(
                 entity,
                 sphere_body_r4(at, Vec4::ZERO, 0.5, 1.0).expect("body"),

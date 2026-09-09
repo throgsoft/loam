@@ -42,7 +42,7 @@ fn typed_borrow_never_reaches_another_domain_or_session() {
     session.dispatch(|d| {
         d.spawn(
             SpawnBundle::new()
-                .at(far, Pose(Iso4Flat::from_rotation(quarter)))
+                .at(far, Pose::from(Iso4Flat::from_rotation(quarter)))
                 .row(Tally { ticks: 0 }),
         )
         .unwrap();
@@ -72,7 +72,7 @@ fn typed_borrow_never_reaches_another_domain_or_session() {
             let far = domains.typed(far).unwrap();
             for (entity, tally) in app.tallies.iter() {
                 let pose = far.poses.get(entity).unwrap();
-                app.seen.set(Some(pose.0.rotation.xy * tally.ticks as f32));
+                app.seen.set(Some(pose.frame.xy * tally.ticks as f32));
             }
         },
     );

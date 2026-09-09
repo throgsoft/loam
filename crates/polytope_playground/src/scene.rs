@@ -1,10 +1,11 @@
 use glam::Vec4;
-use loam_math::{EuclideanR4, Iso4Flat, IsometryGroup};
+use loam_math::EuclideanR4;
 use loam_render::raymarch::{
     polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
 };
 use loam_render::sky_ground::{Ground, DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
 use loam_runtime::Eye;
+use loam_runtime::Pose;
 use loam_scene::{Scene4, SceneNode4};
 
 use crate::catalog::ShapeEntry;
@@ -30,13 +31,12 @@ pub(crate) fn ground(visible: bool) -> Ground {
     }
 }
 
-pub(crate) fn body_of(entry: &ShapeEntry, pose: &Iso4Flat) -> BodyUniform {
-    let position = EuclideanR4.iso_apply(*pose, Vec4::ZERO);
+pub(crate) fn body_of(entry: &ShapeEntry, pose: &Pose<EuclideanR4>) -> BodyUniform {
     BodyUniform::polytope_with_rotor(
-        position.to_array(),
+        pose.point.to_array(),
         entry.shape.shape_id(),
         BODY_SIZE,
-        pose.rotation,
+        pose.frame,
         entry.body_color,
     )
 }

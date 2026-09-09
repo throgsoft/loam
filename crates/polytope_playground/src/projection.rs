@@ -1,6 +1,8 @@
 use glam::{Vec3, Vec4};
-use loam_math::{EuclideanR4, IsometryGroup, Projection, RasterizableSpace, Rotor};
-use loam_runtime::{DepthEnvelope, DomainRay, ImageRay, Pose, SectionCut, ViewMapping};
+use loam_math::{EuclideanR4, Projection, RasterizableSpace};
+use loam_runtime::{
+    DepthEnvelope, DomainRay, DomainSpace, ImageRay, Pose, SectionCut, ViewMapping,
+};
 use loam_shape::polytope::Polytope4;
 use loam_shape::projection::SchlegelParams;
 
@@ -94,7 +96,7 @@ impl ViewMapping<EuclideanR4> for Projected {
     }
 
     fn image_point(&self, eye: &Pose<EuclideanR4>, point: Vec4) -> Option<[f32; 3]> {
-        let relative = EuclideanR4.iso_apply(EuclideanR4.iso_inverse(eye.0), point);
+        let relative = EuclideanR4.local(eye, point).ok()?;
         let placed = self.project(relative);
         placed.is_finite().then(|| placed.to_array())
     }
@@ -102,13 +104,14 @@ impl ViewMapping<EuclideanR4> for Projected {
     fn image_local(
         &self,
         space: &EuclideanR4,
-        eye: &Pose<EuclideanR4>,
-        pose: &Pose<EuclideanR4>,
+        _eye: &Pose<EuclideanR4>,
+        _pose: &Pose<EuclideanR4>,
+        relative: &<EuclideanR4 as DomainSpace>::Relative,
         local: Vec4,
     ) -> Option<[f32; 3]> {
-        let inverse = space.iso_inverse(eye.0);
-        let offset = space.iso_apply(inverse, pose.0.translation).truncate();
-        let placed = self.project(inverse.rotation.apply(pose.0.rotation.apply(local))) + offset;
+        let origin = space.place_relative(relative, Vec4::ZERO).ok()?;
+        let point = space.place_relative(relative, local).ok()?;
+        let placed = self.project(point - origin) + origin.truncate();
         placed.is_finite().then(|| placed.to_array())
     }
 
@@ -116,10 +119,10 @@ impl ViewMapping<EuclideanR4> for Projected {
         let Projection::Perspective4D { focal_distance } = self.projection else {
             return None;
         };
-        let inverse = EuclideanR4.iso_inverse(eye.0);
         let depth = focal_distance - self.slice;
+        let relative = EuclideanR4.local(eye, pose.point).ok()?;
         (depth > 0.0).then(|| SectionCut {
-            offset: self.slice - EuclideanR4.iso_apply(inverse, pose.0.translation).w,
+            offset: self.slice - relative.w,
             scale: focal_distance / depth,
         })
     }
@@ -139,8 +142,6 @@ impl ViewMapping<EuclideanR4> for Projected {
 
 #[cfg(test)]
 mod tests {
-    use loam_math::Iso4Flat;
-
     use super::*;
     use crate::consts::BODY_SIZE;
 
@@ -148,13 +149,10 @@ mod tests {
 
     fn placed(family: Family, local: Vec4) -> Vec3 {
         let mapping = family.mapping(Some(Polytope4::Tesseract), 0, 0.0);
+        let (eye, pose) = (Pose::at(Vec4::ZERO), Pose::at(OFFSET));
+        let relative = EuclideanR4.relative(&eye, &pose).expect("the eye places");
         let image = mapping
-            .image_local(
-                &EuclideanR4,
-                &Pose(Iso4Flat::IDENTITY),
-                &Pose(Iso4Flat::from_translation(OFFSET)),
-                local,
-            )
+            .image_local(&EuclideanR4, &eye, &pose, &relative, local)
             .expect("the map places the vertex");
         Vec3::from_array(image)
     }

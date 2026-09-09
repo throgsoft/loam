@@ -1,6 +1,6 @@
 #![cfg(feature = "physics")]
 
-use loam_math::{EuclideanR4, Iso4Flat, Space};
+use loam_math::{EuclideanR4, Space};
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
 use loam_physics::{ColliderKind, EditError};
 use loam_runtime::{
@@ -45,8 +45,7 @@ fn session() -> (Session<Probe>, DomainHandle<EuclideanR4>) {
 fn ball(session: &mut Session<Probe>, r4: DomainHandle<EuclideanR4>, at: Vec4) -> Entity {
     session
         .dispatch(|d| -> Result<Entity, Rejection> {
-            let entity =
-                d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::from_translation(at))))?;
+            let entity = d.spawn(SpawnBundle::new().at(r4, Pose::at(at)))?;
             let physics = d.domains.typed(r4)?.physics_mut().unwrap();
             physics.spawn(
                 entity,
@@ -65,8 +64,7 @@ fn pose_of(session: &mut Session<Probe>, r4: DomainHandle<EuclideanR4>, entity: 
         .poses
         .get(entity)
         .unwrap()
-        .0
-        .translation
+        .point
 }
 
 fn body_of(session: &mut Session<Probe>, r4: DomainHandle<EuclideanR4>, entity: Entity) -> Vec4 {
@@ -78,7 +76,7 @@ fn body_of(session: &mut Session<Probe>, r4: DomainHandle<EuclideanR4>, entity: 
 fn only_pose(session: &mut Session<Probe>, r4: DomainHandle<EuclideanR4>) -> (Entity, Vec4) {
     let poses: &Store<Pose<EuclideanR4>> = &session.domains_mut().typed(r4).unwrap().poses;
     let (entity, pose) = poses.iter().next().unwrap();
-    (entity, pose.0.translation)
+    (entity, pose.point)
 }
 
 #[test]
@@ -131,12 +129,12 @@ fn a_sleeping_body_does_not_rewrite_its_entity_pose() {
 
     let domain = session.domains_mut().typed(r4).unwrap();
     let before = domain.poses.version(entity).unwrap();
-    let asleep = domain.poses.get(entity).unwrap().0.translation;
+    let asleep = domain.poses.get(entity).unwrap().point;
     session.tick().unwrap();
 
     let domain = session.domains_mut().typed(r4).unwrap();
     assert_eq!(domain.poses.version(entity), Some(before));
-    assert_eq!(domain.poses.get(entity).unwrap().0.translation, asleep);
+    assert_eq!(domain.poses.get(entity).unwrap().point, asleep);
 }
 
 #[test]

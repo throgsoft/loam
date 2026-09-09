@@ -1,4 +1,4 @@
-use loam_math::{EuclideanR3, EuclideanR4, Iso3, Iso4Flat, Space};
+use loam_math::{EuclideanR3, EuclideanR4, Iso3, Space};
 use loam_runtime::{
     Access, BridgeError, BridgeSpec, ChartId, ChartPose, Command, Ctx, DomainBuilder, DomainHandle,
     DomainSpace, DragError, Entity, Eye, Field, FieldKind, FieldOp, ImageSpaceId, Input, Instance,
@@ -38,10 +38,17 @@ struct Stage {
 }
 
 fn stage(fields: bool) -> Stage {
+    marched_stage(fields, fields)
+}
+
+fn marched_stage(fields: bool, marched: bool) -> Stage {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let mut builder = DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default());
     if fields {
         builder = builder.fields();
+    }
+    if marched {
+        builder = builder.marched();
     }
     let r4 = session.register_domain(builder);
     let stub = session.prepare(PreparedGeometry::Lines4 {
@@ -51,12 +58,12 @@ fn stage(fields: bool) -> Stage {
     let root = session.views().root();
     let (eye, object, anchor) = session.dispatch(|d| {
         let eye = d
-            .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+            .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
             .unwrap();
         let object = d
             .spawn(
                 SpawnBundle::new()
-                    .at(r4, Pose(Iso4Flat::from_translation(OBJECT)))
+                    .at(r4, Pose::at(OBJECT))
                     .instance(Instance::new(stub, material)),
             )
             .unwrap();
@@ -109,8 +116,7 @@ impl Stage {
             .poses
             .get(self.object)
             .unwrap()
-            .0
-            .translation
+            .point
     }
 }
 
@@ -121,7 +127,7 @@ fn shrunk() -> Placement {
     })
 }
 
-fn turn_y(quarter: bool) -> Iso3 {
+fn turn_y(quarter: bool) -> Pose<EuclideanR3> {
     let axes: [Vec3; 3] = if quarter {
         [
             Vec3::new(0.0, 0.0, -1.0),
@@ -171,7 +177,7 @@ fn two_hops_compose_to_a_different_depth_or_ndc_than_the_single_placement() {
     let mut stage = stage(false);
     let outer = Rigid {
         pose: Iso3 {
-            rotation: turn_y(true).rotation,
+            rotation: turn_y(true).frame,
             translation: Vec3::new(0.0, 0.0, -6.0),
         },
         scale: 2.0,
@@ -301,7 +307,11 @@ fn a_drag_through_a_section_lands_off_the_analytic_point() {
 }
 
 fn field_stage(kind: FieldKind) -> Stage {
-    let mut stage = stage(true);
+    field_stage_of(stage(true), kind)
+}
+
+fn field_stage_of(stage: Stage, kind: FieldKind) -> Stage {
+    let mut stage = stage;
     let (object, r4) = (stage.object, stage.r4);
     stage
         .session
@@ -333,6 +343,18 @@ fn a_field_bridge_without_a_ray_lift_is_accepted() {
     );
     let section = stage.view(Section4 { w: 0.0 });
     assert!(stage.bridge(root, section, shrunk()).is_ok());
+}
+
+#[test]
+fn a_field_bridge_into_a_domain_with_no_shader_prelude_is_accepted() {
+    let mut stage = field_stage_of(marched_stage(true, false), FieldKind::ExactDistance);
+    let section = stage.view(Section4 { w: 0.0 });
+    let root = stage.root;
+    assert_eq!(
+        stage.bridge(root, section, shrunk()),
+        Err(BridgeError::NoPrelude("r4"))
+    );
+    assert!(stage.session.bridges().is_empty());
 }
 
 #[test]

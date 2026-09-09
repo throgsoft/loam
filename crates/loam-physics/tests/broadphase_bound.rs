@@ -1,5 +1,5 @@
 use glam::Vec2;
-use loam_math::{Bivector2, EuclideanR2, Iso2, IsometryGroup, Space};
+use loam_math::{Bivector2, EuclideanR2, Iso2, IsometryGroup, Rotor2, Space};
 use loam_physics::body::{BodyDef, BodyId, RigidBody};
 use loam_physics::collider::{Collider, ColliderKind};
 use loam_physics::integrator::{BroadphaseBound, PhysicsSpace};
@@ -37,6 +37,11 @@ fn inv_inertia(body: &RigidBody<SeamR2>) -> f32 {
 impl Space for SeamR2 {
     type Point = Vec2;
     type Vector = Vec2;
+    type Frame = Rotor2;
+
+    fn frame_at(&self, _at: Vec2) -> Rotor2 {
+        Rotor2::IDENTITY
+    }
 
     fn distance(&self, a: Vec2, b: Vec2) -> f32 {
         (a - b).length()

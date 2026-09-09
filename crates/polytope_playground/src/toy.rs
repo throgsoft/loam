@@ -1,5 +1,5 @@
 use glam::Vec4;
-use loam_math::{EuclideanR4, Iso4Flat};
+use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{halfspace4_body_r4, polytope_body_r4};
 use loam_runtime::{Dispatch, DomainHandle, Entity, Pose, Rejection, SpawnBundle};
 
@@ -75,7 +75,7 @@ pub(crate) fn populate(
             .ok_or(Rejection::Unsupported("invalid arena plane"))?;
         let entity = dispatch.spawn(
             SpawnBundle::new()
-                .at(domain, Pose(Iso4Flat::IDENTITY))
+                .at(domain, Pose::at(Vec4::ZERO))
                 .row(Wall),
         )?;
         dispatch
@@ -113,7 +113,7 @@ pub(crate) fn clear(
             physics.despawn(entity);
         }
         if let Some(pose) = r4.poses.get_mut(entity) {
-            pose.0 = Iso4Flat::from_translation(rest);
+            *pose = Pose::at(rest);
         }
     }
     Ok(())
