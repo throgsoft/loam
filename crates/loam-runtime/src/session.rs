@@ -484,6 +484,7 @@ impl<A: Stores> Session<A> {
         Ok(())
     }
 
+    /// Call after the frame's last tick; systems see an empty input until the next boundary.
     pub fn take_input(&mut self) -> Input {
         std::mem::take(&mut self.input)
     }

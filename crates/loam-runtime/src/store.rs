@@ -729,7 +729,7 @@ impl<T> Store<T> {
         }
     }
 
-    /// An untracked store or an expired cursor counts as changed.
+    /// An untracked store or an expired cursor counts as changed; a clean check renews the cursor's expiry.
     pub fn changed_since(&self, cursor: &mut Cursor) -> bool {
         let Some(tracking) = &self.tracking else {
             return true;
