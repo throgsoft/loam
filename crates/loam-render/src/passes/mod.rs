@@ -195,4 +195,38 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             "a wrapper recorded the lost device's resources, or built at a sample count the frame does not use: {error:?}"
         );
     }
+    #[test]
+    fn a_publish_that_changes_only_a_colour_still_reaches_the_gpu() {
+        let gpu = noop_gpu();
+        let mut point = PointPass::new("vertices");
+        let record = PointRecord {
+            position: [0.0, 0.0, -2.0],
+            radius_px: 4.0,
+            color: [1.0, 0.0, 0.0, 1.0],
+        };
+        point.publish(&Eye::default(), &[record]);
+        point.attach(&gpu, frame(1)).expect("attach");
+
+        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        schedule
+            .register(Box::new(point.clone()))
+            .expect("registered");
+        record_once(&gpu, &mut schedule, 1);
+        let after_first = point.uploads();
+
+        point.publish(
+            &Eye::default(),
+            &[PointRecord {
+                color: [0.0, 1.0, 0.0, 1.0],
+                ..record
+            }],
+        );
+        record_once(&gpu, &mut schedule, 1);
+        assert_eq!(
+            point.uploads(),
+            after_first + 1,
+            "the colour change never left the CPU: the pass uploaded {} times across both frames",
+            point.uploads()
+        );
+    }
 }
