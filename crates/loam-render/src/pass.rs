@@ -173,34 +173,18 @@ impl PassSchedule {
                 });
             }
         }
-        let shares =
-            |left: &[ResourceId], right: &[ResourceId]| left.iter().any(|id| right.contains(id));
-        let after = self
-            .passes
-            .iter()
-            .enumerate()
-            .filter(|(_, other)| {
-                other.order() < pass.order()
-                    || (other.order() == pass.order() && shares(other.writes(), pass.reads()))
-            })
-            .map(|(index, _)| index + 1)
-            .max()
-            .unwrap_or(0);
-        let before = self
-            .passes
-            .iter()
-            .enumerate()
-            .filter(|(_, other)| {
-                other.order() > pass.order()
-                    || (other.order() == pass.order() && shares(other.reads(), pass.writes()))
-            })
-            .map(|(index, _)| index)
-            .min()
-            .unwrap_or(self.passes.len());
-        if after > before {
-            return Err(PassError::Cycle { pass: pass.name() });
+        let name = pass.name();
+        self.passes.push(pass);
+        let Some(order) = topological(&self.passes) else {
+            self.passes.pop();
+            return Err(PassError::Cycle { pass: name });
+        };
+        let mut held: Vec<Option<Box<dyn FramePass>>> = self.passes.drain(..).map(Some).collect();
+        for index in order {
+            if let Some(pass) = held[index].take() {
+                self.passes.push(pass);
+            }
         }
-        self.passes.insert(after, pass);
         Ok(())
     }
 
@@ -258,6 +242,38 @@ impl PassSchedule {
             timer.after_submit();
         }
     }
+}
+
+fn precedes(left: &dyn FramePass, right: &dyn FramePass) -> bool {
+    left.order() < right.order()
+        || (left.order() == right.order()
+            && left.writes().iter().any(|id| right.reads().contains(id)))
+}
+
+fn topological(passes: &[Box<dyn FramePass>]) -> Option<Vec<usize>> {
+    let count = passes.len();
+    let mut waiting = vec![0usize; count];
+    for (consumer, degree) in waiting.iter_mut().enumerate() {
+        *degree = (0..count)
+            .filter(|&producer| {
+                producer != consumer
+                    && precedes(passes[producer].as_ref(), passes[consumer].as_ref())
+            })
+            .count();
+    }
+    let mut order = Vec::with_capacity(count);
+    let mut placed = vec![false; count];
+    while order.len() < count {
+        let next = (0..count).find(|&index| !placed[index] && waiting[index] == 0)?;
+        placed[next] = true;
+        order.push(next);
+        for consumer in 0..count {
+            if !placed[consumer] && precedes(passes[next].as_ref(), passes[consumer].as_ref()) {
+                waiting[consumer] -= 1;
+            }
+        }
+    }
+    Some(order)
 }
 
 fn time_section(
@@ -347,6 +363,22 @@ mod tests {
         assert_eq!(
             schedule.names().collect::<Vec<_>>(),
             ["producer", "consumer"]
+        );
+    }
+
+    #[test]
+    fn a_transform_registered_after_its_source_and_its_sink_is_not_a_cycle() {
+        const RAW: ResourceId = "raw";
+        const TONED: ResourceId = "toned";
+        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        schedule.register(probe("source", &[], &[RAW])).unwrap();
+        schedule.register(probe("sink", &[TONED], &[])).unwrap();
+        schedule
+            .register(probe("transform", &[RAW], &[TONED]))
+            .unwrap();
+        assert_eq!(
+            schedule.names().collect::<Vec<_>>(),
+            ["source", "transform", "sink"]
         );
     }
 
