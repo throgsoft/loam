@@ -2,6 +2,8 @@
 //! `OffscreenCanvas` transferable and triggers the one-time async wgpu setup.
 
 use anyhow::Result;
+use loam_input::PointerPhase;
+use std::time::Duration;
 use wasm_bindgen::JsValue;
 
 use super::input_queue::InputMessage;
@@ -55,6 +57,24 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
         "pointer_lock_changed" => {
             InputMessage::PointerLockChanged(read_bool_field(data, "locked").unwrap_or(false))
         }
+        "pointer" => {
+            let phase = match read_string_field(data, "phase").as_deref() {
+                Some("pointerdown") => PointerPhase::Down,
+                Some("pointermove") => PointerPhase::Move,
+                Some("pointerup") => PointerPhase::Up,
+                Some("pointercancel") => PointerPhase::Cancel,
+                _ => return Ok(None),
+            };
+            InputMessage::Pointer {
+                id: read_f64_field(data, "id").unwrap_or(0.0).max(0.0) as u64,
+                x: read_f32_field(data, "x").unwrap_or(0.0),
+                y: read_f32_field(data, "y").unwrap_or(0.0),
+                phase,
+                time: read_f64_field(data, "time")
+                    .and_then(|ms| Duration::try_from_secs_f64(ms / 1000.0).ok())
+                    .unwrap_or_default(),
+            }
+        }
         _ => return Ok(None),
     };
 
@@ -75,11 +95,14 @@ fn read_u32_field(obj: &JsValue, key: &str) -> Option<u32> {
         .map(|f| f as u32)
 }
 
-fn read_f32_field(obj: &JsValue, key: &str) -> Option<f32> {
+pub(super) fn read_f64_field(obj: &JsValue, key: &str) -> Option<f64> {
     js_sys::Reflect::get(obj, &JsValue::from_str(key))
         .ok()
         .and_then(|v| v.as_f64())
-        .map(|f| f as f32)
+}
+
+fn read_f32_field(obj: &JsValue, key: &str) -> Option<f32> {
+    read_f64_field(obj, key).map(|f| f as f32)
 }
 
 fn read_bool_field(obj: &JsValue, key: &str) -> Option<bool> {

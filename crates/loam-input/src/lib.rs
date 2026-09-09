@@ -1,4 +1,5 @@
 use glam::Vec2;
+use std::time::Duration;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::{KeyCode, PhysicalKey};
 
@@ -19,6 +20,10 @@ pub struct MouseButtons {
 }
 
 impl MouseButtons {
+    pub fn any_down(&self) -> bool {
+        self.left.down || self.right.down || self.middle.down
+    }
+
     fn slot(&mut self, button: MouseButton) -> Option<&mut ButtonState> {
         match button {
             MouseButton::Left => Some(&mut self.left),
@@ -36,6 +41,26 @@ pub struct Modifiers {
     pub control: bool,
     pub alt: bool,
     pub super_key: bool,
+}
+
+/// One mouse or touch sample.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pointer {
+    /// Unique among active pointers; a mouse and a finger never share one.
+    pub id: u64,
+    /// Physical pixels, like `cursor_pos`.
+    pub position: Vec2,
+    pub phase: PointerPhase,
+    /// Host monotonic time; only differences are meaningful.
+    pub time: Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerPhase {
+    Down,
+    Move,
+    Up,
+    Cancel,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -61,6 +86,8 @@ pub struct FrameInput {
 pub struct InputState {
     frame: FrameInput,
     held_keys: std::collections::HashSet<KeyCode>,
+    pointers_pending: Vec<Pointer>,
+    pointers_frame: Vec<Pointer>,
 }
 
 impl InputState {
@@ -90,6 +117,23 @@ impl InputState {
             slot.down = pressed;
             slot.press_pos = if pressed { cursor } else { None };
         }
+    }
+
+    pub fn cursor_pos(&self) -> Option<Vec2> {
+        self.frame.cursor_pos
+    }
+
+    pub fn buttons(&self) -> MouseButtons {
+        self.frame.buttons
+    }
+
+    pub fn pointer(&mut self, pointer: Pointer) {
+        self.pointers_pending.push(pointer);
+    }
+
+    /// The samples since the previous `take_frame`, in arrival order.
+    pub fn pointers(&self) -> &[Pointer] {
+        &self.pointers_frame
     }
 
     pub fn mouse_wheel(&mut self, delta: MouseScrollDelta) {
@@ -125,6 +169,9 @@ impl InputState {
             alt: either(held, KeyCode::AltLeft, KeyCode::AltRight),
             super_key: either(held, KeyCode::SuperLeft, KeyCode::SuperRight),
         };
+
+        std::mem::swap(&mut self.pointers_pending, &mut self.pointers_frame);
+        self.pointers_pending.clear();
 
         let frame = self.frame;
         self.frame.mouse_delta = Vec2::ZERO;

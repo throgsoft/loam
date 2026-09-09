@@ -1,7 +1,11 @@
 //! Input transitions preserve arrival order; overflow releases held input and keeps the latest control state.
+//! A pointer move replaces its pointer's newest queued move unless a transition sits between them.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::time::Duration;
+
+use loam_input::PointerPhase;
 
 #[derive(Debug)]
 pub enum InputMessage {
@@ -55,6 +59,15 @@ pub enum InputMessage {
 
     /// Browser-confirmed lock state, including releases by Esc or focus loss.
     PointerLockChanged(bool),
+
+    /// Canvas-local CSS position and the DOM `timeStamp`.
+    Pointer {
+        id: u64,
+        x: f32,
+        y: f32,
+        phase: PointerPhase,
+        time: Duration,
+    },
 }
 
 pub const MESSAGE_QUEUE_CAPACITY: usize = 256;
@@ -74,9 +87,36 @@ fn control_kind(msg: &InputMessage) -> Option<usize> {
     }
 }
 
+fn coalesced_move(q: &VecDeque<InputMessage>, msg: &InputMessage) -> Option<usize> {
+    let InputMessage::Pointer {
+        id,
+        phase: PointerPhase::Move,
+        ..
+    } = msg
+    else {
+        return None;
+    };
+    q.iter()
+        .enumerate()
+        .rev()
+        .map_while(|(index, queued)| match queued {
+            InputMessage::Pointer {
+                id: queued_id,
+                phase: PointerPhase::Move,
+                ..
+            } => Some((index, queued_id == id)),
+            _ => None,
+        })
+        .find(|(_, same_pointer)| *same_pointer)
+        .map(|(index, _)| index)
+}
+
 pub fn enqueue(msg: InputMessage) {
     MESSAGE_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
+        if let Some(index) = coalesced_move(&q, &msg) {
+            q.remove(index);
+        }
         if q.len() >= MESSAGE_QUEUE_CAPACITY {
             let mut latest = [None; 5];
             for (index, queued) in q.iter().enumerate() {

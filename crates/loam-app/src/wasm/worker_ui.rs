@@ -117,7 +117,8 @@ impl WorkerUi {
             InputMessage::Resize { .. }
             | InputMessage::Visibility(_)
             | InputMessage::Start
-            | InputMessage::PointerLockChanged(_) => {}
+            | InputMessage::PointerLockChanged(_)
+            | InputMessage::Pointer { .. } => {}
         }
     }
 
