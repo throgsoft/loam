@@ -41,6 +41,7 @@ pub fn run<A: Stores>(session: Session<A>, config: HostConfig) -> Result<(), Hos
     run_with_work(session, config, |_| {})
 }
 
+/// `record` runs once per issued order inside the frame's encoder before the presenter draws.
 pub fn run_with_work<A: Stores>(
     session: Session<A>,
     config: HostConfig,

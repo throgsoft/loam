@@ -27,6 +27,7 @@ pub struct SimConfig {
     pub max_ticks_per_frame: u32,
     pub overlap: bool,
     pub seed: u64,
+    /// In-flight work orders before `issue_work` delays the rest.
     pub work_queue: u32,
 }
 
@@ -453,6 +454,7 @@ impl<A: Stores> Session<A> {
         }
     }
 
+    /// Drains the plan in order into `execute`; a full in-flight queue stops the drain and counts a delay until a result is released.
     pub fn issue_work(&mut self, mut execute: impl FnMut(&WorkOrder)) -> usize {
         let mut issued = 0;
         while let Some(order) = self.work.get(self.work_head).copied() {
@@ -485,14 +487,17 @@ impl<A: Stores> Session<A> {
         self.flight.land(request, rows)
     }
 
+    /// Landed results not yet released.
     pub fn readbacks(&self) -> impl Iterator<Item = Landed<'_>> {
         self.flight.landed()
     }
 
+    /// Frees the queue slot a landed result holds; until then the slot counts against `work_queue`.
     pub fn release_readback(&mut self, request: RequestId) -> bool {
         self.flight.release(request)
     }
 
+    /// The entry stopped for a required readback; `boundary` and `tick` resume there once it lands.
     pub fn waiting(&self) -> Option<Wait> {
         self.wait
     }
@@ -534,6 +539,7 @@ impl<A: Stores> Session<A> {
         Some(self.checkpoints.get(id.index())?.as_ref()?.rows.as_slice())
     }
 
+    /// Hands `apply` each store `restore` planned with its checkpoint rows, empty for a reinitialization.
     pub fn apply_restore(&mut self, mut apply: impl FnMut(BulkId, BulkAction, &[u8])) -> usize {
         let mut plan = std::mem::take(&mut self.restore_plan);
         let applied = plan.len();
@@ -570,7 +576,7 @@ impl<A: Stores> Session<A> {
         f(&mut dispatch)
     }
 
-    /// Commits deferred commands, runs each dispatch entry and then its commands, and counts what grew; runs while paused.
+    /// Commits deferred commands, runs each dispatch entry and then its commands, and counts what grew; runs while paused, and a call that resumes a suspended entry keeps the input it started with.
     pub fn boundary(&mut self, input: Input) -> Result<Growth, DomainError> {
         let mut growth = Growth::default();
         let mut index = match self.wait.take() {
@@ -606,7 +612,7 @@ impl<A: Stores> Session<A> {
         Ok(growth)
     }
 
-    /// One fixed step: the simulation phase's entries in their order, the domain step among them.
+    /// One fixed step: the simulation phase's entries in their order, the domain step among them; a call that resumes a suspended entry finishes that same step.
     pub fn tick(&mut self) -> Result<(), DomainError> {
         let Some(dt) = self.config.dt() else {
             return Ok(());
@@ -769,7 +775,7 @@ impl<A: Stores> Session<A> {
         self.domains.pick(&self.views, &self.prepared, ndc)
     }
 
-    /// `Pending` while a deferred command or a reservation is outstanding.
+    /// `Pending` while a deferred command or a reservation is outstanding, `Readback` while a required readback is unlanded, and `CheckpointTick` when an authoritative checkpoint is from another tick.
     pub fn snapshot(&self) -> Result<SessionSnapshot<A>, RestoreError> {
         if !self.commands.is_empty() || self.entities().has_reservations() {
             return Err(RestoreError::Pending);
@@ -801,7 +807,7 @@ impl<A: Stores> Session<A> {
         })
     }
 
-    /// Cancels pending commands and reservations, then advances the epoch; every earlier external handle fails.
+    /// Refuses `NoCheckpoint` before touching anything; then cancels pending commands, reservations, and in-flight work, advances the epoch so every earlier external handle fails, and queues the bulk plan for `apply_restore`.
     pub fn restore(&mut self, from: &SessionSnapshot<A>) -> Result<(), RestoreError> {
         if from.domains.len() != self.domains.len() {
             let first = from.domains.len().min(self.domains.len());

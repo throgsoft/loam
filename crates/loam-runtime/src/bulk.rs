@@ -16,8 +16,11 @@ impl BulkId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnapshotPolicy {
+    /// Restored from its checkpoint; a snapshot needs the checkpoint at the current tick and a restore refuses without one.
     Authoritative,
+    /// Zeroed on restore and after a device loss; the next work item fills it.
     Reinitializable,
+    /// Left alone on restore; its items recompute it from what they read.
     Derived,
 }
 
@@ -80,6 +83,7 @@ impl Bulk {
         self.live.get(id.index()).copied().unwrap_or(false)
     }
 
+    /// Live stores only; a removed id keeps its index.
     pub fn iter(&self) -> impl Iterator<Item = (BulkId, &BulkSpec)> {
         self.specs
             .iter()
@@ -135,6 +139,7 @@ pub struct WorkOrder {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Landing {
     Applied,
+    /// Landed after a reset, a restore, a cancellation, or the store's removal; nothing was applied.
     Discarded,
 }
 

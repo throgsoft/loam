@@ -19,6 +19,7 @@ pub struct BulkBuffers {
 }
 
 impl BulkBuffers {
+    /// Creates or regrows the buffer; one already large enough keeps its contents.
     pub fn ensure(&mut self, device: &Device, id: BulkId, spec: &BulkSpec) {
         if self.buffers.len() <= id.index() {
             self.buffers.resize_with(id.index() + 1, || None);
@@ -70,6 +71,7 @@ pub struct ComputeWork {
 }
 
 impl ComputeWork {
+    /// `buffers` bind to group 0 in order under the layout the shader declares.
     pub fn new(
         device: &Device,
         label: &'static str,
@@ -178,6 +180,7 @@ impl Readbacks {
         }
     }
 
+    /// Never blocks; delivers the copies whose maps have completed by this poll.
     pub fn poll(&mut self, device: &Device, mut deliver: impl FnMut(RequestId, &[u8])) -> usize {
         let _ = device.poll(PollType::Poll);
         let mut delivered = 0;

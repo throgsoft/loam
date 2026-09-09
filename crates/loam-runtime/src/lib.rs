@@ -1,4 +1,4 @@
-//! One session's CPU state: entities, typed stores, domains behind one facade, phases, commands.
+//! One session's CPU state: entities, typed stores, domains behind one facade, phases, commands, bulk stores, work orders, and checkpoints.
 
 pub mod bulk;
 pub mod command;

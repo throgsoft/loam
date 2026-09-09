@@ -284,6 +284,7 @@ impl PointRasterNode {
         self.instance_count = instances.len() as u32;
     }
 
+    /// Draws `count` instances from `instances`; a later `upload` allocates its own buffer instead of writing into this one.
     pub fn draw_buffer(&mut self, instances: Buffer, count: u32) {
         self.instance_buf = instances;
         self.instance_capacity = 0;
