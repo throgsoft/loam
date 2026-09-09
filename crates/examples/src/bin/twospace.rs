@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use glam::{Vec3, Vec4};
 use loam_app::session::run;
-use loam_math::{EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat};
+use loam_math::{EuclideanR4, HyperbolicH3, Iso3};
 use loam_physics::euclidean_r4::{
     halfspace4_body_r4, register_default_narrowphase, sphere_body_r4,
 };
@@ -126,21 +126,17 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
         session.dispatch(|d| -> Result<Built, Rejection> {
             let landmark4 = d.spawn(
                 SpawnBundle::new()
-                    .at(r4, Pose(Iso4Flat::from_translation(LANDMARK_R4)))
+                    .at(r4, Pose::at(LANDMARK_R4))
                     .instance(Instance::new(edges4, white)),
             )?;
             let landmark3 = d.spawn(
                 SpawnBundle::new()
-                    .at(h3, Pose(Iso3H::from_translation(LANDMARK_H3)))
+                    .at(h3, Pose::at(LANDMARK_H3))
                     .instance(Instance::new(edges3, white)),
             )?;
             let player = Player { speed: WALK_SPEED };
-            let walker4 = d.spawn(
-                SpawnBundle::new()
-                    .at(r4, Pose(Iso4Flat::IDENTITY))
-                    .row(player),
-            )?;
-            let walker3 = d.spawn(SpawnBundle::new().at(h3, Pose(Iso3H::IDENTITY)).row(player))?;
+            let walker4 = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)).row(player))?;
+            let walker3 = d.spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO)).row(player))?;
             let projection = Projection4 {
                 focal: FOCAL_DISTANCE,
             };
@@ -153,9 +149,7 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
             let ball = match physics {
                 false => None,
                 true => {
-                    let ball = d.spawn(
-                        SpawnBundle::new().at(r4, Pose(Iso4Flat::from_translation(BALL_SPAWN))),
-                    )?;
+                    let ball = d.spawn(SpawnBundle::new().at(r4, Pose::at(BALL_SPAWN)))?;
                     let world = d
                         .domains
                         .typed(r4)?
@@ -228,7 +222,7 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
             ctx.commands.app_fn("place-landmark", move |dispatch| {
                 if let Ok(domain) = dispatch.domains.typed(r4) {
                     if let Some(pose) = domain.poses.get_mut(landmark4) {
-                        pose.0.translation = LANDMARK_R4 + Vec4::X * (step as f32 * EDIT_STEP);
+                        pose.point = LANDMARK_R4 + Vec4::X * (step as f32 * EDIT_STEP);
                     }
                 }
             });
@@ -254,7 +248,7 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
 fn ball_height(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Option<f32> {
     let ball = scene.ball?;
     let domain = session.domains_mut().typed(scene.r4).ok()?;
-    Some(domain.poses.get(ball)?.0.translation.y)
+    Some(domain.poses.get(ball)?.point.y)
 }
 
 fn published_point(
@@ -328,7 +322,7 @@ fn bridged(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool,
         .typed(scene.r4)?
         .poses
         .get(scene.landmark4)
-        .map(|pose| pose.0.translation)
+        .map(|pose| pose.point)
         .ok_or_else(|| HostError::Host("the landmark lost its pose".into()))?;
     println!(
         "r4 landmark dragged by ndc ({DRAG_NDC:.3}, 0.000): position ({:.4}, {:.4}, {:.4}, {:.4})",
@@ -525,12 +519,12 @@ mod tests {
             let moved4 = players
                 .iter()
                 .filter_map(|player| r4.poses.get(*player))
-                .any(|pose| pose.0.translation != Vec4::ZERO);
+                .any(|pose| pose.point != Vec4::ZERO);
             let h3 = domains.typed(scene.h3).unwrap();
             let moved3 = players
                 .iter()
                 .filter_map(|player| h3.poses.get(*player))
-                .any(|pose| pose.0 != Iso3H::IDENTITY);
+                .any(|pose| pose.point != Vec3::ZERO);
             moved4 || moved3
         };
         assert!(walked(&mut session));

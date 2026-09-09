@@ -1113,7 +1113,7 @@ fn primitive_record<S: DomainSpace>(
     op: FieldOp,
 ) -> Result<FieldPrimitive, DomainError> {
     let pose = poses.get(entity).ok_or(DomainError::Stale(entity))?;
-    let chart = space.chart_pose(&pose.0);
+    let chart = space.chart_pose(pose);
     let mut record = FieldPrimitive {
         frame: chart.frame,
         translation: chart.coordinates,
@@ -1164,7 +1164,7 @@ fn shift_along(record: &mut FieldPrimitive, normal: [f32; 4], offset: f32) {
 
 #[cfg(test)]
 mod tests {
-    use loam_math::{EuclideanR3, Iso3};
+    use loam_math::EuclideanR3;
 
     use super::*;
     use crate::domain::{Domain, DomainBuilder, DomainId, TypedDomain};
@@ -1199,7 +1199,7 @@ mod tests {
             let entity = self.entities.spawn();
             self.domain
                 .poses
-                .insert(entity, Pose(Iso3::from_translation(at)))
+                .insert(entity, Pose::at(at))
                 .expect("pose row");
             self.domain
                 .fields_mut()
@@ -1221,12 +1221,7 @@ mod tests {
         }
 
         fn move_to(&mut self, entity: Entity, to: Vec3) {
-            self.domain
-                .poses
-                .get_mut(entity)
-                .expect("pose row")
-                .0
-                .translation = to;
+            self.domain.poses.get_mut(entity).expect("pose row").point = to;
         }
     }
 
@@ -1259,7 +1254,7 @@ mod tests {
             fixture
                 .domain
                 .poses
-                .insert(entity, Pose(Iso3::IDENTITY))
+                .insert(entity, Pose::at(Vec3::ZERO))
                 .expect("pose row");
             fixture
                 .domain
@@ -1438,7 +1433,10 @@ mod tests {
             .fields()
             .build(DomainId::new(0), entities.scene());
         let entity = entities.spawn();
-        domain.poses.insert(entity, Pose(pose)).expect("pose row");
+        domain
+            .poses
+            .insert(entity, Pose::from(pose))
+            .expect("pose row");
         domain
             .fields_mut()
             .expect("field store")
@@ -1761,7 +1759,7 @@ mod tests {
     #[test]
     fn a_sphere_off_the_w_slice_keeps_the_value_its_ball_would_cull() {
         use crate::view::Vec4;
-        use loam_math::{EuclideanR4, Iso4Flat};
+        use loam_math::EuclideanR4;
 
         let mut entities = test_entities();
         let mut domain = DomainBuilder::new("r4", EuclideanR4)
@@ -1770,10 +1768,7 @@ mod tests {
             .build(DomainId::new(0), entities.scene());
         let mut place = |at: Vec4, op: FieldOp, operands: &[Entity]| {
             let entity = entities.spawn();
-            domain
-                .poses
-                .insert(entity, Pose(Iso4Flat::from_translation(at)))
-                .expect("pose row");
+            domain.poses.insert(entity, Pose::at(at)).expect("pose row");
             domain
                 .fields_mut()
                 .expect("field store")

@@ -1,10 +1,10 @@
 use std::any::Any;
 
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso4Flat, IsometryGroup, Space};
+use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Space};
 use loam_runtime::{
     Access, ActionEvent, ActionId, AppCommand, ChartCommand, ChartId, ChartPose, ChartTangent,
     Command, CommandResult, Commands, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle,
-    Domains, Entity, Facility, Input, Instance, Material, Order, Outcome, Phase, Pose,
+    DomainSpace, Domains, Entity, Facility, Input, Instance, Material, Order, Outcome, Phase, Pose,
     PreparedGeometry, Rejection, RequestId, Reservation, RestoreError, Session, SimConfig,
     SpawnBundle, Step, Store, StoreError, DOMAIN_STEP,
 };
@@ -55,7 +55,7 @@ fn session() -> (Session<Probe>, DomainHandle<EuclideanR4>) {
 }
 
 fn placed(r4: DomainHandle<EuclideanR4>, tag: Tag) -> SpawnBundle<Probe> {
-    SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)).row(tag)
+    SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)).row(tag)
 }
 
 struct Mark(u32);
@@ -105,7 +105,7 @@ impl Facility<EuclideanR4> for Drift {
         step: Step,
     ) -> Result<(), DomainError> {
         for (_, pose) in poses.iter_mut() {
-            pose.0.translation.x += step.dt;
+            pose.point.x += step.dt;
         }
         Ok(())
     }
@@ -382,12 +382,12 @@ fn system_after_the_domain_step_does_not_see_the_steps_writes() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).facility(Drift));
     let walker = session
-        .dispatch(|d| d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY))))
+        .dispatch(|d| d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO))))
         .unwrap();
     let sample = move |slot: usize| {
         move |app: &mut Probe, domains: &mut Domains| {
             let pose = domains.typed(r4).unwrap().poses.get(walker).unwrap();
-            app.sample.get_mut()[slot] = Some(pose.0.translation.x);
+            app.sample.get_mut()[slot] = Some(pose.point.x);
         }
     };
     let access = || Access::new().domain(r4.id());
@@ -449,37 +449,35 @@ fn a_chart_spawn_lands_at_the_pose_and_instance_the_chart_names() {
     });
 
     let domain4 = session.domains_mut().typed(r4).unwrap();
-    let pose4 = domain4.poses.get(flat4).unwrap().0;
-    let landed4 = EuclideanR4.iso_apply(pose4, Vec4::X);
+    let pose4 = *domain4.poses.get(flat4).unwrap();
+    let landed4 = EuclideanR4.place(&EuclideanR4.prepare(&pose4), Vec4::X);
     assert!(
         (landed4 - Vec4::new(2.0, 4.0, 5.0, 7.0)).length() < 1e-5,
         "the quarter turn put local x at {landed4}"
     );
     assert_eq!(domain4.instances.get(flat4), Some(&instance));
 
-    let pose3 = session
+    let pose3 = *session
         .domains_mut()
         .typed(r3)
         .unwrap()
         .poses
         .get(flat3)
-        .unwrap()
-        .0;
-    let landed3 = EuclideanR3.iso_apply(pose3, Vec3::X);
+        .unwrap();
+    let landed3 = EuclideanR3.place(&EuclideanR3.prepare(&pose3), Vec3::X);
     assert!(
         (landed3 - Vec3::new(1.0, 3.0, 3.0)).length() < 1e-5,
         "the quarter turn put local x at {landed3}"
     );
 
-    let curved_pose = session
+    let curved_pose = *session
         .domains_mut()
         .typed(h3)
         .unwrap()
         .poses
         .get(curved)
-        .unwrap()
-        .0;
-    let landed = HyperbolicH3.iso_apply(curved_pose, Vec3::ZERO);
+        .unwrap();
+    let landed = HyperbolicH3.place(&HyperbolicH3.prepare(&curved_pose), Vec3::ZERO);
     assert!(
         (landed - Vec3::new(0.5, 0.0, 0.0)).length() < 1e-5,
         "the transvection put the origin at {landed}"
@@ -533,8 +531,7 @@ fn a_chart_walk_advances_the_pose_by_the_tangent_it_names() {
         .poses
         .get(walker)
         .unwrap()
-        .0
-        .translation;
+        .point;
     assert!(
         (walked - Vec4::new(0.5, 0.0, 0.0, 1.0)).length() < 1e-5,
         "half a second along (1, 0, 0, 2) ended at {walked}"

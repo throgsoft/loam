@@ -1,6 +1,6 @@
 use std::f32::consts::FRAC_PI_2;
 
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3H, Iso4Flat, IsometryGroup, Space};
+use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3H, IsometryGroup, Space};
 use loam_runtime::{
     ChartId, ChartPose, DomainBuilder, DomainError, DomainHandle, DomainSpace, Entity, Eye,
     Instance, Klein, LogCapacity, Material, Orbit, Pose, PreparedGeometry, Projection4,
@@ -31,15 +31,11 @@ fn spin_z(angle: f32) -> Iso3H {
     spin
 }
 
-fn lorentz(a: Vec4, b: Vec4) -> f32 {
-    a.x * b.x + a.y * b.y + a.z * b.z - a.w * b.w
-}
-
 fn h3_walker() -> (Session<Probe>, DomainHandle<HyperbolicH3>, Entity) {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let h3 = session.register_domain(DomainBuilder::new("h3", HyperbolicH3));
     let walker = session
-        .dispatch(|d| d.spawn(SpawnBundle::new().at(h3, Pose(Iso3H::IDENTITY))))
+        .dispatch(|d| d.spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO))))
         .unwrap();
     (session, h3, walker)
 }
@@ -71,22 +67,24 @@ fn chart_pose_outside_the_ball_or_with_a_non_finite_coordinate_is_accepted() {
         Some(DomainError::InvalidFrame)
     );
 
-    let pose = HyperbolicH3.iso_compose(
+    let pose = Pose::from(HyperbolicH3.iso_compose(
         Iso3H::from_translation(Vec3::new(0.3, -0.1, 0.2)),
         spin_z(0.4),
-    );
+    ));
     let data = HyperbolicH3.chart_pose(&pose);
     let back = HyperbolicH3.pose_from_chart(&data).unwrap();
-    for (a, b) in back
-        .matrix
-        .to_cols_array()
-        .iter()
-        .zip(pose.matrix.to_cols_array())
-    {
-        assert!((a - b).abs() <= 1e-5, "{back:?} against {pose:?}");
+    let placed =
+        |pose: &Pose<HyperbolicH3>, local| HyperbolicH3.place(&HyperbolicH3.prepare(pose), local);
+    for local in [Vec3::X * 0.1, Vec3::Y * 0.1, Vec3::Z * 0.1] {
+        let (there, back_there) = (placed(&pose, local), placed(&back, local));
+        assert!(
+            (there - back_there).length() <= 1e-5,
+            "the round trip put {local} at {back_there} rather than {there}"
+        );
     }
     let position = Vec3::from_slice(&data.coordinates[..3]);
     assert!((position - Vec3::new(0.3, -0.1, 0.2)).length() <= 1e-5);
+    assert!((back.point - pose.point).length() <= 1e-5);
 }
 
 #[test]
@@ -116,7 +114,7 @@ fn klein_image_point_disagrees_with_the_lorentz_embedding_by_hand() {
     );
     let expected = [rx / bw, ry / bw, hz / bw];
 
-    let image = Klein.image_point(&Pose(eye), p).unwrap();
+    let image = Klein.image_point(&Pose::from(eye), p).unwrap();
     for (got, want) in image.iter().zip(expected) {
         assert!((got - want).abs() <= 1e-5, "{image:?} against {expected:?}");
     }
@@ -140,10 +138,10 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
     let center3 = Vec3::new(-0.2, 0.0, -0.5);
     let (object4, object3) = session.dispatch(|d| {
         let eye4 = d
-            .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+            .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
             .unwrap();
         let eye3 = d
-            .spawn(SpawnBundle::new().at(h3, Pose(Iso3H::IDENTITY)))
+            .spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO)))
             .unwrap();
         d.domains.typed(r4).unwrap().add_view(ViewSpec::new(
             root,
@@ -157,17 +155,14 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
         let object4 = d
             .spawn(
                 SpawnBundle::new()
-                    .at(
-                        r4,
-                        Pose(Iso4Flat::from_translation(Vec4::new(1.0, 0.0, -4.0, 0.0))),
-                    )
+                    .at(r4, Pose::at(Vec4::new(1.0, 0.0, -4.0, 0.0)))
                     .instance(Instance::new(stub4, material)),
             )
             .unwrap();
         let object3 = d
             .spawn(
                 SpawnBundle::new()
-                    .at(h3, Pose(Iso3H::from_translation(center3)))
+                    .at(h3, Pose::at(center3))
                     .instance(Instance::new(stub3, material)),
             )
             .unwrap();
@@ -209,8 +204,7 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
             .poses
             .get_mut(object4)
             .unwrap()
-            .0
-            .translation = point.extend(0.0);
+            .point = point.extend(0.0);
         session.pick(ndc3).map(|pick| pick.entity)
     };
     assert_eq!(place4(0.5), Some(object4));
@@ -249,19 +243,20 @@ fn transport_has_the_wrong_signed_holonomy_or_loses_normalization_on_a_geodesic_
             let velocity = Vec3::new(*dx, *dy, 0.0) * (length / 2.0);
             domain.walk(walker, velocity, 1.0).unwrap();
         }
-        let pose = domain.poses.get(walker).unwrap().0;
-        let position = HyperbolicH3.iso_apply(pose, Vec3::ZERO);
+        let pose = *domain.poses.get(walker).unwrap();
+        let position = pose.point;
         assert!(position.length() <= 1e-3, "loop ended at {position:?}");
-        let matrix = pose.matrix;
-        let angle = matrix.x_axis.y.atan2(matrix.x_axis.x);
+        let carried = [Vec3::X, Vec3::Y, Vec3::Z]
+            .map(|axis| HyperbolicH3.carry(&pose, Vec3::ZERO, axis).unwrap());
+        let angle = carried[0].y.atan2(carried[0].x);
         assert!(
             (angle - expected).abs() <= 1e-3,
             "holonomy {angle} against {expected} for {legs:?}"
         );
-        for column in [matrix.x_axis, matrix.y_axis, matrix.z_axis] {
-            assert!((lorentz(column, column) - 1.0).abs() <= 1e-4);
+        for (i, column) in carried.iter().enumerate() {
+            assert!((column.length() - 1.0).abs() <= 1e-4);
+            assert!(column.dot(carried[(i + 1) % 3]).abs() <= 1e-4);
         }
-        assert!((lorentz(matrix.w_axis, matrix.w_axis) + 1.0).abs() <= 1e-4);
     }
 }
 
@@ -273,7 +268,9 @@ fn walk_leaving_the_envelope_is_reported_as_within_it() {
         domain.walk(walker, Vec3::X * 10.0, 1.0),
         Err(DomainError::ChartBoundary)
     );
-    assert_eq!(domain.poses.get(walker).unwrap().0, Iso3H::IDENTITY);
+    let held = *domain.poses.get(walker).unwrap();
+    assert_eq!(held.point, Vec3::ZERO);
+    assert_eq!(HyperbolicH3.carry(&held, Vec3::ZERO, Vec3::X), Ok(Vec3::X));
     assert_eq!(domain.walk(walker, Vec3::X * 8.0, 1.0), Ok(()));
 }
 

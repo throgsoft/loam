@@ -1237,7 +1237,8 @@ impl<A: Stores> Session<A> {
 
 #[cfg(test)]
 mod tests {
-    use loam_math::{EuclideanR4, Iso4Flat, Space};
+    use crate::view::Vec4;
+    use loam_math::{EuclideanR4, Space};
 
     use super::*;
     use crate::command::SpawnBundle;
@@ -1267,13 +1268,10 @@ mod tests {
         let root = session.views().root();
         session
             .dispatch(|d| -> Result<(), Rejection> {
-                let eye = d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))?;
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
                 d.spawn(
                     SpawnBundle::new()
-                        .at(
-                            r4,
-                            Pose(Iso4Flat::from_translation(Vec4::new(0.0, 0.0, -4.0, at_w))),
-                        )
+                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, at_w)))
                         .instance(Instance::new(geometry, material).shaded(shading)),
                 )?;
                 d.domains
@@ -1307,13 +1305,10 @@ mod tests {
         let root = session.views().root();
         let view = session
             .dispatch(|d| -> Result<ViewId, Rejection> {
-                let eye = d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))?;
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
                 d.spawn(
                     SpawnBundle::new()
-                        .at(
-                            r4,
-                            Pose(Iso4Flat::from_translation(Vec4::new(0.0, 0.0, -4.0, 0.0))),
-                        )
+                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, 0.0)))
                         .instance(Instance::new(geometry, body).sectioned(cut)),
                 )?;
                 Ok(d.domains
@@ -1467,7 +1462,7 @@ mod tests {
     #[test]
     fn a_grab_takes_the_view_it_can_lift_while_a_plain_pick_keeps_the_nearer_one() {
         use crate::view::{Eye, Projection4, Section4, Vec4, ViewId};
-        use loam_math::{EuclideanR4, Iso4Flat};
+        use loam_math::EuclideanR4;
 
         const DEPTH: f32 = 4.0;
         const FOCAL: f32 = 2.5;
@@ -1483,15 +1478,10 @@ mod tests {
         let root = session.views().root();
         let (section, projection) = session
             .dispatch(|d| -> Result<(ViewId, ViewId), Rejection> {
-                let eye = d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))?;
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
                 d.spawn(
                     SpawnBundle::new()
-                        .at(
-                            r4,
-                            Pose(Iso4Flat::from_translation(Vec4::new(
-                                0.0, 0.0, -DEPTH, AT_W,
-                            ))),
-                        )
+                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -DEPTH, AT_W)))
                         .instance(Instance::new(edges, white)),
                 )?;
                 let domain = d.domains.typed(r4)?;
@@ -1726,12 +1716,8 @@ mod tests {
         let pool = session.dispatch(|d| {
             (0..8)
                 .map(|value| {
-                    d.spawn(
-                        SpawnBundle::new()
-                            .at(r4, Pose(Iso4Flat::IDENTITY))
-                            .row(value),
-                    )
-                    .unwrap()
+                    d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)).row(value))
+                        .unwrap()
                 })
                 .collect()
         });
@@ -1802,12 +1788,7 @@ mod tests {
                 .fields(),
         );
         session.dispatch(|d| {
-            let at = |x: f32| {
-                SpawnBundle::new().at(
-                    r4,
-                    Pose(Iso4Flat::from_translation(Vec4::new(x, 0.0, 0.0, 0.0))),
-                )
-            };
+            let at = |x: f32| SpawnBundle::new().at(r4, Pose::at(Vec4::new(x, 0.0, 0.0, 0.0)));
             let left = d.spawn(at(-1.0).row(1u32)).unwrap();
             let right = d.spawn(at(1.0).row(2u32)).unwrap();
             let union = d.spawn(at(0.0).row(3u32)).unwrap();
@@ -1874,7 +1855,7 @@ mod tests {
             eye: &Pose<EuclideanR4>,
             point: <EuclideanR4 as Space>::Point,
         ) -> Option<[f32; 3]> {
-            let relative = point - eye.0.translation;
+            let relative = point - eye.point;
             Some([relative.x, relative.y, relative.z])
         }
 
@@ -1909,7 +1890,7 @@ mod tests {
         let root = session.views().root();
         session.dispatch(|d| {
             let eye = d
-                .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
                 .unwrap();
             d.domains
                 .typed(r4)
@@ -1918,7 +1899,7 @@ mod tests {
             for value in 0..8 {
                 d.spawn(
                     SpawnBundle::new()
-                        .at(r4, Pose(Iso4Flat::IDENTITY))
+                        .at(r4, Pose::at(Vec4::ZERO))
                         .instance(Instance::new(geometry, material))
                         .row(value),
                 )
@@ -1934,7 +1915,7 @@ mod tests {
                     *score += 1;
                 }
                 for (_, pose) in domains.typed(r4).unwrap().poses.iter_mut() {
-                    pose.0.translation.x += step.dt;
+                    pose.point.x += step.dt;
                 }
             },
         );

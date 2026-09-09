@@ -1,5 +1,5 @@
 use glam::Vec3;
-use loam_math::{EuclideanR3, Iso3};
+use loam_math::EuclideanR3;
 use loam_runtime::domain::{Domain, DomainBuilder, DomainHandle, Field, FieldKind, Pose};
 use loam_runtime::entity::Entity;
 use loam_runtime::field::{
@@ -199,7 +199,7 @@ fn compiled(centers: &[Vec3], radius: f32) -> Compiled {
     );
     let place = |session: &mut Session<Bench>, at: Vec3| {
         session
-            .dispatch(|d| d.spawn(SpawnBundle::new().at(domain, Pose(Iso3::from_translation(at)))))
+            .dispatch(|d| d.spawn(SpawnBundle::new().at(domain, Pose::at(at))))
             .expect("spawn")
     };
     let leaves: Vec<Entity> = centers.iter().map(|&c| place(&mut session, c)).collect();

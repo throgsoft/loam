@@ -1,4 +1,4 @@
-use loam_math::{EuclideanR3, EuclideanR4, Iso3, Iso4Flat, Space};
+use loam_math::{EuclideanR3, EuclideanR4, Iso3, Space};
 use loam_runtime::{
     Access, BridgeError, BridgeSpec, ChartId, ChartPose, Command, Ctx, DomainBuilder, DomainHandle,
     DomainSpace, DragError, Entity, Eye, Field, FieldKind, FieldOp, ImageSpaceId, Input, Instance,
@@ -51,12 +51,12 @@ fn stage(fields: bool) -> Stage {
     let root = session.views().root();
     let (eye, object, anchor) = session.dispatch(|d| {
         let eye = d
-            .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+            .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
             .unwrap();
         let object = d
             .spawn(
                 SpawnBundle::new()
-                    .at(r4, Pose(Iso4Flat::from_translation(OBJECT)))
+                    .at(r4, Pose::at(OBJECT))
                     .instance(Instance::new(stub, material)),
             )
             .unwrap();
@@ -109,8 +109,7 @@ impl Stage {
             .poses
             .get(self.object)
             .unwrap()
-            .0
-            .translation
+            .point
     }
 }
 
@@ -121,7 +120,7 @@ fn shrunk() -> Placement {
     })
 }
 
-fn turn_y(quarter: bool) -> Iso3 {
+fn turn_y(quarter: bool) -> Pose<EuclideanR3> {
     let axes: [Vec3; 3] = if quarter {
         [
             Vec3::new(0.0, 0.0, -1.0),
@@ -171,7 +170,7 @@ fn two_hops_compose_to_a_different_depth_or_ndc_than_the_single_placement() {
     let mut stage = stage(false);
     let outer = Rigid {
         pose: Iso3 {
-            rotation: turn_y(true).rotation,
+            rotation: turn_y(true).frame,
             translation: Vec3::new(0.0, 0.0, -6.0),
         },
         scale: 2.0,

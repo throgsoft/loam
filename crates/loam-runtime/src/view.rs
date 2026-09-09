@@ -1,7 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use loam_math::hyperbolic::{
-    hyperboloid_to_klein, klein_to_poincare, poincare_to_hyperboloid, H3_DEPTH_ENVELOPE,
-};
+use loam_math::hyperbolic::{klein_to_poincare, poincare_to_klein, H3_DEPTH_ENVELOPE};
 use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Space};
 use loam_shape::polytope::SectionScratch;
 use loam_shape::{LineMesh, TriangleMesh};
@@ -436,7 +434,7 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
         pose: &Pose<S>,
         local: S::Point,
     ) -> Option<[f32; 3]> {
-        self.image_point(eye, space.iso_apply(pose.0, local))
+        self.image_point(eye, space.place(&space.prepare(pose), local))
     }
 
     fn lift(&self, eye: &Pose<S>, ray: &ImageRay) -> Option<DomainRay<S>>;
@@ -508,7 +506,7 @@ impl ViewMapping<EuclideanR4> for Projection4 {
         eye: &Pose<EuclideanR4>,
         point: <EuclideanR4 as Space>::Point,
     ) -> Option<[f32; 3]> {
-        let relative = eye_relative4(eye, point);
+        let relative = eye_relative4(eye, point)?;
         let scale = self.scale(relative.w)?;
         Some((relative.truncate() * scale).to_array())
     }
@@ -527,8 +525,8 @@ impl ViewMapping<EuclideanR4> for Projection4 {
         point: <EuclideanR4 as Space>::Point,
         radius: f32,
     ) -> f32 {
-        let relative = eye_relative4(eye, point);
-        self.scale(relative.w)
+        eye_relative4(eye, point)
+            .and_then(|relative| self.scale(relative.w))
             .map_or(radius, |scale| radius * scale)
     }
 
@@ -552,12 +550,12 @@ impl ViewMapping<EuclideanR4> for Section4 {
         eye: &Pose<EuclideanR4>,
         point: <EuclideanR4 as Space>::Point,
     ) -> Option<[f32; 3]> {
-        Some(eye_relative4(eye, point).truncate().to_array())
+        Some(eye_relative4(eye, point)?.truncate().to_array())
     }
 
     fn section(&self, eye: &Pose<EuclideanR4>, pose: &Pose<EuclideanR4>) -> Option<SectionCut> {
         Some(SectionCut {
-            offset: self.w - eye_relative4(eye, pose.0.translation).w,
+            offset: self.w - eye_relative4(eye, pose.point)?.w,
             scale: 1.0,
         })
     }
@@ -566,8 +564,8 @@ impl ViewMapping<EuclideanR4> for Section4 {
         let direction = Vec3::from(ray.direction).try_normalize()?;
         let origin = Vec3::from(ray.origin).extend(self.w);
         Some(DomainRay {
-            origin: EuclideanR4.iso_apply(eye.0, origin),
-            direction: EuclideanR4.iso_transport(eye.0, origin, direction.extend(0.0)),
+            origin: EuclideanR4.place(&EuclideanR4.prepare(eye), origin),
+            direction: EuclideanR4.carry(eye, origin, direction.extend(0.0)).ok()?,
         })
     }
 
@@ -576,8 +574,8 @@ impl ViewMapping<EuclideanR4> for Section4 {
     }
 }
 
-fn eye_relative4(eye: &Pose<EuclideanR4>, point: Vec4) -> Vec4 {
-    EuclideanR4.iso_apply(EuclideanR4.iso_inverse(eye.0), point)
+fn eye_relative4(eye: &Pose<EuclideanR4>, point: Vec4) -> Option<Vec4> {
+    EuclideanR4.local(eye, point).ok()
 }
 
 /// Klein model of H³ recentered at the eye; its geodesics are chords, so `lift` is exact.
@@ -593,9 +591,8 @@ impl ViewMapping<HyperbolicH3> for Klein {
         eye: &Pose<HyperbolicH3>,
         point: <HyperbolicH3 as Space>::Point,
     ) -> Option<[f32; 3]> {
-        let inverse = HyperbolicH3.iso_inverse(eye.0);
         // Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7: Klein is the hyperboloid seen from the origin.
-        Some(hyperboloid_to_klein(inverse.matrix * poincare_to_hyperboloid(point)).to_array())
+        Some(poincare_to_klein(HyperbolicH3.local(eye, point).ok()?).to_array())
     }
 
     fn lift(&self, eye: &Pose<HyperbolicH3>, ray: &ImageRay) -> Option<DomainRay<HyperbolicH3>> {
@@ -615,8 +612,8 @@ impl ViewMapping<HyperbolicH3> for Klein {
         }
         let unit = HyperbolicH3.log(from, toward) * (1.0 / length);
         Some(DomainRay {
-            origin: HyperbolicH3.iso_apply(eye.0, from),
-            direction: HyperbolicH3.iso_transport(eye.0, from, unit),
+            origin: HyperbolicH3.place(&HyperbolicH3.prepare(eye), from),
+            direction: HyperbolicH3.carry(eye, from, unit).ok()?,
         })
     }
 
@@ -640,19 +637,15 @@ impl ViewMapping<EuclideanR3> for Identity3 {
         eye: &Pose<EuclideanR3>,
         point: <EuclideanR3 as Space>::Point,
     ) -> Option<[f32; 3]> {
-        Some(
-            EuclideanR3
-                .iso_apply(EuclideanR3.iso_inverse(eye.0), point)
-                .to_array(),
-        )
+        Some(EuclideanR3.local(eye, point).ok()?.to_array())
     }
 
     fn lift(&self, eye: &Pose<EuclideanR3>, ray: &ImageRay) -> Option<DomainRay<EuclideanR3>> {
         let origin = Vec3::from(ray.origin);
         let direction = Vec3::from(ray.direction).try_normalize()?;
         Some(DomainRay {
-            origin: EuclideanR3.iso_apply(eye.0, origin),
-            direction: EuclideanR3.iso_transport(eye.0, origin, direction),
+            origin: EuclideanR3.place(&EuclideanR3.prepare(eye), origin),
+            direction: EuclideanR3.carry(eye, origin, direction).ok()?,
         })
     }
 

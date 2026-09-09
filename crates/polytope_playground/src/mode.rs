@@ -1,4 +1,3 @@
-use loam_math::Iso4Flat;
 use loam_math::{Bivector, Bivector4, EuclideanR4, Plane4, Rotor, Rotor4};
 use loam_runtime::{
     AppCommand, Dispatch, DomainHandle, EdgeShading, Instance, MaterialId, Outcome, Pose,
@@ -306,9 +305,9 @@ impl AppCommand<Playground> for SetScrub {
         let r4 = dispatch.domains.typed(self.domain)?;
         for entity in entities {
             if let Some(pose) = r4.poses.get_mut(entity) {
-                let held = pose.0.rotation.log();
+                let held = pose.frame.log();
                 let turned = held + axis * (self.scrub - held.dot(axis));
-                pose.0.rotation = turned.exp().normalize();
+                pose.frame = turned.exp().normalize();
             }
         }
         Ok(Outcome::Done)
@@ -330,7 +329,7 @@ impl AppCommand<Playground> for TurnRow {
         let r4 = dispatch.domains.typed(self.domain)?;
         for entity in entities {
             if let Some(pose) = r4.poses.get_mut(entity) {
-                pose.0.rotation = (self.rotor * pose.0.rotation).normalize();
+                pose.frame = (self.rotor * pose.frame).normalize();
             }
         }
         Ok(Outcome::Done)
@@ -410,7 +409,7 @@ impl AppCommand<Playground> for SetShape {
         row.entry = self.entry;
         dispatch.despawn(entity)?;
         let mut bundle = SpawnBundle::new()
-            .at(self.domain, Pose(Iso4Flat::from_translation(row.rest)))
+            .at(self.domain, Pose::at(row.rest))
             .row(row);
         if let Some(geometry) = self.geometry {
             let mode = *dispatch.app.color.get();

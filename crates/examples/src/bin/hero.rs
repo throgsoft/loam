@@ -8,7 +8,7 @@ use loam_app::args::Args;
 use loam_app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
 use loam_app::environment::Environment;
 use loam_app::session::{launch, FrameHook, SessionApp};
-use loam_math::{Bivector4, EuclideanR4, Iso4Flat, Rotor, WPlane};
+use loam_math::{Bivector4, EuclideanR4, Rotor, WPlane};
 use loam_physics::body::MASK_ALL;
 use loam_physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
@@ -420,14 +420,10 @@ fn spawn_drop(
     position: Vec4,
     tumble: Bivector4,
 ) -> Result<Entity, Rejection> {
-    let entity = d.spawn(
-        SpawnBundle::new()
-            .at(r4, Pose(Iso4Flat::from_translation(position)))
-            .row(Drop {
-                polytope,
-                color: drop_color(polytope),
-            }),
-    )?;
+    let entity = d.spawn(SpawnBundle::new().at(r4, Pose::at(position)).row(Drop {
+        polytope,
+        color: drop_color(polytope),
+    }))?;
     let vertices: Vec<Vec4> = polytope
         .topology()
         .vertices
@@ -474,13 +470,13 @@ fn compose(
             continue;
         };
         let base = mesh.vertices.len();
-        let u = letter.index as f32 - (pose.0.translation.w - slice) / W_PER_LETTERFORM;
+        let u = letter.index as f32 - (pose.point.w - slice) / W_PER_LETTERFORM;
         if !append_field_prism(morph.blend_at(u), half_depth, LETTER_COLOR, mesh) {
             continue;
         }
-        let translate = pose.0.translation.truncate();
+        let translate = pose.point.truncate();
         for v in &mut mesh.vertices[base..] {
-            let posed = pose.0.rotation.apply(Vec4::new(v[0], v[1], v[2], 0.0));
+            let posed = pose.frame.apply(Vec4::new(v[0], v[1], v[2], 0.0));
             *v = (posed.truncate() + translate).to_array();
         }
     }
@@ -494,7 +490,7 @@ fn compose(
             topology
                 .vertices
                 .iter()
-                .map(|v| RAIN_SIZE * pose.0.rotation.apply(*v) + Vec4::W * pose.0.translation.w),
+                .map(|v| RAIN_SIZE * pose.frame.apply(*v) + Vec4::W * pose.point.w),
         );
         let [r, g, b] = drop.color;
         let base = mesh.vertices.len();
@@ -507,7 +503,7 @@ fn compose(
             scratch,
             mesh,
         );
-        let translate = pose.0.translation.truncate();
+        let translate = pose.point.truncate();
         for v in &mut mesh.vertices[base..] {
             v[0] += translate.x;
             v[1] += translate.y;
@@ -542,11 +538,7 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
     session.dispatch(|d| -> Result<(), Rejection> {
         for letter in letters {
             let entry = letter.entry;
-            d.spawn(
-                SpawnBundle::new()
-                    .at(r4, Pose(Iso4Flat::from_translation(entry)))
-                    .row(letter),
-            )?;
+            d.spawn(SpawnBundle::new().at(r4, Pose::at(entry)).row(letter))?;
         }
         let world = physics_of(d.domains, r4)?.world_mut();
         world.pgs_iters = PILE_PGS_ITERS;
@@ -610,7 +602,7 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
                         continue;
                     };
                     if let Some(pose) = domain.poses.get_mut(entity) {
-                        pose.0.translation = at;
+                        pose.point = at;
                     }
                 }
                 if stage.frame() < ASSEMBLE_FRAMES {
@@ -835,7 +827,7 @@ fn letter_height(
         .find(|(_, letter)| letter.index == index)
         .map(|(entity, _)| entity)?;
     let pose = session.domains_mut().typed(r4).ok()?.poses.get(entity)?;
-    Some(pose.0.translation.y)
+    Some(pose.point.y)
 }
 
 fn headless(
@@ -939,7 +931,7 @@ mod tests {
         let domain = session.domains_mut().typed(r4).expect("the r4 domain");
         found
             .iter()
-            .filter_map(|(_, entity)| domain.poses.get(*entity).map(|pose| pose.0.translation))
+            .filter_map(|(_, entity)| domain.poses.get(*entity).map(|pose| pose.point))
             .collect()
     }
 
@@ -957,7 +949,7 @@ mod tests {
         let domain = session.domains_mut().typed(r4).expect("the r4 domain");
         found
             .iter()
-            .filter_map(|(_, entity)| domain.poses.get(*entity).map(|pose| pose.0.rotation))
+            .filter_map(|(_, entity)| domain.poses.get(*entity).map(|pose| pose.frame))
             .collect()
     }
 
@@ -966,7 +958,7 @@ mod tests {
         let domain = session.domains_mut().typed(r4).expect("the r4 domain");
         entities
             .iter()
-            .filter_map(|entity| domain.poses.get(*entity).map(|pose| pose.0.translation))
+            .filter_map(|entity| domain.poses.get(*entity).map(|pose| pose.point))
             .collect()
     }
 

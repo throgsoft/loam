@@ -202,7 +202,7 @@ impl Presenter {
 
 #[cfg(test)]
 mod tests {
-    use loam_math::{EuclideanR4, Iso4Flat};
+    use loam_math::EuclideanR4;
     use loam_runtime::{
         DomainBuilder, Instance, LogCapacity, Material, Pose, PreparedGeometry, Projection4,
         Records, Session, SimConfig, SpawnBundle, ViewSpec,
@@ -293,7 +293,7 @@ mod tests {
         let root = session.views().root();
         let spun = session.dispatch(|d| {
             let eye = d
-                .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+                .spawn(SpawnBundle::new().at(r4, Pose::at(glam::Vec4::ZERO)))
                 .unwrap();
             d.domains.typed(r4).unwrap().add_view(ViewSpec::new(
                 root,
@@ -302,10 +302,7 @@ mod tests {
             ));
             d.spawn(
                 SpawnBundle::new()
-                    .at(
-                        r4,
-                        Pose(Iso4Flat::from_translation(glam::Vec4::NEG_Z * 4.0)),
-                    )
+                    .at(r4, Pose::at(glam::Vec4::NEG_Z * 4.0))
                     .instance(Instance::new(edges, white))
                     .row(0.0_f32),
             )
@@ -335,7 +332,7 @@ mod tests {
         let spin = |session: &mut Session<Spun>| {
             if let Ok(domain) = session.domains_mut().typed(r4) {
                 if let Some(pose) = domain.poses.get_mut(spun) {
-                    pose.0.translation.x += 0.01;
+                    pose.point.x += 0.01;
                 }
             }
         };
@@ -400,14 +397,11 @@ mod tests {
         let root = session.views().root();
         session.dispatch(|d| {
             let eye = d
-                .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+                .spawn(SpawnBundle::new().at(r4, Pose::at(glam::Vec4::ZERO)))
                 .expect("the eye spawned");
             d.spawn(
                 SpawnBundle::new()
-                    .at(
-                        r4,
-                        Pose(Iso4Flat::from_translation(glam::Vec4::NEG_Z * 4.0)),
-                    )
+                    .at(r4, Pose::at(glam::Vec4::NEG_Z * 4.0))
                     .instance(Instance::new(geometry, body).sectioned(cut))
                     .row(0.0_f32),
             )
@@ -465,14 +459,11 @@ mod tests {
             });
             session.dispatch(|d| {
                 let eye = d
-                    .spawn(SpawnBundle::new().at(domain, Pose(Iso4Flat::IDENTITY)))
+                    .spawn(SpawnBundle::new().at(domain, Pose::at(glam::Vec4::ZERO)))
                     .expect("the eye spawned");
                 d.spawn(
                     SpawnBundle::new()
-                        .at(
-                            domain,
-                            Pose(Iso4Flat::from_translation(glam::Vec4::NEG_Z * 4.0)),
-                        )
+                        .at(domain, Pose::at(glam::Vec4::NEG_Z * 4.0))
                         .instance(Instance::new(geometry, white))
                         .row(0.0_f32),
                 )

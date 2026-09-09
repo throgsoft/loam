@@ -1,6 +1,6 @@
 use glam::Vec4;
 use loam_app::session::run;
-use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat};
+use loam_math::{Bivector, Bivector4, EuclideanR4};
 use loam_runtime::host::{HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, Bindings, Command, Commands, Dispatch, DomainBuilder, Domains, Input,
@@ -44,11 +44,11 @@ fn main() -> Result<(), HostError> {
         };
         d.spawn(
             SpawnBundle::new()
-                .at(r4, Pose(Iso4Flat::IDENTITY))
+                .at(r4, Pose::at(Vec4::ZERO))
                 .instance(Instance::new(edges, white))
                 .row(spin),
         )?;
-        let eye = Pose(Iso4Flat::from_translation(Vec4::W * FOCAL_DISTANCE));
+        let eye = Pose::at(Vec4::W * FOCAL_DISTANCE);
         let eye = d.spawn(SpawnBundle::new().at(r4, eye))?;
         let projection = Projection4 {
             focal: FOCAL_DISTANCE,
@@ -102,7 +102,7 @@ fn main() -> Result<(), HostError> {
                     continue;
                 }
                 if let Some(pose) = r4.poses.get_mut(entity) {
-                    pose.0.rotation = ((spin.omega * step.dt).exp() * pose.0.rotation).normalize();
+                    pose.frame = ((spin.omega * step.dt).exp() * pose.frame).normalize();
                 }
             }
         },

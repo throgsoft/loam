@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::collections::BTreeMap;
 
-use loam_math::{EuclideanR4, Iso4Flat, Space};
+use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
     Access, AppCommand, Command, Ctx, DepthEnvelope, Dispatch, DomainBuilder, DomainError,
     DomainHandle, DomainRay, Entity, Facility, Field, FieldKind, FieldOp, Growth, ImageRay, Input,
@@ -9,6 +9,8 @@ use loam_runtime::{
     Publication, Publish, PublishError, RecordBuffer, Records, Rejection, Reservation,
     RestoreError, Session, SimConfig, SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec,
 };
+
+type Vec4 = <EuclideanR4 as Space>::Point;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Tag(u32);
@@ -56,11 +58,11 @@ fn session() -> (Session<Probe>, DomainHandle<EuclideanR4>) {
 }
 
 fn placed(r4: DomainHandle<EuclideanR4>, tag: Tag) -> SpawnBundle<Probe> {
-    SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)).row(tag)
+    SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)).row(tag)
 }
 
 fn at(xyzw: [f32; 4]) -> Pose<EuclideanR4> {
-    Pose(Iso4Flat::from_translation(xyzw.into()))
+    Pose::at(xyzw.into())
 }
 
 fn live(session: &Session<Probe>) -> BTreeMap<Entity, u32> {
@@ -109,8 +111,8 @@ impl Facility<EuclideanR4> for Drift {
     ) -> Result<(), DomainError> {
         self.steps += 1;
         for (_, pose) in poses.iter_mut() {
-            pose.0.translation.x += step.dt;
-            pose.0.translation.y = self.steps as f32;
+            pose.point.x += step.dt;
+            pose.point.y = self.steps as f32;
         }
         Ok(())
     }
@@ -137,7 +139,7 @@ impl ViewMapping<EuclideanR4> for DropW {
         eye: &Pose<EuclideanR4>,
         point: <EuclideanR4 as Space>::Point,
     ) -> Option<[f32; 3]> {
-        let relative = point - eye.0.translation;
+        let relative = point - eye.point;
         Some([relative.x, relative.y, relative.z])
     }
 
@@ -266,11 +268,7 @@ fn restored_relations_domain_poses_or_the_tick_differ_from_the_snapshot() {
     assert_eq!(session.app.pairs.incoming(to).count(), 1);
     session.tick().unwrap();
     let poses = &session.domains_mut().typed(r4).unwrap().poses;
-    let position = |entity| {
-        poses
-            .get(entity)
-            .map(|pose| (pose.0.translation.x, pose.0.translation.y))
-    };
+    let position = |entity| poses.get(entity).map(|pose| (pose.point.x, pose.point.y));
     assert_eq!(position(from), Some((dt + dt + dt + dt, 4.0)));
     assert_eq!(position(a), None);
 }

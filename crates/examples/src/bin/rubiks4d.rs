@@ -169,14 +169,14 @@ fn place_cell(app: &CubeStores, r4: &mut TypedDomain<EuclideanR4>, rotor: Rotor4
         }
         let iso = EuclideanR4.iso_compose(Iso4Flat::from_rotation(rotor), piece.iso());
         if let Some(pose) = r4.poses.get_mut(piece_entity) {
-            pose.0 = iso;
+            *pose = Pose::from(iso);
         }
         for id in app.slots.outgoing(piece_entity) {
             let Some(link) = app.slots.get(id) else {
                 continue;
             };
             if let Some(pose) = r4.poses.get_mut(link.to) {
-                pose.0 = EuclideanR4.iso_compose(iso, link.data.iso());
+                *pose = Pose::from(EuclideanR4.iso_compose(iso, link.data.iso()));
             }
         }
     }
@@ -348,7 +348,11 @@ fn main() -> Result<(), HostError> {
                 grid,
                 orientation: Rotor4::IDENTITY,
             };
-            let piece_entity = d.spawn(SpawnBundle::new().at(r4, Pose(piece.iso())).row(piece))?;
+            let piece_entity = d.spawn(
+                SpawnBundle::new()
+                    .at(r4, Pose::from(piece.iso()))
+                    .row(piece),
+            )?;
             for (axis, &sign) in grid.iter().enumerate() {
                 if sign == 0 {
                     continue;
@@ -357,7 +361,10 @@ fn main() -> Result<(), HostError> {
                 let slot = Slot { local: cell };
                 let sticker = d.spawn(
                     SpawnBundle::new()
-                        .at(r4, Pose(EuclideanR4.iso_compose(piece.iso(), slot.iso())))
+                        .at(
+                            r4,
+                            Pose::from(EuclideanR4.iso_compose(piece.iso(), slot.iso())),
+                        )
                         .instance(Instance::new(
                             sticker_geometry,
                             cell_materials[cell.color()],
@@ -367,7 +374,7 @@ fn main() -> Result<(), HostError> {
                 d.app.slots.link(piece_entity, sticker, slot)?;
             }
         }
-        let eye = Pose(Iso4Flat::from_translation(Vec4::W * FOCAL_DISTANCE));
+        let eye = Pose::at(Vec4::W * FOCAL_DISTANCE);
         let eye = d.spawn(SpawnBundle::new().at(r4, eye))?;
         let projection = Projection4 {
             focal: FOCAL_DISTANCE,
