@@ -70,15 +70,14 @@ impl FieldOp {
         }
     }
 
-    /// The weakest operand kind, dropped to `ConservativeBound` by subtraction and smooth union, which are not distances.
+    /// The weakest operand kind, dropped to `ConservativeBound` by intersection, subtraction, and smooth union; a union stays exact outside the solid and under-reports penetration inside it, never inventing separation.
     pub fn result_kind(self, operands: &[FieldKind]) -> FieldKind {
         let weakest = operands
             .iter()
             .copied()
             .fold(FieldKind::ExactDistance, FieldKind::weaker);
         match self {
-            FieldOp::Union | FieldOp::Intersection | FieldOp::Transform => weakest,
-            FieldOp::Subtraction | FieldOp::SmoothUnion { .. } => {
+            FieldOp::Intersection | FieldOp::Subtraction | FieldOp::SmoothUnion { .. } => {
                 weakest.weaker(FieldKind::ConservativeBound)
             }
             _ => weakest,
@@ -236,14 +235,18 @@ impl Ball {
     }
 }
 
-fn primitive_ball(op: u32, prim: &FieldPrimitive) -> Ball {
+fn primitive_ball(op: u32, prim: &FieldPrimitive, extruded_w: bool) -> Ball {
     let r = prim.params;
     match op {
-        OP_SPHERE | OP_HYPERSPHERE => Ball {
+        OP_HYPERSPHERE => Ball {
             center: prim.translation,
             radius: r[0].abs(),
         },
-        OP_BOX => Ball {
+        OP_SPHERE if !extruded_w => Ball {
+            center: prim.translation,
+            radius: r[0].abs(),
+        },
+        OP_BOX if !extruded_w => Ball {
             center: prim.translation,
             radius: (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt(),
         },
@@ -251,7 +254,7 @@ fn primitive_ball(op: u32, prim: &FieldPrimitive) -> Ball {
     }
 }
 
-fn subtree_ball(primitives: &[FieldPrimitive], range: &[u32]) -> Ball {
+fn subtree_ball(primitives: &[FieldPrimitive], range: &[u32], extruded_w: bool) -> Ball {
     if !range.len().is_multiple_of(2) {
         return UNBOUNDED;
     }
@@ -269,7 +272,7 @@ fn subtree_ball(primitives: &[FieldPrimitive], range: &[u32]) -> Ball {
                 if sp == MAX_STACK {
                     return UNBOUNDED;
                 }
-                stack[sp] = primitive_ball(op, prim);
+                stack[sp] = primitive_ball(op, prim, extruded_w);
                 sp += 1;
             }
             OP_UNION | OP_INTERSECTION | OP_SUBTRACTION | OP_SMOOTH_UNION => {
@@ -940,7 +943,7 @@ impl FieldCompiler {
         Ok((self.program.program.len() / 2) as u32 + self.program.primitives.len() as u32)
     }
 
-    fn rebuild_bounds(&mut self) -> u32 {
+    fn rebuild_bounds(&mut self, extruded_w: bool) -> u32 {
         for cut in &mut self.cuts {
             cut.ball = if cut.implicit {
                 UNBOUNDED
@@ -950,7 +953,7 @@ impl FieldCompiler {
                     .program
                     .get(cut.start as usize..cut.end as usize)
                 {
-                    Some(range) => subtree_ball(&self.program.primitives, range),
+                    Some(range) => subtree_ball(&self.program.primitives, range, extruded_w),
                     None => UNBOUNDED,
                 }
             };
@@ -1097,7 +1100,7 @@ impl FieldCompiler {
         } else {
             self.patch(space, poses)?
         };
-        cost.index_maintenance += self.rebuild_bounds();
+        cost.index_maintenance += self.rebuild_bounds(space.chart_dimension() > 3);
         self.compiled = true;
         Ok(cost)
     }
@@ -1751,6 +1754,121 @@ mod tests {
             assert!(
                 (norm - 1.0).abs() < 1e-2,
                 "probe {probe:?}: gradient norm {norm} on an exact field"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sphere_off_the_w_slice_keeps_the_value_its_ball_would_cull() {
+        use crate::view::Vec4;
+        use loam_math::{EuclideanR4, Iso4Flat};
+
+        let mut entities = test_entities();
+        let mut domain = DomainBuilder::new("r4", EuclideanR4)
+            .tracked(DEFAULT_LOG_CAPACITY)
+            .fields()
+            .build(DomainId::new(0), entities.scene());
+        let mut place = |at: Vec4, op: FieldOp, operands: &[Entity]| {
+            let entity = entities.spawn();
+            domain
+                .poses
+                .insert(entity, Pose(Iso4Flat::from_translation(at)))
+                .expect("pose row");
+            domain
+                .fields_mut()
+                .expect("field store")
+                .insert(
+                    entity,
+                    Field {
+                        kind: FieldKind::ExactDistance,
+                        op,
+                        operands: operands.to_vec(),
+                    },
+                )
+                .expect("field row");
+            entity
+        };
+        let shell = place(Vec4::new(0.0, 0.0, 0.0, 10.0), sphere(1.0), &[]);
+        let near = place(
+            Vec4::new(5.0, 0.0, 0.0, 0.0),
+            FieldOp::HyperSphere { radius: 1.0 },
+            &[],
+        );
+        place(Vec4::ZERO, FieldOp::Union, &[near, shell]);
+        domain.compile_fields().expect("compile");
+
+        let program = domain.field_program();
+        let probe = [1.0, 0.0, 0.0, 0.0];
+        let unculled = program.evaluate(probe).expect("eval").0;
+        let culled = program.evaluate_bounded(probe, 0.0).expect("eval").0;
+        assert!(
+            unculled.abs() < 1e-6,
+            "the unit sphere translated to w = 10 reads {unculled} on its own surface"
+        );
+        assert_eq!(
+            culled, unculled,
+            "the hierarchy culled a surface the program evaluates"
+        );
+    }
+
+    #[test]
+    fn an_intersection_of_exact_half_spaces_reports_a_bound_not_a_distance() {
+        let mut fixture = Fixture::new();
+        let west = fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::HalfSpace {
+                normal: [-1.0, 0.0, 0.0],
+                offset: 0.0,
+            },
+            &[],
+        );
+        let south = fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::HalfSpace {
+                normal: [0.0, -1.0, 0.0],
+                offset: 0.0,
+            },
+            &[],
+        );
+        fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Intersection,
+            &[west, south],
+        );
+        fixture.compile().expect("compile");
+
+        let program = fixture.domain.field_program();
+        let corner = [-1.0, -1.0, 0.0, 0.0];
+        let (value, kind) = program.evaluate(corner).expect("eval");
+        assert_eq!(kind, FieldKind::ConservativeBound);
+        assert!(
+            (value - 1.0).abs() < 1e-6,
+            "the intersection reads {value}, not the max of the two half-spaces"
+        );
+        assert!(
+            value < 2.0f32.sqrt() - 1e-3,
+            "{value} is not below the true distance {} to the quadrant",
+            2.0f32.sqrt()
+        );
+
+        #[cfg(feature = "physics")]
+        {
+            use loam_physics::euclidean_r3::sphere_body_r3;
+            use loam_physics::field_contact::sphere_against_field;
+            use loam_physics::{FieldRefusal, World};
+
+            let mut world = World::new(EuclideanR3);
+            let body = world.push_body(
+                sphere_body_r3(Vec3::new(-1.0, -1.0, 0.0), Vec3::ZERO, 1.2, 1.0).expect("body"),
+            );
+            assert_eq!(
+                sphere_against_field(&world.bodies[body], world.geometry(), program, &EuclideanR3)
+                    .err(),
+                Some(FieldRefusal::Kind(FieldKind::ConservativeBound)),
+                "the contact query read a bound as separation"
             );
         }
     }

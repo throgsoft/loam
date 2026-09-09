@@ -579,7 +579,7 @@ impl Rotor4 {
     pub fn from_rotation_arc(from: Vec4, to: Vec4) -> Self {
         let plane = Bivector4::wedge(from, to);
         let magnitude = plane.magnitude();
-        if magnitude < 1e-6 {
+        if magnitude < ARC_PLANE_EPSILON {
             if from.dot(to) > 0.0 {
                 return Self::IDENTITY;
             }
@@ -670,6 +670,44 @@ impl Rotor4 {
         let c3 = <Self as Rotor>::apply(self, Vec4::new(0.0, 0.0, 0.0, 1.0));
         [c0.to_array(), c1.to_array(), c2.to_array(), c3.to_array()]
     }
+
+    /// The rotor whose frame is `columns`, or `None` for a frame no rotor rebuilds within 1e-3, such as a reflection or a skew.
+    pub fn from_mat4(columns: &[[f32; 4]; 4]) -> Option<Self> {
+        let target = columns.map(Vec4::from_array);
+        let axes = [Vec4::X, Vec4::Y, Vec4::Z];
+        let mut rotor = Self::IDENTITY;
+        for (axis, basis) in axes.into_iter().enumerate() {
+            let from = <Self as Rotor>::apply(&rotor, basis);
+            rotor = rotor * arc_holding(from, target[axis], &target[..axis]);
+        }
+        rotor
+            .to_mat4()
+            .iter()
+            .flatten()
+            .zip(columns.iter().flatten())
+            .all(|(built, given)| (built - given).abs() <= ROTATION_TOLERANCE)
+            .then_some(rotor)
+    }
+}
+
+const ARC_PLANE_EPSILON: f32 = 1e-6;
+const ROTATION_TOLERANCE: f32 = 1e-3;
+
+fn arc_holding(from: Vec4, to: Vec4, held: &[Vec4]) -> Rotor4 {
+    if Bivector4::wedge(from, to).magnitude() >= ARC_PLANE_EPSILON || from.dot(to) > 0.0 {
+        return Rotor4::from_rotation_arc(from, to);
+    }
+    let mut free = Vec4::ZERO;
+    for axis in [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W] {
+        let mut residual = axis - from * axis.dot(from);
+        for fixed in held {
+            residual -= *fixed * residual.dot(*fixed);
+        }
+        if residual.length_squared() > free.length_squared() {
+            free = residual;
+        }
+    }
+    (Bivector4::wedge(from, free.normalize()) * std::f32::consts::PI).exp()
 }
 
 impl Mul for Rotor4 {
@@ -935,6 +973,35 @@ mod tests {
             (by_matrix - by_rotor).length() < 1e-5,
             "matrix application {by_matrix:?} should match rotor application {by_rotor:?}"
         );
+    }
+
+    #[test]
+    fn rotor4_from_mat4_rebuilds_the_frame_including_half_turns() {
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let half = std::f32::consts::PI;
+        for rotor in [
+            Rotor4::IDENTITY,
+            Bivector4::new(0.7, 0.0, 0.0, 0.0, 0.0, 0.3).exp(),
+            Bivector4::new(quarter, 0.0, 0.0, 0.0, 0.0, quarter).exp(),
+            Bivector4::new(0.0, 0.0, 0.0, half, 0.0, 0.0).exp(),
+            Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, half).exp(),
+        ] {
+            let frame = rotor.to_mat4();
+            let rebuilt = Rotor4::from_mat4(&frame)
+                .unwrap_or_else(|| panic!("{rotor:?} gave a frame no rotor rebuilds"))
+                .to_mat4();
+            for (slot, (built, given)) in rebuilt
+                .iter()
+                .flatten()
+                .zip(frame.iter().flatten())
+                .enumerate()
+            {
+                assert!(
+                    (built - given).abs() < 1e-5,
+                    "{rotor:?} slot {slot}: rebuilt {built} against {given}"
+                );
+            }
+        }
     }
 
     #[test]
