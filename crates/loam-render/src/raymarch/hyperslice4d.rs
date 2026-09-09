@@ -776,6 +776,7 @@ impl Hyperslice4DNode {
         self.clear_color = color;
     }
 
+    /// Grows by doubling in `set_bodies` and never shrinks or truncates.
     pub fn body_capacity(&self) -> usize {
         self.body_capacity
     }

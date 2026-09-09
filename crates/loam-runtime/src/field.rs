@@ -67,6 +67,7 @@ impl FieldOp {
         }
     }
 
+    /// The weakest operand kind, dropped to `ConservativeBound` by subtraction and smooth union, which are not distances.
     pub fn result_kind(self, operands: &[FieldKind]) -> FieldKind {
         let weakest = operands
             .iter()
@@ -82,6 +83,7 @@ impl FieldOp {
     }
 }
 
+/// Matches `LoamFieldPrimitive` in field_march.wgsl; a half-space's offset is folded into `translation` at compile time.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct FieldPrimitive {
@@ -153,6 +155,7 @@ fn primitive_distance(op: u32, prim: &FieldPrimitive, p: [f32; 4]) -> f32 {
     }
 }
 
+// Quilez, "Smooth minimum", iquilezles.org/articles/smin, polynomial form.
 fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
     let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
     (b * (1.0 - h) + a * h) - k * h * (1.0 - h)
@@ -580,6 +583,7 @@ impl FieldCompiler {
         Ok((self.program.program.len() / 2) as u32 + self.program.primitives.len() as u32)
     }
 
+    // Kahn 1962, "Topological sorting of large networks", CACM 5(11).
     fn check_acyclic(&mut self) -> Result<(), DomainError> {
         self.work.clear();
         for index in 0..self.nodes.len() as u32 {
@@ -618,6 +622,7 @@ impl FieldCompiler {
         Ok(())
     }
 
+    /// Refuses a curved chart; then a pose change patches records and marks ancestors, an operand edit repairs that operator's edges, and only an insert, a removal, a resync, or the first compile rebuilds everything.
     pub fn compile<S: DomainSpace>(
         &mut self,
         space: &S,
@@ -1111,61 +1116,6 @@ mod tests {
             bytes, 0,
             "32 warmed incremental compiles allocated {bytes} bytes"
         );
-    }
-
-    #[test]
-    #[ignore = "measurement; run with --include-ignored --nocapture"]
-    fn compile_cost_on_a_thousand_primitives_measurement() {
-        let mut fixture = Fixture::new();
-        let leaves: Vec<Entity> = (0..1000)
-            .map(|i| {
-                fixture.spawn(
-                    Vec3::new(i as f32 * 0.5, 0.0, 0.0),
-                    FieldKind::ExactDistance,
-                    sphere(0.2),
-                    &[],
-                )
-            })
-            .collect();
-        let mut level = leaves.clone();
-        while level.len() > 1 {
-            level = level
-                .chunks(2)
-                .map(|pair| {
-                    if pair.len() == 1 {
-                        pair[0]
-                    } else {
-                        fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, FieldOp::Union, pair)
-                    }
-                })
-                .collect();
-        }
-        let root = level[0];
-        fixture.compile().expect("first compile");
-        fixture.compile().expect("settle");
-
-        fixture.move_to(leaves[500], Vec3::new(1.0, 2.0, 3.0));
-        println!("one primitive moved: {:?}", fixture.compile().unwrap());
-
-        let operands = fixture
-            .domain
-            .fields()
-            .expect("field store")
-            .get(root)
-            .expect("root row")
-            .operands
-            .clone();
-        fixture
-            .domain
-            .fields_mut()
-            .expect("field store")
-            .get_mut(root)
-            .expect("root row")
-            .operands = operands.into_iter().rev().collect();
-        println!("one operand list changed: {:?}", fixture.compile().unwrap());
-
-        fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, sphere(0.2), &[]);
-        println!("full rebuild: {:?}", fixture.compile().unwrap());
     }
 
     #[test]

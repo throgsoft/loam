@@ -53,6 +53,7 @@ fn loam_field_primitive(op: u32, index: u32, p: vec4<f32>) -> f32 {
     return LOAM_FIELD_FAR;
 }
 
+// Quilez, "Smooth minimum", iquilezles.org/articles/smin, polynomial form.
 fn loam_field_smooth_min(a: f32, b: f32, k: f32) -> f32 {
     let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
     return mix(b, a, h) - k * h * (1.0 - h);

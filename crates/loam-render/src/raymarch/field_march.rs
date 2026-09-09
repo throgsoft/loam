@@ -8,6 +8,7 @@ use loam_runtime::field::{
 use loam_runtime::FieldProgram;
 use wgpu::*;
 
+/// Exact and conservative kinds step the full distance; `FixedStep` advances `implicit_step` because an implicit value bounds nothing.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MarchMode {
     ExactDistance,
@@ -286,6 +287,7 @@ impl FieldMarchNode {
         self.program_capacity
     }
 
+    /// Grows the storage buffers by doubling and rebinds; the pipeline is never rebuilt.
     pub fn set_program(&mut self, queue: &Queue, program: &FieldProgram) {
         let mut rebind = false;
         if program.primitives.len() > self.primitive_capacity {
