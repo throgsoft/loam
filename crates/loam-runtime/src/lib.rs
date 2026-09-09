@@ -3,6 +3,7 @@
 pub mod command;
 pub mod domain;
 pub mod entity;
+pub mod field;
 pub mod host;
 pub mod input;
 pub mod phase;
@@ -23,6 +24,12 @@ pub use domain::{
     FieldProgram, Instance, Pose, TypedDomain,
 };
 pub use entity::{Entities, EntitiesSnapshot, Entity, EntityKey, Epoch, RuntimeId, SceneId};
+pub use field::{
+    evaluate, evaluate_counted, FieldCompiler, FieldCost, FieldCounts, FieldError, FieldOp,
+    FieldPrimitive, FIELD_FAR, MAX_POSE_DEPTH, MAX_STACK, OP_BOX, OP_HALFSPACE, OP_HALFSPACE4,
+    OP_HYPERSPHERE, OP_INTERSECTION, OP_POP_POSE, OP_PUSH_POSE, OP_SMOOTH_UNION, OP_SPHERE,
+    OP_SUBTRACTION, OP_UNION,
+};
 pub use host::{HostConfig, HostError};
 pub use input::{ActionEvent, ActionId, Bindings, Input, Key, Pointer, PointerPhase};
 pub use phase::{

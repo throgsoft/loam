@@ -69,3 +69,25 @@ Zero ticks is the contract: a command a dispatch entry submits commits in
 the same boundary. `app_fn` boxes a closure per command; the typed path,
 `Domain::apply(&ChartCommand)`, is still `todo!()`. The CPU model and OS
 were not recorded.
+
+## Fields
+
+### Compile and traversal, 2026-09-09, debug build, unit6a-fields 72ba7c1
+
+The scene is 1000 spheres in a balanced union tree. `FieldCompiler::compile`
+reports these costs for one edit each, from a fixture that spawned the tree
+in a domain store and edited it in place:
+
+| edit | changed_inputs | affected_dependencies | program_layout | index_maintenance | full_rebuild |
+|---|---|---|---|---|---|
+| one primitive moved | 1 | 10 | 1 | 0 | no |
+| one operator's operand list changed | 1 | 0 | 2999 | 4 | no |
+| one primitive added | 1 | 0 | 3002 | 1998 | yes |
+
+Traversal on the same scene, `cargo test -p loam-render --test
+field_traversal -- --nocapture`, 16 rays: 336 steps and 336000 primitive
+evaluations for both the interpreter and loam-scene's specialized emit, 21
+steps per ray and 1000 evaluations per step; the interpreter retired 671664
+instructions and the hits agree to 1e-4. The two differ only in
+per-instruction dispatch, and both are linear in the population until a
+hierarchy prunes it. The CPU model and OS were not recorded.

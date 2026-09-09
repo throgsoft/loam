@@ -1,13 +1,15 @@
-//! The user shader exports `vs_fullscreen(@builtin(vertex_index))` and
-//! `fs_main(@builtin(position))`, and binds [`RayMarchUniforms`] at group 0,
-//! binding 0.
+//! A user shader for [`RayMarchNode`] exports `vs_fullscreen(@builtin(vertex_index))` and
+//! `fs_main(@builtin(position))` and binds [`RayMarchUniforms`] at group 0, binding 0;
+//! [`FieldMarchNode`] ships its own shader with the program at bindings 1 and 2.
 
+mod field_march;
 mod hyperslice4d;
 mod polytope_data;
+pub use field_march::{field_march_wgsl, FieldMarchNode, FieldMarchUniforms, MarchMode};
 pub use hyperslice4d::{
     BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
-    MAX_BODIES, SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE, SHAPE_600CELL,
-    SHAPE_CLIFFORD_TORUS, SHAPE_DUOCYLINDER, SHAPE_PENTATOPE, SHAPE_SPHERINDER, SHAPE_TESSERACT,
+    SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE, SHAPE_600CELL, SHAPE_CLIFFORD_TORUS,
+    SHAPE_DUOCYLINDER, SHAPE_PENTATOPE, SHAPE_SPHERINDER, SHAPE_TESSERACT,
 };
 pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
 
