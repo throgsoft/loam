@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn characters_the_font_lacks_are_rejected() {
-        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let bytes = include_bytes!("../../../examples/fonts/lmroman10-bold.otf");
         let font = FontRef::try_from_slice(bytes).expect("parse font");
         let missing = '\u{10FFFF}';
         assert_eq!(font.glyph_id(missing), GlyphId(0));
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn control_characters_are_rejected() {
-        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let bytes = include_bytes!("../../../examples/fonts/lmroman10-bold.otf");
         let font = FontRef::try_from_slice(bytes).expect("parse font");
         for ch in ['\t', '\n', '\u{7F}'] {
             assert_eq!(
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn letters_are_placed_at_their_own_pen_positions() {
-        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let bytes = include_bytes!("../../../examples/fonts/lmroman10-bold.otf");
         let font = FontRef::try_from_slice(bytes).expect("parse font");
         let letters = layout_word(&font, "LOAM", &params()).expect("layout");
 
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn counters_stay_open() {
-        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let bytes = include_bytes!("../../../examples/fonts/lmroman10-bold.otf");
         let font = FontRef::try_from_slice(bytes).expect("parse font");
         let o = &layout_word(&font, "O", &params()).expect("layout")[0];
 
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn letters_serve_as_render_geometry_and_colliders() {
-        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let bytes = include_bytes!("../../../examples/fonts/lmroman10-bold.otf");
         let font = FontRef::try_from_slice(bytes).expect("parse font");
         let letters = layout_word(&font, "LOAM", &params()).expect("layout");
 
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn the_cover_encloses_every_letter_without_filling_its_counters() {
-        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let bytes = include_bytes!("../../../examples/fonts/lmroman10-bold.otf");
         let font = FontRef::try_from_slice(bytes).expect("parse font");
         let letters = layout_word(&font, "LOAM", &params()).expect("layout");
 
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn the_collider_pitch_moves_the_box_count_and_not_the_render_mesh() {
-        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let bytes = include_bytes!("../../../examples/fonts/lmroman10-bold.otf");
         let font = FontRef::try_from_slice(bytes).expect("parse font");
         let fine = layout_word(&font, "LOAM", &params()).expect("layout");
         let coarse_params = GlyphParams {
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn spaces_advance_without_geometry() {
-        let bytes = include_bytes!("../../../hero/fonts/lmroman10-bold.otf");
+        let bytes = include_bytes!("../../../examples/fonts/lmroman10-bold.otf");
         let font = FontRef::try_from_slice(bytes).expect("parse font");
         let letters = layout_word(&font, "A B", &params()).expect("layout");
 

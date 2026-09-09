@@ -21,6 +21,13 @@ pub enum PassOrder {
     AfterScene,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FrameFormat {
+    pub color: TextureFormat,
+    pub depth: TextureFormat,
+    pub sample_count: u32,
+}
+
 pub struct FrameTarget<'a> {
     pub color: &'a TextureView,
     pub depth: Option<&'a TextureView>,

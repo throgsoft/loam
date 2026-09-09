@@ -16,7 +16,7 @@ use loam_render::device::GpuContext;
 use loam_render::work::{BulkBuffers, Readbacks};
 use loam_runtime::WorkOrder;
 
-pub use app::{FrameHook, SessionApp};
+pub use app::{CaptureControl, FrameHook, SessionApp};
 pub use console::{SessionConsole, Submit};
 pub use debug_layer::{DebugLayer, DEBUG_LAYER};
 pub use frame::Target;

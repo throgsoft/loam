@@ -15,6 +15,7 @@ pub mod present;
 pub mod raymarch;
 pub mod shader;
 pub mod sky_ground;
+pub mod triangle_pass;
 pub mod triangle_raster;
 pub mod view;
 pub mod work;
@@ -33,6 +34,7 @@ pub use point_raster::{PointInstance, PointRasterNode, PointRasterUniforms};
 pub use present::Presenter;
 pub use raymarch::{FieldMarchNode, FieldMarchUniforms, MarchMode, RayMarchNode, RayMarchUniforms};
 pub use sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
+pub use triangle_pass::TriangleFeed;
 pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
 };

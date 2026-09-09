@@ -27,7 +27,7 @@ const REST_SPREAD: f32 = 0.02;
 const LANDING_SLIDE: f32 = 0.15;
 
 fn word() -> Vec<GlyphSolid> {
-    let bytes = include_bytes!("../../hero/fonts/lmroman10-bold.otf");
+    let bytes = include_bytes!("../../examples/fonts/lmroman10-bold.otf");
     let font = FontRef::try_from_slice(bytes).expect("parse font");
     layout_word(&font, WORD, &GlyphParams::default()).expect("layout")
 }

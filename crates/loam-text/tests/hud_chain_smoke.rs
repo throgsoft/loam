@@ -49,7 +49,7 @@ async fn request_device() -> Result<(Device, Queue), String> {
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn hud_frame_renders_into_an_offscreen_target_gpu_probe() {
-    let font_bytes = include_bytes!("../../hero/fonts/lmroman10-bold.otf");
+    let font_bytes = include_bytes!("../../examples/fonts/lmroman10-bold.otf");
     let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
 
     let target = device.create_texture(&wgpu::TextureDescriptor {

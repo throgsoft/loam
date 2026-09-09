@@ -15,6 +15,25 @@ pub struct FrameHook<'a, A: Stores> {
     pub sections: &'a [Section],
     pub ui: Option<&'a egui::Context>,
     pub size: (u32, u32),
+    pub capture: CaptureControl<'a>,
+}
+
+pub struct CaptureControl<'a> {
+    requests: &'a mut Vec<CaptureRequest>,
+}
+
+impl<'a> CaptureControl<'a> {
+    pub(crate) fn new(requests: &'a mut Vec<CaptureRequest>) -> Self {
+        Self { requests }
+    }
+
+    pub fn start(&mut self, request: CaptureRequest) {
+        self.requests.push(request);
+    }
+
+    pub fn stop(&mut self) {
+        self.requests.push(CaptureRequest::Stop);
+    }
 }
 
 pub(crate) type FrameFn<A> = Box<dyn FnMut(&mut FrameHook<'_, A>)>;
