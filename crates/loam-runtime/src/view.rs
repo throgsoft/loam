@@ -3,6 +3,8 @@ use loam_math::hyperbolic::{
     hyperboloid_to_klein, klein_to_poincare, poincare_to_hyperboloid, H3_DEPTH_ENVELOPE,
 };
 use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Space};
+use loam_shape::polytope::SectionScratch;
+use loam_shape::{LineMesh, TriangleMesh};
 
 use crate::domain::{ChartPoint, ChartPose, DomainId, DomainSpace, Pose};
 use crate::entity::Entity;
@@ -426,7 +428,23 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
 
     fn image_point(&self, eye: &Pose<S>, point: S::Point) -> Option<[f32; 3]>;
 
+    /// Image of `local`, a point in the frame of an entity at `pose`; the default maps the posed point, and a nonlinear map overrides it to map the rotated point and add the entity's image position after.
+    fn image_local(
+        &self,
+        space: &S,
+        eye: &Pose<S>,
+        pose: &Pose<S>,
+        local: S::Point,
+    ) -> Option<[f32; 3]> {
+        self.image_point(eye, space.iso_apply(pose.0, local))
+    }
+
     fn lift(&self, eye: &Pose<S>, ray: &ImageRay) -> Option<DomainRay<S>>;
+
+    /// Where this map cuts an entity at `pose`, for a prepared geometry that can be sectioned; a map that does not cut returns `None`.
+    fn section(&self, _eye: &Pose<S>, _pose: &Pose<S>) -> Option<SectionCut> {
+        None
+    }
 
     /// True when `lift` recovers a domain ray from any image ray; a map without one refuses grabs and field bridges by name.
     fn ray_lift(&self) -> bool {
@@ -457,6 +475,15 @@ impl<S: DomainSpace> ViewSpec<S> {
             revision: 0,
         }
     }
+}
+
+/// Where a slicing map cuts an entity and how it places the cut in the image.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SectionCut {
+    /// The cut's last chart coordinate in the eye frame, relative to the entity's origin.
+    pub offset: f32,
+    /// Multiplies a cut point's leading chart coordinates before the entity's own image position is added.
+    pub scale: f32,
 }
 
 /// R⁴ to R³ from a center `focal` behind the eye along +W onto the eye's own hyperplane.
@@ -526,6 +553,13 @@ impl ViewMapping<EuclideanR4> for Section4 {
         point: <EuclideanR4 as Space>::Point,
     ) -> Option<[f32; 3]> {
         Some(eye_relative4(eye, point).truncate().to_array())
+    }
+
+    fn section(&self, eye: &Pose<EuclideanR4>, pose: &Pose<EuclideanR4>) -> Option<SectionCut> {
+        Some(SectionCut {
+            offset: self.w - eye_relative4(eye, pose.0.translation).w,
+            scale: 1.0,
+        })
     }
 
     fn lift(&self, eye: &Pose<EuclideanR4>, ray: &ImageRay) -> Option<DomainRay<EuclideanR4>> {
@@ -679,11 +713,29 @@ pub struct PointRecord {
     pub color: [f32; 4],
 }
 
+/// One triangle of a view in its image space, with one colour for the face.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct TriangleRecord {
+    pub vertices: [[f32; 3]; 3],
+    pub color: [f32; 4],
+}
+
+#[derive(Default)]
+pub(crate) struct SectionScratchpad {
+    pub(crate) rotated: Vec<Vec4>,
+    pub(crate) cut: SectionScratch,
+    pub(crate) faces: TriangleMesh<3>,
+    pub(crate) perimeter: LineMesh<3>,
+}
+
 /// Records of one view map, in its image space.
 #[derive(Default)]
 pub struct ViewRecords {
     pub instances: RecordBuffer<InstanceRecord>,
     pub(crate) segments: Vec<SegmentRecord>,
+    pub(crate) triangles: Vec<TriangleRecord>,
+    pub(crate) scratch: SectionScratchpad,
     pub(crate) poses: Cursor,
     pub(crate) attachments: Cursor,
     pub(crate) revision: u32,
@@ -693,6 +745,10 @@ pub struct ViewRecords {
 impl ViewRecords {
     pub fn segments(&self) -> &[SegmentRecord] {
         &self.segments
+    }
+
+    pub fn triangles(&self) -> &[TriangleRecord] {
+        &self.triangles
     }
 
     /// The publication that last rebuilt these records; a skipped rebuild keeps it.

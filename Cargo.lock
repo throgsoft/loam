@@ -1478,6 +1478,7 @@ dependencies = [
  "glam",
  "loam-math",
  "loam-physics",
+ "loam-render",
  "loam-shape",
  "pollster",
  "thiserror 1.0.69",
@@ -2110,6 +2111,7 @@ dependencies = [
  "loam-runtime",
  "loam-scene",
  "loam-shape",
+ "loam-text",
 ]
 
 [[package]]

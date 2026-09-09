@@ -21,6 +21,7 @@ struct State {
     eye: Eye,
     mesh: PointMesh<3>,
     uploaded: bool,
+    uploads: u64,
     node: Option<PointRasterNode>,
     device: Option<Device>,
     queue: Option<Queue>,
@@ -44,6 +45,7 @@ impl PointPass {
                 eye: Eye::default(),
                 mesh: PointMesh::default(),
                 uploaded: false,
+                uploads: 0,
                 node: None,
                 device: None,
                 queue: None,
@@ -51,17 +53,19 @@ impl PointPass {
         }
     }
 
-    /// Stores the eye and rebuilds the point mesh; the record uploads it again only when a position differs from the last publish or the device was rebuilt.
+    /// Stores the eye and rebuilds the point mesh; the record uploads it again only when a position, colour, or radius differs from the last publish or the device was rebuilt.
     pub fn publish(&self, eye: &Eye, points: &[PointRecord]) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;
-        let same = state.mesh.positions.len() == points.len()
-            && state
-                .mesh
-                .positions
-                .iter()
-                .zip(points)
-                .all(|(held, point)| *held == point.position);
+        let mesh = &state.mesh;
+        let same = mesh.positions.len() == points.len()
+            && mesh.colors.len() == points.len()
+            && mesh.sizes.len() == points.len()
+            && points.iter().enumerate().all(|(index, point)| {
+                mesh.positions[index] == point.position
+                    && mesh.colors[index] == point.color
+                    && mesh.sizes[index] == point.radius_px
+            });
         state.uploaded &= same;
         let mesh = &mut state.mesh;
         mesh.positions.clear();
@@ -76,6 +80,10 @@ impl PointPass {
 
     pub fn point_count(&self) -> usize {
         self.shared.borrow().mesh.positions.len()
+    }
+
+    pub fn uploads(&self) -> u64 {
+        self.shared.borrow().uploads
     }
 }
 
@@ -102,6 +110,7 @@ impl FramePass for PointPass {
             eye,
             mesh,
             uploaded,
+            uploads,
             node,
             device,
             queue,
@@ -120,6 +129,7 @@ impl FramePass for PointPass {
         if !*uploaded {
             node.upload::<EuclideanR3, 3>(device, queue, mesh, &Projection::Identity);
             *uploaded = true;
+            *uploads += 1;
         }
         node.record(encoder, target.color, None, None);
     }

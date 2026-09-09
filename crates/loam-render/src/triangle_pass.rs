@@ -62,6 +62,10 @@ impl TriangleFeed {
     pub fn uploads(&self) -> u64 {
         self.input.borrow().uploads
     }
+
+    pub fn triangles(&self) -> usize {
+        self.input.borrow().mesh.indices.len()
+    }
 }
 
 struct Built {

@@ -3,6 +3,9 @@
 //! non-Latin text.
 
 pub mod glyph;
+pub mod pass;
+
+pub use pass::{TextDraw, TextPass};
 
 use std::collections::HashMap;
 

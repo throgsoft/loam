@@ -29,8 +29,8 @@ pub use command::{
 };
 pub use domain::{
     ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent, Domain, DomainBuilder, DomainError,
-    DomainHandle, DomainId, DomainSnapshot, DomainSpace, Domains, Facility, Field, FieldKind,
-    FieldProgram, Instance, Pose, TypedDomain,
+    DomainHandle, DomainId, DomainSnapshot, DomainSpace, Domains, EdgeShading, Facility, Field,
+    FieldKind, FieldProgram, Instance, Pose, TypedDomain,
 };
 pub use entity::{Entities, EntitiesSnapshot, Entity, EntityKey, Epoch, RuntimeId, SceneId};
 pub use field::{
@@ -50,8 +50,9 @@ pub use phase::{
 pub use physics::{Physics, PhysicsConfig};
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
-    Growth, Library, Material, MaterialId, PreparedGeometry, PreparedId, Publication, PublishError,
-    PublishedView, Records, RestoreError, Session, SessionSnapshot, SimConfig, Stamp, DOMAIN_STEP,
+    Growth, Library, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId, Publication,
+    PublishError, PublishedView, Records, RestoreError, Session, SessionSnapshot, SimConfig, Stamp,
+    DOMAIN_STEP,
 };
 pub use store::{
     Change, Changes, Cursor, ErasedStore, LogCapacity, Part, Partition, PartitionError, Parts,
@@ -62,6 +63,7 @@ pub use stores::{HasRelation, HasStore, Stores};
 pub use value::Value;
 pub use view::{
     DepthEnvelope, DomainRay, Eye, Identity3, ImageRay, ImageSpace, ImageSpaceId, InstanceRecord,
-    Klein, Orbit, Pick, Placement, PointRecord, Projection4, Rigid, Section4, SegmentRecord,
-    ViewId, ViewMapping, ViewRecords, ViewSpec, ViewSummary, ViewTarget, Views, ViewsSnapshot,
+    Klein, Orbit, Pick, Placement, PointRecord, Projection4, Rigid, Section4, SectionCut,
+    SegmentRecord, TriangleRecord, ViewId, ViewMapping, ViewRecords, ViewSpec, ViewSummary,
+    ViewTarget, Views, ViewsSnapshot,
 };

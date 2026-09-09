@@ -86,6 +86,15 @@ impl MaterialId {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PaletteId(u32);
+
+impl PaletteId {
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PreparedGeometry {
     Lines4 {
@@ -97,6 +106,11 @@ pub enum PreparedGeometry {
     Mesh3 {
         positions: Vec<[f32; 3]>,
         indices: Vec<u32>,
+    },
+    /// Edges for the wireframe and cells for the section, at canonical coordinates times `scale`.
+    Polytope4 {
+        polytope: loam_shape::polytope::Polytope4,
+        scale: f32,
     },
 }
 
@@ -132,6 +146,15 @@ impl PreparedGeometry {
             Self::Mesh3 { positions, .. } => {
                 farthest(positions.iter().map(|point| point.as_slice()))
             }
+            Self::Polytope4 { polytope, scale } => {
+                polytope
+                    .topology()
+                    .vertices
+                    .iter()
+                    .map(|vertex| vertex.length())
+                    .fold(0.0, f32::max)
+                    * scale
+            }
         }
     }
 }
@@ -156,6 +179,7 @@ impl Material {
 pub struct Library<'a> {
     pub geometry: &'a [PreparedGeometry],
     pub materials: &'a [Material],
+    pub palettes: &'a [Vec<[f32; 4]>],
 }
 
 impl Library<'_> {
@@ -165,6 +189,12 @@ impl Library<'_> {
             Some(Material::Flat { color }) => (*color, 1.0),
             None => ([1.0; 4], 1.0),
         }
+    }
+
+    pub(crate) fn palette(&self, palette: PaletteId) -> &[[f32; 4]] {
+        self.palettes
+            .get(palette.index())
+            .map_or(&[][..], Vec::as_slice)
     }
 }
 
@@ -277,6 +307,7 @@ pub struct Session<A: Stores> {
     input: Input,
     prepared: Vec<PreparedGeometry>,
     materials: Vec<Material>,
+    palettes: Vec<Vec<[f32; 4]>>,
     config: SimConfig,
     tick: Tick,
     sequence: u64,
@@ -330,6 +361,7 @@ impl<A: Stores> Session<A> {
             input: Input::default(),
             prepared: Vec::new(),
             materials: Vec::new(),
+            palettes: Vec::new(),
             config,
             tick: Tick::default(),
             sequence: 0,
@@ -397,6 +429,16 @@ impl<A: Stores> Session<A> {
 
     pub fn prepared(&self, id: PreparedId) -> Option<&PreparedGeometry> {
         self.prepared.get(id.index())
+    }
+
+    /// Two colours per prepared segment, start then end, read in the prepared geometry's own order; a segment past the palette's end keeps the material colour.
+    pub fn add_palette(&mut self, colors: Vec<[f32; 4]>) -> PaletteId {
+        self.palettes.push(colors);
+        PaletteId((self.palettes.len() - 1) as u32)
+    }
+
+    pub fn palette(&self, id: PaletteId) -> Option<&[[f32; 4]]> {
+        self.palettes.get(id.index()).map(Vec::as_slice)
     }
 
     pub fn add_material(&mut self, material: Material) -> MaterialId {
@@ -943,6 +985,7 @@ impl<A: Stores> Session<A> {
         let library = Library {
             geometry: &self.prepared,
             materials: &self.materials,
+            palettes: &self.palettes,
         };
         let mut count = 0;
         for domain in self.domains.iter() {
@@ -1203,6 +1246,217 @@ mod tests {
     crate::stores! {
         #[derive(Default)]
         pub struct Quiet {}
+    }
+
+    fn shaded_segments(
+        shading: crate::domain::EdgeShading,
+        at_w: f32,
+        prepare: impl FnOnce(&mut Session<Quiet>) -> (PreparedId, MaterialId),
+    ) -> Vec<crate::view::SegmentRecord> {
+        use crate::view::{Eye, Section4, Vec4};
+
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let (geometry, material) = prepare(&mut session);
+        let root = session.views().root();
+        session
+            .dispatch(|d| -> Result<(), Rejection> {
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))?;
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(
+                            r4,
+                            Pose(Iso4Flat::from_translation(Vec4::new(0.0, 0.0, -4.0, at_w))),
+                        )
+                        .instance(Instance::new(geometry, material).shaded(shading)),
+                )?;
+                d.domains
+                    .typed(r4)?
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: at_w }));
+                Ok(())
+            })
+            .expect("the view registered");
+        session.views_mut().root_mut().eye = Eye::default();
+        let mut records = Records::default();
+        records.publish(&mut session).expect("published");
+        let publication = records.lend().expect("the buffer is free");
+        publication.views[0].records.segments().to_vec()
+    }
+
+    #[test]
+    fn the_tesseract_cut_at_w_zero_publishes_the_square_caps_of_its_six_straddling_cells() {
+        use crate::view::{Eye, Section4, Vec4, ViewId};
+
+        const SIZE: f32 = 0.7;
+        const LIFT: f32 = 0.2;
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Polytope4 {
+            polytope: loam_shape::polytope::Polytope4::Tesseract,
+            scale: SIZE,
+        });
+        let body = session.add_material(Material::lines([1.0; 4], 1.0));
+        let cut = session.add_material(Material::lines([1.0, 0.85, 0.35, 1.0], 2.0));
+        let root = session.views().root();
+        let view = session
+            .dispatch(|d| -> Result<ViewId, Rejection> {
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))?;
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(
+                            r4,
+                            Pose(Iso4Flat::from_translation(Vec4::new(0.0, 0.0, -4.0, 0.0))),
+                        )
+                        .instance(Instance::new(geometry, body).sectioned(cut)),
+                )?;
+                Ok(d.domains
+                    .typed(r4)?
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 })))
+            })
+            .expect("the view registered");
+        session.views_mut().root_mut().eye = Eye::default();
+
+        let mut records = Records::default();
+        let read = |session: &mut Session<Quiet>, records: &mut Records<Quiet>| {
+            records.publish(session).expect("published");
+            let publication = records.lend().expect("the buffer is free");
+            let view = &publication.views[0];
+            let read = (
+                view.records.triangles().len(),
+                view.records.segments().len(),
+                view.records.built(),
+            );
+            records.release(publication);
+            read
+        };
+
+        let (triangles, segments, built) = read(&mut session, &mut records);
+        assert_eq!(
+            triangles, 24,
+            "the six cells that straddle w = 0 each cut to a square, and each square fans around its centroid into four triangles, not {triangles}"
+        );
+        assert_eq!(
+            segments,
+            32 + 24,
+            "the wireframe's 32 edges and the cut cube's 24 perimeter segments came to {segments}"
+        );
+        assert_eq!(
+            read(&mut session, &mut records).2,
+            built,
+            "an unchanged source and view rebuilt the section"
+        );
+
+        session
+            .dispatch(|d| -> Result<(), Rejection> {
+                d.domains
+                    .typed(r4)?
+                    .view_mut(view)
+                    .ok_or(Rejection::Unsupported("view"))?
+                    .mapping = Box::new(Section4 { w: LIFT });
+                Ok(())
+            })
+            .expect("the slice moved");
+        let (lifted, _, moved) = read(&mut session, &mut records);
+        assert_ne!(
+            moved, built,
+            "a new slice left the section at its old build"
+        );
+        assert_eq!(
+            lifted, 24,
+            "the cut at w = {LIFT} still meets six cells, not {lifted}"
+        );
+    }
+
+    #[test]
+    fn a_depth_shaded_segment_reads_its_colour_from_the_endpoints_own_w_not_the_bodys() {
+        use crate::domain::EdgeShading;
+
+        const EXTENT: f32 = 0.5;
+        const BACK: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+        const FRONT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+        let shading = EdgeShading::Depth {
+            back: BACK,
+            front: FRONT,
+            extent: EXTENT,
+        };
+        let prepare = |session: &mut Session<Quiet>| {
+            (
+                session.prepare(PreparedGeometry::Lines4 {
+                    segments: vec![[[0.0; 4], [0.0, 0.0, 0.0, EXTENT]]],
+                }),
+                session.add_material(Material::lines([1.0; 4], 1.0)),
+            )
+        };
+
+        for lifted in [0.0, 3.0] {
+            let segments = shaded_segments(shading, lifted, prepare);
+            assert_eq!(
+                segments[0].start_color,
+                [0.5, 0.0, 0.5, 1.0],
+                "the midpoint of the depth ramp is wrong for a body at w {lifted}"
+            );
+            assert_eq!(
+                segments[0].end_color, FRONT,
+                "the far endpoint of the depth ramp is wrong for a body at w {lifted}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_palette_colours_each_segment_by_its_prepared_index_and_no_shading_keeps_the_material() {
+        use crate::domain::EdgeShading;
+
+        const COLORS: [[f32; 4]; 4] = [
+            [1.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0],
+        ];
+        const MATERIAL: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
+        let two_edges = vec![
+            [[0.0; 4], [0.5, 0.0, 0.0, 0.0]],
+            [[0.0; 4], [0.0, 0.5, 0.0, 0.0]],
+        ];
+
+        let painted = shaded_segments(EdgeShading::Material, 0.0, |session| {
+            (
+                session.prepare(PreparedGeometry::Lines4 {
+                    segments: two_edges.clone(),
+                }),
+                session.add_material(Material::lines(MATERIAL, 1.0)),
+            )
+        });
+        assert_eq!(
+            painted.iter().map(|s| s.start_color).collect::<Vec<_>>(),
+            [MATERIAL, MATERIAL],
+            "an instance with no shading lost the material's line colour"
+        );
+
+        let mut id = None;
+        let painted = shaded_segments(
+            EdgeShading::Palette(PaletteId(0)),
+            0.0,
+            |session: &mut Session<Quiet>| {
+                id = Some(session.add_palette(COLORS.to_vec()));
+                (
+                    session.prepare(PreparedGeometry::Lines4 {
+                        segments: two_edges,
+                    }),
+                    session.add_material(Material::lines(MATERIAL, 1.0)),
+                )
+            },
+        );
+        assert_eq!(id, Some(PaletteId(0)));
+        assert_eq!(
+            painted
+                .iter()
+                .flat_map(|s| [s.start_color, s.end_color])
+                .collect::<Vec<_>>(),
+            COLORS,
+            "the palette did not follow the prepared segment endpoints in order"
+        );
     }
 
     #[test]
