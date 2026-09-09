@@ -12,6 +12,7 @@ pub mod raymarch;
 pub mod shader;
 pub mod sky_ground;
 pub mod triangle_raster;
+pub mod view;
 
 pub use depth::DepthBuffer;
 pub use lattice::Viewport;

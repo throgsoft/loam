@@ -93,6 +93,11 @@ pub struct RayMarchUniforms {
     pub tick: f32,
     /// Four scalar knobs; semantics are up to the user shader.
     pub params: [f32; 4],
+    /// Inverse of the eye's isometry on the domain's embedding; the view map composes it first.
+    pub eye_inverse: [[f32; 4]; 4],
+    /// Near distance of the root projection; see [`crate::view`].
+    pub near: f32,
+    pub _pad3: [f32; 3],
 }
 
 impl Default for RayMarchUniforms {
@@ -110,6 +115,9 @@ impl Default for RayMarchUniforms {
             time: 0.0,
             tick: 0.0,
             params: [0.0; 4],
+            eye_inverse: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            near: 0.05,
+            _pad3: [0.0; 3],
         }
     }
 }
@@ -120,6 +128,7 @@ pub struct RayMarchNode {
     uniform_buf: Buffer,
     bind_group: BindGroup,
     clear_color: Color,
+    has_depth: bool,
 }
 
 impl RayMarchNode {
@@ -127,6 +136,23 @@ impl RayMarchNode {
         device: &Device,
         surface_format: TextureFormat,
         shader: &ShaderModule,
+        sample_count: u32,
+    ) -> Self {
+        Self::with_depth(
+            device,
+            surface_format,
+            shader,
+            crate::DepthMode::Off,
+            sample_count,
+        )
+    }
+
+    /// The user's `fs_main` writes [`crate::view`]'s projective depth as `frag_depth`.
+    pub fn with_depth(
+        device: &Device,
+        surface_format: TextureFormat,
+        shader: &ShaderModule,
+        depth: crate::DepthMode,
         sample_count: u32,
     ) -> Self {
         let uniform_buf = device.create_buffer(&BufferDescriptor {
@@ -188,7 +214,13 @@ impl RayMarchNode {
                 topology: PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: depth.format().map(|format| DepthStencilState {
+                format,
+                depth_write_enabled: depth.writes(),
+                depth_compare: crate::view::DEPTH_COMPARE,
+                stencil: StencilState::default(),
+                bias: DepthBiasState::default(),
+            }),
             multisample: MultisampleState {
                 count: sample_count,
                 ..Default::default()
@@ -203,6 +235,7 @@ impl RayMarchNode {
             uniform_buf,
             bind_group,
             clear_color: Color::BLACK,
+            has_depth: depth.is_active(),
         }
     }
 
@@ -233,6 +266,34 @@ impl RayMarchNode {
         view: &wgpu::TextureView,
         viewport: crate::Viewport,
     ) {
+        self.record(encoder, view, None, viewport);
+    }
+
+    /// Clears both attachments; depth clears to [`crate::view::DEPTH_CLEAR`].
+    pub fn record(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        depth_view: Option<&wgpu::TextureView>,
+        viewport: crate::Viewport,
+    ) {
+        match (self.has_depth, depth_view.is_some()) {
+            (true, false) => panic!(
+                "RayMarchNode::record: the pipeline has a depth format but no depth view was given"
+            ),
+            (false, true) => panic!(
+                "RayMarchNode::record: the pipeline has no depth format but a depth view was given"
+            ),
+            _ => {}
+        }
+        let depth_stencil_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
+            view: dv,
+            depth_ops: Some(Operations {
+                load: LoadOp::Clear(crate::view::DEPTH_CLEAR),
+                store: StoreOp::Store,
+            }),
+            stencil_ops: None,
+        });
         let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("raymarch pass"),
             color_attachments: &[Some(RenderPassColorAttachment {
@@ -244,7 +305,7 @@ impl RayMarchNode {
                     store: StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment,
             timestamp_writes: None,
             occlusion_query_set: None,
         });

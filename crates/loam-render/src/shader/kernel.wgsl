@@ -44,6 +44,10 @@ fn loam_march_geodesic(ro: vec3<f32>, rd: vec3<f32>, ball_scale: f32) -> vec4<f3
     return vec4<f32>(0.0, 0.0, 0.0, -1.0);
 }
 
+fn loam_projective_depth(image: vec3<f32>, near: f32) -> f32 {
+    return near / max(-image.z, 1e-20);
+}
+
 fn loam_estimate_normal(p: vec3<f32>, ball_scale: f32) -> vec3<f32> {
     let eps = 0.0012 * max(ball_scale, 1e-5);
     let ex = vec3<f32>(eps, 0.0, 0.0);
