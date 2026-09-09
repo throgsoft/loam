@@ -1,11 +1,14 @@
 //! A user shader for [`RayMarchNode`] exports `vs_fullscreen(@builtin(vertex_index))` and
 //! `fs_main(@builtin(position))` and binds [`RayMarchUniforms`] at group 0, binding 0;
-//! [`FieldMarchNode`] ships its own shader with the program at bindings 1 and 2.
+//! [`FieldMarchNode`] ships its own shader with the primitives, program, and ball tree at bindings 1 to 3.
 
 mod field_march;
 mod hyperslice4d;
 mod polytope_data;
-pub use field_march::{field_march_wgsl, FieldMarchNode, FieldMarchUniforms, MarchMode};
+pub use field_march::{
+    field_march_counting_wgsl, field_march_wgsl, field_specialized_wgsl, FieldMarchNode,
+    FieldMarchUniforms, InlineBuilder, MarchMode, SpecializationBuilder, DEFAULT_SPECIALIZE_AFTER,
+};
 pub use hyperslice4d::{
     BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
     SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE, SHAPE_600CELL, SHAPE_CLIFFORD_TORUS,

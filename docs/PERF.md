@@ -91,3 +91,40 @@ steps per ray and 1000 evaluations per step; the interpreter retired 671664
 instructions and the hits agree to 1e-4. The two differ only in
 per-instruction dispatch, and both are linear in the population until a
 hierarchy prunes it. The CPU model and OS were not recorded.
+
+### Hierarchy, contact query, and build, 2026-09-09, unit6b-field-bounds d6ee385
+
+`cargo test -p loam-render --test field_traversal -- --nocapture` for the
+CPU rows, and the same with `--include-ignored --test-threads=1` for the
+GPU rows. Two scenes of 1000 spheres: the balanced union tree above, radius
+0.35, and a 100-unit cube, a 10 by 10 by 10 lattice with radius 4. CPU rows
+are 16 rays from the origin in a debug build; GPU rows are a 32 by 32
+counting kernel that the shipped kernel does not contain. Every count is
+per ray.
+
+| scene | path | hits | steps | evaluations | node visits | node skips |
+|---|---|---|---|---|---|---|
+| balanced, CPU | unculled | 16 of 16 | 21 | 21000 | | |
+| balanced, CPU | hierarchy | 16 of 16 | 21 | 784.4 | 6861.3 | 2656.7 |
+| cube, CPU | unculled | 14 of 16 | 27.44 | 27437.5 | | |
+| cube, CPU | hierarchy | 14 of 16 | 27.44 | 1041.9 | 9854.7 | 3899.1 |
+| balanced, GPU | unculled | 1014 pixels | | 26226.8 | | |
+| balanced, GPU | hierarchy | 1014 pixels | | 894.9 | 8112.3 | 3174.3 |
+| cube, GPU | unculled | 848 pixels | | 31988.2 | | |
+| cube, GPU | hierarchy | 848 pixels | | 1181.2 | 10766.6 | 4218.1 |
+
+The hit sets are identical culled and unculled on both interpreters, and
+the CPU values are bit-identical. Culling pays only when subtree balls are
+separated relative to the current best distance; the worst case is the
+unculled work plus 2n - 1 ball tests, with no O(log n) promise. The build
+is O(n log n) and runs on every compile that changes a pose: 1000
+primitives give 1999 nodes, a full compile reports changed_inputs 1999,
+program_layout 2999, and index_maintenance 3997 (1998 edges plus 1999 node
+writes), and a pose-only compile rewrites all 1999 nodes.
+
+A field contact query on the warmed balanced field, release build, median
+of 1000: 6.5 us (p90 7.3) for one distance plus the eight-sample gradient,
+against 47.7 us unculled; the `FieldNarrowphase::test` wrapper measured
+below the clock's resolution. These two timings came from throwaway tests
+the writer deleted, because no crate links both loam-physics with `r3` and
+loam-runtime; nothing in the tree reproduces them.

@@ -9,6 +9,7 @@ use crate::collider::Collider;
 use crate::collision::VectorOps;
 use crate::dirty::{DirtyBodies, DirtyDrain};
 use crate::edit::EditError;
+use crate::field_contact::FieldNarrowphase;
 use crate::geometry::GeometryStore;
 use crate::integrator::{integrate_body, BroadphaseBound, PhysicsSpace};
 use crate::manifold::{
@@ -16,6 +17,7 @@ use crate::manifold::{
     PENETRATION_SLOP, RESTITUTION_THRESHOLD,
 };
 use crate::narrowphase::Narrowphase;
+use crate::response::Contact;
 use crate::response::FRICTION_COEFF;
 use crate::state::WorldState;
 
@@ -149,11 +151,23 @@ struct ConstraintUnit {
     dense: (usize, usize),
 }
 
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FieldId(u32);
+
+struct FieldEntry {
+    anchor: BodyId,
+    field: Box<dyn loam_shape::field::DistanceField>,
+}
+
 pub struct World<S: PhysicsSpace> {
     pub space: S,
     pub bodies: BodyArena<S>,
     pub gravity: Option<S::Vector>,
     pub narrowphase: Narrowphase<S>,
+    pub field_narrowphase: FieldNarrowphase<S>,
+    fields: Vec<FieldEntry>,
+    field_bindings: Vec<(BodyId, FieldId)>,
     geometry: GeometryStore,
     /// PGS convergence depends on constraint order.
     pub manifolds: BTreeMap<PairKey, Manifold<S>>,
@@ -203,6 +217,9 @@ impl<S: PhysicsSpace> World<S> {
             bodies: BodyArena::new(),
             gravity: None,
             narrowphase: Narrowphase::new(),
+            field_narrowphase: FieldNarrowphase::new(),
+            fields: Vec::new(),
+            field_bindings: Vec::new(),
             geometry: GeometryStore::default(),
             manifolds: BTreeMap::new(),
             pgs_iters: DEFAULT_PGS_ITERS,
@@ -238,6 +255,46 @@ impl<S: PhysicsSpace> World<S> {
         let id = self.bodies.spawn(row);
         self.dirty.mark(id);
         id
+    }
+
+    /// `anchor` must be static; it leaves every collision group so the broadphase never pairs it, and it owns the field's contacts.
+    pub fn insert_field(
+        &mut self,
+        anchor: BodyId,
+        field: Box<dyn loam_shape::field::DistanceField>,
+    ) -> Result<FieldId, EditError> {
+        let Some(body) = self.bodies.get_mut(anchor) else {
+            return Err(EditError::StaleHandle);
+        };
+        if body.inv_mass() != 0.0 {
+            return Err(EditError::DynamicFieldAnchor);
+        }
+        body.collision_group = 0;
+        body.collision_mask = 0;
+        let id = FieldId(self.fields.len() as u32);
+        self.fields.push(FieldEntry { anchor, field });
+        Ok(id)
+    }
+
+    /// Every step queries the field for `body`; a contact lands in the manifold keyed by the body and the field's anchor.
+    pub fn bind_field(&mut self, body: BodyId, field: FieldId) -> Result<(), EditError> {
+        let Some(entry) = self.fields.get(field.0 as usize) else {
+            return Err(EditError::StaleHandle);
+        };
+        if entry.anchor == body {
+            return Err(EditError::AnchorBindsOwnField);
+        }
+        if self.bodies.get(body).is_none() {
+            return Err(EditError::StaleHandle);
+        }
+        if let Err(at) = self.field_bindings.binary_search(&(body, field)) {
+            self.field_bindings.insert(at, (body, field));
+        }
+        Ok(())
+    }
+
+    pub fn field_bindings(&self) -> &[(BodyId, FieldId)] {
+        &self.field_bindings
     }
 
     pub fn geometry(&self) -> &GeometryStore {
@@ -427,6 +484,8 @@ impl<S: PhysicsSpace> World<S> {
             geometry: self.geometry.clone(),
             manifolds: self.manifolds.clone(),
             time: self.time,
+            field_bindings: self.field_bindings.clone(),
+            field_anchors: self.fields.iter().map(|entry| entry.anchor).collect(),
             registrations: self.narrowphase.registrations().to_vec(),
         }
     }
@@ -436,10 +495,21 @@ impl<S: PhysicsSpace> World<S> {
         if self.narrowphase.registrations() != state.registrations {
             return Err(EditError::RegistrationMismatch);
         }
+        if self.fields.len() != state.field_anchors.len()
+            || self
+                .fields
+                .iter()
+                .zip(&state.field_anchors)
+                .any(|(entry, &anchor)| entry.anchor != anchor)
+        {
+            return Err(EditError::FieldMismatch);
+        }
         self.bodies = state.bodies.clone();
         self.geometry = state.geometry.clone();
         self.manifolds = state.manifolds.clone();
         self.time = state.time;
+        self.field_bindings.clear();
+        self.field_bindings.extend_from_slice(&state.field_bindings);
         self.dirty.mark_every(&self.bodies);
         self.pair_order.clear();
         self.constraints.clear();
@@ -536,12 +606,64 @@ impl<S: PhysicsSpace> World<S> {
             manifold.add_or_update(&self.space, a, b, contact);
         }
 
+        self.field_manifolds(&mut touched);
+
         touched.sort_unstable();
         self.counters.contacts = touched.len() as u32;
         self.manifolds
             .retain(|k, _| touched.binary_search(k).is_ok());
         self.touched_pairs = touched;
         self.pair_order = pairs;
+    }
+
+    fn field_manifolds(&mut self, touched: &mut Vec<PairKey>)
+    where
+        S::Vector: VectorOps,
+        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+    {
+        for index in 0..self.field_bindings.len() {
+            let (body, field) = self.field_bindings[index];
+            let Some(entry) = self.fields.get(field.0 as usize) else {
+                continue;
+            };
+            let anchor = entry.anchor;
+            let (Some(row), Some(_)) = (self.bodies.get(body), self.bodies.get(anchor)) else {
+                continue;
+            };
+            let Ok(found) =
+                self.field_narrowphase
+                    .test(row, &self.geometry, entry.field.as_ref(), &self.space)
+            else {
+                continue;
+            };
+            if found.separation >= 0.0 {
+                continue;
+            }
+            let key = canonical_pair(body, anchor);
+            let normal = if key.0 == anchor {
+                found.normal
+            } else {
+                -found.normal
+            };
+            let contact = Contact {
+                normal,
+                point: found.witness,
+                penetration: -found.separation,
+                restitution: (self.bodies[body].restitution + self.bodies[anchor].restitution)
+                    * 0.5,
+            };
+            let (i, j) = self.dense_pair(key);
+            let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
+            if let Some(manifold) = self.manifolds.get_mut(&key) {
+                manifold.refresh(&self.space, a, b);
+            }
+            touched.push(key);
+            let restitution = contact.restitution;
+            self.manifolds
+                .entry(key)
+                .or_insert_with(|| Manifold::new(key.0, key.1, restitution))
+                .add_or_update(&self.space, a, b, contact);
+        }
     }
 
     // Manifold membership must stay fixed until the solve ends.

@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use crate::body::BodyArena;
+use crate::body::{BodyArena, BodyId};
 use crate::collider::ColliderKind;
 use crate::geometry::GeometryStore;
 use crate::integrator::PhysicsSpace;
 use crate::manifold::Manifold;
-use crate::world::PairKey;
+use crate::world::{FieldId, PairKey};
 
 /// Physics state without configuration: gravity, solver iterations, and narrowphase functions stay with the world.
 #[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
@@ -21,6 +21,8 @@ pub struct WorldState<S: PhysicsSpace> {
     pub geometry: GeometryStore,
     pub manifolds: BTreeMap<PairKey, Manifold<S>>,
     pub time: f32,
+    pub field_bindings: Vec<(BodyId, FieldId)>,
+    pub field_anchors: Vec<BodyId>,
     #[cfg_attr(feature = "persist", serde(skip))]
     pub(crate) registrations: Vec<(ColliderKind, ColliderKind)>,
 }
