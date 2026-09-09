@@ -93,7 +93,7 @@ impl Shape {
 }
 
 /// One variant per [`Shape`] variant, and [`Shape::kind`] is total.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShapeKind {
     Sphere,
     HalfSpace,

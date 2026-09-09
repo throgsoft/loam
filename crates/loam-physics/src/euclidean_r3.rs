@@ -6,7 +6,7 @@ use crate::body::{BodyDef, RigidBody};
 use crate::collider::{Collider, ColliderKind};
 use crate::collision::{epa, gjk_intersect, GjkResult, PosedHull, Sphere as GjkSphere};
 use crate::geometry::GeometryStore;
-use crate::integrator::PhysicsSpace;
+use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
@@ -47,15 +47,15 @@ impl PhysicsSpace for EuclideanR3 {
     type AngVel = Bivector3;
     type Inertia = f32;
 
+    fn broadphase_bound(&self) -> BroadphaseBound {
+        BroadphaseBound::Certified
+    }
+
     fn supports_collider(&self, kind: ColliderKind) -> bool {
         matches!(
             kind,
             ColliderKind::Sphere | ColliderKind::ConvexPolytope3D | ColliderKind::HalfSpace
         )
-    }
-
-    fn valid_point(&self, position: Vec3) -> bool {
-        position.is_finite()
     }
 
     fn valid_vector(&self, vector: Vec3) -> bool {
@@ -561,6 +561,7 @@ pub fn dodecahedron_vertices(r: f32) -> Vec<Vec3> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::world::World;
 
     fn assert_close(a: f32, b: f32, tol: f32) {
@@ -671,6 +672,25 @@ mod tests {
         assert!(
             (len - 1.0).abs() < 1e-3,
             "orientation drifted off the unit manifold: |q| = {len}"
+        );
+    }
+
+    #[test]
+    fn the_default_registrations_name_only_this_spaces_kinds() {
+        let mut narrowphase = Narrowphase::new();
+        register_default_narrowphase(&mut narrowphase);
+        assert_eq!(
+            narrowphase.registrations(),
+            [
+                (ColliderKind::Sphere, ColliderKind::Sphere),
+                (ColliderKind::Sphere, ColliderKind::HalfSpace),
+                (ColliderKind::Sphere, ColliderKind::ConvexPolytope3D),
+                (ColliderKind::ConvexPolytope3D, ColliderKind::HalfSpace),
+                (
+                    ColliderKind::ConvexPolytope3D,
+                    ColliderKind::ConvexPolytope3D
+                ),
+            ]
         );
     }
 }

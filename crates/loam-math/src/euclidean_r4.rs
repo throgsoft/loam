@@ -70,6 +70,14 @@ impl Space for EuclideanR4 {
     fn is_chart_flat(&self) -> bool {
         true
     }
+
+    fn chart_envelope(&self) -> f32 {
+        f32::INFINITY
+    }
+
+    fn valid_point(&self, p: Vec4) -> bool {
+        p.is_finite()
+    }
 }
 
 impl IsometryGroup for EuclideanR4 {

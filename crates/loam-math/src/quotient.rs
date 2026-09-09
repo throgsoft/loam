@@ -92,6 +92,14 @@ impl Space for FlatTorus3 {
     fn is_chart_flat(&self) -> bool {
         false
     }
+
+    fn chart_envelope(&self) -> f32 {
+        f32::INFINITY
+    }
+
+    fn valid_point(&self, p: Vec3) -> bool {
+        p.is_finite()
+    }
 }
 
 impl IsometryGroup for FlatTorus3 {
@@ -372,6 +380,14 @@ impl Space for LensSpace {
         let carried = COVER.parallel_transport(from, lift, v);
 
         self.iso_transport(self.deck(-power), lift, carried)
+    }
+
+    fn chart_envelope(&self) -> f32 {
+        COVER.chart_envelope()
+    }
+
+    fn valid_point(&self, p: Vec4) -> bool {
+        COVER.valid_point(p)
     }
 }
 

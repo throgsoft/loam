@@ -22,7 +22,7 @@ glam       = { workspace = true }
 [dev-dependencies]
 pollster.workspace = true
 loam-math    = { path = "../loam-math",    version = "0.1.0" }
-loam-physics = { path = "../loam-physics", version = "0.1.0" }
+loam-physics = { path = "../loam-physics", version = "0.1.0", default-features = false, features = ["r4"] }
 
 [lints]
 workspace = true

@@ -10,9 +10,19 @@ description = "Rigid-body simulation and convex collision in two, three, and fou
 keywords = ["physics", "rigid-body", "collision", "gamedev"]
 categories = ["game-development", "simulation"]
 
+[features]
+default = ["r2", "r3", "r4"]
+r2 = []
+r3 = []
+r4 = []
+persist = ["dep:serde", "dep:ron", "dep:thiserror"]
+
 [dependencies]
 glam.workspace = true
 tracing.workspace = true
+serde = { workspace = true, optional = true }
+ron = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
 loam-math  = { path = "../loam-math",  version = "0.1.0" }
 loam-shape = { path = "../loam-shape", version = "0.1.0" }
 loam-time  = { path = "../loam-time",  version = "0.1.0", default-features = false }

@@ -11,6 +11,8 @@ const GEODESIC_DIRECTION_MIN: f32 = 1e-7;
 
 const TRANSPORT_DENOM_MIN: f32 = 1e-7;
 
+const UNIT_POINT_TOLERANCE: f32 = 1e-4;
+
 /// S³ with unit Vec4 points and ambient tangents; methods assume unit points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SphericalS3Embedded;
@@ -51,6 +53,14 @@ impl Space for SphericalS3Embedded {
         let sum = from + to;
         let denom = (sum.length_squared() * 0.5).max(TRANSPORT_DENOM_MIN);
         v - (v.dot(to) / denom) * sum
+    }
+
+    fn chart_envelope(&self) -> f32 {
+        std::f32::consts::PI
+    }
+
+    fn valid_point(&self, p: Vec4) -> bool {
+        p.is_finite() && (p.length_squared() - 1.0).abs() <= UNIT_POINT_TOLERANCE
     }
 }
 

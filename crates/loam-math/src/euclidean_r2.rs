@@ -78,6 +78,14 @@ impl Space for EuclideanR2 {
     fn is_chart_flat(&self) -> bool {
         true
     }
+
+    fn chart_envelope(&self) -> f32 {
+        f32::INFINITY
+    }
+
+    fn valid_point(&self, p: Vec2) -> bool {
+        p.is_finite()
+    }
 }
 
 impl IsometryGroup for EuclideanR2 {

@@ -131,6 +131,14 @@ impl Space for HyperbolicH3 {
         let conformal = (1.0 - to.length_squared()) / (1.0 - from.length_squared());
         conformal * gyr_apply(to, -from, v)
     }
+
+    fn chart_envelope(&self) -> f32 {
+        H3_DEPTH_ENVELOPE
+    }
+
+    fn valid_point(&self, p: Vec3) -> bool {
+        in_poincare_ball(p) && self.distance(Vec3::ZERO, p) <= H3_DEPTH_ENVELOPE
+    }
 }
 
 impl IsometryGroup for HyperbolicH3 {
@@ -653,6 +661,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_point_past_the_declared_envelope_is_refused() {
+        let s = h3();
+        assert_eq!(s.chart_envelope(), H3_DEPTH_ENVELOPE);
+        let at = |d: f32| Vec3::X * (0.5 * d).tanh();
+        assert!(s.valid_point(at(H3_DEPTH_ENVELOPE - 1.0)));
+        assert!(!s.valid_point(at(H3_DEPTH_ENVELOPE + 1.0)));
+        assert!(!s.valid_point(Vec3::X));
+        assert!(!s.valid_point(Vec3::splat(f32::NAN)));
     }
 
     #[test]

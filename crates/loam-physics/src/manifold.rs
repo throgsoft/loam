@@ -14,6 +14,14 @@ const CONTACT_BREAK_DISTANCE_SQ: f32 = CONTACT_BREAK_DISTANCE * CONTACT_BREAK_DI
 
 const MERGE_RADIUS_SQ: f32 = CONTACT_BREAK_DISTANCE_SQ;
 
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "persist",
+    serde(bound(
+        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
+        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
+    ))
+)]
 pub struct ContactPoint<S: PhysicsSpace> {
     pub world_point: S::Point,
     /// Witness in A's local frame.
@@ -41,6 +49,14 @@ impl<S: PhysicsSpace> Clone for ContactPoint<S> {
 
 impl<S: PhysicsSpace> Copy for ContactPoint<S> {}
 
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "persist",
+    serde(bound(
+        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
+        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
+    ))
+)]
 pub struct Manifold<S: PhysicsSpace> {
     /// Always `< body_b`.
     pub body_a: BodyId,

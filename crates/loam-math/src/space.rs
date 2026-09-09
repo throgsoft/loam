@@ -34,6 +34,10 @@ pub trait Space {
     fn is_chart_flat(&self) -> bool {
         false
     }
+
+    fn chart_envelope(&self) -> f32;
+
+    fn valid_point(&self, p: Self::Point) -> bool;
 }
 
 /// A distance-preserving group action, with tangent transport given by its differential.

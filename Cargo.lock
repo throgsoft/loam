@@ -1441,6 +1441,7 @@ dependencies = [
  "loam-egui",
  "loam-input",
  "loam-math",
+ "loam-physics",
  "loam-render",
  "loam-runtime",
  "loam-time",
@@ -1518,6 +1519,9 @@ dependencies = [
  "loam-math",
  "loam-shape",
  "loam-time",
+ "ron",
+ "serde",
+ "thiserror 1.0.69",
  "tracing",
 ]
 
