@@ -193,11 +193,12 @@ fn a_restore_drops_a_body_the_snapshot_never_had() {
 }
 
 #[test]
-fn a_refused_world_restore_leaves_the_pose_store_and_the_world_untouched() {
+fn a_refused_world_restore_leaves_the_pose_store_the_world_or_the_scene_changed() {
     let (mut session, r4) = session();
     let entity = ball(&mut session, r4, Vec4::new(0.0, 10.0, 0.0, 0.0));
     session.tick().unwrap();
     let snapshot = session.snapshot().unwrap();
+    let epoch = session.scene().epoch;
     session
         .domains_mut()
         .typed(r4)
@@ -223,6 +224,8 @@ fn a_refused_world_restore_leaves_the_pose_store_and_the_world_untouched() {
     );
     assert_eq!(only_pose(&mut session, r4).1, kept.0);
     assert_eq!(body_of(&mut session, r4, entity), kept.1);
+    assert_eq!(session.scene().epoch, epoch);
+    assert_eq!(session.entities().resolve(entity), Some(entity.key()));
 }
 
 #[test]

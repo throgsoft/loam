@@ -1078,7 +1078,7 @@ impl<A: Stores> Session<A> {
         })
     }
 
-    /// Refuses `NoCheckpoint` before touching anything; then cancels pending commands, reservations, and in-flight work, advances the epoch so every earlier external handle fails, and queues the bulk plan for `apply_restore`.
+    /// Validates the domain count, the authoritative checkpoints, and every domain's snapshot against its live configuration before it changes anything; then cancels pending commands, reservations, and in-flight work, advances the epoch so every earlier external handle fails, and queues the bulk plan for `apply_restore`.
     pub fn restore(&mut self, from: &SessionSnapshot<A>) -> Result<(), RestoreError> {
         if from.domains.len() != self.domains.len() {
             let first = from.domains.len().min(self.domains.len());
@@ -1098,6 +1098,9 @@ impl<A: Stores> Session<A> {
             {
                 return Err(RestoreError::NoCheckpoint(spec.name));
             }
+        }
+        for (domain, snapshot) in self.domains.iter().zip(&from.domains) {
+            domain.check_restore(snapshot)?;
         }
         self.flight.cancel_all();
         self.bulk.restore(&from.bulk);
@@ -1777,6 +1780,80 @@ mod tests {
             "16 warmed cycles asked the allocator for {bytes} bytes"
         );
         assert_eq!(session.entities().len(), 8);
+    }
+
+    crate::stores! {
+        #[derive(Default)]
+        pub struct Tagged {
+            tags: Store<u32>,
+        }
+    }
+
+    #[test]
+    fn a_warmed_restore_allocates_beyond_the_rows_it_copies() {
+        use crate::domain::{Field, FieldKind};
+        use crate::field::FieldOp;
+        use crate::view::Vec4;
+
+        let mut session = Session::new(Tagged::default(), SimConfig::default());
+        let r4 = session.register_domain(
+            DomainBuilder::new("r4", EuclideanR4)
+                .tracked(LogCapacity::default())
+                .fields(),
+        );
+        session.dispatch(|d| {
+            let at = |x: f32| {
+                SpawnBundle::new().at(
+                    r4,
+                    Pose(Iso4Flat::from_translation(Vec4::new(x, 0.0, 0.0, 0.0))),
+                )
+            };
+            let left = d.spawn(at(-1.0).row(1u32)).unwrap();
+            let right = d.spawn(at(1.0).row(2u32)).unwrap();
+            let union = d.spawn(at(0.0).row(3u32)).unwrap();
+            let fields = d.domains.typed(r4).unwrap().fields_mut().unwrap();
+            for operand in [left, right] {
+                fields
+                    .insert(
+                        operand,
+                        Field {
+                            kind: FieldKind::ExactDistance,
+                            op: FieldOp::HyperSphere { radius: 1.0 },
+                            operands: Vec::new(),
+                        },
+                    )
+                    .unwrap();
+            }
+            fields
+                .insert(
+                    union,
+                    Field {
+                        kind: FieldKind::ExactDistance,
+                        op: FieldOp::Union,
+                        operands: vec![left, right],
+                    },
+                )
+                .unwrap();
+        });
+        let snapshot = session.snapshot().unwrap();
+        for _ in 0..8 {
+            session.restore(&snapshot).unwrap();
+        }
+
+        let bytes = bytes_allocated_by(|| {
+            session.restore(&snapshot).unwrap();
+        });
+        let copied = size_of::<Entity>() * 2;
+        assert_eq!(
+            bytes, copied,
+            "a warmed restore of three rows asked the allocator for {bytes} bytes, not the {copied} its operand list copies"
+        );
+        session
+            .domains_mut()
+            .facade(r4.id())
+            .unwrap()
+            .compile_fields()
+            .expect("the restored operands still name live rows");
     }
 
     crate::stores! {

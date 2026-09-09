@@ -388,7 +388,8 @@ impl<E: Copy> Ring<E> {
 
     fn reset(&mut self) {
         self.entries.clear();
-        self.pushed += 1;
+        let stride = self.capacity.max(1) as u64;
+        self.pushed = self.pushed / stride * stride + stride;
     }
 }
 
@@ -578,6 +579,10 @@ impl<T> Store<T> {
 
     pub fn rows(&self) -> &[T] {
         &self.dense
+    }
+
+    pub(crate) fn rows_mut_untracked(&mut self) -> &mut [T] {
+        &mut self.dense
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Entity, &T)> {
@@ -1130,6 +1135,35 @@ pub(crate) mod tests {
             "16 warmed passes asked the allocator for {bytes} bytes"
         );
         assert_eq!(buffer.rows().len(), 64);
+    }
+
+    #[test]
+    fn edits_and_removals_after_a_restore_reach_a_resynchronized_cursor() {
+        const RETAINING: LogCapacity = LogCapacity {
+            dirty: 3,
+            removals: 2,
+        };
+        let (mut entities, mut store, e) = filled(3, Some(RETAINING));
+        let mut mirror = Mirror::default();
+        mirror.sync(&store);
+        let (snapshot, rows) = (entities.snapshot(), store.snapshot());
+
+        entities.restore(&snapshot);
+        let scene = entities.scene();
+        store.restore(&rows, scene);
+        let rebased: Vec<Entity> = e
+            .iter()
+            .map(|entity| Entity::new(scene, entity.key()))
+            .collect();
+        assert!(mirror.sync(&store).0, "the restore never forced a resync");
+
+        *store.get_mut(rebased[0]).unwrap() = 40;
+        *store.get_mut(rebased[1]).unwrap() = 41;
+        store.remove(rebased[2]).unwrap();
+        let (resync, seen) = mirror.sync(&store);
+        assert!(!resync, "a second resync hid the lost log entries");
+        assert_eq!(seen, [rebased[0], rebased[1]]);
+        assert_eq!(mirror.rows, live(&store));
     }
 
     #[test]

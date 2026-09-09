@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 use loam_math::{EuclideanR4, Iso4Flat, Space};
 use loam_runtime::{
     Access, AppCommand, Command, Ctx, DepthEnvelope, Dispatch, DomainBuilder, DomainError,
-    DomainHandle, DomainRay, Entity, Facility, Growth, ImageRay, Input, Instance, LogCapacity,
-    Material, Outcome, Phase, Pose, PreparedGeometry, Projection4, Publication, Publish,
-    PublishError, RecordBuffer, Records, Rejection, Reservation, RestoreError, Session, SimConfig,
-    SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec,
+    DomainHandle, DomainRay, Entity, Facility, Field, FieldKind, FieldOp, Growth, ImageRay, Input,
+    Instance, LogCapacity, Material, Outcome, Phase, Pose, PreparedGeometry, Projection4,
+    Publication, Publish, PublishError, RecordBuffer, Records, Rejection, Reservation,
+    RestoreError, Session, SimConfig, SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,6 +273,90 @@ fn restored_relations_domain_poses_or_the_tick_differ_from_the_snapshot() {
     };
     assert_eq!(position(from), Some((dt + dt + dt + dt, 4.0)));
     assert_eq!(position(a), None);
+}
+
+#[test]
+fn a_refused_restore_still_advances_the_epoch_and_cancels_the_pending_commands() {
+    let (mut session, r4) = session();
+    let kept = session.dispatch(|d| d.spawn(placed(r4, Tag(1)))).unwrap();
+    let snapshot = session.snapshot().unwrap();
+    let root = session.views().root();
+    session.dispatch(|d| {
+        let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, DropW));
+    });
+    session.system(
+        Phase::Simulation,
+        "queue",
+        Access::new().commands(),
+        |ctx: Ctx<'_, Probe>| {
+            if ctx.step.tick.0 == 0 {
+                ctx.commands.app(Mark(1));
+            }
+        },
+    );
+    session.tick().unwrap();
+    let epoch = session.scene().epoch;
+
+    assert_eq!(
+        session.restore(&snapshot),
+        Err(RestoreError::Domain(r4.id()))
+    );
+    assert_eq!(session.scene().epoch, epoch);
+    assert_eq!(session.entities().resolve(kept), Some(kept.key()));
+    assert_eq!(session.snapshot().err(), Some(RestoreError::Pending));
+    assert!(session.results().is_empty());
+}
+
+#[test]
+fn a_restored_composed_field_names_its_own_operands_as_stale() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).fields());
+    session.dispatch(|d| {
+        let ball = |x| SpawnBundle::new().at(r4, at([x, 0.0, 0.0, 0.0]));
+        let left = d.spawn(ball(-1.0)).unwrap();
+        let right = d.spawn(ball(1.0)).unwrap();
+        let union = d.spawn(ball(0.0)).unwrap();
+        let fields = d.domains.typed(r4).unwrap().fields_mut().unwrap();
+        for operand in [left, right] {
+            fields
+                .insert(
+                    operand,
+                    Field {
+                        kind: FieldKind::ExactDistance,
+                        op: FieldOp::HyperSphere { radius: 1.0 },
+                        operands: Vec::new(),
+                    },
+                )
+                .unwrap();
+        }
+        fields
+            .insert(
+                union,
+                Field {
+                    kind: FieldKind::ExactDistance,
+                    op: FieldOp::Union,
+                    operands: vec![left, right],
+                },
+            )
+            .unwrap();
+    });
+    let compile = |session: &mut Session<Probe>| {
+        session
+            .domains_mut()
+            .facade(r4.id())
+            .unwrap()
+            .compile_fields()
+            .map(|_| ())
+    };
+    assert_eq!(compile(&mut session), Ok(()));
+
+    let snapshot = session.snapshot().unwrap();
+    session.restore(&snapshot).unwrap();
+    assert_eq!(compile(&mut session), Ok(()));
 }
 
 #[test]

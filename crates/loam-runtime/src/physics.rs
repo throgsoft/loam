@@ -207,6 +207,15 @@ where
         })
     }
 
+    fn check_restore(&self, from: &(dyn Any + Send)) -> Result<(), RestoreError> {
+        let from = from
+            .downcast_ref::<PhysicsSnapshot<S>>()
+            .ok_or_else(|| RestoreError::Schema(SchemaId::of::<PhysicsSnapshot<S>>()))?;
+        self.world
+            .check_restore(&from.world)
+            .map_err(RestoreError::Edit)
+    }
+
     fn restore(&mut self, from: &(dyn Any + Send)) -> Result<(), RestoreError> {
         let from = from
             .downcast_ref::<PhysicsSnapshot<S>>()
