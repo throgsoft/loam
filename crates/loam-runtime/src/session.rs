@@ -102,6 +102,26 @@ impl PreparedGeometry {
             .collect();
         Self::Lines4 { segments }
     }
+
+    /// Chart distance from the origin to the farthest vertex.
+    pub fn bounding_radius(&self) -> f32 {
+        fn farthest<'a>(points: impl Iterator<Item = &'a [f32]>) -> f32 {
+            points
+                .map(|point| point.iter().map(|c| c * c).sum::<f32>().sqrt())
+                .fold(0.0, f32::max)
+        }
+        match self {
+            Self::Lines4 { segments } => {
+                farthest(segments.iter().flatten().map(|point| point.as_slice()))
+            }
+            Self::Lines3 { segments } => {
+                farthest(segments.iter().flatten().map(|point| point.as_slice()))
+            }
+            Self::Mesh3 { positions, .. } => {
+                farthest(positions.iter().map(|point| point.as_slice()))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -406,7 +426,7 @@ impl<A: Stores> Session<A> {
     }
 
     pub fn pick(&self, ndc: [f32; 2]) -> Option<Pick> {
-        self.domains.pick(&self.views, ndc)
+        self.domains.pick(&self.views, &self.prepared, ndc)
     }
 
     /// `Pending` while a deferred command or a reservation is outstanding.
@@ -505,6 +525,7 @@ impl<A: Stores> Session<A> {
             commands,
             results,
             input,
+            prepared,
             ..
         } = self;
         let Some(Entry::System(system)) = phases.entries_mut(phase).get_mut(index) else {
@@ -517,6 +538,7 @@ impl<A: Stores> Session<A> {
             commands,
             results: results.as_slice(),
             input,
+            prepared: prepared.as_slice(),
             step,
         })
     }

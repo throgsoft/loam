@@ -2,16 +2,21 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::fmt;
 use std::marker::PhantomData;
+use std::ops::Mul;
 
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, IsometryGroup, WgslSpace};
+use loam_math::hyperbolic::{in_poincare_ball, poincare_to_hyperboloid};
+use loam_math::{
+    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Space, WgslSpace,
+};
 
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
 use crate::phase::Step;
-use crate::session::{MaterialId, PreparedId, RestoreError, Stamp};
+use crate::session::{MaterialId, PreparedGeometry, PreparedId, RestoreError, Stamp};
 use crate::store::{LogCapacity, Store, StoreField, StoreSnapshot};
 use crate::view::{
-    ImageRay, InstanceRecord, Pick, ViewId, ViewRecords, ViewSpec, ViewTarget, Views,
+    self, DomainRay, ImageRay, InstanceRecord, Pick, Vec3, Vec4, ViewId, ViewRecords, ViewSpec,
+    ViewTarget, Views,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -79,6 +84,12 @@ pub struct ChartTangent {
     pub vector: [f32; 4],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChartPoint {
+    pub chart: ChartId,
+    pub coordinates: [f32; 4],
+}
+
 /// Heterogeneous commands; native systems use typed poses instead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChartCommand {
@@ -118,7 +129,8 @@ pub enum DomainError {
     UnknownDomain(DomainId),
     SpaceMismatch(DomainId),
     Stale(Entity),
-    InvalidCoordinates,
+    InvalidCoordinate(&'static str),
+    InvalidFrame,
     ChartBoundary,
     NoConvergence,
     ErrorBudget,
@@ -126,19 +138,110 @@ pub enum DomainError {
 }
 
 /// A space a domain is built over; its poses cross the facade as chart data.
-pub trait DomainSpace: IsometryGroup + WgslSpace + Send + Sync + 'static {
+pub trait DomainSpace:
+    IsometryGroup<Vector: Mul<f32, Output = <Self as Space>::Vector>>
+    + WgslSpace
+    + Send
+    + Sync
+    + Sized
+    + 'static
+{
     fn origin(&self) -> Self::Point;
+
+    /// Names the first non-finite coordinate or reports the chart boundary; nothing is clamped.
+    fn check(&self, point: Self::Point) -> Result<(), DomainError>;
+
+    fn chart_point(&self, point: Self::Point) -> ChartPoint;
 
     fn chart_pose(&self, pose: &Self::Iso) -> ChartPose;
 
     fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError>;
 
     fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError>;
+
+    /// Moves the origin to `to` along their geodesic, carrying the frame by parallel transport.
+    fn transvection(&self, to: Self::Point) -> Self::Iso;
+
+    /// Metric distance from the origin to a point at chart radius `radius`.
+    fn chart_reach(&self, radius: f32) -> f32;
+
+    /// Arc length along `ray` into the metric ball of `radius` around `center`: zero from inside, `None` on a miss.
+    fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32>;
+}
+
+const FRAME_TOLERANCE: f32 = 1e-3;
+
+fn finite(values: [f32; 4]) -> Result<(), DomainError> {
+    for (value, axis) in values.into_iter().zip(["x", "y", "z", "w"]) {
+        if !value.is_finite() {
+            return Err(DomainError::InvalidCoordinate(axis));
+        }
+    }
+    Ok(())
+}
+
+fn frame_columns(frame: &[[f32; 4]; 4]) -> Result<[Vec3; 3], DomainError> {
+    let columns = [0, 1, 2].map(|i| Vec3::new(frame[i][0], frame[i][1], frame[i][2]));
+    let [x, y, z] = columns;
+    let unit = |v: Vec3| v.is_finite() && (v.length_squared() - 1.0).abs() <= FRAME_TOLERANCE;
+    let orthogonal = |a: Vec3, b: Vec3| a.dot(b).abs() <= FRAME_TOLERANCE;
+    let valid = columns.iter().all(|column| unit(*column))
+        && orthogonal(x, y)
+        && orthogonal(y, z)
+        && orthogonal(z, x)
+        && x.cross(y).dot(z) > 0.0;
+    valid.then_some(columns).ok_or(DomainError::InvalidFrame)
+}
+
+fn frame_of(columns: [Vec3; 3]) -> [[f32; 4]; 4] {
+    let mut frame = [[0.0; 4]; 4];
+    for (slot, column) in frame.iter_mut().zip(columns) {
+        *slot = column.extend(0.0).to_array();
+    }
+    frame[3] = [0.0, 0.0, 0.0, 1.0];
+    frame
+}
+
+// Shepperd, Quaternion from Rotation Matrix, J. Guidance and Control 1(3), 1978.
+fn rotation_of([x, y, z]: [Vec3; 3]) -> Iso3 {
+    let mut pose = Iso3::IDENTITY;
+    let q = &mut pose.rotation;
+    let trace = x.x + y.y + z.z;
+    if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        (q.w, q.x, q.y, q.z) = (s * 0.25, (y.z - z.y) / s, (z.x - x.z) / s, (x.y - y.x) / s);
+    } else if x.x > y.y && x.x > z.z {
+        let s = (1.0 + x.x - y.y - z.z).sqrt() * 2.0;
+        (q.w, q.x, q.y, q.z) = ((y.z - z.y) / s, s * 0.25, (y.x + x.y) / s, (z.x + x.z) / s);
+    } else if y.y > z.z {
+        let s = (1.0 + y.y - x.x - z.z).sqrt() * 2.0;
+        (q.w, q.x, q.y, q.z) = ((z.x - x.z) / s, (y.x + x.y) / s, s * 0.25, (z.y + y.z) / s);
+    } else {
+        let s = (1.0 + z.z - x.x - y.y).sqrt() * 2.0;
+        (q.w, q.x, q.y, q.z) = ((x.y - y.x) / s, (z.x + x.z) / s, (z.y + y.z) / s, s * 0.25);
+    }
+    pose.rotation = pose.rotation.normalize();
+    pose
+}
+
+fn lorentz(a: Vec4, b: Vec4) -> f32 {
+    a.x * b.x + a.y * b.y + a.z * b.z - a.w * b.w
 }
 
 impl DomainSpace for EuclideanR4 {
     fn origin(&self) -> Self::Point {
-        [0.0; 4].into()
+        Vec4::ZERO
+    }
+
+    fn check(&self, point: Self::Point) -> Result<(), DomainError> {
+        finite(point.to_array())
+    }
+
+    fn chart_point(&self, point: Self::Point) -> ChartPoint {
+        ChartPoint {
+            chart: ChartId(0),
+            coordinates: point.to_array(),
+        }
     }
 
     fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
@@ -156,41 +259,156 @@ impl DomainSpace for EuclideanR4 {
     fn tangent_from_chart(&self, _tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
         todo!()
     }
+
+    fn transvection(&self, to: Self::Point) -> Self::Iso {
+        Iso4Flat::from_translation(to)
+    }
+
+    fn chart_reach(&self, radius: f32) -> f32 {
+        radius
+    }
+
+    fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32> {
+        let offset = ray.origin - center;
+        view::ball_entry(
+            offset.dot(ray.direction),
+            offset.length_squared() - radius * radius,
+        )
+    }
 }
 
 impl DomainSpace for HyperbolicH3 {
     fn origin(&self) -> Self::Point {
-        [0.0; 3].into()
+        Vec3::ZERO
     }
 
-    fn chart_pose(&self, _pose: &Self::Iso) -> ChartPose {
-        todo!()
+    fn check(&self, point: Self::Point) -> Result<(), DomainError> {
+        finite(point.extend(0.0).to_array())?;
+        in_poincare_ball(point)
+            .then_some(())
+            .ok_or(DomainError::ChartBoundary)
     }
 
-    fn pose_from_chart(&self, _pose: &ChartPose) -> Result<Self::Iso, DomainError> {
-        todo!()
+    fn chart_point(&self, point: Self::Point) -> ChartPoint {
+        ChartPoint {
+            chart: ChartId(0),
+            coordinates: point.extend(0.0).to_array(),
+        }
     }
 
-    fn tangent_from_chart(&self, _tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
-        todo!()
+    fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
+        let position = self.iso_apply(*pose, Vec3::ZERO);
+        let rotation = self.iso_compose(self.iso_inverse(Iso3H::from_translation(position)), *pose);
+        let matrix = rotation.matrix;
+        ChartPose {
+            chart: ChartId(0),
+            coordinates: position.extend(0.0).to_array(),
+            frame: frame_of([
+                matrix.x_axis.truncate(),
+                matrix.y_axis.truncate(),
+                matrix.z_axis.truncate(),
+            ]),
+        }
+    }
+
+    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError> {
+        finite(pose.coordinates)?;
+        let position = Vec3::from_slice(&pose.coordinates[..3]);
+        self.check(position)?;
+        let [x, y, z] = frame_columns(&pose.frame)?;
+        let mut rotation = Iso3H::IDENTITY;
+        rotation.matrix.x_axis = x.extend(0.0);
+        rotation.matrix.y_axis = y.extend(0.0);
+        rotation.matrix.z_axis = z.extend(0.0);
+        Ok(self.iso_compose(Iso3H::from_translation(position), rotation))
+    }
+
+    fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
+        finite(tangent.vector)?;
+        Ok(Vec3::from_slice(&tangent.vector[..3]))
+    }
+
+    fn transvection(&self, to: Self::Point) -> Self::Iso {
+        Iso3H::from_translation(to)
+    }
+
+    fn chart_reach(&self, radius: f32) -> f32 {
+        2.0 * radius.min(1.0).atanh()
+    }
+
+    fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32> {
+        // Ratcliffe, Foundations of Hyperbolic Manifolds, 2006, §3.2: cosh d(x, y) = -⟨x, y⟩ on the hyperboloid.
+        let start = poincare_to_hyperboloid(ray.origin);
+        let ahead = poincare_to_hyperboloid(self.exp(ray.origin, ray.direction));
+        let tangent = (ahead - start * 1.0_f32.cosh()) / 1.0_f32.sinh();
+        let target = poincare_to_hyperboloid(center);
+        let reach = -lorentz(start, target);
+        let along = -lorentz(tangent, target);
+        let nearest = (reach * reach - along * along).max(1.0).sqrt();
+        let foot = -(along / reach).atanh();
+        let ratio = radius.cosh() / nearest;
+        if ratio < 1.0 {
+            return None;
+        }
+        let half = ratio.acosh();
+        let entry = foot - half;
+        if entry <= 0.0 {
+            return (foot + half >= 0.0).then_some(0.0);
+        }
+        Some(entry)
     }
 }
 
 impl DomainSpace for EuclideanR3 {
     fn origin(&self) -> Self::Point {
-        [0.0; 3].into()
+        Vec3::ZERO
     }
 
-    fn chart_pose(&self, _pose: &Self::Iso) -> ChartPose {
-        todo!()
+    fn check(&self, point: Self::Point) -> Result<(), DomainError> {
+        finite(point.extend(0.0).to_array())
     }
 
-    fn pose_from_chart(&self, _pose: &ChartPose) -> Result<Self::Iso, DomainError> {
-        todo!()
+    fn chart_point(&self, point: Self::Point) -> ChartPoint {
+        ChartPoint {
+            chart: ChartId(0),
+            coordinates: point.extend(0.0).to_array(),
+        }
     }
 
-    fn tangent_from_chart(&self, _tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
-        todo!()
+    fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
+        ChartPose {
+            chart: ChartId(0),
+            coordinates: pose.translation.extend(0.0).to_array(),
+            frame: frame_of([Vec3::X, Vec3::Y, Vec3::Z].map(|axis| pose.rotation * axis)),
+        }
+    }
+
+    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError> {
+        finite(pose.coordinates)?;
+        let mut iso = rotation_of(frame_columns(&pose.frame)?);
+        iso.translation = Vec3::from_slice(&pose.coordinates[..3]);
+        Ok(iso)
+    }
+
+    fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
+        finite(tangent.vector)?;
+        Ok(Vec3::from_slice(&tangent.vector[..3]))
+    }
+
+    fn transvection(&self, to: Self::Point) -> Self::Iso {
+        Iso3::from_translation(to)
+    }
+
+    fn chart_reach(&self, radius: f32) -> f32 {
+        radius
+    }
+
+    fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32> {
+        let offset = ray.origin - center;
+        view::ball_entry(
+            offset.dot(ray.direction),
+            offset.length_squared() - radius * radius,
+        )
     }
 }
 
@@ -261,7 +479,13 @@ pub trait Domain: Send + 'static {
         stamp: Stamp,
     ) -> Result<(), DomainError>;
 
-    fn pick(&self, view: ViewId, ray: &ImageRay) -> Option<Pick>;
+    fn pick(
+        &self,
+        view: ViewId,
+        ray: &ImageRay,
+        views: &Views,
+        prepared: &[PreparedGeometry],
+    ) -> Option<Pick>;
 
     fn step(&mut self, step: Step) -> Result<(), DomainError>;
 
@@ -330,14 +554,27 @@ impl<S: DomainSpace> TypedDomain<S> {
         self.fields.as_mut()
     }
 
-    /// Exponential along `velocity` for `dt`, with the frame transported.
+    /// Exponential along `velocity`, a chart tangent in the entity's own frame, for `dt`, with the frame carried by parallel transport.
     pub fn walk(
         &mut self,
-        _entity: Entity,
-        _velocity: S::Vector,
-        _dt: f32,
+        entity: Entity,
+        velocity: S::Vector,
+        dt: f32,
     ) -> Result<(), DomainError> {
-        todo!()
+        let pose = self
+            .poses
+            .get_mut(entity)
+            .ok_or(DomainError::Stale(entity))?;
+        let origin = self.space.origin();
+        let step = self.space.exp(origin, velocity * dt);
+        self.space.check(step)?;
+        // Helgason, Differential Geometry, Lie Groups, and Symmetric Spaces, 1978, Ch. IV §3: the transvection along a geodesic is parallel transport along it.
+        let next = self
+            .space
+            .iso_compose(pose.0, self.space.transvection(step));
+        self.space.check(self.space.iso_apply(next, origin))?;
+        pose.0 = next;
+        Ok(())
     }
 }
 
@@ -388,8 +625,66 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         Ok(())
     }
 
-    fn pick(&self, _view: ViewId, _ray: &ImageRay) -> Option<Pick> {
-        todo!()
+    fn pick(
+        &self,
+        view: ViewId,
+        ray: &ImageRay,
+        views: &Views,
+        prepared: &[PreparedGeometry],
+    ) -> Option<Pick> {
+        let spec = self.views.get(view.index())?;
+        let eye = self.poses.get(spec.eye)?;
+        let origin = self.space.origin();
+        let lifted = spec.mapping.lift(eye, ray);
+        let mut nearest: Option<Pick> = None;
+        for (entity, instance) in self.instances.iter() {
+            let Some(pose) = self.poses.get(entity) else {
+                continue;
+            };
+            let Some(geometry) = prepared.get(instance.geometry.index()) else {
+                continue;
+            };
+            let center = self.space.iso_apply(pose.0, origin);
+            let radius = geometry.bounding_radius();
+            let hit = match &lifted {
+                Some(domain_ray) => {
+                    let reach = self.space.chart_reach(radius);
+                    self.space
+                        .hit_ball(domain_ray, center, reach)
+                        .map(|t| self.space.exp(domain_ray.origin, domain_ray.direction * t))
+                        .and_then(|point| {
+                            let image_point = spec.mapping.image_point(eye, point)?;
+                            Some((image_point, Some(self.space.chart_point(point))))
+                        })
+                }
+                None => spec
+                    .mapping
+                    .image_point(eye, center)
+                    .and_then(|image_center| {
+                        let image_radius = spec.mapping.image_radius(eye, center, radius);
+                        let t = view::image_hit(ray, image_center, image_radius)?;
+                        Some((ray.at(t), None))
+                    }),
+            };
+            let Some((image_point, hit)) = hit else {
+                continue;
+            };
+            let Some(depth) = views.depth(image_point) else {
+                continue;
+            };
+            if nearest.is_some_and(|best| best.depth >= depth) {
+                continue;
+            }
+            nearest = Some(Pick {
+                entity,
+                domain: self.id,
+                view,
+                image_point,
+                depth,
+                hit,
+            });
+        }
+        nearest
     }
 
     fn step(&mut self, step: Step) -> Result<(), DomainError> {
@@ -593,7 +888,25 @@ impl Domains {
     }
 
     /// The nearest hit by the root eye's projective depth across every view into `views`' root.
-    pub fn pick(&self, _views: &Views, _ndc: [f32; 2]) -> Option<Pick> {
-        todo!()
+    pub fn pick(
+        &self,
+        views: &Views,
+        prepared: &[PreparedGeometry],
+        ndc: [f32; 2],
+    ) -> Option<Pick> {
+        let root = views.root();
+        let ray = views.ray(root, ndc)?;
+        let mut nearest: Option<Pick> = None;
+        for domain in self.iter() {
+            for target in domain.views().iter().filter(|target| target.image == root) {
+                let Some(pick) = domain.pick(target.view, &ray, views, prepared) else {
+                    continue;
+                };
+                if nearest.is_none_or(|best| pick.depth > best.depth) {
+                    nearest = Some(pick);
+                }
+            }
+        }
+        nearest
     }
 }

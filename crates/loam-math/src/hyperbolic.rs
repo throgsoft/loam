@@ -9,6 +9,16 @@ use crate::space::{IsometryGroup, Space, WgslSpace};
 
 const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
 
+/// H³ hits at least `H3_DEPTH_SEPARATION` apart stay ordered within this hyperbolic distance of an eye at most `H3_EYE_CHART_REACH` from the chart origin.
+pub const H3_DEPTH_ENVELOPE: f32 = 6.0;
+pub const H3_DEPTH_SEPARATION: f32 = 0.05;
+pub const H3_EYE_CHART_REACH: f32 = 1.0;
+
+/// False past the radius where the chart's f32 arithmetic is clamped.
+pub fn in_poincare_ball(p: Vec3) -> bool {
+    p.is_finite() && p.length_squared() <= POINCARE_R2_MAX
+}
+
 fn clamp_to_ball(p: Vec3) -> Vec3 {
     let r2 = p.length_squared();
     if r2 <= POINCARE_R2_MAX {
