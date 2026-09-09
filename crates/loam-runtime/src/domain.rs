@@ -9,8 +9,10 @@ use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
 use crate::phase::Step;
 use crate::session::{MaterialId, PreparedId, RestoreError, Stamp};
-use crate::store::{LogCapacity, Store, StoreField};
-use crate::view::{ImageRay, Pick, ViewId, ViewRecords, ViewSpec, ViewTarget, Views};
+use crate::store::{LogCapacity, Store, StoreField, StoreSnapshot};
+use crate::view::{
+    ImageRay, InstanceRecord, Pick, ViewId, ViewRecords, ViewSpec, ViewTarget, Views,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DomainId(u32);
@@ -67,6 +69,7 @@ pub struct ChartId(pub u16);
 pub struct ChartPose {
     pub chart: ChartId,
     pub coordinates: [f32; 4],
+    /// Column-major, matching glam's `Mat4` and WGSL's `mat4x4<f32>`.
     pub frame: [[f32; 4]; 4],
 }
 
@@ -124,6 +127,8 @@ pub enum DomainError {
 
 /// A space a domain is built over; its poses cross the facade as chart data.
 pub trait DomainSpace: IsometryGroup + WgslSpace + Send + Sync + 'static {
+    fn origin(&self) -> Self::Point;
+
     fn chart_pose(&self, pose: &Self::Iso) -> ChartPose;
 
     fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError>;
@@ -132,8 +137,16 @@ pub trait DomainSpace: IsometryGroup + WgslSpace + Send + Sync + 'static {
 }
 
 impl DomainSpace for EuclideanR4 {
-    fn chart_pose(&self, _pose: &Self::Iso) -> ChartPose {
-        todo!()
+    fn origin(&self) -> Self::Point {
+        [0.0; 4].into()
+    }
+
+    fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
+        ChartPose {
+            chart: ChartId(0),
+            coordinates: pose.translation.to_array(),
+            frame: pose.rotation.to_mat4(),
+        }
     }
 
     fn pose_from_chart(&self, _pose: &ChartPose) -> Result<Self::Iso, DomainError> {
@@ -146,6 +159,10 @@ impl DomainSpace for EuclideanR4 {
 }
 
 impl DomainSpace for HyperbolicH3 {
+    fn origin(&self) -> Self::Point {
+        [0.0; 3].into()
+    }
+
     fn chart_pose(&self, _pose: &Self::Iso) -> ChartPose {
         todo!()
     }
@@ -160,6 +177,10 @@ impl DomainSpace for HyperbolicH3 {
 }
 
 impl DomainSpace for EuclideanR3 {
+    fn origin(&self) -> Self::Point {
+        [0.0; 3].into()
+    }
+
     fn chart_pose(&self, _pose: &Self::Iso) -> ChartPose {
         todo!()
     }
@@ -217,6 +238,13 @@ pub struct FieldProgram {
 }
 
 pub struct DomainSnapshot(pub Box<dyn Any + Send>);
+
+struct TypedSnapshot<S: DomainSpace> {
+    poses: StoreSnapshot<Pose<S>>,
+    instances: StoreSnapshot<Instance>,
+    fields: Option<StoreSnapshot<Field>>,
+    facilities: Vec<Box<dyn Any + Send>>,
+}
 
 /// The facade the session holds; `S` never appears here.
 pub trait Domain: Send + 'static {
@@ -328,11 +356,36 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
 
     fn publish(
         &self,
-        _view: ViewId,
-        _into: &mut ViewRecords,
-        _stamp: Stamp,
+        view: ViewId,
+        into: &mut ViewRecords,
+        stamp: Stamp,
     ) -> Result<(), DomainError> {
-        todo!()
+        let spec = self
+            .views
+            .get(view.index())
+            .ok_or(DomainError::Unsupported("unknown view"))?;
+        let eye = self
+            .poses
+            .get(spec.eye)
+            .ok_or(DomainError::Stale(spec.eye))?;
+        let origin = self.space.origin();
+        let records = self.instances.iter().filter_map(|(entity, instance)| {
+            let pose = self.poses.get(entity)?;
+            let point = self.space.iso_apply(pose.0, origin);
+            let image_point = spec.mapping.image_point(eye, point)?;
+            Some((
+                entity,
+                InstanceRecord {
+                    entity,
+                    geometry: instance.geometry,
+                    material: instance.material,
+                    pose: self.space.chart_pose(&pose.0),
+                    image_point,
+                },
+            ))
+        });
+        into.instances.replace(records, stamp);
+        Ok(())
     }
 
     fn pick(&self, _view: ViewId, _ray: &ImageRay) -> Option<Pick> {
@@ -363,11 +416,41 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     }
 
     fn snapshot(&self) -> DomainSnapshot {
-        todo!()
+        DomainSnapshot(Box::new(TypedSnapshot::<S> {
+            poses: StoreField::snapshot(&self.poses),
+            instances: StoreField::snapshot(&self.instances),
+            fields: self.fields.as_ref().map(StoreField::snapshot),
+            facilities: self
+                .facilities
+                .iter()
+                .map(|facility| facility.snapshot())
+                .collect(),
+        }))
     }
 
-    fn restore(&mut self, _from: &DomainSnapshot, _scene: SceneId) -> Result<(), RestoreError> {
-        todo!()
+    fn restore(&mut self, from: &DomainSnapshot, scene: SceneId) -> Result<(), RestoreError> {
+        let from = from
+            .0
+            .downcast_ref::<TypedSnapshot<S>>()
+            .ok_or(RestoreError::Domain(self.id))?;
+        if from.facilities.len() != self.facilities.len()
+            || from.fields.is_some() != self.fields.is_some()
+        {
+            return Err(RestoreError::Domain(self.id));
+        }
+        for (facility, snapshot) in self.facilities.iter_mut().zip(&from.facilities) {
+            facility.restore(snapshot.as_ref())?;
+        }
+        self.scene = scene;
+        StoreField::restore(&mut self.poses, &from.poses, scene);
+        StoreField::restore(&mut self.instances, &from.instances, scene);
+        if let (Some(fields), Some(snapshot)) = (&mut self.fields, &from.fields) {
+            StoreField::restore(fields, snapshot, scene);
+        }
+        for view in &mut self.views {
+            view.eye = Entity::new(scene, view.eye.key());
+        }
+        Ok(())
     }
 
     fn apply(&mut self, _command: &ChartCommand) -> Result<Outcome, Rejection> {
@@ -407,7 +490,6 @@ impl<S: DomainSpace> DomainBuilder<S> {
         }
     }
 
-    /// Publication needs a tracked domain; a headless domain can stay untracked.
     pub fn tracked(mut self, capacity: LogCapacity) -> Self {
         self.tracking = Some(capacity);
         self

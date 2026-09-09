@@ -456,7 +456,7 @@ fn main() -> Result<(), HostError> {
         },
     );
 
-    session.set_initial();
+    session.set_initial()?;
     let bindings = Bindings::new()
         .key(Key::Space, TWIST)
         .key(Key::Letter('s'), SCRAMBLE)

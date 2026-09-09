@@ -158,6 +158,10 @@ impl Entities {
         self.reserved_index(entity).is_some()
     }
 
+    pub(crate) fn has_reservations(&self) -> bool {
+        self.slots.iter().any(|slot| slot.reserved)
+    }
+
     fn reserved_index(&self, entity: Entity) -> Option<usize> {
         if entity.scene != self.scene {
             return None;

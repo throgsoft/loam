@@ -1,7 +1,7 @@
 use crate::command::Rejection;
 use crate::domain::DomainError;
 use crate::input::Bindings;
-use crate::session::Session;
+use crate::session::{RestoreError, Session};
 use crate::stores::Stores;
 
 pub struct HostConfig {
@@ -30,6 +30,12 @@ impl From<Rejection> for HostError {
 impl From<DomainError> for HostError {
     fn from(error: DomainError) -> Self {
         Self::Setup(Rejection::Domain(error))
+    }
+}
+
+impl From<RestoreError> for HostError {
+    fn from(error: RestoreError) -> Self {
+        Self::Setup(Rejection::Restore(error))
     }
 }
 

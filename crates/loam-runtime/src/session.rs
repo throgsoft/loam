@@ -1,6 +1,8 @@
 use loam_shape::polytope::Polytope4Topology;
 
-use crate::command::{Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request};
+use crate::command::{
+    Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
+};
 use crate::domain::{
     DomainBuilder, DomainError, DomainHandle, DomainId, DomainSnapshot, DomainSpace, Domains,
 };
@@ -146,6 +148,8 @@ pub struct SessionSnapshot<A: Stores> {
     pub entities: EntitiesSnapshot,
     pub domains: Vec<DomainSnapshot>,
     pub tick: Tick,
+    pub config: SimConfig,
+    pub next_request: RequestId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +177,7 @@ pub struct Session<A: Stores> {
     materials: Vec<Material>,
     config: SimConfig,
     tick: Tick,
+    sequence: u64,
     initial: Option<SessionSnapshot<A>>,
 }
 
@@ -210,6 +215,7 @@ impl<A: Stores> Session<A> {
             materials: Vec::new(),
             config,
             tick: Tick::default(),
+            sequence: 0,
             initial: None,
         }
     }
@@ -363,8 +369,36 @@ impl<A: Stores> Session<A> {
         Ok(())
     }
 
-    pub fn publish(&mut self, _into: &mut Publication<A>) {
-        todo!()
+    /// Stamps every record buffer with the tick and a sequence that advances while paused.
+    pub fn publish(&mut self, into: &mut Publication<A>) -> Result<(), DomainError> {
+        self.sequence += 1;
+        let stamp = Stamp {
+            tick: self.tick,
+            sequence: self.sequence,
+        };
+        self.app.publish(&mut into.app, stamp);
+        let mut count = 0;
+        for domain in self.domains.iter() {
+            for &target in domain.views() {
+                let current = into
+                    .views
+                    .get(count)
+                    .is_some_and(|view| view.domain == domain.id() && view.target == target);
+                if !current {
+                    into.views.truncate(count);
+                    into.views.push(PublishedView {
+                        domain: domain.id(),
+                        target,
+                        records: ViewRecords::default(),
+                    });
+                }
+                domain.publish(target.view, &mut into.views[count].records, stamp)?;
+                count += 1;
+            }
+        }
+        into.views.truncate(count);
+        into.stamp = stamp;
+        Ok(())
     }
 
     pub fn results(&self) -> &[CommandResult] {
@@ -375,18 +409,47 @@ impl<A: Stores> Session<A> {
         self.domains.pick(&self.views, ndc)
     }
 
-    /// Needs a quiescent boundary: no pending command or reservation.
-    pub fn snapshot(&self) -> SessionSnapshot<A> {
-        todo!()
+    /// `Pending` while a deferred command or a reservation is outstanding.
+    pub fn snapshot(&self) -> Result<SessionSnapshot<A>, RestoreError> {
+        if !self.commands.is_empty() || self.entities().has_reservations() {
+            return Err(RestoreError::Pending);
+        }
+        Ok(SessionSnapshot {
+            app: self.app.snapshot(),
+            entities: self.entities().snapshot(),
+            domains: self
+                .domains
+                .iter()
+                .map(|domain| domain.snapshot())
+                .collect(),
+            tick: self.tick,
+            config: self.config,
+            next_request: self.commands.next_request(),
+        })
     }
 
-    /// Advances the epoch; every external handle from before the restore fails.
-    pub fn restore(&mut self, _from: &SessionSnapshot<A>) -> Result<(), RestoreError> {
-        todo!()
+    /// Cancels pending commands and reservations, then advances the epoch; every earlier external handle fails.
+    pub fn restore(&mut self, from: &SessionSnapshot<A>) -> Result<(), RestoreError> {
+        if from.domains.len() != self.domains.len() {
+            let first = from.domains.len().min(self.domains.len());
+            return Err(RestoreError::Domain(DomainId::new(first)));
+        }
+        self.commands.cancel_into(&mut self.results);
+        self.commands.restore(&from.entities, from.next_request);
+        let scene = self.scene();
+        for (domain, snapshot) in self.domains.iter_mut().zip(&from.domains) {
+            domain.restore(snapshot, scene)?;
+        }
+        self.app.restore(&from.app, scene);
+        self.tick = from.tick;
+        self.config = from.config;
+        Ok(())
     }
 
-    pub fn set_initial(&mut self) {
-        self.initial = Some(self.snapshot());
+    /// Refused like `snapshot`; `reset` restores what it captures.
+    pub fn set_initial(&mut self) -> Result<(), RestoreError> {
+        self.initial = Some(self.snapshot()?);
+        Ok(())
     }
 
     pub fn reset(&mut self) -> Result<(), RestoreError> {
@@ -401,14 +464,23 @@ impl<A: Stores> Session<A> {
     fn commit(&mut self, growth: &mut Growth) {
         let mut batch = std::mem::take(&mut self.batch);
         self.commands.drain_into(&mut batch);
+        let mut cancelled = false;
         for request in batch.drain(..) {
             let despawn = matches!(request.command, Command::Despawn(_));
-            let outcome = match request.command {
-                Command::Reset => self
-                    .reset()
-                    .map(|()| Outcome::Done)
-                    .map_err(Rejection::Restore),
-                command => self.dispatch(|dispatch| dispatch.apply(command)),
+            let outcome = if cancelled {
+                Err(Rejection::Cancelled)
+            } else {
+                match request.command {
+                    Command::Reset => {
+                        let outcome = self
+                            .reset()
+                            .map(|()| Outcome::Done)
+                            .map_err(Rejection::Restore);
+                        cancelled = outcome.is_ok();
+                        outcome
+                    }
+                    command => self.dispatch(|dispatch| dispatch.apply(command)),
+                }
             };
             growth.commands += 1;
             match outcome {
@@ -452,14 +524,15 @@ impl<A: Stores> Session<A> {
 
 #[cfg(test)]
 mod tests {
-    use loam_math::{EuclideanR4, Iso4Flat};
+    use loam_math::{EuclideanR4, Iso4Flat, Space};
 
     use super::*;
     use crate::command::SpawnBundle;
-    use crate::domain::Pose;
+    use crate::domain::{Instance, Pose};
     use crate::entity::Entity;
     use crate::store::tests::alloc_probe::bytes_allocated_by;
-    use crate::store::LogCapacity;
+    use crate::store::{LogCapacity, Store};
+    use crate::view::{DepthEnvelope, DomainRay, ImageRay, ViewMapping, ViewSpec};
 
     crate::stores! {
         #[derive(Default)]
@@ -530,5 +603,110 @@ mod tests {
             "16 warmed cycles asked the allocator for {bytes} bytes"
         );
         assert_eq!(session.entities().len(), 8);
+    }
+
+    crate::stores! {
+        pub struct Shown {
+            scores: Published<u32>,
+        }
+    }
+
+    struct Flat;
+
+    impl ViewMapping<EuclideanR4> for Flat {
+        fn name(&self) -> &'static str {
+            "flat"
+        }
+
+        fn image_point(
+            &self,
+            eye: &Pose<EuclideanR4>,
+            point: <EuclideanR4 as Space>::Point,
+        ) -> Option<[f32; 3]> {
+            let relative = point - eye.0.translation;
+            Some([relative.x, relative.y, relative.z])
+        }
+
+        fn lift(
+            &self,
+            _eye: &Pose<EuclideanR4>,
+            _ray: &ImageRay,
+        ) -> Option<DomainRay<EuclideanR4>> {
+            None
+        }
+
+        fn depth_envelope(&self) -> DepthEnvelope {
+            DepthEnvelope {
+                near: 0.0,
+                far: 1.0,
+            }
+        }
+    }
+
+    #[test]
+    fn warmed_publish_allocates() {
+        let shown = Shown {
+            scores: Store::tracked(LogCapacity::default()),
+        };
+        let mut session = Session::new(shown, SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Lines4 {
+            segments: Vec::new(),
+        });
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        session.dispatch(|d| {
+            let eye = d
+                .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+                .unwrap();
+            d.domains
+                .typed(r4)
+                .unwrap()
+                .add_view(ViewSpec::new(root, eye, Flat));
+            for value in 0..8 {
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose(Iso4Flat::IDENTITY))
+                        .instance(Instance::new(geometry, material))
+                        .row(value),
+                )
+                .unwrap();
+            }
+        });
+        session.system(
+            Phase::Simulation,
+            "churn",
+            Access::new().writes::<u32>().domain(r4.id()),
+            move |app: &mut Shown, domains: &mut Domains, step: Step| {
+                for (_, score) in app.scores.iter_mut() {
+                    *score += 1;
+                }
+                for (_, pose) in domains.typed(r4).unwrap().poses.iter_mut() {
+                    pose.0.translation.x += step.dt;
+                }
+            },
+        );
+        let mut publication = Publication::default();
+        let cycle = |session: &mut Session<Shown>, publication: &mut Publication<Shown>| {
+            session.tick().unwrap();
+            session.boundary(Input::default()).unwrap();
+            session.publish(publication).unwrap();
+        };
+        for _ in 0..4 {
+            cycle(&mut session, &mut publication);
+        }
+
+        let bytes = bytes_allocated_by(|| {
+            for _ in 0..16 {
+                cycle(&mut session, &mut publication);
+            }
+        });
+        assert_eq!(
+            bytes, 0,
+            "16 warmed publishes asked the allocator for {bytes} bytes"
+        );
+        assert_eq!(publication.app.scores.rows().len(), 8);
+        assert_eq!(publication.views[0].records.instances.rows().len(), 8);
     }
 }
