@@ -6,6 +6,9 @@ use wgpu::{
 };
 
 use crate::depth::DepthBuffer;
+use crate::device::{GpuContext, MissingGpuCapability};
+use crate::gpu_timer::SectionTimer;
+use crate::pass::{FramePass, FrameTarget, PassError, PassOrder, PassSchedule, Section};
 use crate::view::{DEPTH_CLEAR, DEPTH_FORMAT};
 use crate::{DepthConvention, DepthMode, LineRasterNode};
 
@@ -19,6 +22,7 @@ pub struct Presenter {
     sample_count: u32,
     depth: Option<DepthBuffer>,
     views: Vec<ViewLines>,
+    schedule: PassSchedule,
 }
 
 impl Presenter {
@@ -28,7 +32,31 @@ impl Presenter {
             sample_count,
             depth: None,
             views: Vec::new(),
+            schedule: PassSchedule::new(DepthConvention::ReversedZ),
         }
+    }
+
+    /// Takes the context's section timer and rebuilds every registered pass on it.
+    pub fn attach(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+        self.depth = None;
+        self.views.clear();
+        self.schedule
+            .set_timer(SectionTimer::new(&gpu.device, &gpu.queue));
+        self.schedule.rebuild(gpu)
+    }
+
+    /// Refused when the pass writes depth under another convention.
+    pub fn register_pass(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {
+        self.schedule.register(pass)
+    }
+
+    pub fn sections(&self) -> &[Section] {
+        self.schedule.sections()
+    }
+
+    /// Call after the frame's queue submit.
+    pub fn after_submit(&mut self) {
+        self.schedule.after_submit();
     }
 
     /// Skips a view whose records were built by a publication it already uploaded.
@@ -40,6 +68,8 @@ impl Presenter {
         viewport: Vec2,
         views: &[PublishedView],
     ) {
+        self.schedule.begin_frame();
+        let _scope = loam_time::frame_trace::scope("present-upload");
         while self.views.len() < views.len() {
             self.views.push(ViewLines {
                 node: LineRasterNode::new(
@@ -85,31 +115,43 @@ impl Presenter {
         let Some(depth) = self.depth.as_ref() else {
             return;
         };
-        encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("loam-render present clear"),
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: Operations {
-                    load: LoadOp::Clear(background),
-                    store: StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                view: &depth.view,
-                depth_ops: Some(Operations {
-                    load: LoadOp::Clear(DEPTH_CLEAR),
-                    store: StoreOp::Store,
+        let frame = FrameTarget {
+            color: target,
+            depth: Some(&depth.view),
+            size,
+        };
+        self.schedule
+            .record(PassOrder::BeforeScene, encoder, &frame);
+        let views = &self.views;
+        self.schedule.section("present-draw", encoder, |encoder| {
+            encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("loam-render present clear"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(background),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &depth.view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(DEPTH_CLEAR),
+                        store: StoreOp::Store,
+                    }),
+                    stencil_ops: None,
                 }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            for slot in views {
+                slot.node.record(encoder, target, Some(&depth.view), None);
+            }
         });
-        for slot in &self.views {
-            slot.node.record(encoder, target, Some(&depth.view), None);
-        }
+        self.schedule.record(PassOrder::AfterScene, encoder, &frame);
+        self.schedule.end_frame(encoder);
     }
 }
 

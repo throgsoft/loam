@@ -13,7 +13,7 @@ use loam_render::device::{FeatureRequest, RenderDevice};
 use loam_render::present::Presenter;
 use loam_runtime::host::{HostConfig, HostError};
 use loam_runtime::{ActionEvent, Input, Key, Pointer, PointerPhase, Records, Session, Stores};
-use loam_time::FixedTimestep;
+use loam_time::{frame_trace, FixedTimestep};
 
 const BACKGROUND: wgpu::Color = wgpu::Color {
     r: 0.02,
@@ -135,6 +135,12 @@ impl<A: Stores> Host<A> {
     }
 
     fn frame(&mut self, elwt: &ActiveEventLoop) {
+        frame_trace::begin_frame();
+        self.record_frame(elwt);
+        frame_trace::end_frame();
+    }
+
+    fn record_frame(&mut self, elwt: &ActiveEventLoop) {
         let Some(size) = self
             .device
             .as_ref()
@@ -146,12 +152,18 @@ impl<A: Stores> Host<A> {
             return;
         }
         let input = std::mem::take(&mut self.input);
-        if let Err(error) = self.session.boundary(input) {
-            return self.stop(elwt, error.into());
-        }
-        for _ in self.timestep.advance(Instant::now()) {
-            if let Err(error) = self.session.tick() {
+        {
+            let _dispatch = frame_trace::scope("dispatch");
+            if let Err(error) = self.session.boundary(input) {
                 return self.stop(elwt, error.into());
+            }
+        }
+        {
+            let _simulation = frame_trace::scope("simulation");
+            for _ in self.timestep.advance(Instant::now()) {
+                if let Err(error) = self.session.tick() {
+                    return self.stop(elwt, error.into());
+                }
             }
         }
         self.reclaim_input();
@@ -159,6 +171,16 @@ impl<A: Stores> Host<A> {
         else {
             return;
         };
+        if let Some(loss) = device.take_device_loss() {
+            tracing::warn!("device lost ({:?}): {}", loss.reason, loss.message);
+            if let Err(error) = pollster::block_on(device.recover()) {
+                return self.stop(elwt, failed(format!("{error:#}")));
+            }
+            if let Err(error) = presenter.attach(device) {
+                return self.stop(elwt, failed(error));
+            }
+            return;
+        }
         let eye = {
             let root = self.session.views().root();
             let image = self.session.views_mut().get_mut(root);
@@ -168,12 +190,17 @@ impl<A: Stores> Host<A> {
             image.eye.aspect = size.width as f32 / size.height as f32;
             image.eye
         };
-        if let Err(error) = self.records.publish(&mut self.session) {
-            return self.stop(elwt, HostError::Host(format!("{error:?}")));
-        }
-        let Some(published) = self.records.lend() else {
+        let published = {
+            let _publication = frame_trace::scope("publication");
+            if let Err(error) = self.records.publish(&mut self.session) {
+                return self.stop(elwt, HostError::Host(format!("{error:?}")));
+            }
+            self.records.lend()
+        };
+        let Some(published) = published else {
             return;
         };
+        let _presentation = frame_trace::scope("presentation");
         let viewport = Vec2::new(size.width as f32, size.height as f32);
         presenter.upload(
             &device.device,
@@ -210,6 +237,7 @@ impl<A: Stores> Host<A> {
             device.composite_to_swap(&mut encoder, &swap_view);
         }
         device.queue.submit(Some(encoder.finish()));
+        presenter.after_submit();
         frame.present();
     }
 }
@@ -233,10 +261,11 @@ impl<A: Stores> ApplicationHandler for Host<A> {
             Ok(device) => device,
             Err(error) => return self.stop(elwt, failed(format!("{error:#}"))),
         };
-        self.presenter = Some(Presenter::new(
-            device.target_format(),
-            device.sample_count(),
-        ));
+        let mut presenter = Presenter::new(device.target_format(), device.sample_count());
+        if let Err(error) = presenter.attach(&device) {
+            return self.stop(elwt, failed(error));
+        }
+        self.presenter = Some(presenter);
         self.device = Some(device);
         self.window = Some(window);
         self.timestep.reset_clock(Instant::now());
