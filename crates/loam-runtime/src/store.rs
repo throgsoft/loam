@@ -309,6 +309,10 @@ pub trait StoreField: Send + 'static {
     fn restore(&mut self, from: &Self::Snapshot, scene: SceneId);
 
     fn erased(&mut self) -> &mut dyn ErasedStore;
+
+    fn boundary(&mut self) {}
+
+    fn release(&mut self, _entity: Entity) {}
 }
 
 pub struct StoreSnapshot<T> {
@@ -772,6 +776,14 @@ impl<T: Clone + Send + 'static> StoreField for Store<T> {
     fn erased(&mut self) -> &mut dyn ErasedStore {
         self
     }
+
+    fn boundary(&mut self) {
+        Store::boundary(self);
+    }
+
+    fn release(&mut self, entity: Entity) {
+        let _ = Store::remove(self, entity);
+    }
 }
 
 impl<T: Send + 'static> ErasedStore for Store<T> {
@@ -789,14 +801,14 @@ impl<T: Send + 'static> ErasedStore for Store<T> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
     use crate::entity::{Entities, Epoch, RuntimeId};
     use crate::relation::Relation;
 
-    mod alloc_probe {
+    pub(crate) mod alloc_probe {
         use std::alloc::{GlobalAlloc, Layout, System};
         use std::cell::Cell;
 

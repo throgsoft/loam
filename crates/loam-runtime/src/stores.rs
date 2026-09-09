@@ -1,4 +1,4 @@
-use crate::entity::SceneId;
+use crate::entity::{Entity, SceneId};
 use crate::relation::Relation;
 use crate::session::Stamp;
 use crate::store::{ErasedStore, Store};
@@ -10,6 +10,10 @@ pub trait Stores: Send + 'static {
     type Snapshot: Send + 'static;
 
     fn bind(&mut self, scene: SceneId);
+
+    fn boundary(&mut self);
+
+    fn release(&mut self, entity: Entity);
 
     fn publish(&self, into: &mut Self::Records, stamp: Stamp);
 
@@ -123,6 +127,14 @@ macro_rules! stores {
 
                 fn bind(&mut self, _scene: $crate::SceneId) {
                     $( $crate::StoreField::bind(&mut self.$field, _scene); )*
+                }
+
+                fn boundary(&mut self) {
+                    $( $crate::StoreField::boundary(&mut self.$field); )*
+                }
+
+                fn release(&mut self, _entity: $crate::Entity) {
+                    $( $crate::StoreField::release(&mut self.$field, _entity); )*
                 }
 
                 fn publish(&self, _into: &mut Records, _stamp: $crate::Stamp) {

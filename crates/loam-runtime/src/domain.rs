@@ -9,7 +9,7 @@ use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
 use crate::phase::Step;
 use crate::session::{MaterialId, PreparedId, RestoreError, Stamp};
-use crate::store::{LogCapacity, Store};
+use crate::store::{LogCapacity, Store, StoreField};
 use crate::view::{ImageRay, Pick, ViewId, ViewRecords, ViewSpec, ViewTarget, Views};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -237,6 +237,10 @@ pub trait Domain: Send + 'static {
 
     fn step(&mut self, step: Step) -> Result<(), DomainError>;
 
+    fn boundary(&mut self);
+
+    fn release(&mut self, entity: Entity);
+
     fn snapshot(&self) -> DomainSnapshot;
 
     fn restore(&mut self, from: &DomainSnapshot, scene: SceneId) -> Result<(), RestoreError>;
@@ -340,6 +344,22 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             facility.step(&mut self.poses, step)?;
         }
         Ok(())
+    }
+
+    fn boundary(&mut self) {
+        self.poses.boundary();
+        self.instances.boundary();
+        if let Some(fields) = &mut self.fields {
+            fields.boundary();
+        }
+    }
+
+    fn release(&mut self, entity: Entity) {
+        self.poses.release(entity);
+        self.instances.release(entity);
+        if let Some(fields) = &mut self.fields {
+            fields.release(entity);
+        }
     }
 
     fn snapshot(&self) -> DomainSnapshot {

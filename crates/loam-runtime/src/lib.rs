@@ -31,8 +31,8 @@ pub use phase::{
 };
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
-    Material, MaterialId, PreparedGeometry, PreparedId, Publication, PublishedView, RestoreError,
-    Session, SessionSnapshot, SimConfig, Stamp, DOMAIN_STEP,
+    Growth, Material, MaterialId, PreparedGeometry, PreparedId, Publication, PublishedView,
+    RestoreError, Session, SessionSnapshot, SimConfig, Stamp, DOMAIN_STEP,
 };
 pub use store::{
     Change, Changes, Cursor, ErasedStore, LogCapacity, Part, Partition, PartitionError, Parts,

@@ -2,7 +2,8 @@ use crate::domain::{
     ChartCommand, ChartPose, DomainError, DomainHandle, DomainId, DomainSpace, Domains, Instance,
     Pose,
 };
-use crate::entity::{Entities, Entity};
+use crate::entity::{Entities, Entity, SceneId};
+use crate::session::RestoreError;
 use crate::store::StoreError;
 use crate::stores::{HasStore, Stores};
 use crate::view::Views;
@@ -23,6 +24,7 @@ pub enum Rejection {
     Capacity,
     Domain(DomainError),
     Store(StoreError),
+    Restore(RestoreError),
     Unsupported(&'static str),
 }
 
@@ -74,15 +76,29 @@ pub struct Request<A> {
 /// Deferred to the next boundary; a result arrives before the next entry that can observe it.
 pub struct Commands<A> {
     queue: Vec<Request<A>>,
+    entities: Entities,
     next: u64,
 }
 
 impl<A: Stores> Commands<A> {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(scene: SceneId) -> Self {
         Self {
             queue: Vec::new(),
+            entities: Entities::new(scene),
             next: 0,
         }
+    }
+
+    pub(crate) fn entities(&self) -> &Entities {
+        &self.entities
+    }
+
+    pub(crate) fn entities_mut(&mut self) -> &mut Entities {
+        &mut self.entities
+    }
+
+    pub(crate) fn drain_into(&mut self, into: &mut Vec<Request<A>>) {
+        into.append(&mut self.queue);
     }
 
     pub fn submit(&mut self, command: Command<A>) -> RequestId {
@@ -105,8 +121,11 @@ impl<A: Stores> Commands<A> {
         self.app(FnCommand { name, apply })
     }
 
-    pub fn spawn(&mut self, _bundle: SpawnBundle<A>) -> Result<Reservation, Rejection> {
-        todo!()
+    pub fn spawn(&mut self, mut bundle: SpawnBundle<A>) -> Result<Reservation, Rejection> {
+        let entity = self.entities.reserve();
+        bundle.reserved = Some(entity);
+        let request = self.submit(Command::Spawn(bundle));
+        Ok(Reservation { request, entity })
     }
 
     pub fn pending(&self) -> &[Request<A>] {
@@ -214,6 +233,7 @@ pub struct SpawnBundle<A> {
     placement: Option<Box<dyn Place>>,
     instance: Option<Instance>,
     rows: Vec<Box<dyn Attach<A>>>,
+    reserved: Option<Entity>,
 }
 
 impl<A: Stores> Default for SpawnBundle<A> {
@@ -228,6 +248,7 @@ impl<A: Stores> SpawnBundle<A> {
             placement: None,
             instance: None,
             rows: Vec::new(),
+            reserved: None,
         }
     }
 
@@ -279,18 +300,51 @@ impl<'a, A: Stores> Dispatch<'a, A> {
     }
 
     pub fn spawn(&mut self, bundle: SpawnBundle<A>) -> Result<Entity, Rejection> {
-        let entity = self.entities.spawn();
+        let entity = match bundle.reserved {
+            Some(entity) if self.entities.is_reserved(entity) => entity,
+            Some(entity) => return Err(Rejection::Stale(entity)),
+            None => self.entities.reserve(),
+        };
+        match self.attach(entity, bundle) {
+            Ok(()) => {
+                self.entities.commit(entity);
+                Ok(entity)
+            }
+            Err(rejection) => {
+                self.detach(entity);
+                self.entities.release(entity);
+                Err(rejection)
+            }
+        }
+    }
+
+    fn attach(&mut self, entity: Entity, bundle: SpawnBundle<A>) -> Result<(), Rejection> {
         if let Some(placement) = &bundle.placement {
             placement.place(self.domains, entity, bundle.instance)?;
         }
         for row in bundle.rows {
             row.attach(self.app, entity)?;
         }
-        Ok(entity)
+        Ok(())
     }
 
-    pub fn despawn(&mut self, _entity: Entity) -> Result<(), Rejection> {
-        todo!()
+    fn detach(&mut self, entity: Entity) {
+        self.app.release(entity);
+        for domain in self.domains.iter_mut() {
+            domain.release(entity);
+        }
+    }
+
+    pub fn despawn(&mut self, entity: Entity) -> Result<(), Rejection> {
+        if self.entities.is_reserved(entity) {
+            return Err(Rejection::Reserved(entity));
+        }
+        if self.entities.resolve(entity).is_none() {
+            return Err(Rejection::Stale(entity));
+        }
+        self.detach(entity);
+        self.entities.despawn(entity)?;
+        Ok(())
     }
 
     pub fn apply(&mut self, command: Command<A>) -> Result<Outcome, Rejection> {
