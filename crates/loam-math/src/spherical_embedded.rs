@@ -22,6 +22,12 @@ impl Space for SphericalS3Embedded {
 
     type Vector = Vec4;
 
+    type Frame = Iso4;
+
+    fn frame_at(&self, at: Vec4) -> Iso4 {
+        Iso4::from_translation(at.truncate())
+    }
+
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {
         let half_chord = (a - b).length() * 0.5;
         2.0 * half_chord.clamp(0.0, 1.0).asin()

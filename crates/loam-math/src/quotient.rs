@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::f32::consts::{PI, TAU};
 
-use glam::{BVec3, Mat4, Vec3, Vec4};
+use glam::{BVec3, Mat4, Quat, Vec3, Vec4};
 
 use crate::euclidean::Iso3;
 use crate::space::{IsometryGroup, Space, WgslSpace};
@@ -72,6 +72,11 @@ fn unit_where(mask: BVec3) -> Vec3 {
 impl Space for FlatTorus3 {
     type Point = Vec3;
     type Vector = Vec3;
+    type Frame = Quat;
+
+    fn frame_at(&self, _at: Vec3) -> Quat {
+        Quat::IDENTITY
+    }
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         self.wrap(a - b).length()
@@ -361,6 +366,11 @@ fn gcd(a: u32, b: u32) -> u32 {
 impl Space for LensSpace {
     type Point = Vec4;
     type Vector = Vec4;
+    type Frame = Iso4;
+
+    fn frame_at(&self, at: Vec4) -> Iso4 {
+        Iso4::from_translation(self.wrap_to_domain(at).0.truncate())
+    }
 
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {
         self.nearest_lift(a, b).2

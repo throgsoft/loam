@@ -4,6 +4,9 @@ use std::borrow::Cow;
 pub trait Space {
     type Point: Copy + Send + Sync + 'static;
     type Vector: Copy + Send + Sync + 'static;
+    type Frame: Copy + Send + Sync + 'static;
+
+    fn frame_at(&self, at: Self::Point) -> Self::Frame;
 
     fn distance(&self, a: Self::Point, b: Self::Point) -> f32;
 

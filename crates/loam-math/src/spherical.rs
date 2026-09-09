@@ -97,6 +97,11 @@ pub struct SphericalS3;
 impl Space for SphericalS3 {
     type Point = Vec3;
     type Vector = Vec3;
+    type Frame = Iso4;
+
+    fn frame_at(&self, at: Vec3) -> Iso4 {
+        Iso4::from_translation(at)
+    }
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         let qa = to_sphere(clamp_to_hemisphere(a));

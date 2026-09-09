@@ -92,6 +92,11 @@ pub struct HyperbolicH3;
 impl Space for HyperbolicH3 {
     type Point = Vec3;
     type Vector = Vec3;
+    type Frame = Iso3H;
+
+    fn frame_at(&self, at: Vec3) -> Iso3H {
+        Iso3H::from_translation(at)
+    }
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         let a = clamp_to_ball(a);

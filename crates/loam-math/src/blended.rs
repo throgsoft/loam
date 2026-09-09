@@ -126,6 +126,11 @@ where
 {
     type Point = Vec3;
     type Vector = Vec3;
+    type Frame = Mat3;
+
+    fn frame_at(&self, at: Vec3) -> Mat3 {
+        Mat3::from_diagonal(Vec3::splat(1.0 / self.conformal_factor(at).sqrt()))
+    }
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         let log = self.log(a, b);
@@ -1059,6 +1064,10 @@ mod tests {
         impl crate::space::Space for H3FdOnly {
             type Point = Vec3;
             type Vector = Vec3;
+            type Frame = Mat3;
+            fn frame_at(&self, _at: Vec3) -> Mat3 {
+                Mat3::IDENTITY
+            }
             fn distance(&self, _: Vec3, _: Vec3) -> f32 {
                 0.0
             }
