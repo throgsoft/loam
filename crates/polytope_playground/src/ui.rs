@@ -3,9 +3,10 @@ use loam_runtime::Session;
 
 use crate::color::ColorMode;
 use crate::composer::{parse_term, Composer};
-use crate::consts::W_RANGE;
+use crate::consts::{MAX_RATE, W_RANGE};
 use crate::mode::Mode;
 use crate::projection::Family;
+use crate::strip::{Cell, Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
 use crate::{catalog, push, Intent, Intents, Playground};
 
 const PLANE_LABELS: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
@@ -56,19 +57,14 @@ pub(crate) fn draw(
                     }
                 }
             });
-            ui.horizontal(|ui| {
-                let running = app.spin.get().running;
-                if ui.button(if running { "pause" } else { "spin" }).clicked() {
-                    push(intents, Intent::Running(!running));
-                }
-                if ui
-                    .selectable_label(*app.gimbal.get(), "gimbal")
-                    .on_hover_text("drag a ring to turn the whole row")
-                    .clicked()
-                {
-                    push(intents, Intent::Gimbal);
-                }
-            });
+            playback(ui, app.spin.get().running, app.spin.get().rate, intents);
+            if ui
+                .selectable_label(*app.gimbal.get(), "gimbal")
+                .on_hover_text("drag a ring to turn the whole row")
+                .clicked()
+            {
+                push(intents, Intent::Gimbal);
+            }
 
             if *app.mode.get() == Mode::Compose {
                 ui.separator();
@@ -116,6 +112,9 @@ pub(crate) fn draw(
                     }
                 }
             });
+
+            ui.separator();
+            filmstrip(ui, *app.strip.get(), intents);
 
             ui.separator();
             ui.label("row");
@@ -260,6 +259,116 @@ pub(crate) fn callouts(
                     .corner_radius(3)
                     .show(ui, |ui| {
                         ui.monospace(*label);
+                    });
+            });
+    }
+}
+
+/// Play, pause, and the rotation rate the row and the strip's t fan share.
+fn playback(ui: &mut egui::Ui, running: bool, rate: f32, intents: &Intents) {
+    ui.horizontal(|ui| {
+        if ui.button(if running { "pause" } else { "play" }).clicked() {
+            push(intents, Intent::Running(!running));
+        }
+        let mut held = rate;
+        if ui
+            .add(egui::Slider::new(&mut held, 0.0..=MAX_RATE).text("rate"))
+            .changed()
+        {
+            push(intents, Intent::Rate(held));
+        }
+    });
+}
+
+fn filmstrip(ui: &mut egui::Ui, strip: Strip, intents: &Intents) {
+    let mut held = strip;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("filmstrip");
+        if ui.selectable_label(strip.on, "on").clicked() {
+            held.on = !held.on;
+        }
+        if ui.selectable_label(strip.w, "w cells").clicked() {
+            held.w = !held.w;
+        }
+        if ui.selectable_label(strip.t, "t cells").clicked() {
+            held.t = !held.t;
+        }
+        if strip.w && strip.t && ui.selectable_label(strip.swap_axes, "swap").clicked() {
+            held.swap_axes = !held.swap_axes;
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        if strip.w {
+            ui.add(
+                egui::DragValue::new(&mut held.count_w)
+                    .range(MIN_CELLS..=MAX_CELLS)
+                    .speed(0.2)
+                    .prefix("w: "),
+            );
+        }
+        if strip.t {
+            ui.add(
+                egui::DragValue::new(&mut held.count_t)
+                    .range(MIN_CELLS..=MAX_CELLS)
+                    .speed(0.2)
+                    .prefix("t: "),
+            );
+            ui.add(
+                egui::DragValue::new(&mut held.t_extent)
+                    .range(MIN_T_EXTENT..=MAX_T_EXTENT)
+                    .speed(0.02)
+                    .fixed_decimals(2)
+                    .suffix("s")
+                    .prefix("dt: "),
+            );
+        }
+        let subject = ui.button(format!(
+            "subject: {}",
+            catalog::SHAPE_CATALOG[strip.subject()].label
+        ));
+        egui::Popup::menu(&subject).show(|ui| {
+            ui.set_min_width(140.0);
+            for (card, entry) in catalog::SHAPE_CATALOG.iter().enumerate() {
+                if ui.button(entry.label).clicked() {
+                    held.subject = card;
+                    ui.close();
+                }
+            }
+        });
+    });
+    if held != strip {
+        push(intents, Intent::Strip(held));
+    }
+}
+
+/// One w and t readout over each cell of the grid, in the cell's own rectangle.
+pub(crate) fn strip_labels(context: &egui::Context, session: &Session<Playground>, cells: &[Cell]) {
+    let strip = *session.app.strip.get();
+    if !strip.on {
+        return;
+    }
+    let per_point = context.pixels_per_point().max(1e-3);
+    for (index, cell) in cells.iter().enumerate() {
+        let at = egui::pos2(
+            (cell.viewport.x as f32 + cell.viewport.width as f32 * 0.5) / per_point,
+            (cell.viewport.y as f32 + 8.0) / per_point,
+        );
+        let text = if strip.t {
+            format!("w={:+.3}  t={:.2}s", cell.w, cell.t)
+        } else {
+            format!("w={:+.3}", cell.w)
+        };
+        egui::Area::new(egui::Id::new(("strip-cell", index)))
+            .fixed_pos(at)
+            .pivot(egui::Align2::CENTER_TOP)
+            .order(egui::Order::Foreground)
+            .show(context, |ui| {
+                egui::Frame::default()
+                    .fill(egui::Color32::from_black_alpha(160))
+                    .inner_margin(egui::Margin::symmetric(6, 2))
+                    .corner_radius(3)
+                    .show(ui, |ui| {
+                        ui.monospace(text);
                     });
             });
     }

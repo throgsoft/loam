@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use glam::Vec4;
 use loam_app::args::Args;
 use loam_app::session::{launch, FrameHook, SessionApp};
-use loam_math::{Bivector, EuclideanR4, Iso4Flat};
+use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat};
 use loam_render::pass::{FramePass, PassOrder, PassSchedule};
 use loam_render::raymarch::BodyUniform;
 use loam_render::{
@@ -70,6 +70,7 @@ mod mode;
 mod points;
 mod projection;
 mod scene;
+mod strip;
 mod toy;
 mod ui;
 
@@ -80,10 +81,11 @@ use consts::{BODY_SIZE, BODY_X_SPACING, BODY_Y, GRAVITY, W_SCRUB_RATE};
 use gimbal::Gimbal;
 use mode::{
     ClearComposer, ClearDraft, CommitDraft, DraftPlane, DropTerm, Mode, PushTerm, SetActive,
-    SetColorMode, SetMode, SetProjection, SetRunning, SetScrub, SetShape, SetSlice, Spin,
-    ToggleGimbal, TogglePlane, TogglePoints, TurnRow,
+    SetColorMode, SetMode, SetProjection, SetRate, SetRunning, SetScrub, SetShape, SetSlice,
+    SetStrip, Spin, ToggleGimbal, TogglePlane, TogglePoints, TurnRow,
 };
 use projection::Family;
+use strip::{Cell, Strip};
 
 const SPIN: ActionId = ActionId(0);
 const SLICE_UP: ActionId = ActionId(1);
@@ -91,6 +93,7 @@ const SLICE_DOWN: ActionId = ActionId(2);
 const NEXT_MODE: ActionId = ActionId(3);
 const RESET: ActionId = ActionId(4);
 const GIMBAL: ActionId = ActionId(5);
+const STRIP: ActionId = ActionId(6);
 const PLANE: [ActionId; 6] = [
     ActionId(10),
     ActionId(11),
@@ -106,6 +109,7 @@ const EDGE_WIDTH_PX: f32 = 1.4;
 const HEADLESS_STEPS: u32 = 8;
 const HEADLESS_FORMULA: &str = "90deg (xy + zw)";
 const HEADLESS_SCRUB: f32 = 0.7;
+const HEADLESS_FRAME: (u32, u32) = (1280, 720);
 
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
@@ -132,6 +136,7 @@ loam_runtime::stores! {
         gimbal: Value<bool>,
         points: Value<bool>,
         color: Value<ColorMode>,
+        strip: Value<Strip>,
         floor: Value<bool>,
     }
 }
@@ -156,6 +161,8 @@ pub(crate) enum Intent {
     Color(ColorMode),
     Points,
     Shape(usize, usize),
+    Strip(Strip),
+    Rate(f32),
 }
 
 pub(crate) type Intents = Arc<Mutex<Vec<Intent>>>;
@@ -330,6 +337,11 @@ fn install_systems(
             if ctx.input.pressed(GIMBAL) {
                 ctx.commands.app(ToggleGimbal);
             }
+            if ctx.input.pressed(STRIP) {
+                let mut strip = *ctx.app.strip.get();
+                strip.on = !strip.on;
+                ctx.commands.app(SetStrip { strip });
+            }
             for (index, action) in PLANE.into_iter().enumerate() {
                 if ctx.input.pressed(action) {
                     ctx.commands.app(TogglePlane { plane: index });
@@ -365,14 +377,15 @@ fn install_systems(
         },
     );
 
-    let mut painted: Option<ColorMode> = None;
+    let mut painted: Option<(ColorMode, bool)> = None;
     session.system(
         Phase::Dispatch,
         "shading",
         Access::new().reads::<Slot>().domain(domain.id()),
         move |app: &mut Playground, domains: &mut Domains| {
             let mode = *app.color.get();
-            if painted == Some(mode) {
+            let strip = app.strip.get().on;
+            if painted == Some((mode, strip)) {
                 return;
             }
             let Ok(r4) = domains.typed(domain) else {
@@ -384,9 +397,10 @@ fn install_systems(
                 };
                 if let Some(instance) = r4.instances.get_mut(entity) {
                     instance.shading = shades.of(mode);
+                    instance.section = (!strip).then_some(cut);
                 }
             }
-            painted = Some(mode);
+            painted = Some((mode, strip));
         },
     );
 
@@ -465,6 +479,8 @@ fn submit(
         Intent::Turn(rotor) => commands.app(TurnRow { rotor, domain }),
         Intent::Color(mode) => commands.app(SetColorMode { mode }),
         Intent::Points => commands.app(TogglePoints),
+        Intent::Strip(strip) => commands.app(SetStrip { strip }),
+        Intent::Rate(rate) => commands.app(SetRate { rate }),
         Intent::Shape(slot, card) => {
             let Some(entry) = catalog::SHAPE_CATALOG.get(card) else {
                 return;
@@ -489,6 +505,7 @@ pub(crate) fn bindings() -> Bindings {
         .key(Key::Letter('m'), NEXT_MODE)
         .key(Key::Letter('r'), RESET)
         .key(Key::Letter('g'), GIMBAL)
+        .key(Key::Letter('f'), STRIP)
         .key(Key::Letter('e'), SLICE_UP)
         .key(Key::Letter('q'), SLICE_DOWN);
     for (index, action) in PLANE.into_iter().enumerate() {
@@ -556,6 +573,9 @@ struct Scratch {
     slots: Vec<(Entity, ShapeEntry)>,
     bodies: Vec<BodyUniform>,
     cloud: points::Cloud,
+    cells: Vec<Cell>,
+    strip: Vec<(loam_render::Viewport, f32, BodyUniform)>,
+    subject: loam_math::Rotor4,
     anchors: Vec<(usize, &'static str, glam::Vec3)>,
 }
 
@@ -566,6 +586,9 @@ impl Scratch {
             slots: Vec::new(),
             bodies: Vec::new(),
             cloud: points::Cloud::new(row.iter().filter_map(|entry| entry.shape.polytope4())),
+            cells: Vec::new(),
+            strip: Vec::new(),
+            subject: loam_math::Rotor4::IDENTITY,
             anchors: Vec::new(),
         }
     }
@@ -577,7 +600,9 @@ fn collect(
     scratch: &mut Scratch,
 ) {
     let mode = *session.app.color.get();
-    let cloud_on = *session.app.points.get();
+    let strip = *session.app.strip.get();
+    let cloud_on = *session.app.points.get() && !strip.on;
+    let active = *session.app.active.get();
     scratch.slots.clear();
     scratch.slots.extend(
         session
@@ -596,6 +621,7 @@ fn collect(
     );
     scratch.bodies.clear();
     scratch.cloud.clear();
+    scratch.subject = loam_math::Rotor4::IDENTITY;
     let mut sum = glam::Vec3::ZERO;
     let Ok(r4) = session.domains_mut().typed(domain) else {
         return;
@@ -604,6 +630,9 @@ fn collect(
         let Some(pose) = r4.poses.get(*entity) else {
             continue;
         };
+        if scratch.anchors.get(at).is_some_and(|held| held.0 == active) {
+            scratch.subject = pose.0.rotation;
+        }
         let center = pose.0.translation.truncate();
         sum += center;
         if let Some(anchor) = scratch.anchors.get_mut(at) {
@@ -805,17 +834,69 @@ fn main() -> Result<(), HostError> {
 
             let slice = *hook.session.app.slice.get();
             let floor = *hook.session.app.floor.get();
+            let strip = *hook.session.app.strip.get();
             collect(hook.session, domain, &mut scratch);
             sky.publish(&eye, scene::ground(floor));
             hyperslice.publish(scene::uniforms(&eye, slice, floor), &scratch.bodies);
+            fill_strip(
+                &strip,
+                turn_of(hook.session),
+                hook.size,
+                slice,
+                &mut scratch,
+            );
+            hyperslice.publish_strip(&scratch.strip);
+            gimbal.enabled = gimbal.enabled && !strip.on;
             rings.publish(&eye, gimbal.rings(scratch.center));
             cloud.publish(&eye, scratch.cloud.records());
             if let Some(context) = hook.ui {
                 ui::draw(context, hook.session, &mut panel, &ui_intents);
-                ui::callouts(context, hook.session, &scratch.anchors);
+                if !strip.on {
+                    ui::callouts(context, hook.session, &scratch.anchors);
+                }
+                ui::strip_labels(context, hook.session, &scratch.cells);
             }
         });
     launch(booted.session, app)
+}
+
+fn turn_of(session: &Session<Playground>) -> Bivector4 {
+    match *session.app.mode.get() {
+        Mode::Rotate => session.app.spin.get().omega(),
+        Mode::Compose => session.app.composer.get().angular_velocity(),
+        Mode::Toybox => Bivector4::ZERO,
+    }
+}
+
+/// One cell per grid rectangle, each carrying its own w and the subject's rotation at its own time.
+fn fill_strip(
+    strip: &Strip,
+    omega: Bivector4,
+    frame: (u32, u32),
+    slice: f32,
+    scratch: &mut Scratch,
+) {
+    scratch.strip.clear();
+    if !strip.on {
+        scratch.cells.clear();
+        return;
+    }
+    strip.cells([frame.0, frame.1], slice, BODY_SIZE, &mut scratch.cells);
+    let entry = catalog::SHAPE_CATALOG[strip.subject()];
+    for cell in &scratch.cells {
+        let rotor = ((omega * cell.t).exp() * scratch.subject).normalize();
+        scratch.strip.push((
+            cell.viewport,
+            cell.w,
+            BodyUniform::polytope_with_rotor(
+                [0.0, BODY_Y, 0.0, 0.0],
+                entry.shape.shape_id(),
+                BODY_SIZE,
+                rotor,
+                entry.body_color,
+            ),
+        ));
+    }
 }
 
 fn pointer_drag(session: &Session<Playground>) -> [f32; 2] {
@@ -920,8 +1001,17 @@ fn report(booted: &mut Boot, frame: &Frame, config: &HostConfig) -> Result<Vec<S
                 .map(|view| view.records.triangles().len())
                 .sum::<usize>()
         ),
+        strip_line(&mut Scratch::new(&[]), *booted.session.app.strip.get()),
         format!("sections: {}", frame_sections(frame).join(", ")),
     ])
+}
+
+fn strip_line(scratch: &mut Scratch, strip: Strip) -> String {
+    let mut shown = strip;
+    shown.on = true;
+    fill_strip(&shown, Bivector4::ZERO, HEADLESS_FRAME, 0.0, scratch);
+    let (cols, rows, _) = shown.grid();
+    format!("filmstrip: {} cells, {cols} by {rows}", scratch.strip.len())
 }
 
 fn composer_line() -> String {
@@ -1432,6 +1522,49 @@ mod tests {
     }
 
     #[test]
+    fn the_marcher_takes_one_strip_cell_per_grid_rectangle_and_none_once_the_strip_is_off() {
+        let mut scratch = Scratch::new(&[CELL24]);
+        let strip = Strip {
+            on: true,
+            w: true,
+            t: true,
+            count_w: 5,
+            count_t: 3,
+            ..Strip::default()
+        };
+        fill_strip(&strip, Bivector4::ZERO, HEADLESS_FRAME, 0.25, &mut scratch);
+        assert_eq!(scratch.strip.len(), 15, "a 5 by 3 grid is fifteen draws");
+        let covered: u64 = scratch
+            .strip
+            .iter()
+            .map(|(viewport, _, _)| u64::from(viewport.width) * u64::from(viewport.height))
+            .sum();
+        assert_eq!(
+            covered,
+            u64::from(HEADLESS_FRAME.0) * u64::from(HEADLESS_FRAME.1),
+            "the cells the marcher draws leave a gap or overlap"
+        );
+        let slices: Vec<f32> = scratch.strip.iter().map(|(_, w, _)| *w).collect();
+        assert!(
+            (slices[0] - (0.25 - BODY_SIZE)).abs() < 1e-6
+                && (slices[14] - (0.25 + BODY_SIZE)).abs() < 1e-6,
+            "the strip does not span the body around the slider: {slices:?}"
+        );
+
+        fill_strip(
+            &Strip { on: false, ..strip },
+            Bivector4::ZERO,
+            HEADLESS_FRAME,
+            0.25,
+            &mut scratch,
+        );
+        assert!(
+            scratch.strip.is_empty(),
+            "a stale strip kept the filmstrip on screen after it was switched off"
+        );
+    }
+
+    #[test]
     fn the_headless_report_names_the_active_polytope_and_the_frames_sections() {
         let (mut booted, _intents) = one_slot();
         let frame = Frame::new();
@@ -1443,12 +1576,17 @@ mod tests {
             lines[1]
         );
         assert!(
-            lines[4].contains("present-clear")
-                && lines[4].contains("sky-ground")
-                && lines[4].contains("present-draw")
-                && lines[4].contains("triangles")
-                && lines[4].contains("hyperslice"),
+            lines[5].contains("present-clear")
+                && lines[5].contains("sky-ground")
+                && lines[5].contains("present-draw")
+                && lines[5].contains("triangles")
+                && lines[5].contains("hyperslice"),
             "the report does not list the frame's sections: {}",
+            lines[5]
+        );
+        assert_eq!(
+            lines[4], "filmstrip: 11 cells, 11 by 1",
+            "the default strip fans eleven w cells across one row: {}",
             lines[4]
         );
         assert!(

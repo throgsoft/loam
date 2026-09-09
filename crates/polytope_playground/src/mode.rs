@@ -8,8 +8,9 @@ use loam_runtime::{
 use crate::catalog::ShapeEntry;
 use crate::color::{ColorMode, Shades};
 use crate::composer::Term;
-use crate::consts::{BASE_ROTATION_RATE, W_RANGE};
+use crate::consts::{BASE_ROTATION_RATE, MAX_RATE, W_RANGE};
 use crate::projection::Family;
+use crate::strip::{Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
 use crate::toy;
 use crate::Playground;
 
@@ -430,6 +431,49 @@ impl AppCommand<Playground> for SetShape {
                 toy::add_body(dispatch, self.domain, spawned, polytope, row.rest)?;
             }
         }
+        Ok(Outcome::Done)
+    }
+}
+
+pub(crate) struct SetStrip {
+    pub(crate) strip: Strip,
+}
+
+impl AppCommand<Playground> for SetStrip {
+    fn name(&self) -> &'static str {
+        "strip"
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        if !self.strip.t_extent.is_finite() {
+            return Err(Rejection::Unsupported("the t extent is not finite"));
+        }
+        if !self.strip.w && !self.strip.t {
+            return Err(Rejection::Unsupported("the strip needs one axis"));
+        }
+        let mut held = self.strip;
+        held.count_w = held.count_w.clamp(MIN_CELLS, MAX_CELLS);
+        held.count_t = held.count_t.clamp(MIN_CELLS, MAX_CELLS);
+        held.t_extent = held.t_extent.clamp(MIN_T_EXTENT, MAX_T_EXTENT);
+        dispatch.app.strip.set(held);
+        Ok(Outcome::Done)
+    }
+}
+
+pub(crate) struct SetRate {
+    pub(crate) rate: f32,
+}
+
+impl AppCommand<Playground> for SetRate {
+    fn name(&self) -> &'static str {
+        "rate"
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        if !self.rate.is_finite() {
+            return Err(Rejection::Unsupported("the rate is not finite"));
+        }
+        dispatch.app.spin.get_mut().rate = self.rate.clamp(0.0, MAX_RATE);
         Ok(Outcome::Done)
     }
 }
