@@ -31,7 +31,7 @@ pub trait Rotor: Copy + Mul<Output = Self> {
 }
 
 /// Coefficient on `e1∧e2`: the angle in radians from `x` toward `y`.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bivector2(pub f32);
 
 impl Add for Bivector2 {
@@ -118,7 +118,7 @@ impl Rotor for Rotor2 {
 }
 
 /// Coefficients on `e1∧e2`, `e2∧e3`, `e3∧e1`; the magnitude is the angle.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bivector3 {
     pub xy: f32,
     pub yz: f32,
@@ -286,7 +286,7 @@ impl Rotor for Rotor3 {
 }
 
 /// Six coefficients on the basis planes `e_i ∧ e_j`, `i < j`.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bivector4 {
     pub xy: f32,
     pub xz: f32,

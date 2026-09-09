@@ -61,6 +61,14 @@ impl Space for EuclideanR3 {
     fn is_chart_flat(&self) -> bool {
         true
     }
+
+    fn chart_envelope(&self) -> f32 {
+        f32::INFINITY
+    }
+
+    fn valid_point(&self, p: Vec3) -> bool {
+        p.is_finite()
+    }
 }
 
 impl IsometryGroup for EuclideanR3 {

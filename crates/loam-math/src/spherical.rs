@@ -135,6 +135,14 @@ impl Space for SphericalS3 {
         perp4.truncate() * (d / n)
     }
 
+    fn chart_envelope(&self) -> f32 {
+        std::f32::consts::FRAC_PI_2
+    }
+
+    fn valid_point(&self, p: Vec3) -> bool {
+        p.is_finite() && p.length_squared() <= SPHERE_R2_MAX
+    }
+
     fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
         let from = clamp_to_hemisphere(from);
         let to = clamp_to_hemisphere(to);

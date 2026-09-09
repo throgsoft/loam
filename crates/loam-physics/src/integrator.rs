@@ -4,14 +4,22 @@ use loam_math::{Bivector, IsometryGroup, Space};
 
 use crate::body::RigidBody;
 
-pub trait PhysicsSpace: Space + IsometryGroup {
-    type AngVel: Bivector;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BroadphaseBound {
+    /// Chart distance is a lower bound on separation everywhere, seams and identifications included.
+    Certified,
+    /// No distance pruning; every pair that passes the static and mask filters is a candidate.
+    Unknown,
+}
 
-    type Inertia: Copy;
+pub trait PhysicsSpace: Space + IsometryGroup + Send + Sync {
+    type AngVel: Bivector + Send + Sync;
+
+    type Inertia: Copy + Send + Sync;
+
+    fn broadphase_bound(&self) -> BroadphaseBound;
 
     fn supports_collider(&self, kind: crate::ColliderKind) -> bool;
-
-    fn valid_point(&self, position: Self::Point) -> bool;
 
     fn valid_vector(&self, vector: Self::Vector) -> bool;
 

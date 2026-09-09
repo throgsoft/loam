@@ -1,3 +1,5 @@
+#![cfg(all(feature = "r3", feature = "r4"))]
+
 use glam::{Vec3, Vec4};
 use loam_math::{EuclideanR3, EuclideanR4};
 use loam_physics::{euclidean_r3 as r3, euclidean_r4 as r4, World};

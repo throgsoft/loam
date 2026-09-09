@@ -158,6 +158,14 @@ where
         }
         current
     }
+
+    fn chart_envelope(&self) -> f32 {
+        self.a.chart_envelope().min(self.b.chart_envelope())
+    }
+
+    fn valid_point(&self, p: Vec3) -> bool {
+        self.a.valid_point(p) && self.b.valid_point(p)
+    }
 }
 
 pub const GEODESIC_DEFAULT_STEPS: u32 = 32;
@@ -1062,6 +1070,12 @@ mod tests {
             }
             fn parallel_transport(&self, _: Vec3, _: Vec3, v: Vec3) -> Vec3 {
                 v
+            }
+            fn chart_envelope(&self) -> f32 {
+                f32::INFINITY
+            }
+            fn valid_point(&self, p: Vec3) -> bool {
+                p.is_finite()
             }
         }
         impl ConformallyFlat for H3FdOnly {

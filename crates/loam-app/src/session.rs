@@ -24,6 +24,7 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
 
 /// Owns the window, device, and loop; the session stays a CPU value.
 pub fn run<A: Stores>(session: Session<A>, config: HostConfig) -> Result<(), HostError> {
+    crate::par_native::install();
     let event_loop = EventLoop::new().map_err(failed)?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut host = Host::new(session, config);

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::{Add, Mul};
 
-use loam_math::{EuclideanR2, EuclideanR3, EuclideanR4};
+use loam_time::par;
 use loam_time::StateHash;
 
 use crate::body::{BodyArena, BodyDef, BodyId, RigidBody};
@@ -10,7 +10,7 @@ use crate::collision::VectorOps;
 use crate::dirty::{DirtyBodies, DirtyDrain};
 use crate::edit::EditError;
 use crate::geometry::GeometryStore;
-use crate::integrator::{integrate_body, PhysicsSpace};
+use crate::integrator::{integrate_body, BroadphaseBound, PhysicsSpace};
 use crate::manifold::{
     ContactPoint, Manifold, BAUMGARTE_BETA, DEFAULT_PGS_ITERS, MAX_LINEAR_CORRECTION,
     PENETRATION_SLOP, RESTITUTION_THRESHOLD,
@@ -41,6 +41,11 @@ pub struct Island {
     /// Ascending pairs; static contacts belong to their dynamic side.
     pub constraints: Vec<PairKey>,
 }
+
+pub const DEFAULT_SOLVER_TOLERANCE: f32 = 1e-3;
+
+/// Measured, not derived; the sweep is in docs/PERF.md.
+pub const ISLANDS_PER_SOLVE_WORKER: usize = 256;
 
 const STALE_CONSTRAINT_KEY: &str = "constraint buffer outlived its manifold";
 const STALE_MANIFOLD_BODY: &str = "manifold key names a body that is gone";
@@ -82,6 +87,60 @@ fn max_norm(norms_squared: impl Iterator<Item = f32>) -> f32 {
     norms_squared.fold(0.0_f32, f32::max).sqrt()
 }
 
+/// `residual` is the largest normal-impulse change of the last sweep; `converged` compares it to `World::solver_tolerance`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SolveReport {
+    pub residual: f32,
+    pub converged: bool,
+}
+
+impl Default for SolveReport {
+    fn default() -> Self {
+        Self {
+            residual: 0.0,
+            converged: true,
+        }
+    }
+}
+
+struct ScratchUnit {
+    key: PairKey,
+    a: u32,
+    b: u32,
+    first: u32,
+    count: u32,
+}
+
+struct IslandSolve<S: PhysicsSpace> {
+    bodies: Vec<RigidBody<S>>,
+    dense: Vec<u32>,
+    units: Vec<ScratchUnit>,
+    points: Vec<ContactPoint<S>>,
+    residual: f32,
+}
+
+impl<S: PhysicsSpace> Default for IslandSolve<S> {
+    fn default() -> Self {
+        Self {
+            bodies: Vec::new(),
+            dense: Vec::new(),
+            units: Vec::new(),
+            points: Vec::new(),
+            residual: 0.0,
+        }
+    }
+}
+
+const SCATTERED_NOWHERE: u32 = u32::MAX;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StepCounters {
+    pub index_visits: u32,
+    pub distance_evals: u32,
+    pub candidates: u32,
+    pub contacts: u32,
+}
+
 #[derive(Clone, Copy)]
 struct ConstraintUnit {
     island: BodyId,
@@ -108,17 +167,33 @@ pub struct World<S: PhysicsSpace> {
     touched_pairs: Vec<PairKey>,
     island_parent: Vec<u32>,
     island_labels: Vec<BodyId>,
+    counters: StepCounters,
+    /// Same unit as [`SolveReport::residual`]: impulse, mass times speed.
+    pub solver_tolerance: f32,
+    report: SolveReport,
+    scratch: Vec<IslandSolve<S>>,
+    scratch_islands: usize,
+    scratch_local: Vec<u32>,
 }
 
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     const fn assert_no_allocation<T: Copy>() {}
-    assert_send_sync::<World<EuclideanR2>>();
-    assert_send_sync::<World<EuclideanR3>>();
-    assert_send_sync::<World<EuclideanR4>>();
-    assert_no_allocation::<RigidBody<EuclideanR2>>();
-    assert_no_allocation::<RigidBody<EuclideanR3>>();
-    assert_no_allocation::<RigidBody<EuclideanR4>>();
+    #[cfg(feature = "r2")]
+    {
+        assert_send_sync::<World<loam_math::EuclideanR2>>();
+        assert_no_allocation::<RigidBody<loam_math::EuclideanR2>>();
+    }
+    #[cfg(feature = "r3")]
+    {
+        assert_send_sync::<World<loam_math::EuclideanR3>>();
+        assert_no_allocation::<RigidBody<loam_math::EuclideanR3>>();
+    }
+    #[cfg(feature = "r4")]
+    {
+        assert_send_sync::<World<loam_math::EuclideanR4>>();
+        assert_no_allocation::<RigidBody<loam_math::EuclideanR4>>();
+    }
 };
 
 impl<S: PhysicsSpace> World<S> {
@@ -140,7 +215,22 @@ impl<S: PhysicsSpace> World<S> {
             touched_pairs: Vec::new(),
             island_parent: Vec::new(),
             island_labels: Vec::new(),
+            counters: StepCounters::default(),
+            solver_tolerance: DEFAULT_SOLVER_TOLERANCE,
+            report: SolveReport::default(),
+            scratch: Vec::new(),
+            scratch_islands: 0,
+            scratch_local: Vec::new(),
         }
+    }
+
+    /// From the last `step` or `broadphase_into`.
+    pub fn counters(&self) -> StepCounters {
+        self.counters
+    }
+
+    pub fn solve_report(&self) -> SolveReport {
+        self.report
     }
 
     pub fn push_body(&mut self, body: BodyDef<S>) -> BodyId {
@@ -358,6 +448,8 @@ impl<S: PhysicsSpace> World<S> {
         self.broadphase_active.clear();
         self.island_parent.clear();
         self.island_labels.clear();
+        self.scratch_islands = 0;
+        self.report = SolveReport::default();
         Ok(())
     }
 
@@ -367,6 +459,7 @@ impl<S: PhysicsSpace> World<S> {
         S::Vector: VectorOps,
         S::Point: Copy + std::ops::Sub<Output = S::Vector>,
     {
+        self.counters = StepCounters::default();
         self.apply_forces(dt);
         self.integrate(dt);
         self.update_manifolds();
@@ -419,6 +512,7 @@ impl<S: PhysicsSpace> World<S> {
             &mut self.broadphase_intervals,
             &mut self.broadphase_active,
             &mut pairs,
+            &mut self.counters,
         );
         let mut touched = std::mem::take(&mut self.touched_pairs);
         touched.clear();
@@ -443,6 +537,7 @@ impl<S: PhysicsSpace> World<S> {
         }
 
         touched.sort_unstable();
+        self.counters.contacts = touched.len() as u32;
         self.manifolds
             .retain(|k, _| touched.binary_search(k).is_ok());
         self.touched_pairs = touched;
@@ -544,23 +639,99 @@ impl<S: PhysicsSpace> World<S> {
     where
         S::Vector: VectorOps,
     {
-        for _ in 0..self.pgs_iters {
-            for unit in &self.constraints {
-                debug_assert_eq!(unit.dense, self.dense_pair(unit.key));
-                let (i, j) = unit.dense;
+        self.gather_islands();
+        let Self {
+            space,
+            scratch,
+            scratch_islands,
+            pgs_iters,
+            ..
+        } = self;
+        let iterations = *pgs_iters;
+        let space = &*space;
+        let islands = &mut scratch[..*scratch_islands];
+        let workers = islands.len() / ISLANDS_PER_SOLVE_WORKER;
+        if workers < 2 {
+            for island in islands.iter_mut() {
+                solve_island(space, iterations, island);
+            }
+        } else {
+            let chunk = islands.len().div_ceil(workers);
+            par::for_each_chunk(islands, chunk, |chunk| {
+                for island in chunk {
+                    solve_island(space, iterations, island);
+                }
+            });
+        }
+        self.scatter_islands();
+    }
+
+    fn gather_islands(&mut self) {
+        self.scratch_local.clear();
+        self.scratch_local
+            .resize(self.bodies.len(), SCATTERED_NOWHERE);
+        self.scratch_islands = 0;
+        let mut current = None;
+        for unit in &self.constraints {
+            if current != Some(unit.island) {
+                current = Some(unit.island);
+                if self.scratch.len() == self.scratch_islands {
+                    self.scratch.push(IslandSolve::default());
+                }
+                let island = &mut self.scratch[self.scratch_islands];
+                island.bodies.clear();
+                island.dense.clear();
+                island.units.clear();
+                island.points.clear();
+                self.scratch_islands += 1;
+            }
+            let island = &mut self.scratch[self.scratch_islands - 1];
+            let (i, j) = unit.dense;
+            let a = gather_body(island, &mut self.scratch_local, &self.bodies, i);
+            let b = gather_body(island, &mut self.scratch_local, &self.bodies, j);
+            let manifold = self
+                .manifolds
+                .get(&unit.key)
+                .unwrap_or_else(|| panic!("{STALE_CONSTRAINT_KEY}"));
+            let first = island.points.len() as u32;
+            island.points.extend_from_slice(&manifold.points);
+            island.units.push(ScratchUnit {
+                key: unit.key,
+                a,
+                b,
+                first,
+                count: manifold.points.len() as u32,
+            });
+        }
+    }
+
+    fn scatter_islands(&mut self) {
+        let mut residual = 0.0_f32;
+        for island in &self.scratch[..self.scratch_islands] {
+            residual = residual.max(island.residual);
+            for (local, &dense) in island.dense.iter().enumerate() {
+                if dense != SCATTERED_NOWHERE {
+                    self.bodies[dense as usize] = island.bodies[local];
+                }
+            }
+            for unit in &island.units {
                 let manifold = self
                     .manifolds
                     .get_mut(&unit.key)
                     .unwrap_or_else(|| panic!("{STALE_CONSTRAINT_KEY}"));
-                let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
-                for cp in &mut manifold.points {
-                    solve_normal_then_tangent(&self.space, a, b, cp);
-                }
+                let first = unit.first as usize;
+                manifold
+                    .points
+                    .copy_from_slice(&island.points[first..first + unit.count as usize]);
             }
         }
+        self.report = SolveReport {
+            residual,
+            converged: residual <= self.solver_tolerance,
+        };
     }
 
-    /// Sorted overlapping bounding-ball pairs, excluding pairs of static bodies.
+    /// Sorted candidate pairs: bounding-ball overlaps under a certified bound, every masked non-static pair otherwise.
     pub fn broadphase(&self) -> Vec<PairKey> {
         let mut pairs = Vec::new();
         Self::fill_broadphase(
@@ -570,12 +741,14 @@ impl<S: PhysicsSpace> World<S> {
             &mut Vec::new(),
             &mut Vec::new(),
             &mut pairs,
+            &mut StepCounters::default(),
         );
         pairs
     }
 
     /// Reuses the world's sweep storage and replaces `pairs` with the current candidates.
     pub fn broadphase_into(&mut self, pairs: &mut Vec<PairKey>) {
+        self.counters = StepCounters::default();
         Self::fill_broadphase(
             &self.bodies,
             &self.geometry,
@@ -583,6 +756,7 @@ impl<S: PhysicsSpace> World<S> {
             &mut self.broadphase_intervals,
             &mut self.broadphase_active,
             pairs,
+            &mut self.counters,
         );
     }
 
@@ -594,6 +768,7 @@ impl<S: PhysicsSpace> World<S> {
         intervals: &mut Vec<RadialInterval>,
         active: &mut Vec<u32>,
         pairs: &mut Vec<PairKey>,
+        counters: &mut StepCounters,
     ) {
         pairs.clear();
         intervals.clear();
@@ -602,6 +777,7 @@ impl<S: PhysicsSpace> World<S> {
         if n < 2 {
             return;
         }
+        let certified = space.broadphase_bound() == BroadphaseBound::Certified;
 
         let anchor = (1..n).fold(0, |lowest, dense| {
             if bodies.id_at(dense) < bodies.id_at(lowest) {
@@ -615,11 +791,17 @@ impl<S: PhysicsSpace> World<S> {
         for dense in 0..n {
             let body = &bodies[dense];
             let radius = bounding_radius(geometry.get(body.collider()));
-            let d = space.distance(origin, body.position);
-            let slack = d * BROADPHASE_TRIANGLE_SLACK;
+            let (lo, hi) = if certified {
+                counters.distance_evals += 1;
+                let d = space.distance(origin, body.position);
+                let slack = d * BROADPHASE_TRIANGLE_SLACK;
+                (d - radius - slack, d + radius + slack)
+            } else {
+                (f32::NEG_INFINITY, f32::INFINITY)
+            };
             intervals.push(RadialInterval {
-                lo: d - radius - slack,
-                hi: d + radius + slack,
+                lo,
+                hi,
                 radius,
                 dense: dense as u32,
                 id: bodies.id_at(dense),
@@ -634,8 +816,14 @@ impl<S: PhysicsSpace> World<S> {
         for i in 0..n {
             let entry = intervals[i];
 
-            active.retain(|&open| intervals[open as usize].hi >= entry.lo);
+            let mut visits = counters.index_visits;
+            active.retain(|&open| {
+                visits += 1;
+                intervals[open as usize].hi >= entry.lo
+            });
+            counters.index_visits = visits;
             for &open in active.iter() {
+                counters.index_visits += 1;
                 let other = intervals[open as usize];
                 if !entry.dynamic && !other.dynamic {
                     continue;
@@ -644,18 +832,23 @@ impl<S: PhysicsSpace> World<S> {
                 if entry.group & other.mask == 0 || other.group & entry.mask == 0 {
                     continue;
                 }
-                let gap = space.distance(
-                    bodies[other.dense as usize].position,
-                    bodies[entry.dense as usize].position,
-                );
-                if gap <= other.radius + entry.radius {
-                    pairs.push(canonical_pair(other.id, entry.id));
+                if certified {
+                    counters.distance_evals += 1;
+                    let gap = space.distance(
+                        bodies[other.dense as usize].position,
+                        bodies[entry.dense as usize].position,
+                    );
+                    if gap > other.radius + entry.radius {
+                        continue;
+                    }
                 }
+                pairs.push(canonical_pair(other.id, entry.id));
             }
             active.push(i as u32);
         }
 
         pairs.sort_unstable();
+        counters.candidates = pairs.len() as u32;
     }
 
     /// Hashes contact keys, point counts, and normal impulses in key order.
@@ -817,12 +1010,58 @@ fn split_two_mut<T>(slice: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     }
 }
 
+fn gather_body<S: PhysicsSpace>(
+    island: &mut IslandSolve<S>,
+    local: &mut [u32],
+    bodies: &BodyArena<S>,
+    dense: usize,
+) -> u32 {
+    if bodies[dense].inv_mass() == 0.0 {
+        island.bodies.push(bodies[dense]);
+        island.dense.push(SCATTERED_NOWHERE);
+        return island.bodies.len() as u32 - 1;
+    }
+    if local[dense] == SCATTERED_NOWHERE {
+        local[dense] = island.bodies.len() as u32;
+        island.bodies.push(bodies[dense]);
+        island.dense.push(dense as u32);
+    }
+    local[dense]
+}
+
+// Catto 2005, "Iterative Dynamics with Temporal Coherence", accumulated impulses with warm start.
+fn solve_island<S>(space: &S, iterations: usize, island: &mut IslandSolve<S>)
+where
+    S: PhysicsSpace,
+    S::Vector: VectorOps,
+{
+    let IslandSolve {
+        bodies,
+        units,
+        points,
+        residual,
+        ..
+    } = island;
+    *residual = 0.0;
+    for _ in 0..iterations {
+        *residual = 0.0;
+        for unit in units.iter() {
+            let (a, b) = split_two_mut(bodies, unit.a as usize, unit.b as usize);
+            let first = unit.first as usize;
+            for cp in &mut points[first..first + unit.count as usize] {
+                *residual = residual.max(solve_normal_then_tangent(space, a, b, cp));
+            }
+        }
+    }
+}
+
 fn solve_normal_then_tangent<S>(
     space: &S,
     a: &mut RigidBody<S>,
     b: &mut RigidBody<S>,
     cp: &mut ContactPoint<S>,
-) where
+) -> f32
+where
     S: PhysicsSpace,
     S::Vector: VectorOps,
 {
@@ -836,11 +1075,13 @@ fn solve_normal_then_tangent<S>(
     let v_n = VectorOps::dot(v_rel_n_vec, cp.normal);
     let k_n = space.effective_mass_inv(a, b, cp.world_point, cp.normal);
 
+    let mut change = 0.0;
     if k_n > 0.0 {
         let dj = -(v_n + cp.velocity_bias) / k_n;
         let new_acc = (cp.normal_impulse + dj).max(0.0);
         let actual = new_acc - cp.normal_impulse;
         cp.normal_impulse = new_acc;
+        change = actual.abs();
         if actual.abs() > 0.0 {
             space.apply_contact_impulse(a, b, cp.world_point, cp.normal, actual);
         }
@@ -882,9 +1123,10 @@ fn solve_normal_then_tangent<S>(
             -delta_magnitude,
         );
     }
+    change
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "r2", feature = "r3", feature = "r4"))]
 mod tests {
     use std::collections::BTreeSet;
 
@@ -1107,6 +1349,30 @@ mod tests {
             world.step(dt);
         }
         world
+    }
+
+    #[test]
+    fn a_one_iteration_budget_separates_a_resting_contact_from_a_fast_impact() {
+        const DT: f32 = 1.0 / 240.0;
+        let mut resting = settled_sphere_stack(DT, 240);
+        resting.pgs_iters = 1;
+        resting.step(DT);
+        let settled = resting.solve_report();
+        assert!(
+            resting.counters().contacts > 0,
+            "the resting stack lost its contacts"
+        );
+        assert!(settled.converged, "resting residual {}", settled.residual);
+
+        let mut struck = settled_sphere_stack(DT, 240);
+        struck.pgs_iters = 1;
+        let top = struck.bodies.id_at(2);
+        struck
+            .set_velocity(top, Vec3::new(0.0, -20.0, 0.0), Bivector3::ZERO)
+            .unwrap();
+        struck.step(DT);
+        let impact = struck.solve_report();
+        assert!(!impact.converged, "impact residual {}", impact.residual);
     }
 
     mod solver_contracts {
@@ -2484,6 +2750,7 @@ mod tests {
                 &mut intervals,
                 &mut active,
                 &mut pairs,
+                &mut StepCounters::default(),
             );
         }
         assert!(!pairs.is_empty(), "the fixture produced no pairs to emit");
@@ -2497,12 +2764,32 @@ mod tests {
                     &mut intervals,
                     &mut active,
                     &mut pairs,
+                    &mut StepCounters::default(),
                 );
             }
         });
         assert_eq!(
             bytes, 0,
             "16 sweeps over a steady body set asked the allocator for {bytes} bytes"
+        );
+    }
+
+    #[test]
+    fn step_counters_report_the_sweep_work_of_a_four_body_line() {
+        let mut world = World::new(EuclideanR3);
+        register_default_narrowphase(&mut world.narrowphase);
+        for x in [0.0, 0.75, 1.75, 5.0] {
+            world.push_body(sphere_body_r3(Vec3::new(x, 0.0, 0.0), Vec3::ZERO, 0.5, 1.0).unwrap());
+        }
+        world.step(1.0 / 240.0);
+        assert_eq!(
+            world.counters(),
+            StepCounters {
+                index_visits: 7,
+                distance_evals: 6,
+                candidates: 2,
+                contacts: 1,
+            }
         );
     }
 
@@ -2845,6 +3132,25 @@ mod tests {
     }
 
     #[test]
+    fn island_scratch_allocates_nothing_after_the_first_solve() {
+        const DT: f32 = 1.0 / 240.0;
+        let (mut world, _, _) = settled_islands(DT, 120);
+        world.step(DT);
+        assert!(!world.constraints.is_empty(), "the fixture solves nothing");
+        world.solve();
+
+        let bytes = alloc_probe::bytes_allocated_by(|| {
+            for _ in 0..16 {
+                world.solve();
+            }
+        });
+        assert_eq!(
+            bytes, 0,
+            "16 solves over a steady island set asked the allocator for {bytes} bytes"
+        );
+    }
+
+    #[test]
     fn island_grouping_allocates_nothing_after_the_first_pass() {
         let mut world = settled_columns(PERMUTATION_SEEDS[0]);
         for _ in 0..2 {
@@ -2891,6 +3197,7 @@ mod tests {
     fn r4_wall_bias_pushes_toward_the_near_face() {
         use crate::euclidean_r4::{sphere_body_r4, tesseract_vertices};
         use glam::Vec4;
+        use loam_math::EuclideanR4;
         for x in [-0.092, -0.09, -0.088] {
             let mut world = World::new(EuclideanR4);
             crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);

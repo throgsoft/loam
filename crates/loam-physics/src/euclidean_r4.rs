@@ -9,7 +9,7 @@ use crate::body::{BodyDef, RigidBody};
 use crate::collider::{Collider, ColliderKind};
 use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult4, PosedHull4, Sphere4 as GjkSphere4};
 use crate::geometry::GeometryStore;
-use crate::integrator::PhysicsSpace;
+use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
@@ -30,15 +30,15 @@ impl PhysicsSpace for EuclideanR4 {
     type AngVel = Bivector4;
     type Inertia = f32;
 
+    fn broadphase_bound(&self) -> BroadphaseBound {
+        BroadphaseBound::Certified
+    }
+
     fn supports_collider(&self, kind: ColliderKind) -> bool {
         matches!(
             kind,
             ColliderKind::Sphere | ColliderKind::ConvexPolytope4D | ColliderKind::HalfSpace4D
         )
-    }
-
-    fn valid_point(&self, position: Vec4) -> bool {
-        position.is_finite()
     }
 
     fn valid_vector(&self, vector: Vec4) -> bool {
@@ -453,6 +453,7 @@ pub use loam_shape::polytope_geom::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::world::World;
 
     fn assert_close(a: f32, b: f32, tol: f32) {

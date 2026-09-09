@@ -5,7 +5,7 @@ use loam_math::{Bivector, Bivector2, EuclideanR2, Iso2};
 use crate::body::{BodyDef, RigidBody};
 use crate::collider::{Collider, ColliderKind};
 use crate::geometry::GeometryStore;
-use crate::integrator::PhysicsSpace;
+use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
@@ -25,12 +25,12 @@ impl PhysicsSpace for EuclideanR2 {
     type AngVel = Bivector2;
     type Inertia = f32;
 
-    fn supports_collider(&self, kind: ColliderKind) -> bool {
-        matches!(kind, ColliderKind::Sphere | ColliderKind::Polygon2D)
+    fn broadphase_bound(&self) -> BroadphaseBound {
+        BroadphaseBound::Certified
     }
 
-    fn valid_point(&self, position: Vec2) -> bool {
-        position.is_finite()
+    fn supports_collider(&self, kind: ColliderKind) -> bool {
+        matches!(kind, ColliderKind::Sphere | ColliderKind::Polygon2D)
     }
 
     fn valid_vector(&self, vector: Vec2) -> bool {
@@ -489,6 +489,7 @@ pub fn static_wall(center: Vec2, half_extents: Vec2) -> Option<BodyDef<Euclidean
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::world::World;
 
     #[test]

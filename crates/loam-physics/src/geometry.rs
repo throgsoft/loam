@@ -4,6 +4,7 @@ use std::hash::Hasher;
 
 use crate::collider::{Collider, ColliderKind};
 
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GeometryId(u32);
 
@@ -13,6 +14,7 @@ impl GeometryId {
     }
 }
 
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GeometryRef {
     id: GeometryId,
@@ -29,6 +31,7 @@ impl GeometryRef {
     }
 }
 
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ColliderRef {
     kind: ColliderKind,
@@ -45,6 +48,7 @@ impl ColliderRef {
     }
 }
 
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 struct Entry {
     version: u32,
@@ -55,6 +59,7 @@ struct Entry {
 
 const RELEASED_BUFFERS: usize = 2;
 
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default)]
 pub struct GeometryStore {
     entries: Vec<Entry>,

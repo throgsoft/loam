@@ -29,6 +29,8 @@ pub mod frame_pacing;
 pub mod freecam;
 pub mod keymap;
 pub mod log;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod par_native;
 pub mod script;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod session;
@@ -311,6 +313,7 @@ fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
             .with(tracing_subscriber::fmt::layer())
             .with(log::ConsoleLayer)
             .try_init();
+        par_native::install();
     }
 
     let event_loop = EventLoop::new()?;

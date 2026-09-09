@@ -1,3 +1,5 @@
+#![cfg(feature = "r3")]
+
 use glam::Vec3;
 
 use loam_math::EuclideanR3;
