@@ -698,7 +698,7 @@ pub trait Facility<S: DomainSpace>: Any + Send + 'static {
 
     fn snapshot(&self) -> Box<dyn Any + Send>;
 
-    /// Refuses whatever `restore` would refuse, changing nothing; the session calls it on every facility before the first one restores.
+    /// Refuses whatever `restore` would refuse, changing nothing; the default accepts, and the session calls it on every facility before the first one restores.
     fn check_restore(&self, _from: &(dyn Any + Send)) -> Result<(), RestoreError> {
         Ok(())
     }
