@@ -7,7 +7,7 @@ use wgpu::{
 
 use crate::depth::DepthBuffer;
 use crate::view::{DEPTH_CLEAR, DEPTH_FORMAT};
-use crate::{DepthMode, LineRasterNode};
+use crate::{DepthConvention, DepthMode, LineRasterNode};
 
 struct ViewLines {
     node: LineRasterNode,
@@ -47,6 +47,7 @@ impl Presenter {
                     DepthMode::ReadWrite {
                         format: DEPTH_FORMAT,
                     },
+                    DepthConvention::ReversedZ,
                     self.sample_count,
                 ),
                 uploaded: Stamp::default(),

@@ -11,12 +11,12 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState,
     Buffer, BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    DepthStencilState, Device, FragmentState, LoadOp, MultisampleState, Operations,
-    PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState,
-    StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState,
-    VertexStepMode,
+    CompareFunction, DepthStencilState, Device, FragmentState, LoadOp, MultisampleState,
+    Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    StencilState, StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
+    VertexState, VertexStepMode,
 };
 
 const LINE_RASTER_WGSL: &str = include_str!("line_raster.wgsl");
@@ -61,6 +61,7 @@ impl LineRasterNode {
         device: &Device,
         surface_format: TextureFormat,
         depth: crate::DepthMode,
+        convention: crate::DepthConvention,
         sample_count: u32,
     ) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
@@ -181,7 +182,7 @@ impl LineRasterNode {
                 topology: PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: depth_state(depth),
+            depth_stencil: depth_state(depth, convention),
             multisample: MultisampleState {
                 count: sample_count,
                 ..Default::default()
@@ -335,11 +336,17 @@ impl LineRasterNode {
     }
 }
 
-fn depth_state(depth: crate::DepthMode) -> Option<DepthStencilState> {
+fn depth_state(
+    depth: crate::DepthMode,
+    convention: crate::DepthConvention,
+) -> Option<DepthStencilState> {
     depth.format().map(|format| DepthStencilState {
         format,
         depth_write_enabled: depth.writes(),
-        depth_compare: crate::view::DEPTH_COMPARE,
+        depth_compare: match convention {
+            crate::DepthConvention::StandardZ => CompareFunction::LessEqual,
+            crate::DepthConvention::ReversedZ => crate::view::DEPTH_COMPARE,
+        },
         stencil: StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     })
@@ -404,12 +411,12 @@ mod tests {
     use super::*;
 
     use glam::Vec3;
-    use loam_math::EuclideanR3;
+    use loam_math::{EuclideanR3, Iso3};
     use loam_shape::LineMesh;
     use wgpu::CompareFunction;
 
-    use crate::view::{projective_depth, root_view_projection, DEPTH_FORMAT};
-    use crate::DepthMode;
+    use crate::view::{eye_relative, projective_depth, root_view_projection, DEPTH_FORMAT};
+    use crate::{DepthConvention, DepthMode};
 
     fn passes(compare: CompareFunction, incoming: f32, stored: f32) -> bool {
         match compare {
@@ -425,48 +432,59 @@ mod tests {
     }
 
     #[test]
-    fn line_raster_hides_the_nearer_line_or_leaves_the_root_projection_out() {
+    fn line_raster_hides_the_nearer_line_under_the_convention_its_pipeline_declares() {
         let eye = Eye {
             position: [0.0, 0.0, 3.0],
             ..Eye::default()
         };
-        let projection = root_view_projection(&eye);
-        let clip_depth = |point: Vec3| {
-            let clip = projection * point.extend(1.0);
-            clip.z / clip.w
+        let standing = Iso3 {
+            rotation: glam::Quat::IDENTITY,
+            translation: Vec3::from(eye.position),
         };
-        let image_depth =
-            |point: Vec3| projective_depth(point - Vec3::from(eye.position), eye.near);
-
         let near_point = Vec3::new(0.2, -0.1, 0.0);
         let far_point = Vec3::new(0.2, -0.1, -4.0);
-        for point in [near_point, far_point] {
-            let (raster, image) = (clip_depth(point), image_depth(point));
+
+        for (convention, projection) in [
+            (DepthConvention::ReversedZ, root_view_projection(&eye)),
+            (
+                DepthConvention::StandardZ,
+                Mat4::perspective_rh(eye.fov_y, eye.aspect, eye.near, eye.far)
+                    * eye_relative(standing),
+            ),
+        ] {
+            let depth = |point: Vec3| {
+                let clip = projection * point.extend(1.0);
+                clip.z / clip.w
+            };
+            let state = depth_state(
+                DepthMode::ReadWrite {
+                    format: DEPTH_FORMAT,
+                },
+                convention,
+            )
+            .unwrap();
             assert!(
-                (raster - image).abs() <= 1e-6,
-                "{point} rasterizes at depth {raster}, not the image-space {image}"
+                passes(state.depth_compare, depth(near_point), depth(far_point)),
+                "{convention:?} with {:?} hides the nearer line",
+                state.depth_compare
+            );
+            assert!(!passes(
+                state.depth_compare,
+                depth(far_point),
+                depth(near_point)
+            ));
+        }
+
+        let reversed = root_view_projection(&eye);
+        for point in [near_point, far_point] {
+            let clip = reversed * point.extend(1.0);
+            let image = projective_depth(point - Vec3::from(eye.position), eye.near);
+            assert!(
+                (clip.z / clip.w - image).abs() <= 1e-6,
+                "{point} rasterizes at depth {}, not the image-space {image}",
+                clip.z / clip.w
             );
         }
-        assert!(image_depth(near_point) > image_depth(far_point));
-
-        let state = depth_state(DepthMode::ReadWrite {
-            format: DEPTH_FORMAT,
-        })
-        .unwrap();
-        assert!(
-            passes(
-                state.depth_compare,
-                clip_depth(near_point),
-                clip_depth(far_point)
-            ),
-            "{:?} hides the nearer line",
-            state.depth_compare
-        );
-        assert!(!passes(
-            state.depth_compare,
-            clip_depth(far_point),
-            clip_depth(near_point)
-        ));
     }
 
     fn one_segment_mesh(a: [f32; 3], b: [f32; 3]) -> LineMesh<3> {

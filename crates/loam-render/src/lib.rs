@@ -27,6 +27,12 @@ pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
 };
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DepthConvention {
+    StandardZ,
+    ReversedZ,
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum DepthMode {
     Off,
