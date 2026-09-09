@@ -174,7 +174,12 @@ pub struct SectionTimer {
     open: usize,
     names: [&'static str; MAX_SECTIONS],
     in_flight: Arc<AtomicBool>,
-    last: Arc<Mutex<Vec<(&'static str, Duration)>>>,
+    last: Arc<Mutex<SectionResults>>,
+}
+
+struct SectionResults {
+    names: [&'static str; MAX_SECTIONS],
+    elapsed: [Duration; MAX_SECTIONS],
 }
 
 impl SectionTimer {
@@ -208,7 +213,10 @@ impl SectionTimer {
             open: 0,
             names: [""; MAX_SECTIONS],
             in_flight: Arc::new(AtomicBool::new(false)),
-            last: Arc::new(Mutex::new(Vec::with_capacity(MAX_SECTIONS))),
+            last: Arc::new(Mutex::new(SectionResults {
+                names: [""; MAX_SECTIONS],
+                elapsed: [Duration::ZERO; MAX_SECTIONS],
+            })),
         })
     }
 
@@ -233,8 +241,7 @@ impl SectionTimer {
 
     pub fn elapsed(&self, slot: usize) -> Option<Duration> {
         let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        let (name, elapsed) = last.get(slot)?;
-        (*name == self.names[slot]).then_some(*elapsed)
+        (last.names[slot] == self.names[slot]).then(|| last.elapsed[slot])
     }
 
     pub fn resolve(&mut self, encoder: &mut CommandEncoder) {
@@ -257,7 +264,8 @@ impl SectionTimer {
             return;
         }
         let bytes = SECTION_BYTES * self.open as u64;
-        let names: Vec<&'static str> = self.names[..self.open].to_vec();
+        let names = self.names;
+        let open = self.open;
         let buffer = self.map_buffer.clone();
         let reader = buffer.clone();
         let period_ns = self.timestamp_period_ns;
@@ -269,8 +277,8 @@ impl SectionTimer {
                 if result.is_ok() {
                     let view = reader.slice(0..bytes).get_mapped_range();
                     let mut done = last.lock().unwrap_or_else(|e| e.into_inner());
-                    done.clear();
-                    for (slot, name) in names.iter().enumerate() {
+                    done.names = [""; MAX_SECTIONS];
+                    for (slot, name) in names.iter().enumerate().take(open) {
                         let at = slot * SECTION_BYTES as usize;
                         let (Ok(start), Ok(end)) = (
                             <[u8; 8]>::try_from(&view[at..at + 8]),
@@ -281,7 +289,8 @@ impl SectionTimer {
                         let ticks =
                             u64::from_le_bytes(end).saturating_sub(u64::from_le_bytes(start));
                         let nanos = (ticks as f64 * period_ns as f64) as u64;
-                        done.push((name, Duration::from_nanos(nanos)));
+                        done.names[slot] = name;
+                        done.elapsed[slot] = Duration::from_nanos(nanos);
                     }
                     drop(done);
                     drop(view);
