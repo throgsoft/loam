@@ -2,7 +2,7 @@ use crate::domain::{
     ChartCommand, ChartPose, DomainError, DomainHandle, DomainId, DomainSpace, Domains, Instance,
     Pose,
 };
-use crate::entity::{Entities, Entity, SceneId};
+use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
 use crate::session::RestoreError;
 use crate::store::StoreError;
 use crate::stores::{HasStore, Stores};
@@ -25,6 +25,7 @@ pub enum Rejection {
     Domain(DomainError),
     Store(StoreError),
     Restore(RestoreError),
+    Cancelled,
     Unsupported(&'static str),
 }
 
@@ -99,6 +100,31 @@ impl<A: Stores> Commands<A> {
 
     pub(crate) fn drain_into(&mut self, into: &mut Vec<Request<A>>) {
         into.append(&mut self.queue);
+    }
+
+    pub(crate) fn cancel_into(&mut self, results: &mut Vec<CommandResult>) {
+        for request in self.queue.drain(..) {
+            if let Command::Spawn(SpawnBundle {
+                reserved: Some(entity),
+                ..
+            }) = &request.command
+            {
+                self.entities.release(*entity);
+            }
+            results.push(CommandResult {
+                request: request.id,
+                outcome: Err(Rejection::Cancelled),
+            });
+        }
+    }
+
+    pub(crate) fn next_request(&self) -> RequestId {
+        RequestId(self.next)
+    }
+
+    pub(crate) fn restore(&mut self, entities: &EntitiesSnapshot, next: RequestId) {
+        self.entities.restore(entities);
+        self.next = next.0;
     }
 
     pub fn submit(&mut self, command: Command<A>) -> RequestId {

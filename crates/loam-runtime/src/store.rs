@@ -258,6 +258,14 @@ impl<R> RecordBuffer<R> {
         self.entities.clear();
         self.positions.fill(NO_RECORD);
     }
+
+    pub(crate) fn replace(&mut self, records: impl Iterator<Item = (Entity, R)>, stamp: Stamp) {
+        self.clear();
+        for (entity, record) in records {
+            self.upsert(entity, record);
+        }
+        self.stamp = stamp;
+    }
 }
 
 impl<R> Default for RecordBuffer<R> {

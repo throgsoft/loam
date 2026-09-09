@@ -290,6 +290,7 @@ pub struct InstanceRecord {
     pub geometry: PreparedId,
     pub material: MaterialId,
     pub pose: ChartPose,
+    pub image_point: [f32; 3],
 }
 
 /// Records of one view map, in its image space.
