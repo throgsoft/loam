@@ -26,8 +26,10 @@ impl FieldKind {
 
 pub const GRADIENT_STEP: f32 = 1.0e-3;
 
+/// Below this a contact query refuses rather than normalizes noise into a normal.
 pub const MIN_GRADIENT_NORM: f32 = 1.0e-4;
 
+/// `distance` returns what `field_kind` says it does, a distance, a lower bound, or an implicit value, off by at most `error`.
 pub trait DistanceField: Send + Sync {
     fn field_kind(&self) -> FieldKind;
 

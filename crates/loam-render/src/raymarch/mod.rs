@@ -1,6 +1,6 @@
 //! A user shader for [`RayMarchNode`] exports `vs_fullscreen(@builtin(vertex_index))` and
 //! `fs_main(@builtin(position))` and binds [`RayMarchUniforms`] at group 0, binding 0;
-//! [`FieldMarchNode`] ships its own shader with the program at bindings 1 and 2.
+//! [`FieldMarchNode`] ships its own shader with the primitives, program, and ball tree at bindings 1 to 3.
 
 mod field_march;
 mod hyperslice4d;

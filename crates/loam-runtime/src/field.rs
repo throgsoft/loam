@@ -22,6 +22,7 @@ pub const MAX_PROGRAM_WORDS: usize = 1 << 20;
 
 pub const FIELD_FAR: f32 = 1e9;
 
+/// The error a compiled program states when read through `DistanceField`.
 pub const FIELD_PROGRAM_ERROR: f32 = 1e-4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -85,7 +86,7 @@ impl FieldOp {
     }
 }
 
-/// Matches `LoamFieldPrimitive` in field_march.wgsl; a half-space's offset is folded into `translation` at compile time.
+/// Matches `LoamFieldPrimitive` in field_common.wgsl; a half-space's offset is folded into `translation` at compile time.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct FieldPrimitive {
@@ -127,6 +128,7 @@ impl FieldCost {
     }
 }
 
+/// A ball-tree node matching `LoamFieldNode` in field_common.wgsl: a leaf when `end` is not zero, unbounded when `radius` is negative, `escape` the index after its subtree, and the subtree's value at any point is at least `lower_bound`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct FieldNode {
@@ -549,6 +551,7 @@ pub fn evaluate_counted(
     run::<true>(program, primitives, point, counts)
 }
 
+/// Skips a subtree whose ball's lower bound exceeds the best value so far by more than `tolerance`; an empty `nodes` slice evaluates the whole program.
 pub fn evaluate_bounded(
     program: &[u32],
     primitives: &[FieldPrimitive],
@@ -1014,7 +1017,7 @@ impl FieldCompiler {
         Ok(())
     }
 
-    /// Refuses a curved chart; then a pose change patches records and marks ancestors, an operand edit repairs that operator's edges, and only an insert, a removal, a resync, or the first compile rebuilds everything.
+    /// Refuses a curved chart; then a pose change patches records and marks ancestors, an operand edit repairs that operator's edges, only an insert, a removal, a resync, or the first compile rebuilds everything, and every compile rebuilds the ball tree, counted in `index_maintenance`.
     pub fn compile<S: DomainSpace>(
         &mut self,
         space: &S,

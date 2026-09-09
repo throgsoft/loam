@@ -55,6 +55,7 @@ pub struct FieldMarchUniforms {
     pub program_len: u32,
     pub kind: u32,
     pub node_len: u32,
+    /// Slack added to the best value before a subtree's ball skips it.
     pub cull_tolerance: f32,
 }
 
@@ -222,6 +223,7 @@ fn same_structure(previous: &[u32], next: &[u32]) -> bool {
             .all(|(was, now)| was[0] == now[0] && (was[0] == OP_SMOOTH_UNION || was[1] == now[1]))
 }
 
+/// Compiles a specialized module off the frame path; `take` hands it over once and `discard` drops a build the node no longer wants.
 pub trait SpecializationBuilder: Send {
     fn submit(&mut self, device: &Device, revision: u64, wgsl: String);
 
@@ -230,6 +232,7 @@ pub trait SpecializationBuilder: Send {
     fn discard(&mut self);
 }
 
+/// Compiles inside `submit`, on the calling thread.
 #[derive(Default)]
 pub struct InlineBuilder {
     ready: Option<(u64, ShaderModule)>,
@@ -253,6 +256,7 @@ impl SpecializationBuilder for InlineBuilder {
     }
 }
 
+/// Boundaries a program's structure must survive unchanged before the node specializes it.
 pub const DEFAULT_SPECIALIZE_AFTER: u32 = 8;
 
 const PRIMITIVE_SIZE: u64 = std::mem::size_of::<FieldPrimitive>() as u64;
@@ -320,6 +324,7 @@ impl FieldMarchNode {
         Self::build(device, surface_format, depth, sample_count, false)
     }
 
+    /// A kernel that writes visit, skip, and evaluation counts to an `Rgba32Float` target instead of color; the shipped kernel carries no counters.
     pub fn counting(device: &Device, sample_count: u32) -> Self {
         Self::build(
             device,
@@ -490,13 +495,14 @@ impl FieldMarchNode {
         self.specialize_after = boundaries.max(1);
     }
 
+    /// Drops any pending build with the old builder.
     pub fn set_specialization_builder(&mut self, builder: Box<dyn SpecializationBuilder>) {
         self.builder.discard();
         self.pending = None;
         self.builder = builder;
     }
 
-    /// Grows the storage buffers by doubling and rebinds; the pipeline is never rebuilt.
+    /// Grows the three storage buffers by doubling and rebinds without rebuilding the interpreter pipeline; a change to opcodes or operands, but not to a smooth-union radius, restarts specialization.
     pub fn set_program(&mut self, queue: &Queue, program: &FieldProgram) {
         let mut rebind = false;
         if program.primitives.len() > self.primitive_capacity {
@@ -570,6 +576,7 @@ impl FieldMarchNode {
         self.flush_uniforms(queue);
     }
 
+    /// Call once per frame; at `specialize_after` stable boundaries it submits a build and swaps the result in only while the structure still matches.
     pub fn boundary(&mut self) {
         if self.stable < self.specialize_after {
             self.stable += 1;

@@ -9,11 +9,14 @@ use crate::integrator::PhysicsSpace;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldRefusal {
+    /// No query is registered for the body's collider kind.
     Collider(ColliderKind),
+    /// The field's value is not an exact distance, so it is not a separation.
     Kind(FieldKind),
     DegenerateGradient,
 }
 
+/// `separation` is negative in penetration, `normal` points from the field surface toward the body, `witness` lies on that surface, all within `error`.
 pub struct FieldContact<S: PhysicsSpace> {
     pub separation: f32,
     pub normal: S::Vector,
@@ -91,6 +94,7 @@ mod r3 {
     use crate::collider::{Collider, ColliderKind};
     use crate::geometry::GeometryStore;
 
+    /// Separation is the field distance at the sphere's center minus its radius; the field must be an exact distance.
     pub fn sphere_against_field(
         body: &RigidBody<EuclideanR3>,
         geometry: &GeometryStore,

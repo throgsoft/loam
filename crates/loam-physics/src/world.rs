@@ -256,6 +256,7 @@ impl<S: PhysicsSpace> World<S> {
         id
     }
 
+    /// `anchor` must be static; it leaves every collision group so the broadphase never pairs it, and it owns the field's contacts.
     pub fn insert_field(
         &mut self,
         anchor: BodyId,
@@ -274,6 +275,7 @@ impl<S: PhysicsSpace> World<S> {
         Ok(id)
     }
 
+    /// Every step queries the field for `body`; a contact lands in the manifold keyed by the body and the field's anchor.
     pub fn bind_field(&mut self, body: BodyId, field: FieldId) -> Result<(), EditError> {
         let Some(entry) = self.fields.get(field.0 as usize) else {
             return Err(EditError::StaleHandle);

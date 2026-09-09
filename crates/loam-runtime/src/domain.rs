@@ -523,7 +523,7 @@ pub struct Field {
     pub operands: Vec<Entity>,
 }
 
-/// Primitive buffer, postfix program, and stack requirement for the fixed traverser.
+/// Primitive buffer, postfix program, ball tree, and stack requirement for the fixed traverser.
 #[derive(Clone, Debug, Default)]
 pub struct FieldProgram {
     pub primitives: Vec<FieldPrimitive>,
