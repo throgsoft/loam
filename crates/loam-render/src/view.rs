@@ -4,17 +4,13 @@
 
 use glam::{Mat4, Vec3};
 use loam_math::hyperbolic::{hyperboloid_to_klein, poincare_to_hyperboloid, poincare_to_klein};
+pub use loam_math::hyperbolic::{H3_DEPTH_ENVELOPE, H3_DEPTH_SEPARATION, H3_EYE_CHART_REACH};
 use loam_math::{Iso3, Iso3H};
 use wgpu::{CompareFunction, TextureFormat};
 
 pub const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 pub const DEPTH_COMPARE: CompareFunction = CompareFunction::GreaterEqual;
 pub const DEPTH_CLEAR: f32 = 0.0;
-
-/// H³ hits at least `H3_DEPTH_SEPARATION` apart stay ordered within this hyperbolic distance of an eye at most `H3_EYE_CHART_REACH` from the chart origin.
-pub const H3_DEPTH_ENVELOPE: f32 = 6.0;
-pub const H3_DEPTH_SEPARATION: f32 = 0.05;
-pub const H3_EYE_CHART_REACH: f32 = 1.0;
 
 pub fn root_projection(fov_y: f32, aspect: f32, near: f32) -> Mat4 {
     Mat4::perspective_infinite_reverse_rh(fov_y, aspect, near)

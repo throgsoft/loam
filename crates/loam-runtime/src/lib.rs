@@ -18,7 +18,7 @@ pub use command::{
     Reservation, SpawnBundle,
 };
 pub use domain::{
-    ChartCommand, ChartId, ChartPose, ChartTangent, Domain, DomainBuilder, DomainError,
+    ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent, Domain, DomainBuilder, DomainError,
     DomainHandle, DomainId, DomainSnapshot, DomainSpace, Domains, Facility, Field, FieldKind,
     FieldProgram, Instance, Pose, TypedDomain,
 };

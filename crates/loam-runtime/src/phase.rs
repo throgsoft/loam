@@ -3,6 +3,7 @@ use std::any::TypeId;
 use crate::command::{CommandResult, Commands};
 use crate::domain::{DomainError, DomainId, Domains};
 use crate::input::Input;
+use crate::session::PreparedGeometry;
 use crate::view::{Pick, Views};
 
 /// Fixed order; dispatch runs while paused and is the only phase where capacity grows.
@@ -135,12 +136,13 @@ pub struct Ctx<'a, A> {
     pub commands: &'a mut Commands<A>,
     pub results: &'a [CommandResult],
     pub input: &'a Input,
+    pub prepared: &'a [PreparedGeometry],
     pub step: Step,
 }
 
 impl<A> Ctx<'_, A> {
     pub fn pick(&self, ndc: [f32; 2]) -> Option<Pick> {
-        self.domains.pick(self.views, ndc)
+        self.domains.pick(self.views, self.prepared, ndc)
     }
 }
 
