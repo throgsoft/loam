@@ -8,6 +8,7 @@ pub mod lattice;
 pub mod line_raster;
 pub mod line_raster_static_r4;
 pub mod point_raster;
+pub mod present;
 pub mod raymarch;
 pub mod shader;
 pub mod sky_ground;
@@ -19,11 +20,19 @@ pub use lattice::Viewport;
 pub use line_raster::{LineRasterNode, LineRasterUniforms};
 pub use line_raster_static_r4::{LineRasterStaticR4Node, LineRasterStaticR4Uniforms};
 pub use point_raster::{PointRasterNode, PointRasterUniforms};
+pub use present::Presenter;
 pub use raymarch::{RayMarchNode, RayMarchUniforms};
 pub use sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
 pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
 };
+
+/// `ReversedZ` follows the [`view`] depth contract; `StandardZ` serves a standard perspective matrix.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DepthConvention {
+    StandardZ,
+    ReversedZ,
+}
 
 #[derive(Copy, Clone, Debug)]
 pub enum DepthMode {

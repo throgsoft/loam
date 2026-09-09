@@ -1,6 +1,7 @@
 use glam::Vec4;
+use loam_app::session::run;
 use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat};
-use loam_runtime::host::{self, HostConfig, HostError};
+use loam_runtime::host::{HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, Bindings, Command, Commands, Dispatch, DomainBuilder, Domains, Input,
     Instance, Key, LogCapacity, Material, Orbit, Phase, Pose, PreparedGeometry, Projection4,
@@ -112,5 +113,5 @@ fn main() -> Result<(), HostError> {
         .key(Key::Letter('t'), PAUSE)
         .key(Key::Space, PAUSE)
         .key(Key::Letter('r'), RESET);
-    host::run(session, HostConfig::new("tesseract", bindings))
+    run(session, HostConfig::new("tesseract", bindings))
 }

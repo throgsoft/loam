@@ -686,6 +686,7 @@ name = "examples"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "loam-app",
  "loam-math",
  "loam-runtime",
  "loam-shape",
@@ -1441,6 +1442,7 @@ dependencies = [
  "loam-input",
  "loam-math",
  "loam-render",
+ "loam-runtime",
  "loam-time",
  "notify",
  "png 0.17.16",
@@ -1527,6 +1529,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "loam-math",
+ "loam-runtime",
  "loam-scene",
  "loam-shape",
  "loam-time",
@@ -1543,6 +1546,7 @@ dependencies = [
 name = "loam-runtime"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "loam-math",
  "loam-shape",
 ]

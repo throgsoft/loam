@@ -259,6 +259,10 @@ impl<R> RecordBuffer<R> {
         self.positions.fill(NO_RECORD);
     }
 
+    pub(crate) fn restamp(&mut self, stamp: Stamp) {
+        self.stamp = stamp;
+    }
+
     pub(crate) fn replace(&mut self, records: impl Iterator<Item = (Entity, R)>, stamp: Stamp) {
         self.clear();
         for (entity, record) in records {
@@ -723,6 +727,25 @@ impl<T> Store<T> {
             dirty,
             rows,
         }
+    }
+
+    /// An untracked store or an expired cursor counts as changed; a clean check renews the cursor's expiry.
+    pub fn changed_since(&self, cursor: &mut Cursor) -> bool {
+        let Some(tracking) = &self.tracking else {
+            return true;
+        };
+        if tracking.stale(cursor)
+            || cursor.position != tracking.dirty.pushed
+            || cursor.removed != tracking.removals.pushed
+        {
+            return true;
+        }
+        cursor.boundary = tracking.boundary;
+        false
+    }
+
+    pub fn catch_up(&self, cursor: &mut Cursor) {
+        let _ = self.changes(cursor);
     }
 }
 

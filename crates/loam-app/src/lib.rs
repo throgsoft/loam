@@ -30,6 +30,8 @@ pub mod freecam;
 pub mod keymap;
 pub mod log;
 pub mod script;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod session;
 pub mod shell;
 pub mod trace;
 pub mod version;

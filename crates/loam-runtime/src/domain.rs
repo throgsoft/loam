@@ -12,11 +12,11 @@ use loam_math::{
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
 use crate::phase::Step;
-use crate::session::{MaterialId, PreparedGeometry, PreparedId, RestoreError, Stamp};
+use crate::session::{Library, MaterialId, PreparedGeometry, PreparedId, RestoreError, Stamp};
 use crate::store::{LogCapacity, Store, StoreField, StoreSnapshot};
 use crate::view::{
-    self, DomainRay, ImageRay, InstanceRecord, Pick, Vec3, Vec4, ViewId, ViewRecords, ViewSpec,
-    ViewTarget, Views,
+    self, DomainRay, ImageRay, InstanceRecord, Pick, SegmentRecord, Vec3, Vec4, ViewId,
+    ViewMapping, ViewRecords, ViewSpec, ViewTarget, Views,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -153,6 +153,9 @@ pub trait DomainSpace:
 
     fn chart_point(&self, point: Self::Point) -> ChartPoint;
 
+    /// Reads the leading coordinates the space has and ignores the rest.
+    fn local_point(&self, coordinates: [f32; 4]) -> Self::Point;
+
     fn chart_pose(&self, pose: &Self::Iso) -> ChartPose;
 
     fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError>;
@@ -244,6 +247,10 @@ impl DomainSpace for EuclideanR4 {
         }
     }
 
+    fn local_point(&self, coordinates: [f32; 4]) -> Self::Point {
+        Vec4::from_array(coordinates)
+    }
+
     fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
         ChartPose {
             chart: ChartId(0),
@@ -294,6 +301,10 @@ impl DomainSpace for HyperbolicH3 {
             chart: ChartId(0),
             coordinates: point.extend(0.0).to_array(),
         }
+    }
+
+    fn local_point(&self, coordinates: [f32; 4]) -> Self::Point {
+        Vec3::from_slice(&coordinates[..3])
     }
 
     fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
@@ -375,6 +386,10 @@ impl DomainSpace for EuclideanR3 {
         }
     }
 
+    fn local_point(&self, coordinates: [f32; 4]) -> Self::Point {
+        Vec3::from_slice(&coordinates[..3])
+    }
+
     fn chart_pose(&self, pose: &Self::Iso) -> ChartPose {
         ChartPose {
             chart: ChartId(0),
@@ -409,6 +424,64 @@ impl DomainSpace for EuclideanR3 {
             offset.dot(ray.direction),
             offset.length_squared() - radius * radius,
         )
+    }
+}
+
+fn image_of<S: DomainSpace>(
+    space: &S,
+    mapping: &dyn ViewMapping<S>,
+    eye: &Pose<S>,
+    pose: &Pose<S>,
+    local: [f32; 4],
+) -> Option<[f32; 3]> {
+    let point = space.iso_apply(pose.0, space.local_point(local));
+    space.check(point).ok()?;
+    mapping.image_point(eye, point)
+}
+
+fn push_segments<S: DomainSpace>(
+    space: &S,
+    mapping: &dyn ViewMapping<S>,
+    eye: &Pose<S>,
+    pose: &Pose<S>,
+    library: &Library<'_>,
+    instance: &Instance,
+    into: &mut Vec<SegmentRecord>,
+) {
+    let Some(geometry) = library.geometry.get(instance.geometry.index()) else {
+        return;
+    };
+    let (color, width_px) = library.line_style(instance.material);
+    let mut push = |a: [f32; 4], b: [f32; 4]| {
+        let (Some(start), Some(end)) = (
+            image_of(space, mapping, eye, pose, a),
+            image_of(space, mapping, eye, pose, b),
+        ) else {
+            return;
+        };
+        into.push(SegmentRecord {
+            start,
+            _pad0: 0.0,
+            end,
+            _pad1: 0.0,
+            start_color: color,
+            end_color: color,
+            width_px,
+            _pad2: [0.0; 3],
+        });
+    };
+    match geometry {
+        PreparedGeometry::Lines4 { segments } => {
+            for &[a, b] in segments {
+                push(a, b);
+            }
+        }
+        PreparedGeometry::Lines3 { segments } => {
+            for &[a, b] in segments {
+                push([a[0], a[1], a[2], 0.0], [b[0], b[1], b[2], 0.0]);
+            }
+        }
+        PreparedGeometry::Mesh3 { .. } => {}
     }
 }
 
@@ -475,6 +548,7 @@ pub trait Domain: Send + 'static {
     fn publish(
         &self,
         view: ViewId,
+        library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
     ) -> Result<(), DomainError>;
@@ -543,7 +617,9 @@ impl<S: DomainSpace> TypedDomain<S> {
     }
 
     pub fn view_mut(&mut self, id: ViewId) -> Option<&mut ViewSpec<S>> {
-        self.views.get_mut(id.index())
+        let spec = self.views.get_mut(id.index())?;
+        spec.revision = spec.revision.wrapping_add(1);
+        Some(spec)
     }
 
     pub fn fields(&self) -> Option<&Store<Field>> {
@@ -594,6 +670,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     fn publish(
         &self,
         view: ViewId,
+        library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
     ) -> Result<(), DomainError> {
@@ -605,23 +682,39 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             .poses
             .get(spec.eye)
             .ok_or(DomainError::Stale(spec.eye))?;
+        let moved = self.poses.changed_since(&mut into.poses);
+        let attached = self.instances.changed_since(&mut into.attachments);
+        if !moved && !attached && into.revision == spec.revision {
+            into.instances.restamp(stamp);
+            return Ok(());
+        }
+        self.poses.catch_up(&mut into.poses);
+        self.instances.catch_up(&mut into.attachments);
+        into.revision = spec.revision;
         let origin = self.space.origin();
+        let space = &self.space;
+        let poses = &self.poses;
+        let mapping = spec.mapping.as_ref();
+        let segments = &mut into.segments;
+        segments.clear();
         let records = self.instances.iter().filter_map(|(entity, instance)| {
-            let pose = self.poses.get(entity)?;
-            let point = self.space.iso_apply(pose.0, origin);
-            let image_point = spec.mapping.image_point(eye, point)?;
+            let pose = poses.get(entity)?;
+            let point = space.iso_apply(pose.0, origin);
+            let image_point = mapping.image_point(eye, point)?;
+            push_segments(space, mapping, eye, pose, &library, instance, segments);
             Some((
                 entity,
                 InstanceRecord {
                     entity,
                     geometry: instance.geometry,
                     material: instance.material,
-                    pose: self.space.chart_pose(&pose.0),
+                    pose: space.chart_pose(&pose.0),
                     image_point,
                 },
             ))
         });
         into.instances.replace(records, stamp);
+        into.built = stamp;
         Ok(())
     }
 

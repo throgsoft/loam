@@ -9,8 +9,8 @@ use loam_render::{
     raymarch::{
         polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
     },
-    DepthBuffer, DepthMode, LineRasterNode, PointRasterNode, SkyGroundNode, SkyGroundUniforms,
-    TriangleRasterNode, Viewport,
+    DepthBuffer, DepthConvention, DepthMode, LineRasterNode, PointRasterNode, SkyGroundNode,
+    SkyGroundUniforms, TriangleRasterNode, Viewport,
 };
 use loam_shape::polytope::{
     polytope_section_faces_append, polytope_section_perimeter_append, vertex_color_by_position,
@@ -172,6 +172,7 @@ fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32)
             DepthMode::ReadOnly {
                 format: SECTION_FACES_DEPTH_FORMAT,
             },
+            DepthConvention::StandardZ,
             samples,
         ),
         parent_wireframe: LineRasterNode::new(
@@ -180,9 +181,16 @@ fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32)
             DepthMode::ReadOnly {
                 format: SECTION_FACES_DEPTH_FORMAT,
             },
+            DepthConvention::StandardZ,
             samples,
         ),
-        gimbal: LineRasterNode::new(device, format, DepthMode::Off, samples),
+        gimbal: LineRasterNode::new(
+            device,
+            format,
+            DepthMode::Off,
+            DepthConvention::StandardZ,
+            samples,
+        ),
         // A depth test hides a vertex behind its own cap under drop-w.
         points: PointRasterNode::new(device, format, DepthMode::Off, samples),
         section_faces: TriangleRasterNode::new(

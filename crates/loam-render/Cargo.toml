@@ -20,6 +20,7 @@ winit.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 loam-math    = { path = "../loam-math",  version = "0.1.0" }
+loam-runtime = { path = "../loam-runtime", version = "0.1.0" }
 loam-shape   = { path = "../loam-shape", version = "0.1.0" }
 loam-time    = { path = "../loam-time",  version = "0.1.0" }
 

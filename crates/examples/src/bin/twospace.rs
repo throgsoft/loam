@@ -2,6 +2,7 @@ use std::ops::Range;
 use std::process::ExitCode;
 
 use glam::{Vec3, Vec4};
+use loam_app::session::run;
 use loam_math::{EuclideanR4, HyperbolicH3, Iso3H, Iso4Flat};
 use loam_runtime::host::{self, HostConfig, HostError};
 use loam_runtime::{
@@ -234,7 +235,7 @@ fn main() -> ExitCode {
             build().and_then(|(mut session, scene)| headless(&mut session, &scene, steps))
         }
         None => build().and_then(|(session, _)| {
-            host::run(session, HostConfig::new("twospace", bindings())).map(|()| true)
+            run(session, HostConfig::new("twospace", bindings())).map(|()| true)
         }),
     };
     match outcome {

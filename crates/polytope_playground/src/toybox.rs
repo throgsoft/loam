@@ -13,8 +13,8 @@ use loam_physics::euclidean_r4::{
 };
 use loam_physics::{BodyId, World};
 use loam_render::{
-    DepthBuffer, DepthMode, LineRasterNode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode,
-    Viewport,
+    DepthBuffer, DepthConvention, DepthMode, LineRasterNode, SkyGroundNode, SkyGroundUniforms,
+    TriangleRasterNode, Viewport,
 };
 use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
 use loam_shape::{LineMesh, TriangleMesh};
@@ -1457,6 +1457,7 @@ impl ToyboxScene {
                 &ctx.rd.device,
                 ctx.rd.target_format(),
                 DepthMode::Off,
+                DepthConvention::StandardZ,
                 ctx.rd.sample_count(),
             ),
             arena_node: LineRasterNode::new(
@@ -1465,6 +1466,7 @@ impl ToyboxScene {
                 DepthMode::ReadOnly {
                     format: DEPTH_FORMAT,
                 },
+                DepthConvention::StandardZ,
                 ctx.rd.sample_count(),
             ),
             arena_mesh: LineMesh::<3>::default(),

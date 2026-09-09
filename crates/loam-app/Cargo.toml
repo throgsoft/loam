@@ -32,6 +32,7 @@ loam-console = { path = "../loam-console", version = "0.1.0" }
 loam-input  = { path = "../loam-input",  version = "0.1.0" }
 loam-math   = { path = "../loam-math",   version = "0.1.0" }
 loam-render = { path = "../loam-render", version = "0.1.0" }
+loam-runtime = { path = "../loam-runtime", version = "0.1.0" }
 loam-time   = { path = "../loam-time",   version = "0.1.0" }
 loam-egui   = { path = "../loam-egui",   version = "0.1.0" }
 egui-wgpu  = { version = "0.33", default-features = false }
