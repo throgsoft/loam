@@ -827,7 +827,6 @@ fn main() -> Result<(), HostError> {
         )
         .on_frame(move |hook: &mut FrameHook<'_, Playground>| {
             let wants_pointer = hook.ui.is_some_and(|context| context.wants_pointer_input());
-            gimbal.enabled = *hook.session.app.gimbal.get();
             let turning = drive_gimbal(
                 hook.session,
                 wants_pointer,
@@ -858,7 +857,6 @@ fn main() -> Result<(), HostError> {
                 &mut scratch,
             );
             hyperslice.publish_strip(&scratch.strip);
-            gimbal.enabled = gimbal.enabled && !strip.on;
             rings.publish(&eye, gimbal.rings(scratch.center));
             cloud.publish(&eye, scratch.cloud.records());
             let shown = *hook.session.app.hud.get();
@@ -943,6 +941,7 @@ fn drive_gimbal(
     center: glam::Vec3,
     intents: &Intents,
 ) -> bool {
+    gimbal.enabled = *session.app.gimbal.get() && !session.app.strip.get().on;
     let root = session.views().root();
     let pointer = *session.app.pointer.get();
     let ray = pointer.and_then(|pointer| session.views().ray(root, pointer.ndc));
@@ -1544,6 +1543,104 @@ mod tests {
         assert!(
             (turned - expected).length() < 1e-5,
             "the ring's rotor sent x to {turned} rather than the analytic {expected}"
+        );
+    }
+
+    #[test]
+    fn a_press_on_a_ring_turns_the_row_only_while_the_filmstrip_is_off() {
+        fn press_and_drag(booted: &mut Boot, intents: &Intents, ndc: [f32; 2]) -> bool {
+            let mut gimbal = Gimbal::default();
+            let mut at = |phase, ndc, time| {
+                booted.session.app.pointer.set(Some(Pointer {
+                    id: 0,
+                    ndc,
+                    delta: [0.0; 2],
+                    phase,
+                    time,
+                }));
+                drive_gimbal(
+                    &mut booted.session,
+                    false,
+                    &mut gimbal,
+                    glam::Vec3::new(0.0, BODY_Y, 0.0),
+                    intents,
+                )
+            };
+            let taken = at(PointerPhase::Began, ndc, 0.0);
+            at(PointerPhase::Moved, [ndc[0] + 0.2, ndc[1] + 0.2], 1.0);
+            taken
+        }
+
+        let (mut booted, intents) = one_slot();
+        push(&intents, Intent::Gimbal);
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let on_ring = gimbal::widget(glam::Vec3::new(0.0, BODY_Y, 0.0)).rings()[0].point(0.0);
+        let ndc = booted
+            .session
+            .views()
+            .ndc(on_ring.to_array())
+            .expect("the ring is in front of the eye");
+
+        assert!(
+            press_and_drag(&mut booted, &intents, ndc),
+            "the press missed the ring, so the strip has nothing to mask"
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let entity = slot_entity(&booted);
+        let turned = booted
+            .session
+            .domains_mut()
+            .typed(booted.domain)
+            .expect("the r4 domain")
+            .poses
+            .get(entity)
+            .expect("pose")
+            .0
+            .rotation;
+        assert_ne!(
+            turned,
+            loam_math::Rotor4::IDENTITY,
+            "the ring drag never turned the row, so the check below proves nothing"
+        );
+
+        push(
+            &intents,
+            Intent::Strip(Strip {
+                on: true,
+                ..Strip::default()
+            }),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        assert!(
+            !press_and_drag(&mut booted, &intents, ndc),
+            "the gimbal took a press while the filmstrip covered it"
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let held = booted
+            .session
+            .domains_mut()
+            .typed(booted.domain)
+            .expect("the r4 domain")
+            .poses
+            .get(entity)
+            .expect("pose")
+            .0
+            .rotation;
+        assert_eq!(
+            held, turned,
+            "an invisible gimbal turned the row under the filmstrip"
         );
     }
 

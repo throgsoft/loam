@@ -1,5 +1,5 @@
 use glam::Vec2;
-use loam_runtime::{Eye, PublishedView, Rigid, Stamp};
+use loam_runtime::{DomainId, Eye, PublishedView, Rigid, Stamp, ViewTarget};
 use wgpu::{
     Color, CommandEncoder, Device, LoadOp, Operations, Queue, RenderPassColorAttachment,
     RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureFormat, TextureView,
@@ -25,6 +25,7 @@ pub struct Presenter {
     depth: Option<DepthBuffer>,
     views: Vec<ViewLines>,
     fills: TriangleFeed,
+    filled: Vec<(DomainId, ViewTarget)>,
     schedule: PassSchedule,
 }
 
@@ -39,6 +40,7 @@ impl Presenter {
             depth: None,
             views: Vec::new(),
             fills,
+            filled: Vec::new(),
             schedule,
         }
     }
@@ -112,7 +114,13 @@ impl Presenter {
                 .upload_segments(device, queue, view.records.segments());
         }
         self.fills.set_view(eye, Rigid::IDENTITY);
-        if rebuilt {
+        let listed = self.filled.len() == views.len()
+            && (self.filled.iter().zip(views))
+                .all(|(held, view)| *held == (view.domain, view.target));
+        if rebuilt || !listed {
+            self.filled.clear();
+            self.filled
+                .extend(views.iter().map(|view| (view.domain, view.target)));
             self.fills.edit(|mesh| {
                 mesh.vertices.clear();
                 mesh.colors.clear();
@@ -374,6 +382,69 @@ mod tests {
             idle < busy,
             "the presenter uploads records it already holds: {idle} bytes idle against {busy} busy"
         );
+    }
+
+    #[test]
+    fn a_view_dropped_from_the_publication_takes_its_section_fills_with_it() {
+        use loam_runtime::{Section4, ViewId};
+
+        let mut session = Session::new(Spun::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Polytope4 {
+            polytope: loam_shape::polytope::Polytope4::Tesseract,
+            scale: 0.7,
+        });
+        let body = session.add_material(Material::lines([1.0; 4], 1.0));
+        let cut = session.add_material(Material::lines([1.0, 0.85, 0.35, 1.0], 2.0));
+        let root = session.views().root();
+        session.dispatch(|d| {
+            let eye = d
+                .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+                .expect("the eye spawned");
+            d.spawn(
+                SpawnBundle::new()
+                    .at(
+                        r4,
+                        Pose(Iso4Flat::from_translation(glam::Vec4::NEG_Z * 4.0)),
+                    )
+                    .instance(Instance::new(geometry, body).sectioned(cut))
+                    .row(0.0_f32),
+            )
+            .expect("the body spawned");
+            let domain = d.domains.typed(r4).expect("the r4 domain");
+            let _: ViewId = domain.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
+            domain.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+        });
+
+        let (device, queue) = noop_device();
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1);
+        let mut records = Records::<Spun>::default();
+        let eye = Eye::default();
+        records.publish(&mut session).expect("published");
+        let published = records.lend().expect("the buffer is free");
+
+        presenter.upload(&device, &queue, &eye, Vec2::splat(64.0), &published.views);
+        let both = presenter.fills.triangles();
+        assert_eq!(
+            both,
+            24 * 2,
+            "each of the two cut layers fans the tesseract's six straddling cells into four triangles, not {both}"
+        );
+
+        presenter.upload(
+            &device,
+            &queue,
+            &eye,
+            Vec2::splat(64.0),
+            &published.views[..1],
+        );
+        assert_eq!(
+            presenter.fills.triangles(),
+            24,
+            "the dropped view left its section fills on screen"
+        );
+        records.release(published);
     }
 
     const PROBE_SIZE: u32 = 64;

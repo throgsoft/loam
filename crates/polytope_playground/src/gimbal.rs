@@ -23,7 +23,7 @@ pub(crate) struct Gimbal {
     segments: Vec<SegmentRecord>,
 }
 
-fn widget(center: Vec3) -> Hypergimbal {
+pub(crate) fn widget(center: Vec3) -> Hypergimbal {
     Hypergimbal {
         center,
         scale: SCALE,
