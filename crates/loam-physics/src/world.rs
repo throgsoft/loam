@@ -44,6 +44,7 @@ pub struct Island {
 
 pub const DEFAULT_SOLVER_TOLERANCE: f32 = 1e-3;
 
+/// Measured, not derived; the sweep is in docs/PERF.md.
 pub const ISLANDS_PER_SOLVE_WORKER: usize = 256;
 
 const STALE_CONSTRAINT_KEY: &str = "constraint buffer outlived its manifold";
@@ -86,6 +87,7 @@ fn max_norm(norms_squared: impl Iterator<Item = f32>) -> f32 {
     norms_squared.fold(0.0_f32, f32::max).sqrt()
 }
 
+/// `residual` is the largest normal-impulse change of the last sweep; `converged` compares it to `World::solver_tolerance`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SolveReport {
     pub residual: f32,
@@ -166,6 +168,7 @@ pub struct World<S: PhysicsSpace> {
     island_parent: Vec<u32>,
     island_labels: Vec<BodyId>,
     counters: StepCounters,
+    /// Same unit as [`SolveReport::residual`]: impulse, mass times speed.
     pub solver_tolerance: f32,
     report: SolveReport,
     scratch: Vec<IslandSolve<S>>,
@@ -221,6 +224,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
+    /// From the last `step` or `broadphase_into`.
     pub fn counters(&self) -> StepCounters {
         self.counters
     }
@@ -727,7 +731,7 @@ impl<S: PhysicsSpace> World<S> {
         };
     }
 
-    /// Sorted overlapping bounding-ball pairs, excluding pairs of static bodies.
+    /// Sorted candidate pairs: bounding-ball overlaps under a certified bound, every masked non-static pair otherwise.
     pub fn broadphase(&self) -> Vec<PairKey> {
         let mut pairs = Vec::new();
         Self::fill_broadphase(
@@ -1025,6 +1029,7 @@ fn gather_body<S: PhysicsSpace>(
     local[dense]
 }
 
+// Catto 2005, "Iterative Dynamics with Temporal Coherence", accumulated impulses with warm start.
 fn solve_island<S>(space: &S, iterations: usize, island: &mut IslandSolve<S>)
 where
     S: PhysicsSpace,

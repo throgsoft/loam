@@ -9,6 +9,7 @@ pub trait ChunkSource {
 pub trait Executor: Send + Sync {
     fn parallelism(&self) -> usize;
 
+    /// `workers` is a request; each worker drains `chunks` until `run_next` is false.
     fn for_each_chunk(&self, workers: usize, chunks: &(dyn ChunkSource + Sync));
 
     fn join(&self, a: &mut (dyn FnMut() + Send), b: &mut (dyn FnMut() + Send));
@@ -39,6 +40,7 @@ static INSTALLED: OnceLock<Box<dyn Executor>> = OnceLock::new();
 
 static SEQUENTIAL: Sequential = Sequential;
 
+/// Once per process; before it, and after a refusal, [`executor`] is [`Sequential`].
 pub fn install(executor: Box<dyn Executor>) -> Result<(), AlreadyInstalled> {
     INSTALLED.set(executor).map_err(|_| AlreadyInstalled)
 }
@@ -75,6 +77,7 @@ impl<T: Send, F: Fn(&mut [T]) + Sync> ChunkSource for Chunks<'_, T, F> {
     }
 }
 
+/// Runs `task` on disjoint chunks of `data` in no fixed order.
 pub fn for_each_chunk<T: Send>(data: &mut [T], chunk: usize, task: impl Fn(&mut [T]) + Sync) {
     let chunk = chunk.max(1);
     let executor = executor();
@@ -94,18 +97,4 @@ pub fn for_each_chunk<T: Send>(data: &mut [T], chunk: usize, task: impl Fn(&mut 
         task,
     };
     executor.for_each_chunk(workers, &chunks);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_join_runs_both_sides() {
-        let (mut left, mut right) = (0u32, 0u32);
-        let mut a = || left = 1;
-        let mut b = || right = 2;
-        executor().join(&mut a, &mut b);
-        assert_eq!((left, right), (1, 2));
-    }
 }

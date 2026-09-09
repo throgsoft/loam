@@ -6,7 +6,9 @@ use crate::body::RigidBody;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BroadphaseBound {
+    /// Chart distance is a lower bound on separation everywhere, seams and identifications included.
     Certified,
+    /// No distance pruning; every pair that passes the static and mask filters is a candidate.
     Unknown,
 }
 

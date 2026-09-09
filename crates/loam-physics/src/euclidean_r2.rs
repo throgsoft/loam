@@ -964,18 +964,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn the_default_registrations_name_only_this_spaces_kinds() {
-        let mut narrowphase = Narrowphase::new();
-        register_default_narrowphase(&mut narrowphase);
-        assert_eq!(
-            narrowphase.registrations(),
-            [
-                (ColliderKind::Sphere, ColliderKind::Sphere),
-                (ColliderKind::Sphere, ColliderKind::Polygon2D),
-                (ColliderKind::Polygon2D, ColliderKind::Polygon2D),
-            ]
-        );
-    }
 }

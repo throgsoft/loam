@@ -9,6 +9,7 @@ use crate::world::World;
 
 pub const PERSIST_SCHEMA: &str = "loam.physics.world";
 
+/// Bump on any change to the saved layout.
 pub const PERSIST_VERSION: u32 = 1;
 
 pub const PERSIST_CODEC: &str = "ron";
@@ -69,6 +70,7 @@ where
         ron::to_string(&document).map_err(PersistError::Encode)
     }
 
+    /// Decodes and checks the whole document before touching the world; a refusal leaves it unchanged.
     pub fn load(&mut self, text: &str) -> Result<(), PersistError> {
         let document: Persisted<S> = ron::from_str(text).map_err(PersistError::Decode)?;
         let header = document.header;

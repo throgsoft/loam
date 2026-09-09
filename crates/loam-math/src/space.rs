@@ -35,8 +35,10 @@ pub trait Space {
         false
     }
 
+    /// Geodesic distance from the chart origin beyond which [`Self::valid_point`] refuses a point.
     fn chart_envelope(&self) -> f32;
 
+    /// Finite, inside the chart, and within [`Self::chart_envelope`] of the origin.
     fn valid_point(&self, p: Self::Point) -> bool;
 }
 

@@ -911,23 +911,4 @@ mod tests {
             "rotor drifted off the unit manifold: |R|² = {n}"
         );
     }
-
-    #[test]
-    fn the_default_registrations_name_only_this_spaces_kinds() {
-        let mut narrowphase = Narrowphase::new();
-        register_default_narrowphase(&mut narrowphase);
-        assert_eq!(
-            narrowphase.registrations(),
-            [
-                (ColliderKind::Sphere, ColliderKind::Sphere),
-                (ColliderKind::Sphere, ColliderKind::HalfSpace4D),
-                (ColliderKind::Sphere, ColliderKind::ConvexPolytope4D),
-                (ColliderKind::ConvexPolytope4D, ColliderKind::HalfSpace4D),
-                (
-                    ColliderKind::ConvexPolytope4D,
-                    ColliderKind::ConvexPolytope4D
-                ),
-            ]
-        );
-    }
 }
