@@ -1377,7 +1377,6 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "egui-winit",
- "glam",
  "loam-console",
  "loam-math",
  "winit",

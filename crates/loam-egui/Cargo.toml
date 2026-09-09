@@ -22,8 +22,5 @@ egui-winit = { version = "0.33", default-features = false, features = ["clipboar
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 egui-winit = { version = "0.33", default-features = false, features = ["links"] }
 
-[dev-dependencies]
-glam = { workspace = true }
-
 [lints]
 workspace = true
