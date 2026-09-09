@@ -6,8 +6,8 @@ use loam_physics::{BodyDef, BodyId, EditError, Narrowphase, PhysicsSpace, World,
 
 use crate::command::{Outcome, Rejection};
 use crate::domain::{
-    ChartCommand, ChartPose, ChartTangent, DomainBuilder, DomainError, DomainSpace, Facility, Pose,
-    TypedDomain,
+    ChartCommand, ChartPoint, ChartPose, ChartTangent, DomainBuilder, DomainError, DomainSpace,
+    Facility, Pose, TypedDomain,
 };
 use crate::entity::{Entity, EntityKey};
 use crate::phase::Step;
@@ -142,6 +142,20 @@ where
         Ok(Outcome::Done)
     }
 
+    fn move_to(&mut self, id: BodyId, point: &ChartPoint) -> Result<Outcome, Rejection> {
+        let orientation = self
+            .world
+            .bodies
+            .get(id)
+            .ok_or(Rejection::Edit(EditError::StaleHandle))?
+            .orientation;
+        let position = self.world.space.local_point(point.coordinates);
+        self.world
+            .set_pose(id, position, orientation)
+            .map_err(Rejection::Edit)?;
+        Ok(Outcome::Done)
+    }
+
     fn walk(&mut self, id: BodyId, tangent: &ChartTangent, dt: f32) -> Result<Outcome, Rejection> {
         let space = self.world.space;
         let row = self
@@ -236,6 +250,10 @@ where
             } => {
                 let id = self.body(*entity)?;
                 Some(self.walk(id, tangent, *dt))
+            }
+            ChartCommand::Move { entity, point } => {
+                let id = self.body(*entity)?;
+                Some(self.move_to(id, point))
             }
             _ => None,
         }

@@ -840,6 +840,65 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_in_toybox_survives_the_step_that_follows_it() {
+        let (mut booted, intents) = one_slot();
+        push(&intents, Intent::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        booted
+            .session
+            .grab([0.0, 0.0], 0.0)
+            .expect("the ray through the slot centre picks it");
+
+        const NDC_X: f32 = 0.5;
+        booted
+            .session
+            .drag([NDC_X, 0.0], 1.0)
+            .expect("the drag meets its plane");
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary applied the move");
+        let dragged = (EYE_BACK - BODY_SIZE) * NDC_X * HALF_FOV_TAN;
+
+        let entity = slot_entity(&booted);
+        let r4 = booted
+            .session
+            .domains_mut()
+            .typed(booted.domain)
+            .expect("the r4 domain");
+        let body = r4
+            .physics()
+            .and_then(|physics| physics.body(entity))
+            .expect("the slot has a body");
+        let placed = r4
+            .physics()
+            .and_then(|physics| physics.world().bodies.get(body))
+            .expect("the body is live")
+            .position;
+        assert!(
+            (placed.x - dragged).abs() < 1e-4,
+            "the world never took the drag: the body sits at x {} rather than {dragged}",
+            placed.x
+        );
+
+        booted.session.tick().expect("the tick ran");
+        let r4 = booted
+            .session
+            .domains_mut()
+            .typed(booted.domain)
+            .expect("the r4 domain");
+        let pose = r4.poses.get(entity).expect("pose").0.translation;
+        assert!(
+            (pose.x - dragged).abs() < 1e-3,
+            "the step overwrote the drag from a body that never moved: pose x {}",
+            pose.x
+        );
+    }
+
+    #[test]
     fn the_headless_report_names_the_active_polytope_and_the_frames_sections() {
         let (mut booted, _intents) = one_slot();
         let frame = Frame::new();
