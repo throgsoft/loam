@@ -59,6 +59,7 @@ mod alloc_probe {
 static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 
 mod catalog;
+mod composer;
 mod consts;
 mod mode;
 mod projection;
@@ -68,8 +69,12 @@ mod toy;
 mod ui;
 
 use catalog::ShapeEntry;
+use composer::{Composer, Term};
 use consts::{BODY_SIZE, BODY_X_SPACING, BODY_Y, GRAVITY, W_SCRUB_RATE};
-use mode::{Mode, SetActive, SetMode, SetProjection, SetRunning, SetSlice, Spin, TogglePlane};
+use mode::{
+    ClearComposer, ClearDraft, CommitDraft, DraftPlane, DropTerm, Mode, PushTerm, SetActive,
+    SetMode, SetProjection, SetRunning, SetScrub, SetSlice, Spin, TogglePlane,
+};
 use projection::Family;
 
 const SPIN: ActionId = ActionId(0);
@@ -90,6 +95,8 @@ const SECTION_COLOR: [f32; 4] = [1.0, 0.85, 0.35, 1.0];
 const SECTION_WIDTH_PX: f32 = 2.0;
 const EDGE_WIDTH_PX: f32 = 1.4;
 const HEADLESS_STEPS: u32 = 8;
+const HEADLESS_FORMULA: &str = "90deg (xy + zw)";
+const HEADLESS_SCRUB: f32 = 0.7;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
@@ -108,6 +115,7 @@ loam_runtime::stores! {
         walls: Store<Wall>,
         mode: Value<Mode>,
         spin: Value<Spin>,
+        composer: Value<Composer>,
         active: Value<usize>,
         slice: Value<f32>,
         projection: Value<Family>,
@@ -124,6 +132,13 @@ pub(crate) enum Intent {
     Plane(usize),
     Running(bool),
     Projection(Family),
+    Term(Term),
+    DropTerm(usize),
+    Draft(usize),
+    CommitDraft,
+    ClearDraft,
+    ClearTerms,
+    Scrub(f32),
 }
 
 pub(crate) type Intents = Arc<Mutex<Vec<Intent>>>;
@@ -249,7 +264,8 @@ fn install_systems(
             }
             if ctx.input.pressed(NEXT_MODE) {
                 let next = match *ctx.app.mode.get() {
-                    Mode::Rotate => Mode::Toybox,
+                    Mode::Rotate => Mode::Compose,
+                    Mode::Compose => Mode::Toybox,
                     Mode::Toybox => Mode::Rotate,
                 };
                 ctx.commands.app(SetMode { mode: next, domain });
@@ -324,10 +340,11 @@ fn install_systems(
         "spin",
         Access::new().reads::<Slot>().domain(domain.id()),
         move |app: &mut Playground, domains: &mut Domains, step: Step| {
-            if *app.mode.get() != Mode::Rotate {
-                return;
-            }
-            let omega = app.spin.get().omega();
+            let omega = match *app.mode.get() {
+                Mode::Rotate => app.spin.get().omega(),
+                Mode::Compose if app.spin.get().running => app.composer.get().angular_velocity(),
+                _ => return,
+            };
             let Ok(r4) = domains.typed(domain) else {
                 return;
             };
@@ -348,6 +365,13 @@ fn submit(commands: &mut Commands<Playground>, domain: DomainHandle<EuclideanR4>
         Intent::Plane(plane) => commands.app(TogglePlane { plane }),
         Intent::Running(running) => commands.app(SetRunning { running }),
         Intent::Projection(family) => commands.app(SetProjection { family }),
+        Intent::Term(term) => commands.app(PushTerm { term }),
+        Intent::DropTerm(index) => commands.app(DropTerm { index }),
+        Intent::Draft(plane) => commands.app(DraftPlane { plane }),
+        Intent::CommitDraft => commands.app(CommitDraft),
+        Intent::ClearDraft => commands.app(ClearDraft),
+        Intent::ClearTerms => commands.app(ClearComposer),
+        Intent::Scrub(scrub) => commands.app(SetScrub { scrub, domain }),
     };
 }
 
@@ -485,8 +509,11 @@ fn main() -> Result<(), HostError> {
     let spin_intents = intents.clone();
     let shape_intents = intents.clone();
     let projection_intents = intents.clone();
+    let formula_intents = intents.clone();
+    let scrub_intents = intents.clone();
     let domain = booted.domain;
     let mut scratch = Scratch::default();
+    let mut panel = ui::Panel::default();
     let mut orbit = Orbit::around([0.0, BODY_Y, 0.0], 9.0);
     orbit.pitch = -0.25;
 
@@ -569,6 +596,42 @@ fn main() -> Result<(), HostError> {
                 Ok(())
             },
         )
+        .command(
+            "formula",
+            "add a term to the composer sequence, or clear it, or drop one",
+            move |args, _submit, out| {
+                match args {
+                    ["clear"] => push(&formula_intents, Intent::ClearTerms),
+                    ["drop", index] => match index.parse::<usize>() {
+                        Ok(index) => push(&formula_intents, Intent::DropTerm(index)),
+                        Err(_) => out.line("usage: formula drop <index>"),
+                    },
+                    [] => out.line("usage: formula <angle> (<plane> + ...) | clear | drop <index>"),
+                    terms => match composer::parse_term(&terms.join(" ")) {
+                        Ok(term) => {
+                            push(&formula_intents, Intent::Term(term));
+                            out.line("formula: term requested");
+                        }
+                        Err(error) => out.line(format!("formula: {error}")),
+                    },
+                }
+                Ok(())
+            },
+        )
+        .command(
+            "scrub",
+            "set the row's turn along the composer's bivector, in degrees",
+            move |args, _submit, out| {
+                match args.first().and_then(|token| token.parse::<f32>().ok()) {
+                    Some(degrees) => {
+                        push(&scrub_intents, Intent::Scrub(degrees.to_radians()));
+                        out.line(format!("scrub: {degrees:.1} degrees requested"));
+                    }
+                    None => out.line("usage: scrub <degrees>"),
+                }
+                Ok(())
+            },
+        )
         .on_frame(move |hook: &mut FrameHook<'_, Playground>| {
             let wants_pointer = hook.ui.is_some_and(|context| context.wants_pointer_input());
             drive_pointer(hook.session, wants_pointer, &grabbed);
@@ -585,7 +648,7 @@ fn main() -> Result<(), HostError> {
             hyperslice.publish(scene::uniforms(&eye, slice, floor), &scratch.bodies);
             cut.publish(&eye, &scratch.segments);
             if let Some(context) = hook.ui {
-                ui::draw(context, hook.session, &ui_intents);
+                ui::draw(context, hook.session, &mut panel, &ui_intents);
             }
         });
     launch(booted.session, app)
@@ -636,6 +699,7 @@ fn report(booted: &mut Boot, frame: &Frame, config: &HostConfig) -> Result<Vec<S
         .and_then(|entry| entry.shape.polytope4())
         .map_or(0, |polytope| polytope.edge_count());
     Ok(vec![
+        composer_line(),
         format!(
             "active: {} with {edges} edges",
             entry.map_or("none", |entry| entry.label)
@@ -650,6 +714,23 @@ fn report(booted: &mut Boot, frame: &Frame, config: &HostConfig) -> Result<Vec<S
         ),
         format!("sections: {}", frame_sections(frame).join(", ")),
     ])
+}
+
+fn composer_line() -> String {
+    use loam_math::{Bivector, Plane4, Rotor};
+
+    let mut probe = Composer::default();
+    probe.push(composer::parse_term(HEADLESS_FORMULA).unwrap_or_default());
+    let mut text = String::new();
+    probe.write(&mut text);
+    let turned = probe.axis().map_or(loam_math::Bivector4::ZERO, |axis| {
+        (axis * HEADLESS_SCRUB).exp().log()
+    });
+    format!(
+        "composer: {text} scrubbed to {HEADLESS_SCRUB:.3} turns xy {:.4} zw {:.4}",
+        turned.component(Plane4::Xy),
+        turned.component(Plane4::Zw)
+    )
 }
 
 fn headless(booted: &mut Boot, frame: &Frame, config: &HostConfig) -> Result<(), HostError> {
@@ -949,24 +1030,90 @@ mod tests {
     }
 
     #[test]
+    fn the_scrub_turns_each_slot_by_its_own_angle_along_the_sequences_bivector() {
+        use loam_math::{Bivector, Bivector4, Rotor};
+
+        let (mut booted, intents) = one_slot();
+        push(&intents, Intent::Mode(Mode::Compose));
+        push(
+            &intents,
+            Intent::Term(composer::parse_term("90deg (xy + zw)").expect("the formula parses")),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        const SCRUB: f32 = 0.7;
+        let start = loam_math::Plane4::Xz.unit_bivector() * 0.5
+            + loam_math::Plane4::Xy.unit_bivector() * 0.3;
+        let entity = slot_entity(&booted);
+        booted
+            .session
+            .domains_mut()
+            .typed(booted.domain)
+            .expect("the r4 domain")
+            .poses
+            .get_mut(entity)
+            .expect("pose")
+            .0
+            .rotation = start.exp();
+        push(&intents, Intent::Scrub(SCRUB));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        let axis = booted
+            .session
+            .app
+            .composer
+            .get()
+            .axis()
+            .expect("the sequence names a bivector");
+        let r4 = booted
+            .session
+            .domains_mut()
+            .typed(booted.domain)
+            .expect("the r4 domain");
+        let log: Bivector4 = r4.poses.get(entity).expect("pose").0.rotation.log();
+        assert!(
+            (log.dot(axis) - SCRUB).abs() < 1e-4,
+            "the scrub turned the slot by {} along the sequence, not {SCRUB}",
+            log.dot(axis)
+        );
+        let across = log + axis * -log.dot(axis);
+        let kept = start + axis * -start.dot(axis);
+        assert!(
+            (across + kept * -1.0).magnitude() < 1e-4,
+            "the scrub disturbed the turn across its own bivector: {across:?} rather than {kept:?}"
+        );
+    }
+
+    #[test]
     fn the_headless_report_names_the_active_polytope_and_the_frames_sections() {
         let (mut booted, _intents) = one_slot();
         let frame = Frame::new();
         let config = HostConfig::new("polytope playground", bindings());
         let lines = report(&mut booted, &frame, &config).expect("the headless run");
         assert!(
-            lines[0].contains("24-cell") && lines[0].contains("96 edges"),
+            lines[1].contains("24-cell") && lines[1].contains("96 edges"),
             "the report does not name the active polytope and its edges: {}",
-            lines[0]
+            lines[1]
         );
         assert!(
-            lines[2].contains("present-clear")
-                && lines[2].contains("sky-ground")
-                && lines[2].contains("present-draw")
-                && lines[2].contains("hyperslice")
-                && lines[2].contains("section"),
+            lines[3].contains("present-clear")
+                && lines[3].contains("sky-ground")
+                && lines[3].contains("present-draw")
+                && lines[3].contains("hyperslice")
+                && lines[3].contains("section"),
             "the report does not list the frame's sections: {}",
-            lines[2]
+            lines[3]
+        );
+        assert!(
+            lines[0].contains("xy 0.4950") && lines[0].contains("zw 0.4950"),
+            "the composer line does not carry the scrubbed turn: {}",
+            lines[0]
         );
     }
 }
