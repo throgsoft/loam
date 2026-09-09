@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 glam.workspace = true
 
+loam-app     = { path = "../loam-app",     version = "0.1.0" }
 loam-math    = { path = "../loam-math",    version = "0.1.0" }
 loam-runtime = { path = "../loam-runtime", version = "0.1.0" }
 loam-shape   = { path = "../loam-shape",   version = "0.1.0" }

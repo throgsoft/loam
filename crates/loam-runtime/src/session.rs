@@ -140,6 +140,22 @@ impl Material {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Library<'a> {
+    pub geometry: &'a [PreparedGeometry],
+    pub materials: &'a [Material],
+}
+
+impl Library<'_> {
+    pub(crate) fn line_style(&self, material: MaterialId) -> ([f32; 4], f32) {
+        match self.materials.get(material.index()) {
+            Some(Material::Lines { color, width_px }) => (*color, *width_px),
+            Some(Material::Flat { color }) => (*color, 1.0),
+            None => ([1.0; 4], 1.0),
+        }
+    }
+}
+
 pub struct PublishedView {
     pub domain: DomainId,
     pub target: ViewTarget,
@@ -160,6 +176,46 @@ impl<A: Stores> Default for Publication<A> {
             views: Vec::new(),
             stamp: Stamp::default(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishError {
+    Borrowed,
+    Domain(DomainError),
+}
+
+impl From<DomainError> for PublishError {
+    fn from(error: DomainError) -> Self {
+        Self::Domain(error)
+    }
+}
+
+pub struct Records<A: Stores> {
+    idle: Option<Publication<A>>,
+}
+
+impl<A: Stores> Default for Records<A> {
+    fn default() -> Self {
+        Self {
+            idle: Some(Publication::default()),
+        }
+    }
+}
+
+impl<A: Stores> Records<A> {
+    pub fn publish(&mut self, session: &mut Session<A>) -> Result<Stamp, PublishError> {
+        let buffer = self.idle.as_mut().ok_or(PublishError::Borrowed)?;
+        session.publish(buffer)?;
+        Ok(buffer.stamp)
+    }
+
+    pub fn lend(&mut self) -> Option<Publication<A>> {
+        self.idle.take()
+    }
+
+    pub fn release(&mut self, publication: Publication<A>) {
+        self.idle = Some(publication);
     }
 }
 
@@ -397,9 +453,14 @@ impl<A: Stores> Session<A> {
             sequence: self.sequence,
         };
         self.app.publish(&mut into.app, stamp);
+        let root = self.views.root();
+        let library = Library {
+            geometry: &self.prepared,
+            materials: &self.materials,
+        };
         let mut count = 0;
         for domain in self.domains.iter() {
-            for &target in domain.views() {
+            for &target in domain.views().iter().filter(|target| target.image == root) {
                 let current = into
                     .views
                     .get(count)
@@ -412,7 +473,7 @@ impl<A: Stores> Session<A> {
                         records: ViewRecords::default(),
                     });
                 }
-                domain.publish(target.view, &mut into.views[count].records, stamp)?;
+                domain.publish(target.view, library, &mut into.views[count].records, stamp)?;
                 count += 1;
             }
         }

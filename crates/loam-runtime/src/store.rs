@@ -259,6 +259,10 @@ impl<R> RecordBuffer<R> {
         self.positions.fill(NO_RECORD);
     }
 
+    pub(crate) fn restamp(&mut self, stamp: Stamp) {
+        self.stamp = stamp;
+    }
+
     pub(crate) fn replace(&mut self, records: impl Iterator<Item = (Entity, R)>, stamp: Stamp) {
         self.clear();
         for (entity, record) in records {
@@ -723,6 +727,19 @@ impl<T> Store<T> {
             dirty,
             rows,
         }
+    }
+
+    pub fn changed_since(&self, cursor: &Cursor) -> bool {
+        let Some(tracking) = &self.tracking else {
+            return true;
+        };
+        tracking.stale(cursor)
+            || cursor.position != tracking.dirty.pushed
+            || cursor.removed != tracking.removals.pushed
+    }
+
+    pub fn catch_up(&self, cursor: &mut Cursor) {
+        let _ = self.changes(cursor);
     }
 }
 

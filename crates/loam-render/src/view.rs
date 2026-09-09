@@ -6,6 +6,7 @@ use glam::{Mat4, Vec3};
 use loam_math::hyperbolic::{hyperboloid_to_klein, poincare_to_hyperboloid, poincare_to_klein};
 pub use loam_math::hyperbolic::{H3_DEPTH_ENVELOPE, H3_DEPTH_SEPARATION, H3_EYE_CHART_REACH};
 use loam_math::{Iso3, Iso3H};
+use loam_runtime::Eye;
 use wgpu::{CompareFunction, TextureFormat};
 
 pub const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
@@ -18,6 +19,16 @@ pub fn root_projection(fov_y: f32, aspect: f32, near: f32) -> Mat4 {
 
 pub fn projective_depth(image: Vec3, near: f32) -> f32 {
     near / -image.z
+}
+
+pub fn root_view_projection(eye: &Eye) -> Mat4 {
+    let basis = Mat4::from_cols(
+        Vec3::from(eye.right).extend(0.0),
+        Vec3::from(eye.up).extend(0.0),
+        (-Vec3::from(eye.forward)).extend(0.0),
+        Vec3::from(eye.position).extend(1.0),
+    );
+    root_projection(eye.fov_y, eye.aspect, eye.near) * basis.inverse()
 }
 
 /// Places an R³ image space so that `eye` sits at the root origin.

@@ -31,8 +31,8 @@ pub use phase::{
 };
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
-    Growth, Material, MaterialId, PreparedGeometry, PreparedId, Publication, PublishedView,
-    RestoreError, Session, SessionSnapshot, SimConfig, Stamp, DOMAIN_STEP,
+    Growth, Library, Material, MaterialId, PreparedGeometry, PreparedId, Publication, PublishError,
+    PublishedView, Records, RestoreError, Session, SessionSnapshot, SimConfig, Stamp, DOMAIN_STEP,
 };
 pub use store::{
     Change, Changes, Cursor, ErasedStore, LogCapacity, Part, Partition, PartitionError, Parts,
@@ -43,6 +43,6 @@ pub use stores::{HasRelation, HasStore, Stores};
 pub use value::Value;
 pub use view::{
     DepthEnvelope, DomainRay, Eye, Identity3, ImageRay, ImageSpace, ImageSpaceId, InstanceRecord,
-    Klein, Orbit, Pick, Projection4, Section4, ViewId, ViewMapping, ViewRecords, ViewSpec,
-    ViewTarget, Views,
+    Klein, Orbit, Pick, Projection4, Section4, SegmentRecord, ViewId, ViewMapping, ViewRecords,
+    ViewSpec, ViewTarget, Views,
 };

@@ -21,6 +21,7 @@ impl HostConfig {
 pub enum HostError {
     MissingCapability(&'static str),
     Setup(Rejection),
+    Host(String),
 }
 
 impl From<Rejection> for HostError {
@@ -39,11 +40,6 @@ impl From<RestoreError> for HostError {
     fn from(error: RestoreError) -> Self {
         Self::Setup(Rejection::Restore(error))
     }
-}
-
-/// The host owns the window, device, and loop; the session stays a CPU value.
-pub fn run<A: Stores>(_session: Session<A>, _config: HostConfig) -> Result<(), HostError> {
-    todo!()
 }
 
 /// Boundary, tick, and publish `steps` times, with each key of `holds` held over its step range, and returns the last publication.

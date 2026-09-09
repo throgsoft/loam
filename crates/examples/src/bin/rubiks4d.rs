@@ -1,8 +1,9 @@
 use std::f32::consts::FRAC_PI_2;
 
 use glam::Vec4;
+use loam_app::session::run;
 use loam_math::{Bivector, EuclideanR4, Iso4Flat, IsometryGroup, Plane4, Rotor, Rotor4};
-use loam_runtime::host::{self, HostConfig, HostError};
+use loam_runtime::host::{HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, AppCommand, Bindings, Command, Commands, Ctx, Dispatch, DomainBuilder,
     DomainHandle, Domains, Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId,
@@ -462,5 +463,5 @@ fn main() -> Result<(), HostError> {
         .key(Key::Letter('s'), SCRAMBLE)
         .key(Key::Letter('u'), UNDO)
         .key(Key::Letter('r'), RESET);
-    host::run(session, HostConfig::new("rubiks4d", bindings))
+    run(session, HostConfig::new("rubiks4d", bindings))
 }

@@ -1,3 +1,4 @@
+use bytemuck::{Pod, Zeroable};
 use loam_math::hyperbolic::{
     hyperboloid_to_klein, klein_to_poincare, poincare_to_hyperboloid, H3_DEPTH_ENVELOPE,
 };
@@ -5,8 +6,8 @@ use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, IsometryGroup, Space};
 
 use crate::domain::{ChartPoint, ChartPose, DomainId, DomainSpace, Pose};
 use crate::entity::Entity;
-use crate::session::{MaterialId, PreparedId};
-use crate::store::RecordBuffer;
+use crate::session::{MaterialId, PreparedId, Stamp};
+use crate::store::{Cursor, RecordBuffer};
 
 pub(crate) type Vec3 = <EuclideanR3 as Space>::Point;
 pub(crate) type Vec4 = <EuclideanR4 as Space>::Point;
@@ -53,8 +54,21 @@ pub struct Eye {
 }
 
 impl Eye {
-    pub fn looking_at(_position: [f32; 3], _target: [f32; 3], _up: [f32; 3]) -> Self {
-        todo!()
+    pub fn looking_at(position: [f32; 3], target: [f32; 3], up: [f32; 3]) -> Self {
+        let forward = (Vec3::from(target) - Vec3::from(position))
+            .try_normalize()
+            .unwrap_or(-Vec3::Z);
+        let right = forward
+            .cross(Vec3::from(up))
+            .try_normalize()
+            .unwrap_or(Vec3::X);
+        Self {
+            position,
+            right: right.to_array(),
+            up: right.cross(forward).to_array(),
+            forward: forward.to_array(),
+            ..Self::default()
+        }
     }
 
     fn forward_distance(&self, point: [f32; 3]) -> (Vec3, f32) {
@@ -96,14 +110,25 @@ impl Orbit {
         }
     }
 
-    pub fn drag(&mut self, _delta: [f32; 2]) {
-        todo!()
+    pub fn drag(&mut self, delta: [f32; 2]) {
+        self.yaw -= delta[0] * ORBIT_GAIN;
+        self.pitch = (self.pitch + delta[1] * ORBIT_GAIN).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
     pub fn eye(&self) -> Eye {
-        todo!()
+        let (yaw_sin, yaw_cos) = self.yaw.sin_cos();
+        let (pitch_sin, pitch_cos) = self.pitch.sin_cos();
+        let offset = Vec3::new(yaw_sin * pitch_cos, pitch_sin, yaw_cos * pitch_cos);
+        Eye::looking_at(
+            (Vec3::from(self.target) + offset * self.distance).to_array(),
+            self.target,
+            [0.0, 1.0, 0.0],
+        )
     }
 }
+
+const ORBIT_GAIN: f32 = 2.0;
+const PITCH_LIMIT: f32 = 1.5;
 
 pub struct ImageSpace {
     pub eye: Eye,
@@ -429,10 +454,37 @@ pub struct InstanceRecord {
     pub image_point: [f32; 3],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct SegmentRecord {
+    pub start: [f32; 3],
+    pub _pad0: f32,
+    pub end: [f32; 3],
+    pub _pad1: f32,
+    pub start_color: [f32; 4],
+    pub end_color: [f32; 4],
+    pub width_px: f32,
+    pub _pad2: [f32; 3],
+}
+
 /// Records of one view map, in its image space.
 #[derive(Default)]
 pub struct ViewRecords {
     pub instances: RecordBuffer<InstanceRecord>,
+    pub(crate) segments: Vec<SegmentRecord>,
+    pub(crate) poses: Cursor,
+    pub(crate) attachments: Cursor,
+    pub(crate) built: Stamp,
+}
+
+impl ViewRecords {
+    pub fn segments(&self) -> &[SegmentRecord] {
+        &self.segments
+    }
+
+    pub fn built(&self) -> Stamp {
+        self.built
+    }
 }
 
 /// `hit` is the domain-space entry point when the view has a lift.

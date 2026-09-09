@@ -5,9 +5,9 @@ use loam_math::{EuclideanR4, Iso4Flat, Space};
 use loam_runtime::{
     Access, AppCommand, Command, Ctx, DepthEnvelope, Dispatch, DomainBuilder, DomainError,
     DomainHandle, DomainRay, Entity, Facility, Growth, ImageRay, Input, Instance, LogCapacity,
-    Material, Outcome, Phase, Pose, PreparedGeometry, Publication, Publish, RecordBuffer,
-    Rejection, Reservation, RestoreError, Session, SimConfig, SpawnBundle, Step, Store, Tick,
-    ViewMapping, ViewSpec,
+    Material, Outcome, Phase, Pose, PreparedGeometry, Projection4, Publication, Publish,
+    PublishError, RecordBuffer, Records, Rejection, Reservation, RestoreError, Session, SimConfig,
+    SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -462,4 +462,106 @@ fn cancelled_request_and_a_fresh_request_after_a_reset_share_an_id() {
     };
     assert_eq!(fresh.outcome, Ok(Outcome::Done));
     assert!(fresh.request > cancelled);
+}
+
+#[test]
+fn publish_rebuilds_a_view_whose_rows_did_not_change_or_misses_one_that_did() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let geometry = session.prepare(PreparedGeometry::Lines4 {
+        segments: Vec::new(),
+    });
+    let material = session.add_material(Material::flat([1.0; 4]));
+    let root = session.views().root();
+    let drawn = session.dispatch(|d| {
+        let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, DropW));
+        d.spawn(
+            SpawnBundle::new()
+                .at(r4, at([1.0, 2.0, 3.0, 4.0]))
+                .instance(Instance::new(geometry, material)),
+        )
+        .unwrap()
+    });
+
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    let first = publication.views[0].records.built();
+    session.publish(&mut publication).unwrap();
+    assert_eq!(publication.views[0].records.built(), first);
+
+    *session
+        .domains_mut()
+        .typed(r4)
+        .unwrap()
+        .poses
+        .get_mut(drawn)
+        .unwrap() = at([5.0, 6.0, 7.0, 8.0]);
+    session.publish(&mut publication).unwrap();
+    let records = &publication.views[0].records;
+    assert!(records.built().sequence > first.sequence);
+    assert_eq!(records.instances.rows()[0].image_point, [5.0, 6.0, 7.0]);
+}
+
+#[test]
+fn published_segments_miss_the_endpoints_the_mapping_sends_them_to() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let geometry = session.prepare(PreparedGeometry::Lines4 {
+        segments: vec![[[1.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 1.0]]],
+    });
+    let material = session.add_material(Material::lines([0.2, 0.4, 0.6, 1.0], 3.0));
+    let root = session.views().root();
+    session.dispatch(|d| {
+        let eye = d
+            .spawn(SpawnBundle::new().at(r4, at([0.0, 0.0, 0.0, 2.0])))
+            .unwrap();
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }));
+        d.spawn(
+            SpawnBundle::new()
+                .at(r4, at([0.0, 0.0, -3.0, 0.0]))
+                .instance(Instance::new(geometry, material)),
+        )
+        .unwrap();
+    });
+
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    let [segment] = publication.views[0].records.segments() else {
+        panic!(
+            "{} segments published",
+            publication.views[0].records.segments().len()
+        );
+    };
+    let close = |got: [f32; 3], want: [f32; 3]| {
+        assert!(
+            got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 1e-6),
+            "{got:?} is not {want:?}"
+        );
+    };
+    close(segment.start, [0.5, 0.0, -1.5]);
+    close(segment.end, [0.0, 4.0 / 3.0, -2.0]);
+    assert_eq!(segment.start_color, [0.2, 0.4, 0.6, 1.0]);
+    assert_eq!(segment.width_px, 3.0);
+}
+
+#[test]
+fn publish_overwrites_a_record_buffer_the_renderer_still_holds() {
+    let (mut session, _) = session();
+    let mut records = Records::<Probe>::default();
+    let first = records.publish(&mut session).unwrap();
+    let held = records.lend().unwrap();
+    assert_eq!(held.stamp, first);
+    assert_eq!(records.publish(&mut session), Err(PublishError::Borrowed));
+    records.release(held);
+    let second = records.publish(&mut session).unwrap();
+    assert!(second.sequence > first.sequence);
 }
