@@ -6,7 +6,6 @@ members = [
   "crates/loam-time",
   "crates/loam-render",
   "crates/loam-input",
-  "crates/loam-camera",
   "crates/loam-physics",
   "crates/loam-app",
   "crates/loam-text",
@@ -15,7 +14,6 @@ members = [
   "crates/loam-runtime",
   "crates/examples",
   "crates/polytope_playground",
-  "crates/tesseract_demo",
   "crates/xtask",
 ]
 resolver = "2"
@@ -73,7 +71,6 @@ loam-shape     = { path = "crates/loam-shape",   version = "0.1.0" }
 loam-time      = { path = "crates/loam-time",    version = "0.1.0" }
 loam-render    = { path = "crates/loam-render",  version = "0.1.0" }
 loam-input     = { path = "crates/loam-input",   version = "0.1.0" }
-loam-camera    = { path = "crates/loam-camera",  version = "0.1.0" }
 loam-physics   = { path = "crates/loam-physics", version = "0.1.0" }
 loam-app       = { path = "crates/loam-app",     version = "0.1.0" }
 loam-text      = { path = "crates/loam-text",    version = "0.1.0" }

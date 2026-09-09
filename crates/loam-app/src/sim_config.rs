@@ -52,8 +52,8 @@ impl SimConfig {
         set("overlap", f64::from(u8::from(self.overlap)));
     }
 
-    #[cfg(any(target_arch = "wasm32", test))]
-    pub(crate) fn decode(get: impl Fn(&str) -> Option<f64>) -> anyhow::Result<Self> {
+    #[cfg(test)]
+    fn decode(get: impl Fn(&str) -> Option<f64>) -> anyhow::Result<Self> {
         let field = |key: &str| {
             get(key).ok_or_else(|| anyhow::anyhow!("init message has no `{key}` field"))
         };

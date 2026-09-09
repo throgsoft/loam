@@ -561,7 +561,7 @@ impl<A: Stores> Session<A> {
         self.flight.release(request)
     }
 
-    /// The entry stopped for a required readback; `boundary` and `tick` resume there once it lands or fails, or after `cancel_work` drops it.
+    /// The entry stopped for a required readback; `boundary`, `tick`, and `publish` resume there once it lands or fails, or after `cancel_work` drops it.
     pub fn waiting(&self) -> Option<Wait> {
         self.wait
     }

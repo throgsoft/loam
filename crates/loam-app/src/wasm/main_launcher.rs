@@ -15,7 +15,7 @@ pub fn launch_on_click(
     canvas_id: &str,
     sim: SimConfig,
 ) -> Result<()> {
-    super::worker::install_logging_idempotent();
+    super::install_logging_idempotent();
 
     spawn_worker_for_preview(canvas_id, host_id, button_id, sim)?;
     Ok(())
@@ -68,7 +68,6 @@ fn spawn_worker_for_preview(
         .transfer_control_to_offscreen()
         .map_err(|e| anyhow!("transfer_control_to_offscreen: {e:?}"))?;
 
-    let asset_base = asset_base_url(&document)?;
     let js_url = read_wasm_bundle_url()?;
     let (js_path, query) = js_url.split_once('?').unwrap_or((js_url.as_str(), ""));
     let wasm_url = format!(
@@ -140,7 +139,6 @@ fn spawn_worker_for_preview(
             &JsValue::from_str(&search),
         );
         let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("hash"), &JsValue::from_str(&hash));
-        set_msg_string(&msg, "assets", &asset_base);
         sim.encode(|key, value| set_msg_f64(&msg, key, value));
 
         let transfer = js_sys::Array::new();
@@ -158,9 +156,6 @@ fn spawn_worker_for_preview(
 
     install_dom_input_forwarders(&worker, &canvas).context("install_dom_input_forwarders")?;
 
-    install_host_action_handler(&worker, &canvas).context("install_host_action_handler")?;
-
-    install_preview_progress_handler(&worker)?;
     install_preview_ready_handler(&worker, button_id)?;
     install_worker_failure_handler(&worker, button_id)?;
 
@@ -607,45 +602,6 @@ fn set_msg_string(obj: &js_sys::Object, key: &str, v: &str) {
     let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_str(v));
 }
 
-// Bar markup lives in `crates/loam-app/static/page_loader.html`.
-fn install_preview_progress_handler(worker: &Worker) -> Result<()> {
-    let cb = Closure::wrap(Box::new(move |event: MessageEvent| {
-        let data: JsValue = event.data();
-        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-            .ok()
-            .and_then(|v| v.as_string());
-        if kind.as_deref() != Some("preview_progress") {
-            return;
-        }
-        let pct = js_sys::Reflect::get(&data, &JsValue::from_str("pct"))
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0);
-        let percent = pct * 100.0;
-        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
-            return;
-        };
-        if let Some(fill) = document.get_element_by_id("loam-page-loader-fill") {
-            let _ = fill.dyn_into::<web_sys::HtmlElement>().map(|el| {
-                let _ = el.style().set_property("width", &format!("{percent}%"));
-            });
-        }
-        if let Some(track) = document
-            .query_selector("#loam-page-loader .loam-progress-track")
-            .ok()
-            .flatten()
-        {
-            let _ = track.set_attribute("aria-valuenow", &format!("{}", percent.round() as i32));
-        }
-    }) as Box<dyn FnMut(MessageEvent)>);
-    worker
-        .add_event_listener_with_callback("message", cb.as_ref().unchecked_ref())
-        .map_err(|e| anyhow!("worker.addEventListener('message') for preview_progress: {e:?}"))?;
-    cb.forget();
-    Ok(())
-}
-
 fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()> {
     let button_id_owned: String = button_id.to_string();
     let cb = Closure::wrap(Box::new(move |event: MessageEvent| {
@@ -671,17 +627,6 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
         .map_err(|e| anyhow!("worker.addEventListener('message') for preview_ready: {e:?}"))?;
     cb.forget();
     Ok(())
-}
-
-// A blob-URL worker resolves relative fetches against the blob, so main sends the page's absolute base.
-fn asset_base_url(document: &web_sys::Document) -> Result<String> {
-    let page = document
-        .base_uri()
-        .map_err(|e| anyhow!("document.baseURI: {e:?}"))?
-        .unwrap_or_default();
-    let url = web_sys::Url::new_with_base(&format!("{}/", crate::assets::ASSET_DIR), &page)
-        .map_err(|e| anyhow!("asset base URL: {e:?}"))?;
-    Ok(url.href())
 }
 
 fn install_worker_failure_handler(worker: &Worker, button_id: &str) -> Result<()> {
@@ -747,110 +692,4 @@ fn show_worker_failure(message: &str, button_id: &str) {
     if let Some(overlay) = document.get_element_by_id(button_id) {
         overlay.remove();
     }
-}
-
-fn install_host_action_handler(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
-    let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
-    let document = window
-        .document()
-        .ok_or_else(|| anyhow!("no document on window"))?;
-
-    let want_locked: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
-
-    {
-        let canvas_for_dispatch = canvas.clone();
-        let document_for_dispatch = document.clone();
-        let want_locked_for_dispatch = want_locked.clone();
-        let cb = Closure::wrap(Box::new(move |event: MessageEvent| {
-            let data: JsValue = event.data();
-            let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-                .ok()
-                .and_then(|v| v.as_string());
-            if kind.as_deref() != Some("host_action") {
-                return;
-            }
-            let actions = match js_sys::Reflect::get(&data, &JsValue::from_str("actions")) {
-                Ok(arr) => arr,
-                Err(_) => return,
-            };
-            let arr = match actions.dyn_into::<js_sys::Array>() {
-                Ok(a) => a,
-                Err(_) => return,
-            };
-            for i in 0..arr.length() {
-                let item = arr.get(i);
-                let action_kind = js_sys::Reflect::get(&item, &JsValue::from_str("kind"))
-                    .ok()
-                    .and_then(|v| v.as_string());
-                match action_kind.as_deref() {
-                    Some("pointer_lock_request") => {
-                        *want_locked_for_dispatch.borrow_mut() = true;
-                        canvas_for_dispatch.request_pointer_lock();
-                    }
-                    Some("pointer_lock_release") => {
-                        *want_locked_for_dispatch.borrow_mut() = false;
-                        document_for_dispatch.exit_pointer_lock();
-                    }
-                    Some(other) => {
-                        tracing::warn!(
-                            "loam_app::wasm: unknown host_action kind '{other}'; dropping"
-                        );
-                    }
-                    None => {
-                        tracing::warn!("loam_app::wasm: host_action item missing 'kind'");
-                    }
-                }
-            }
-        }) as Box<dyn FnMut(MessageEvent)>);
-        worker
-            .add_event_listener_with_callback("message", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("worker.addEventListener('message') for host_action: {e:?}"))?;
-        cb.forget();
-    }
-
-    {
-        let worker_for_change = worker.clone();
-        let document_for_change = document.clone();
-        let canvas_for_change = canvas.clone();
-        let cb = Closure::wrap(Box::new(move || {
-            let locked = document_for_change
-                .pointer_lock_element()
-                .as_ref()
-                .map(|el| el == canvas_for_change.as_ref())
-                .unwrap_or(false);
-            let msg = build_msg("pointer_lock_changed");
-            set_msg_bool(&msg, "locked", locked);
-            let _ = worker_for_change.post_message(&msg);
-        }) as Box<dyn FnMut()>);
-        document
-            .add_event_listener_with_callback("pointerlockchange", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("pointerlockchange listener: {e:?}"))?;
-        cb.forget();
-    }
-
-    {
-        let canvas_for_click = canvas.clone();
-        let document_for_click = document.clone();
-        let want_locked_for_click = want_locked.clone();
-        let cb = Closure::wrap(Box::new(move |_ev: web_sys::MouseEvent| {
-            if !*want_locked_for_click.borrow() {
-                return;
-            }
-            let already_locked = document_for_click
-                .pointer_lock_element()
-                .as_ref()
-                .map(|el| el == canvas_for_click.as_ref())
-                .unwrap_or(false);
-            if already_locked {
-                return;
-            }
-            canvas_for_click.request_pointer_lock();
-        }) as Box<dyn FnMut(web_sys::MouseEvent)>);
-        canvas
-            .add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("canvas click listener: {e:?}"))?;
-        cb.forget();
-    }
-
-    Ok(())
 }

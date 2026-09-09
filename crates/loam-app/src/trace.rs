@@ -609,8 +609,8 @@ mod tests {
 
     #[test]
     fn unscoped_ignores_sections_nested_inside_frame_loop_sections() {
-        let flat = frame_of(&[("frame", 4000), ("app-record", 130)]);
-        let nested = frame_of(&[("frame", 4000), ("app-record", 130), ("pp-sdf", 94)]);
+        let flat = frame_of(&[("frame", 4000), ("presentation", 130)]);
+        let nested = frame_of(&[("frame", 4000), ("presentation", 130), ("pp-sdf", 94)]);
         assert_eq!(unscoped(&nested), unscoped(&flat));
     }
 
@@ -618,7 +618,7 @@ mod tests {
     fn unscoped_ignores_the_sections_that_do_not_nest_in_the_frame() {
         let frame = frame_of(&[
             ("frame", 4000),
-            ("app-record", 130),
+            ("presentation", 130),
             ("between-frames", 4130),
             ("idle", 110),
             ("gpu-total", 800),
@@ -628,13 +628,13 @@ mod tests {
 
     #[test]
     fn unscoped_is_absent_for_a_frame_without_a_frame_section() {
-        let frame = frame_of(&[("app-record", 130), ("present", 40)]);
+        let frame = frame_of(&[("presentation", 130), ("present", 40)]);
         assert_eq!(unscoped(&frame), None);
     }
 
     #[test]
     fn unscoped_saturates_at_zero_when_the_children_overrun_the_parent() {
-        let frame = frame_of(&[("frame", 100), ("app-record", 130)]);
+        let frame = frame_of(&[("frame", 100), ("presentation", 130)]);
         assert_eq!(unscoped(&frame), Some(Duration::ZERO));
     }
 

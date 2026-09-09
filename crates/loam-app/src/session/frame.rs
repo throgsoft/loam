@@ -322,6 +322,9 @@ impl<A: Stores> Inner<A> {
         if let Some(context) = context.as_ref() {
             loam_egui::ConsoleUi::ui(self.app.console.ui_mut(), context);
         }
+        if let Some(driver) = self.app.script.as_mut() {
+            driver.advance_console(&mut self.app.console);
+        }
         self.app.console.dispatch_pending();
         if let Some(layer) = layer {
             layer.finish();
@@ -737,6 +740,62 @@ mod tests {
             ticked, 1,
             "the frame that resumed the session paid the wait back as {ticked} catch-up ticks"
         );
+    }
+
+    #[test]
+    fn a_scripted_line_reaches_its_verb_on_the_frame_the_script_names() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("demo.script");
+        std::fs::write(&path, "0 mark first\n2 mark second\n").expect("wrote the script");
+
+        let marked: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = marked.clone();
+        let args = Args::from_argv([format!("--script={}", path.display())]);
+        let app = SessionApp::<Bare>::with_args(HostConfig::new("script", Bindings::new()), args)
+            .debug_layer(false)
+            .command("mark", "record a marker", move |args, _submit, _out| {
+                recorded
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(args.join(" "));
+                Ok(())
+            });
+        let mut frame = bare(app);
+        frame
+            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .expect("attached");
+
+        let mut after_each = Vec::new();
+        for _ in 0..3 {
+            run_one(&mut frame, &gpu, &texture);
+            after_each.push(
+                marked
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .len(),
+            );
+        }
+
+        assert_eq!(
+            after_each,
+            [1, 1, 2],
+            "the host drove the script off its own frame index"
+        );
+        assert_eq!(
+            *marked.lock().unwrap_or_else(|error| error.into_inner()),
+            ["first", "second"]
+        );
+    }
+
+    #[test]
+    fn a_host_without_a_script_argument_holds_no_driver() {
+        let app = SessionApp::<Bare>::with_args(
+            HostConfig::new("no script", Bindings::new()),
+            Args::from_argv(["--fps=30"]),
+        );
+        assert!(app.script.is_none());
     }
 
     #[test]
