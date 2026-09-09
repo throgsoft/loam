@@ -12,6 +12,7 @@ use loam_physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
 };
 use loam_physics::{BodyId, World};
+use loam_render::device::{GpuContext, MissingGpuCapability};
 use loam_render::{
     DepthBuffer, DepthConvention, DepthMode, LineRasterNode, SkyGroundNode, SkyGroundUniforms,
     TriangleRasterNode, Viewport,
@@ -1340,15 +1341,16 @@ fn boot_orbit() -> OrbitController<EuclideanR3> {
 }
 
 fn build_caps(
-    device: &wgpu::Device,
+    gpu: &GpuContext,
     format: wgpu::TextureFormat,
     samples: u32,
     depth: DepthMode,
-) -> TriangleRasterNode {
+) -> Result<TriangleRasterNode, MissingGpuCapability> {
     TriangleRasterNode::new(
-        device,
+        gpu,
         format,
         depth,
+        DepthConvention::StandardZ,
         loam_render::triangle_raster::FragmentShading::FaceNormalLambert,
         samples,
     )
@@ -1430,25 +1432,26 @@ impl ToyboxScene {
             orbit,
             console,
             caps: build_caps(
-                &ctx.rd.device,
+                ctx.rd,
                 ctx.rd.target_format(),
                 ctx.rd.sample_count(),
                 DepthMode::ReadWrite {
                     format: DEPTH_FORMAT,
                 },
-            ),
+            )?,
             faded_caps: build_caps(
-                &ctx.rd.device,
+                ctx.rd,
                 ctx.rd.target_format(),
                 ctx.rd.sample_count(),
                 DepthMode::ReadOnly {
                     format: DEPTH_FORMAT,
                 },
-            ),
+            )?,
             sky_ground: SkyGroundNode::new(
                 &ctx.rd.device,
                 ctx.rd.target_format(),
                 DEPTH_FORMAT,
+                DepthConvention::StandardZ,
                 ctx.rd.sample_count(),
             ),
             depth: None,

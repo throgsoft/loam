@@ -93,6 +93,20 @@ impl fmt::Display for MissingGpuCapability {
 
 impl std::error::Error for MissingGpuCapability {}
 
+#[cfg(test)]
+pub(crate) fn noop_context() -> GpuContext {
+    let instance = Instance::new(&InstanceDescriptor {
+        backends: Backends::NOOP,
+        backend_options: BackendOptions {
+            noop: NoopBackendOptions { enable: true },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    pollster::block_on(GpuContext::new(instance, FeatureRequest::default(), None))
+        .expect("the noop backend always yields a context")
+}
+
 #[derive(Debug)]
 pub struct DeviceLoss {
     pub reason: DeviceLostReason,
@@ -815,18 +829,6 @@ mod tests {
             request.resolve(adapter_features, &adapter_limits),
             Ok(Features::SHADER_F16 | Features::TIMESTAMP_QUERY)
         );
-    }
-
-    fn noop_context() -> GpuContext {
-        let instance = Instance::new(&InstanceDescriptor {
-            backends: Backends::NOOP,
-            backend_options: BackendOptions {
-                noop: NoopBackendOptions { enable: true },
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        pollster::block_on(GpuContext::new(instance, FeatureRequest::default(), None)).unwrap()
     }
 
     fn render_target(device: &Device, format: TextureFormat) -> TextureView {

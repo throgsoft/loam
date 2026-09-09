@@ -1,6 +1,6 @@
 //! Root image space: the eye at the origin looking down -Z. Depth is
 //! `near / -z`, reversed-Z in `Depth32Float`, cleared to zero and compared
-//! `GreaterEqual`; every pass that writes depth writes that one quantity.
+//! `GreaterEqual`; every pass here writes that quantity, and `StandardZ` nodes serve the old paths only.
 
 use glam::{Mat4, Vec3};
 use loam_math::hyperbolic::{hyperboloid_to_klein, poincare_to_hyperboloid, poincare_to_klein};

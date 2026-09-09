@@ -17,6 +17,7 @@ thiserror.workspace = true
 tracing.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+web-time.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
 loam-math    = { path = "../loam-math",  version = "0.1.0" }

@@ -71,6 +71,7 @@ impl LineRasterStaticR4Node {
         device: &Device,
         surface_format: TextureFormat,
         depth: crate::DepthMode,
+        convention: crate::DepthConvention,
         sample_count: u32,
     ) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
@@ -162,7 +163,10 @@ impl LineRasterStaticR4Node {
             layout: Some(&pipeline_layout),
             vertex: VertexState {
                 module: &module,
-                entry_point: Some("vs_main"),
+                entry_point: Some(match convention {
+                    crate::DepthConvention::StandardZ => "vs_main",
+                    crate::DepthConvention::ReversedZ => "vs_reversed_z",
+                }),
                 buffers: &[corner_layout, instance_layout],
                 compilation_options: Default::default(),
             },
@@ -194,7 +198,7 @@ impl LineRasterStaticR4Node {
             depth_stencil: depth.format().map(|format| DepthStencilState {
                 format,
                 depth_write_enabled: depth.writes(),
-                depth_compare: crate::view::DEPTH_COMPARE,
+                depth_compare: convention.compare(wgpu::CompareFunction::LessEqual),
                 stencil: StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

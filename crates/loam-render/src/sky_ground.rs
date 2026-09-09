@@ -110,14 +110,13 @@ fn unproject(ndc: vec3<f32>) -> vec3<f32> {
     return h.xyz / h.w;
 }
 
-@fragment
-fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
+fn shade(frag_pos: vec4<f32>, near_ndc: f32, far_ndc: f32, background_depth: f32) -> Fragment {
     let uv = (frag_pos.xy - u.viewport_origin) / u.resolution;
     let ndc_xy = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    // wgpu clip space puts the near plane at z = 0 and the far plane at z = 1.
-    let near = unproject(vec3<f32>(ndc_xy, 0.0));
-    let far = unproject(vec3<f32>(ndc_xy, 1.0));
-    let rd = normalize(far - near);
+    let near = unproject(vec3<f32>(ndc_xy, near_ndc));
+    // The infinite reversed projection puts the far point at w = 0, so the direction is formed before the divide.
+    let far = u.inv_view_proj * vec4<f32>(ndc_xy, far_ndc, 1.0);
+    let rd = normalize(far.xyz - near * far.w);
 
     var out: Fragment;
 
@@ -130,7 +129,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
 
     if (!hit) {
         out.color = vec4<f32>(sky(rd), 1.0);
-        out.depth = 1.0;
+        out.depth = background_depth;
         return out;
     }
 
@@ -145,6 +144,16 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
     out.depth = clamp(clip.z / clip.w, 0.0, 1.0);
     return out;
 }
+
+@fragment
+fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
+    return shade(frag_pos, 0.0, 1.0, 1.0);
+}
+
+@fragment
+fn fs_reversed_z(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
+    return shade(frag_pos, 1.0, 0.0, 0.0);
+}
 "#
 );
 
@@ -152,6 +161,7 @@ pub struct SkyGroundNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
     bind_group: BindGroup,
+    depth_clear: f32,
 }
 
 impl SkyGroundNode {
@@ -160,6 +170,7 @@ impl SkyGroundNode {
         device: &Device,
         target_format: TextureFormat,
         depth_format: TextureFormat,
+        convention: crate::DepthConvention,
         sample_count: u32,
     ) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
@@ -214,7 +225,10 @@ impl SkyGroundNode {
             },
             fragment: Some(FragmentState {
                 module: &module,
-                entry_point: Some("fs_main"),
+                entry_point: Some(match convention {
+                    crate::DepthConvention::StandardZ => "fs_main",
+                    crate::DepthConvention::ReversedZ => "fs_reversed_z",
+                }),
                 targets: &[Some(ColorTargetState {
                     format: target_format,
                     blend: None,
@@ -245,6 +259,10 @@ impl SkyGroundNode {
             pipeline,
             uniform_buf,
             bind_group,
+            depth_clear: match convention {
+                crate::DepthConvention::StandardZ => 1.0,
+                crate::DepthConvention::ReversedZ => crate::view::DEPTH_CLEAR,
+            },
         }
     }
 
@@ -275,7 +293,7 @@ impl SkyGroundNode {
             depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                 view: depth_view,
                 depth_ops: Some(Operations {
-                    load: LoadOp::Clear(1.0),
+                    load: LoadOp::Clear(self.depth_clear),
                     store: StoreOp::Store,
                 }),
                 stencil_ops: None,

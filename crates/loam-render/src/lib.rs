@@ -7,6 +7,8 @@ pub mod hypergimbal;
 pub mod lattice;
 pub mod line_raster;
 pub mod line_raster_static_r4;
+pub mod material;
+pub mod pass;
 pub mod point_raster;
 pub mod present;
 pub mod raymarch;
@@ -19,6 +21,10 @@ pub use depth::DepthBuffer;
 pub use lattice::Viewport;
 pub use line_raster::{LineRasterNode, LineRasterUniforms};
 pub use line_raster_static_r4::{LineRasterStaticR4Node, LineRasterStaticR4Uniforms};
+pub use material::{MaterialPipeline, MaterialSpec};
+pub use pass::{
+    FramePass, FrameTarget, GpuTime, PassError, PassOrder, PassSchedule, ResourceId, Section,
+};
 pub use point_raster::{PointRasterNode, PointRasterUniforms};
 pub use present::Presenter;
 pub use raymarch::{RayMarchNode, RayMarchUniforms};
@@ -32,6 +38,16 @@ pub use triangle_raster::{
 pub enum DepthConvention {
     StandardZ,
     ReversedZ,
+}
+
+impl DepthConvention {
+    /// `standard_z` is the node's own compare; `ReversedZ` substitutes [`view::DEPTH_COMPARE`].
+    pub fn compare(self, standard_z: wgpu::CompareFunction) -> wgpu::CompareFunction {
+        match self {
+            Self::StandardZ => standard_z,
+            Self::ReversedZ => view::DEPTH_COMPARE,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -55,5 +71,20 @@ impl DepthMode {
 
     pub fn writes(&self) -> bool {
         matches!(self, DepthMode::ReadWrite { .. })
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn depth_passes(compare: wgpu::CompareFunction, incoming: f32, stored: f32) -> bool {
+    use wgpu::CompareFunction;
+    match compare {
+        CompareFunction::Never => false,
+        CompareFunction::Less => incoming < stored,
+        CompareFunction::Equal => incoming == stored,
+        CompareFunction::LessEqual => incoming <= stored,
+        CompareFunction::Greater => incoming > stored,
+        CompareFunction::NotEqual => incoming != stored,
+        CompareFunction::GreaterEqual => incoming >= stored,
+        CompareFunction::Always => true,
     }
 }

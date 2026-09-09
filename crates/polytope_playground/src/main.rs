@@ -4,6 +4,7 @@ use loam_app::{args::Args, egui, Camera, FrameCtx, OrbitController, RunConfig, S
 use loam_egui::{Console, ConsoleUi};
 use loam_math::WPlane;
 use loam_math::{Bivector4, EuclideanR3, Rotor, Rotor4};
+use loam_render::device::{GpuContext, MissingGpuCapability};
 use loam_render::{
     device::RenderDevice,
     raymarch::{
@@ -159,12 +160,17 @@ struct DemoNodes {
     section_faces_translucent: TriangleRasterNode,
 }
 
-fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> DemoNodes {
+fn build_nodes(
+    gpu: &GpuContext,
+    format: wgpu::TextureFormat,
+    samples: u32,
+) -> Result<DemoNodes, MissingGpuCapability> {
+    let device = &gpu.device;
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("polytope_playground shader"),
         source: wgpu::ShaderSource::Wgsl(shader_source().into()),
     });
-    DemoNodes {
+    Ok(DemoNodes {
         marcher: Hyperslice4DNode::new(device, format, &module, samples),
         section_edges: LineRasterNode::new(
             device,
@@ -192,26 +198,34 @@ fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32)
             samples,
         ),
         // A depth test hides a vertex behind its own cap under drop-w.
-        points: PointRasterNode::new(device, format, DepthMode::Off, samples),
-        section_faces: TriangleRasterNode::new(
+        points: PointRasterNode::new(
             device,
+            format,
+            DepthMode::Off,
+            DepthConvention::StandardZ,
+            samples,
+        ),
+        section_faces: TriangleRasterNode::new(
+            gpu,
             format,
             DepthMode::ReadWrite {
                 format: SECTION_FACES_DEPTH_FORMAT,
             },
+            DepthConvention::StandardZ,
             loam_render::FragmentShading::FaceNormalLambert,
             samples,
-        ),
+        )?,
         section_faces_translucent: TriangleRasterNode::new(
-            device,
+            gpu,
             format,
             DepthMode::ReadOnly {
                 format: SECTION_FACES_DEPTH_FORMAT,
             },
+            DepthConvention::StandardZ,
             loam_render::FragmentShading::FaceNormalLambert,
             samples,
-        ),
-    }
+        )?,
+    })
 }
 
 impl Demo {
@@ -226,11 +240,7 @@ impl Demo {
             points: points_node,
             section_faces,
             section_faces_translucent,
-        } = build_nodes(
-            &ctx.rd.device,
-            ctx.rd.target_format(),
-            ctx.rd.sample_count(),
-        );
+        } = build_nodes(ctx.rd, ctx.rd.target_format(), ctx.rd.sample_count())?;
 
         let surface_mode = SurfaceMode::default();
         let row_len = row.len();
@@ -274,6 +284,7 @@ impl Demo {
                 &ctx.rd.device,
                 ctx.rd.target_format(),
                 SECTION_FACES_DEPTH_FORMAT,
+                DepthConvention::StandardZ,
                 ctx.rd.sample_count(),
             ),
             sdf_upload_pending: true,

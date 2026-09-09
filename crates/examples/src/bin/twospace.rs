@@ -1,14 +1,15 @@
 use std::ops::Range;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use glam::{Vec3, Vec4};
 use loam_app::session::run;
 use loam_math::{EuclideanR4, HyperbolicH3, Iso3H, Iso4Flat};
 use loam_runtime::host::{self, HostConfig, HostError};
 use loam_runtime::{
-    Access, ActionId, Bindings, Ctx, DomainBuilder, DomainHandle, Domains, Entity, Input, Instance,
-    Key, Klein, LogCapacity, Material, Phase, Pick, Pose, PreparedGeometry, Projection4,
-    Publication, Rejection, Session, SimConfig, SpawnBundle, Step, ViewSpec,
+    Access, ActionEvent, ActionId, Bindings, Ctx, DomainBuilder, DomainHandle, Domains, Entity,
+    Input, Instance, Key, Klein, LogCapacity, Material, Phase, Pick, Pose, PreparedGeometry,
+    Projection4, Publication, Rejection, Session, SimConfig, SpawnBundle, Step, ViewSpec,
 };
 use loam_shape::polytope::Polytope4;
 
@@ -22,10 +23,19 @@ const LANDMARK_SCALE: f32 = 0.15;
 const LANDMARK_R4: Vec4 = Vec4::new(1.5, 0.0, -4.0, 0.0);
 const LANDMARK_H3: Vec3 = Vec3::new(-0.12, 0.0, -0.55);
 const HEADLESS_WALK: Range<u32> = 0..6;
+const EDIT: ActionId = ActionId(4);
+const EDIT_STEP: f32 = 0.05;
+const LATENCY_SAMPLES: usize = 128;
 
 #[derive(Clone, Copy)]
 struct Player {
     speed: f32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Edit {
+    step: u32,
+    submitted: Option<Instant>,
 }
 
 loam_runtime::stores! {
@@ -33,6 +43,7 @@ loam_runtime::stores! {
     pub struct TwoSpaceStores {
         players: Store<Player>,
         last_pick: Value<Option<Pick>>,
+        edits: Value<Edit>,
     }
 }
 
@@ -73,6 +84,7 @@ fn bindings() -> Bindings {
         .key(Key::Letter('s'), BACK)
         .key(Key::Letter('a'), LEFT)
         .key(Key::Letter('d'), RIGHT)
+        .key(Key::Letter('e'), EDIT)
 }
 
 fn build() -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
@@ -160,6 +172,29 @@ fn build() -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
         },
     );
 
+    session.system(
+        Phase::Dispatch,
+        "edit",
+        Access::new().writes::<Edit>().commands().domain(r4.id()),
+        move |ctx: Ctx<'_, TwoSpaceStores>| {
+            if !ctx.input.is_held(EDIT) {
+                return;
+            }
+            let step = ctx.app.edits.get().step + 1;
+            ctx.commands.app_fn("place-landmark", move |dispatch| {
+                if let Ok(domain) = dispatch.domains.typed(r4) {
+                    if let Some(pose) = domain.poses.get_mut(landmark4) {
+                        pose.0.translation = LANDMARK_R4 + Vec4::X * (step as f32 * EDIT_STEP);
+                    }
+                }
+            });
+            ctx.app.edits.set(Edit {
+                step,
+                submitted: Some(Instant::now()),
+            });
+        },
+    );
+
     session.set_initial()?;
     let scene = Scene {
         r4,
@@ -220,8 +255,77 @@ fn headless(
     Ok(all_matched)
 }
 
+fn edit_input() -> Input {
+    Input {
+        actions: vec![ActionEvent {
+            action: EDIT,
+            pressed: true,
+        }],
+        held: vec![EDIT],
+        ..Input::default()
+    }
+}
+
+fn median<T: Copy + Ord>(mut samples: Vec<T>) -> T {
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
+fn edit_latency(
+    session: &mut Session<TwoSpaceStores>,
+    scene: &Scene,
+    samples: usize,
+) -> Result<(), HostError> {
+    let mut publication = Publication::default();
+    session.publish(&mut publication)?;
+    let mut ticks_seen: Vec<u32> = Vec::with_capacity(samples);
+    let mut wall_seen: Vec<Duration> = Vec::with_capacity(samples);
+
+    for _ in 0..samples {
+        let before = published_point(&publication, scene.landmark4);
+        session.boundary(edit_input())?;
+        let mut ticks = 0;
+        loop {
+            session.tick()?;
+            session.publish(&mut publication)?;
+            if published_point(&publication, scene.landmark4) != before {
+                break;
+            }
+            ticks += 1;
+            session.boundary(Input::default())?;
+        }
+        let submitted = session
+            .app
+            .edits
+            .get()
+            .submitted
+            .ok_or_else(|| HostError::Host("the edit system submitted no command".into()))?;
+        wall_seen.push(submitted.elapsed());
+        ticks_seen.push(ticks);
+    }
+
+    println!(
+        "twospace edit-to-result over {samples} samples: median {} ticks, {:.4} ms",
+        median(ticks_seen),
+        median(wall_seen).as_secs_f64() * 1000.0
+    );
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--edit-latency") {
+        let outcome = build().and_then(|(mut session, scene)| {
+            edit_latency(&mut session, &scene, LATENCY_SAMPLES).map(|()| true)
+        });
+        return match outcome {
+            Ok(_) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("twospace: {error:?}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let steps = args
         .iter()
         .position(|arg| arg == "--headless")
