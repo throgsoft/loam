@@ -18,7 +18,7 @@ use loam_runtime::WorkOrder;
 
 pub use app::{FrameHook, SessionApp};
 pub use console::{SessionConsole, Submit};
-pub use debug_layer::DebugLayer;
+pub use debug_layer::{DebugLayer, DEBUG_LAYER};
 pub use frame::Target;
 pub use pacing::{Pace, Pacer};
 

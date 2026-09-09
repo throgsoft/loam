@@ -9,7 +9,10 @@ use loam_render::pass::{FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COL
 use wgpu::{CommandBuffer, CommandEncoder, Device, Queue, TextureFormat, TextureView};
 use winit::window::Window;
 
-const WRITES: [ResourceId; 1] = [SCENE_COLOR];
+pub const DEBUG_LAYER: ResourceId = "debug-layer";
+
+const READS: [ResourceId; 1] = [SCENE_COLOR];
+const WRITES: [ResourceId; 1] = [DEBUG_LAYER];
 
 enum Feed {
     Winit(Box<loam_egui::WinitInput>),
@@ -271,7 +274,11 @@ struct LayerPass {
 
 impl FramePass for LayerPass {
     fn name(&self) -> &'static str {
-        "debug-layer"
+        DEBUG_LAYER
+    }
+
+    fn reads(&self) -> &[ResourceId] {
+        &READS
     }
 
     fn writes(&self) -> &[ResourceId] {
@@ -292,5 +299,78 @@ impl FramePass for LayerPass {
         layer.queue = gpu.queue.clone();
         layer.renderer = renderer(&gpu.device, layer.format, layer.sample_count);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loam_render::device::FeatureRequest;
+    use loam_render::pass::{PassSchedule, SCENE_COLOR};
+    use loam_render::DepthConvention;
+    use wgpu::{BackendOptions, Backends, Instance, InstanceDescriptor, NoopBackendOptions};
+
+    use super::*;
+
+    const SCENE: [ResourceId; 1] = [SCENE_COLOR];
+
+    struct Overlay;
+
+    impl FramePass for Overlay {
+        fn name(&self) -> &'static str {
+            "overlay"
+        }
+
+        fn reads(&self) -> &[ResourceId] {
+            &SCENE
+        }
+
+        fn writes(&self) -> &[ResourceId] {
+            &SCENE
+        }
+
+        fn order(&self) -> PassOrder {
+            PassOrder::AfterScene
+        }
+
+        fn record(&self, _encoder: &mut CommandEncoder, _target: &FrameTarget<'_>) {}
+
+        fn rebuild(&mut self, _gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+            Ok(())
+        }
+    }
+
+    fn noop_gpu() -> GpuContext {
+        let instance = Instance::new(&InstanceDescriptor {
+            backends: Backends::NOOP,
+            backend_options: BackendOptions {
+                noop: NoopBackendOptions { enable: true },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        pollster::block_on(GpuContext::new(instance, FeatureRequest::default(), None))
+            .expect("the noop backend always yields a context")
+    }
+
+    #[test]
+    fn an_application_pass_over_the_scene_records_before_the_debug_layer() {
+        let gpu = noop_gpu();
+        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, 1, (16, 16), 1.0);
+        for layer_first in [true, false] {
+            let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+            let passes: [Box<dyn FramePass>; 2] = if layer_first {
+                [layer.pass(), Box::new(Overlay)]
+            } else {
+                [Box::new(Overlay), layer.pass()]
+            };
+            for pass in passes {
+                schedule.register(pass).expect("registered");
+            }
+            assert_eq!(
+                schedule.names().collect::<Vec<_>>(),
+                ["overlay", DEBUG_LAYER],
+                "an application pass over the scene paints over the debug layer"
+            );
+        }
     }
 }

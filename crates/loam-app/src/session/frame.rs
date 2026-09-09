@@ -246,6 +246,7 @@ impl<A: Stores> Inner<A> {
                     .readbacks()
                     .any(|landed| landed.request == wait.request)
                 {
+                    timestep.reset_clock(now);
                     return Ok(());
                 }
                 true
@@ -436,6 +437,7 @@ impl<A: Stores> Inner<A> {
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use loam_render::device::{FeatureRequest, MissingGpuCapability};
     use loam_render::pass::{FramePass, FrameTarget, PassOrder};
@@ -465,6 +467,8 @@ mod tests {
             walked: Value<bool>,
         }
     }
+
+    const WALK: ActionId = ActionId(0);
 
     struct Probe {
         recorded: Arc<AtomicU32>,
@@ -524,12 +528,16 @@ mod tests {
         Frame::new(Session::new(Bare::default(), SimConfig::default()), app)
     }
 
-    fn host(name: &'static str) -> SessionApp<Bare> {
+    fn host<A: Stores>(name: &'static str) -> SessionApp<A> {
         SessionApp::with_args(HostConfig::new(name, Bindings::new()), Args::default())
             .debug_layer(false)
     }
 
     fn run_one<A: Stores>(frame: &mut Frame<A>, gpu: &GpuContext, texture: &Texture) {
+        run_at(frame, gpu, texture, Instant::now());
+    }
+
+    fn run_at<A: Stores>(frame: &mut Frame<A>, gpu: &GpuContext, texture: &Texture, now: Instant) {
         let view = texture.create_view(&TextureViewDescriptor::default());
         let target = Target {
             view: &view,
@@ -538,8 +546,50 @@ mod tests {
             size: SIZE,
         };
         frame
-            .step(gpu, &target, Instant::now(), |_| {})
+            .step(gpu, &target, now, |_| {})
             .expect("the frame stepped");
+    }
+
+    fn suspended_on_a_readback(runs: Arc<AtomicU32>) -> (Session<Watched>, RequestId) {
+        let mut session = Session::new(Watched::default(), SimConfig::default());
+        let grid = session.register_bulk(BulkSpec {
+            name: "grid",
+            element_size: 4,
+            count: 4,
+            readback: Readback::Required,
+            snapshot: SnapshotPolicy::Derived,
+            schedule: Schedule::InStep,
+        });
+        session.work(
+            Phase::Simulation,
+            WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
+        );
+        session.system(
+            Phase::Dispatch,
+            "observe",
+            Access::new(),
+            |ctx: Ctx<'_, Watched>| {
+                if ctx.input.pressed(WALK) {
+                    ctx.app.walked.set(true);
+                }
+            },
+        );
+        session.system(
+            Phase::Dispatch,
+            "consume",
+            Access::new().awaits("reduce"),
+            move |_input: &Input, _commands: &mut Commands<Watched>| {
+                runs.fetch_add(1, Ordering::Relaxed);
+            },
+        );
+        session.boundary(Input::default()).expect("first boundary");
+        session.tick().expect("tick");
+        let mut issued: Option<RequestId> = None;
+        session.issue_work(|order| issued = Some(order.request));
+        let request = issued.expect("the tick ordered the work item");
+        session.submitted(request);
+        session.boundary(Input::default()).expect("second boundary");
+        (session, request)
     }
 
     #[test]
@@ -607,50 +657,10 @@ mod tests {
 
     #[test]
     fn input_gathered_while_the_session_waits_survives_to_the_boundary_that_reads_it() {
-        const WALK: ActionId = ActionId(0);
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let runs = Arc::new(AtomicU32::new(0));
-        let counted = runs.clone();
-
-        let mut session = Session::new(Watched::default(), SimConfig::default());
-        let grid = session.register_bulk(BulkSpec {
-            name: "grid",
-            element_size: 4,
-            count: 4,
-            readback: Readback::Required,
-            snapshot: SnapshotPolicy::Derived,
-            schedule: Schedule::InStep,
-        });
-        session.work(
-            Phase::Simulation,
-            WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
-        );
-        session.system(
-            Phase::Dispatch,
-            "observe",
-            Access::new(),
-            |ctx: Ctx<'_, Watched>| {
-                if ctx.input.pressed(WALK) {
-                    ctx.app.walked.set(true);
-                }
-            },
-        );
-        session.system(
-            Phase::Dispatch,
-            "consume",
-            Access::new().awaits("reduce"),
-            move |_input: &Input, _commands: &mut Commands<Watched>| {
-                counted.fetch_add(1, Ordering::Relaxed);
-            },
-        );
-        session.boundary(Input::default()).expect("first boundary");
-        session.tick().expect("tick");
-        let mut issued: Option<RequestId> = None;
-        session.issue_work(|order| issued = Some(order.request));
-        let request = issued.expect("the tick ordered the work item");
-        session.submitted(request);
-        session.boundary(Input::default()).expect("second boundary");
+        let (session, request) = suspended_on_a_readback(runs.clone());
         assert_eq!(runs.load(Ordering::Relaxed), 1);
         assert!(session.waiting().is_some());
 
@@ -682,6 +692,44 @@ mod tests {
         assert!(
             *frame.inner.session.app.walked.get(),
             "a boundary that only resumed a suspended entry swallowed the gathered input"
+        );
+    }
+
+    #[test]
+    fn a_wait_for_a_readback_costs_the_resuming_frame_one_tick_not_a_catch_up_burst() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let runs = Arc::new(AtomicU32::new(0));
+        let (session, request) = suspended_on_a_readback(runs);
+        let mut frame = Frame::new(session, host("paused"));
+        frame
+            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .expect("attached");
+
+        let start = Instant::now();
+        let held = Duration::from_secs(3);
+        frame.reset_clock(start);
+        for second in 1..=3 {
+            run_at(
+                &mut frame,
+                &gpu,
+                &texture,
+                start + Duration::from_secs(second),
+            );
+        }
+
+        frame.inner.session.land_readback(request, Some(&[0u8; 16]));
+        let before = frame.inner.session.current_tick();
+        run_at(
+            &mut frame,
+            &gpu,
+            &texture,
+            start + held + Duration::from_millis(20),
+        );
+        let ticked = frame.inner.session.current_tick().0 - before.0;
+        assert_eq!(
+            ticked, 1,
+            "the frame that resumed the session paid the wait back as {ticked} catch-up ticks"
         );
     }
 
