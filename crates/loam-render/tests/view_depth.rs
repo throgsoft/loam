@@ -1,7 +1,3 @@
-//! One depth buffer holds an R⁴ line raster and an H³ geodesic march: the
-//! line takes hardware depth, the march writes the projective depth of its
-//! Klein image, and every expected depth here is computed by hand.
-
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 use loam_math::{HyperbolicH3, Iso3, Iso3H, IsometryGroup, Rotor4};
 use loam_render::shader::ShaderDb;
