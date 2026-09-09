@@ -135,7 +135,7 @@ pub fn driver_from_args(args: &Args) -> Result<Option<ScriptDriver>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::CommandQueue;
+    use loam_console::CommandQueue;
 
     #[test]
     fn invalid_frame_or_empty_command_is_rejected() {

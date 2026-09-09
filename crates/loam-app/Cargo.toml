@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam app shell: the App trait, winit event loop, scene registry, and console commands on native and browser; capture on native."
+description = "Loam session host: the winit event loop and the browser worker that run a session, with capture on native."
 keywords = ["winit", "event-loop", "wgpu", "wasm", "gamedev"]
 categories = ["game-development"]
 
@@ -18,7 +18,6 @@ capture = ["dep:image", "dep:gif", "dep:color_quant", "dep:png"]
 anyhow.workspace = true
 glam.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 web-time = { workspace = true }
@@ -38,7 +37,6 @@ loam-egui   = { path = "../loam-egui",   version = "0.1.0" }
 egui-wgpu  = { version = "0.33", default-features = false }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
-notify.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

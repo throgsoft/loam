@@ -15,7 +15,7 @@ pub fn launch_on_click(
     canvas_id: &str,
     sim: SimConfig,
 ) -> Result<()> {
-    super::worker::install_logging_idempotent();
+    super::install_logging_idempotent();
 
     spawn_worker_for_preview(canvas_id, host_id, button_id, sim)?;
     Ok(())
@@ -68,7 +68,6 @@ fn spawn_worker_for_preview(
         .transfer_control_to_offscreen()
         .map_err(|e| anyhow!("transfer_control_to_offscreen: {e:?}"))?;
 
-    let asset_base = asset_base_url(&document)?;
     let js_url = read_wasm_bundle_url()?;
     let (js_path, query) = js_url.split_once('?').unwrap_or((js_url.as_str(), ""));
     let wasm_url = format!(
@@ -140,7 +139,6 @@ fn spawn_worker_for_preview(
             &JsValue::from_str(&search),
         );
         let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("hash"), &JsValue::from_str(&hash));
-        set_msg_string(&msg, "assets", &asset_base);
         sim.encode(|key, value| set_msg_f64(&msg, key, value));
 
         let transfer = js_sys::Array::new();
@@ -671,17 +669,6 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
         .map_err(|e| anyhow!("worker.addEventListener('message') for preview_ready: {e:?}"))?;
     cb.forget();
     Ok(())
-}
-
-// A blob-URL worker resolves relative fetches against the blob, so main sends the page's absolute base.
-fn asset_base_url(document: &web_sys::Document) -> Result<String> {
-    let page = document
-        .base_uri()
-        .map_err(|e| anyhow!("document.baseURI: {e:?}"))?
-        .unwrap_or_default();
-    let url = web_sys::Url::new_with_base(&format!("{}/", crate::assets::ASSET_DIR), &page)
-        .map_err(|e| anyhow!("asset base URL: {e:?}"))?;
-    Ok(url.href())
 }
 
 fn install_worker_failure_handler(worker: &Worker, button_id: &str) -> Result<()> {
