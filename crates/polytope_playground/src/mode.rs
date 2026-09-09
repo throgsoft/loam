@@ -45,7 +45,6 @@ impl Default for Spin {
 }
 
 impl Spin {
-    /// `Plane4::ALL` product order, summed; the row turns by its exponential each step.
     pub(crate) fn omega(&self) -> Bivector4 {
         if !self.running {
             return Bivector4::ZERO;

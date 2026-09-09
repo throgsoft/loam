@@ -670,7 +670,6 @@ pub struct SegmentRecord {
     pub _pad2: [f32; 3],
 }
 
-/// Instance vertex layout of `loam-render`'s `point_raster.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct PointRecord {

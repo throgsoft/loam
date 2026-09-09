@@ -30,7 +30,6 @@ pub(crate) fn ground(visible: bool) -> Ground {
     }
 }
 
-/// The marched body of one slot, read from the pose the domain published.
 pub(crate) fn body_of(entry: &ShapeEntry, pose: &Iso4Flat) -> BodyUniform {
     let position = EuclideanR4.iso_apply(*pose, Vec4::ZERO);
     BodyUniform::polytope_with_rotor(

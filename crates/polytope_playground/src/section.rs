@@ -24,7 +24,6 @@ impl Cutter {
         }
     }
 
-    /// The slice is a world hyperplane; the body's own w offsets it, and its rotor turns the vertices before the cut.
     pub(crate) fn cut(
         &mut self,
         polytope: Polytope4,

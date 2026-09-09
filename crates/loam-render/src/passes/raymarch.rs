@@ -17,7 +17,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A [`RayMarchNode`] over a scene's WGSL, recorded before the scene draw from the uniforms an application publishes.
 #[derive(Clone)]
 pub struct RaymarchPass {
     shared: Rc<RefCell<State>>,
@@ -37,7 +36,6 @@ impl RaymarchPass {
         }
     }
 
-    /// `resolution` comes from the frame target, not from here.
     pub fn publish(&self, uniforms: RayMarchUniforms) {
         self.shared.borrow_mut().uniforms = uniforms;
     }

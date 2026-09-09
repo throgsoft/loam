@@ -16,7 +16,6 @@ use loam_runtime::{
     SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
 };
 
-// At the crate root: `#[global_allocator]` is a per-binary singleton (E0152).
 #[cfg(test)]
 mod alloc_probe {
     use std::alloc::{GlobalAlloc, Layout, System};
@@ -114,7 +113,6 @@ loam_runtime::stores! {
     }
 }
 
-/// What the UI and the console ask for; the dispatch entry turns each into its command.
 #[derive(Clone, Copy)]
 pub(crate) enum Intent {
     Mode(Mode),
@@ -349,7 +347,6 @@ impl Frame {
     }
 }
 
-/// The order the presenter records, with its own scene draw between the two groups.
 pub(crate) fn frame_sections(frame: &Frame) -> Vec<&'static str> {
     let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
     for pass in frame.passes() {
@@ -387,7 +384,6 @@ impl Default for Scratch {
     }
 }
 
-/// Reads the poses the domain holds after the boundary; nothing here mutates the simulation.
 fn collect(
     session: &mut Session<Playground>,
     domain: DomainHandle<EuclideanR4>,
@@ -441,7 +437,10 @@ fn main() -> Result<(), HostError> {
     let hyperslice = frame.hyperslice.clone();
     let cut = frame.cut.clone();
     let ui_intents = intents.clone();
-    let console_intents = intents.clone();
+    let mode_intents = intents.clone();
+    let slice_intents = intents.clone();
+    let spin_intents = intents.clone();
+    let shape_intents = intents.clone();
     let domain = booted.domain;
     let mut scratch = Scratch::default();
     let mut orbit = Orbit::around([0.0, BODY_Y, 0.0], 9.0);
@@ -458,10 +457,56 @@ fn main() -> Result<(), HostError> {
             move |args, _submit, out| {
                 match args.first().copied().and_then(Mode::from_token) {
                     Some(mode) => {
-                        push(&console_intents, Intent::Mode(mode));
+                        push(&mode_intents, Intent::Mode(mode));
                         out.line(format!("mode: {} requested", mode.name()));
                     }
                     None => out.line("usage: mode rotate | toybox"),
+                }
+                Ok(())
+            },
+        )
+        .command(
+            "slice",
+            "set the w hyperplane the marcher and the cut share",
+            move |args, _submit, out| {
+                match args.first().and_then(|token| token.parse::<f32>().ok()) {
+                    Some(w) => {
+                        push(&slice_intents, Intent::Slice(w));
+                        out.line(format!("slice: {w:.3} requested"));
+                    }
+                    None => out.line("usage: slice <w>"),
+                }
+                Ok(())
+            },
+        )
+        .command(
+            "spin",
+            "run or pause the row's rotation, or toggle one of its six planes",
+            move |args, _submit, out| {
+                match args.first().copied() {
+                    Some("on") => push(&spin_intents, Intent::Running(true)),
+                    Some("off") => push(&spin_intents, Intent::Running(false)),
+                    Some(token) => match token.parse::<usize>() {
+                        Ok(plane) if (1..=6).contains(&plane) => {
+                            push(&spin_intents, Intent::Plane(plane - 1));
+                        }
+                        _ => out.line("usage: spin on | off | <1..6>"),
+                    },
+                    None => out.line("usage: spin on | off | <1..6>"),
+                }
+                Ok(())
+            },
+        )
+        .command(
+            "shape",
+            "make one slot of the row the active polytope",
+            move |args, _submit, out| {
+                match args.first().and_then(|token| token.parse::<usize>().ok()) {
+                    Some(slot) => {
+                        push(&shape_intents, Intent::Active(slot));
+                        out.line(format!("shape: slot {slot} requested"));
+                    }
+                    None => out.line("usage: shape <slot>"),
                 }
                 Ok(())
             },

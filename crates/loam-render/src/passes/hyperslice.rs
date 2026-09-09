@@ -21,7 +21,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A [`Hyperslice4DNode`] over a scene's WGSL, composited onto the scene's colour and depth from the uniforms and body list an application publishes.
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,
@@ -42,7 +41,6 @@ impl HyperslicePass {
         }
     }
 
-    /// `resolution` and `viewport_origin` come from the frame target, not from here.
     pub fn publish(&self, uniforms: Hyperslice4DUniforms, bodies: &[BodyUniform]) {
         let mut state = self.shared.borrow_mut();
         state.uniforms = uniforms;

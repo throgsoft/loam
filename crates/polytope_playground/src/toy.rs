@@ -8,7 +8,6 @@ use crate::{Playground, Wall};
 
 const BODY_MASS: f32 = 1.0;
 
-/// Solid on the far side of each plane: the ground under y, then the four walls in x and z, then the two in w.
 fn arena() -> [(Vec4, f32); 7] {
     [
         (Vec4::Y, FLOOR_Y),

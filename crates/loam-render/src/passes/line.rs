@@ -24,7 +24,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A [`LineRasterNode`] over the segments an application publishes, drawn after the scene under the root eye and tested against the scene's depth without writing it.
 #[derive(Clone)]
 pub struct LinePass {
     name: &'static str,

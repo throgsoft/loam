@@ -19,7 +19,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A [`SkyGroundNode`] that clears the frame's colour and depth before the scene draw, from the eye and ground an application publishes.
 #[derive(Clone)]
 pub struct SkyGroundPass {
     shared: Rc<RefCell<State>>,

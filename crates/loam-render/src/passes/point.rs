@@ -25,7 +25,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A [`PointRasterNode`] over the point records an application publishes; it writes no depth, so a sprite is never hidden by its own surface.
 #[derive(Clone)]
 pub struct PointPass {
     name: &'static str,

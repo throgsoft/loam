@@ -45,7 +45,6 @@ pub trait FramePass {
         None
     }
 
-    /// Called at registration with the frame's colour attachment format and sample count, before the first [`Self::rebuild`].
     fn target(&mut self, _format: TextureFormat, _sample_count: u32) {}
 
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>);

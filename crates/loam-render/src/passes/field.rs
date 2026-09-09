@@ -18,7 +18,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A [`FieldMarchNode`] recorded before the scene draw from the uniforms and the [`FieldProgram`] an application publishes.
 #[derive(Clone)]
 pub struct FieldPass {
     shared: Rc<RefCell<State>>,
@@ -44,7 +43,6 @@ impl FieldPass {
         }
     }
 
-    /// `resolution`, `viewport_origin`, and the program lengths come from the frame target and the program, not from here.
     pub fn publish(&self, uniforms: FieldMarchUniforms, program: &FieldProgram) {
         let mut state = self.shared.borrow_mut();
         state.uniforms = uniforms;
@@ -59,7 +57,6 @@ impl FieldPass {
         held.kind = program.kind;
     }
 
-    /// Call once per boundary so the node counts stable structures toward its specialization.
     pub fn boundary(&self) {
         if let Some(node) = self.shared.borrow_mut().node.as_mut() {
             node.boundary();
