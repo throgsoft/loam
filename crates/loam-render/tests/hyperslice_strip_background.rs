@@ -2,11 +2,15 @@
 //! the floor, so the clear is what stands in for the sky in a comparison grid.
 //! A cell of `Color::BLACK` is the regression this pins.
 
+use loam_render::device::{FeatureRequest, GpuContext};
+use loam_render::pass::{FrameFormat, FramePass, FrameTarget};
 use loam_render::raymarch::{
-    polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
+    polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
+    HYPERSLICE_KERNEL_WGSL,
 };
 use loam_render::sky_ground::SKY_HORIZON;
-use loam_render::Viewport;
+use loam_render::view::DEPTH_FORMAT;
+use loam_render::{HyperslicePass, Viewport};
 use wgpu::*;
 
 // 64 * 4 bytes per row meets `COPY_BYTES_PER_ROW_ALIGNMENT`, so no row unpadding.
@@ -160,4 +164,90 @@ fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
             );
         }
     }
+}
+
+fn strip_cells(count: u32) -> Vec<(Viewport, f32, BodyUniform)> {
+    Viewport::full(SIZE)
+        .split_horizontal(count)
+        .map(|viewport| (viewport, 0.0, BodyUniform::default()))
+        .collect()
+}
+
+fn probe_source() -> String {
+    format!(
+        "{HYPERSLICE_KERNEL_WGSL}
+{}
+{FLOOR_SCENE_WGSL}",
+        polytope_stub_sdfs_wgsl()
+    )
+}
+
+fn probe_attachment(device: &Device, format: TextureFormat, label: &'static str) -> TextureView {
+    device
+        .create_texture(&TextureDescriptor {
+            label: Some(label),
+            size: Extent3d {
+                width: SIZE[0],
+                height: SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format,
+            usage: TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&TextureViewDescriptor::default())
+}
+
+#[test]
+#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+fn a_published_strip_records_a_pipeline_its_attachments_accept_gpu_probe() {
+    let gpu = pollster::block_on(GpuContext::new(
+        Instance::default(),
+        FeatureRequest::default(),
+        None,
+    ))
+    .expect("a wgpu adapter");
+    let color = probe_attachment(
+        &gpu.device,
+        TextureFormat::Rgba8Unorm,
+        "hyperslice strip validation colour",
+    );
+    let depth = probe_attachment(
+        &gpu.device,
+        DEPTH_FORMAT,
+        "hyperslice strip validation depth",
+    );
+
+    let mut pass = HyperslicePass::new(probe_source());
+    pass.attach(
+        &gpu,
+        FrameFormat {
+            color: TextureFormat::Rgba8Unorm,
+            depth: DEPTH_FORMAT,
+            sample_count: 1,
+        },
+    )
+    .expect("the hyperslice pass attaches");
+    pass.publish(Hyperslice4DUniforms::default(), &[]);
+    pass.publish_strip(&strip_cells(CELLS));
+
+    gpu.device.push_error_scope(ErrorFilter::Validation);
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    pass.record(
+        &mut encoder,
+        &FrameTarget {
+            color: &color,
+            depth: Some(&depth),
+            size: (SIZE[0], SIZE[1]),
+        },
+    );
+    gpu.queue.submit(Some(encoder.finish()));
+    let error = pollster::block_on(gpu.device.pop_error_scope());
+    assert!(
+        error.is_none(),
+        "the filmstrip recorded a pipeline its render pass does not accept: {error:?}"
+    );
 }

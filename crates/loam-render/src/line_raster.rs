@@ -257,6 +257,10 @@ impl LineRasterNode {
         self.instances_scratch = scratch;
     }
 
+    pub fn segment_count(&self) -> u32 {
+        self.instance_count
+    }
+
     pub fn upload_segments(&mut self, device: &Device, queue: &Queue, segments: &[SegmentRecord]) {
         let needed_capacity = segments.len() as u32;
         if needed_capacity > self.instance_capacity {

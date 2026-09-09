@@ -336,31 +336,56 @@ fn same_structure(previous: &[u32], next: &[u32]) -> bool {
             .all(|(was, now)| was[0] == now[0] && (was[0] == OP_SMOOTH_UNION || was[1] == now[1]))
 }
 
-/// Compiles a specialized module off the frame path; `take` hands it over once and `discard` drops a build the node no longer wants.
+/// Builds a specialized pipeline off the frame path from a `SpecializationRequest`; `take` hands the finished pipeline over once and `discard` drops a build the node no longer wants.
 pub trait SpecializationBuilder: Send {
-    fn submit(&mut self, device: &Device, revision: u64, wgsl: String);
+    fn submit(&mut self, revision: u64, request: SpecializationRequest);
 
-    fn take(&mut self) -> Option<(u64, ShaderModule)>;
+    fn take(&mut self) -> Option<(u64, RenderPipeline)>;
 
     fn discard(&mut self);
+}
+
+/// Everything a builder needs to compile the module and its pipeline away from the node; `build` does both on the calling thread.
+pub struct SpecializationRequest {
+    pub device: Device,
+    pub layout: PipelineLayout,
+    pub wgsl: String,
+    pub surface_format: TextureFormat,
+    pub depth: crate::DepthMode,
+    pub sample_count: u32,
+    pub entry: &'static str,
+}
+
+impl SpecializationRequest {
+    pub fn build(&self) -> RenderPipeline {
+        let module = self.device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("field march specialized"),
+            source: ShaderSource::Wgsl(self.wgsl.as_str().into()),
+        });
+        pipeline_for(
+            &self.device,
+            &self.layout,
+            &module,
+            self.surface_format,
+            self.depth,
+            self.sample_count,
+            self.entry,
+        )
+    }
 }
 
 /// Compiles inside `submit`, on the calling thread.
 #[derive(Default)]
 pub struct InlineBuilder {
-    ready: Option<(u64, ShaderModule)>,
+    ready: Option<(u64, RenderPipeline)>,
 }
 
 impl SpecializationBuilder for InlineBuilder {
-    fn submit(&mut self, device: &Device, revision: u64, wgsl: String) {
-        let module = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("field march specialized"),
-            source: ShaderSource::Wgsl(wgsl.into()),
-        });
-        self.ready = Some((revision, module));
+    fn submit(&mut self, revision: u64, request: SpecializationRequest) {
+        self.ready = Some((revision, request.build()));
     }
 
-    fn take(&mut self) -> Option<(u64, ShaderModule)> {
+    fn take(&mut self) -> Option<(u64, RenderPipeline)> {
         self.ready.take()
     }
 
@@ -697,29 +722,27 @@ impl FieldMarchNode {
                 && self.specialized.is_none()
                 && self.pending.is_none()
             {
-                let wgsl = specialized_module(&self.words, self.counting);
+                let request = SpecializationRequest {
+                    device: self.device.clone(),
+                    layout: self.pipeline_layout.clone(),
+                    wgsl: specialized_module(&self.words, self.counting),
+                    surface_format: self.surface_format,
+                    depth: self.depth,
+                    sample_count: self.sample_count,
+                    entry: entry_point(self.depth, self.counting),
+                };
                 self.pending = Some(self.structure_revision);
-                self.builder
-                    .submit(&self.device, self.structure_revision, wgsl);
+                self.builder.submit(self.structure_revision, request);
             }
         }
-        let Some((revision, module)) = self.builder.take() else {
+        let Some((revision, pipeline)) = self.builder.take() else {
             return;
         };
         self.pending = None;
         if revision != self.structure_revision {
             return;
         }
-        self.specialized = Some(pipeline_for(
-            &self.device,
-            &self.pipeline_layout,
-            &module,
-            self.surface_format,
-            self.depth,
-            self.sample_count,
-            entry_point(self.depth, self.counting),
-        ));
-        self.pipeline_builds += 1;
+        self.specialized = Some(pipeline);
     }
 
     pub fn flush_uniforms(&self, queue: &Queue) {
@@ -995,7 +1018,6 @@ mod tests {
         }
         node.boundary();
         assert!(node.is_specialized(), "not specialized after 3 boundaries");
-        assert_eq!(node.pipeline_builds(), 2);
     }
 
     #[test]
@@ -1038,20 +1060,16 @@ mod tests {
 
     #[derive(Default)]
     struct Deferred {
-        held: Option<(u64, ShaderModule)>,
+        held: Option<(u64, RenderPipeline)>,
         release: Arc<AtomicBool>,
     }
 
     impl SpecializationBuilder for Deferred {
-        fn submit(&mut self, device: &Device, revision: u64, wgsl: String) {
-            let module = device.create_shader_module(ShaderModuleDescriptor {
-                label: Some("deferred specialization"),
-                source: ShaderSource::Wgsl(wgsl.into()),
-            });
-            self.held = Some((revision, module));
+        fn submit(&mut self, revision: u64, request: SpecializationRequest) {
+            self.held = Some((revision, request.build()));
         }
 
-        fn take(&mut self) -> Option<(u64, ShaderModule)> {
+        fn take(&mut self) -> Option<(u64, RenderPipeline)> {
             if self.release.load(Ordering::Relaxed) {
                 self.held.take()
             } else {
@@ -1060,6 +1078,36 @@ mod tests {
         }
 
         fn discard(&mut self) {}
+    }
+
+    #[test]
+    fn a_finished_build_swaps_in_without_the_boundary_building_a_pipeline() {
+        let gpu = crate::device::noop_context();
+        let mut node = FieldMarchNode::new(
+            &gpu.device,
+            TextureFormat::Rgba8Unorm,
+            crate::DepthMode::Off,
+            1,
+        );
+        let release = Arc::new(AtomicBool::new(false));
+        node.set_specialization_builder(Box::new(Deferred {
+            held: None,
+            release: release.clone(),
+        }));
+        node.specialize_after(1);
+        node.set_program(
+            &gpu.queue,
+            &sphere_program(&[[0.0, 0.0, -3.0, 0.0], [1.0, 0.0, -3.0, 0.0]], 0.5),
+        );
+        node.boundary();
+        release.store(true, Ordering::Relaxed);
+        node.boundary();
+        assert!(node.is_specialized(), "the finished build never swapped in");
+        assert_eq!(
+            node.pipeline_builds(),
+            1,
+            "the boundary built a pipeline instead of taking the finished one"
+        );
     }
 
     #[test]

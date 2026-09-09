@@ -12,6 +12,8 @@ use crate::{DepthConvention, DepthMode, Viewport};
 
 const WRITES: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
 
+const STRIP_WRITES: [ResourceId; 1] = [SCENE_COLOR];
+
 struct State {
     source: String,
     format: TextureFormat,
@@ -79,7 +81,11 @@ impl FramePass for HyperslicePass {
     }
 
     fn writes(&self) -> &[ResourceId] {
-        &WRITES
+        if self.shared.borrow().cells.is_empty() {
+            &WRITES
+        } else {
+            &STRIP_WRITES
+        }
     }
 
     fn order(&self) -> PassOrder {
