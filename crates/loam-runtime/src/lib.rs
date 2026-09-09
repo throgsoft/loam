@@ -1,5 +1,6 @@
-//! One session's CPU state: entities, typed stores, domains behind one facade, phases, commands.
+//! One session's CPU state: entities, typed stores, domains behind one facade, phases, commands, bulk stores, work orders, and checkpoints.
 
+pub mod bulk;
 pub mod command;
 pub mod domain;
 pub mod entity;
@@ -14,6 +15,10 @@ pub mod stores;
 pub mod value;
 pub mod view;
 
+pub use bulk::{
+    Bulk, BulkAction, BulkCheckpoint, BulkError, BulkId, BulkSnapshot, BulkSpec, Landed, Landing,
+    SnapshotPolicy, Wait, WorkOrder, WorkStats,
+};
 pub use command::{
     AppCommand, Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
     Reservation, SpawnBundle,

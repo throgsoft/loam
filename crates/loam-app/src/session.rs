@@ -9,10 +9,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as Physical, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use loam_render::device::{FeatureRequest, RenderDevice};
+use loam_render::device::{FeatureRequest, GpuContext, RenderDevice};
 use loam_render::present::Presenter;
+use loam_render::work::{BulkBuffers, Readbacks};
 use loam_runtime::host::{HostConfig, HostError};
-use loam_runtime::{ActionEvent, Input, Key, Pointer, PointerPhase, Records, Session, Stores};
+use loam_runtime::{
+    ActionEvent, Input, Key, Landing, Pointer, PointerPhase, Records, RequestId, Session,
+    SnapshotPolicy, Stores, WorkOrder,
+};
 use loam_time::{frame_trace, FixedTimestep};
 
 const BACKGROUND: wgpu::Color = wgpu::Color {
@@ -22,12 +26,31 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
     a: 1.0,
 };
 
+pub struct WorkContext<'a> {
+    pub gpu: &'a GpuContext,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub order: &'a WorkOrder,
+    pub buffers: &'a BulkBuffers,
+    pub readbacks: &'a mut Readbacks,
+}
+
+type Recorder = Box<dyn FnMut(WorkContext<'_>)>;
+
 /// Owns the window, device, and loop; the session stays a CPU value.
 pub fn run<A: Stores>(session: Session<A>, config: HostConfig) -> Result<(), HostError> {
+    run_with_work(session, config, |_| {})
+}
+
+/// `record` runs once per issued order inside the frame's encoder before the presenter draws.
+pub fn run_with_work<A: Stores>(
+    session: Session<A>,
+    config: HostConfig,
+    record: impl FnMut(WorkContext<'_>) + 'static,
+) -> Result<(), HostError> {
     crate::par_native::install();
     let event_loop = EventLoop::new().map_err(failed)?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut host = Host::new(session, config);
+    let mut host = Host::new(session, config, Box::new(record));
     event_loop.run_app(&mut host).map_err(failed)?;
     match host.failure {
         Some(error) => Err(error),
@@ -49,13 +72,18 @@ struct Host<A: Stores> {
     device: Option<RenderDevice>,
     presenter: Option<Presenter>,
     input: Input,
+    spare: Input,
     cursor: [f32; 2],
     dragging: bool,
     failure: Option<HostError>,
+    buffers: BulkBuffers,
+    readbacks: Readbacks,
+    issued: Vec<RequestId>,
+    record_work: Recorder,
 }
 
 impl<A: Stores> Host<A> {
-    fn new(session: Session<A>, config: HostConfig) -> Self {
+    fn new(session: Session<A>, config: HostConfig, record_work: Recorder) -> Self {
         let sim = session.config();
         let timestep = FixedTimestep::new(sim.fixed_hz).with_max_catch_up(sim.max_ticks_per_frame);
         Self {
@@ -68,10 +96,68 @@ impl<A: Stores> Host<A> {
             device: None,
             presenter: None,
             input: Input::default(),
+            spare: Input::default(),
             cursor: [0.0; 2],
             dragging: false,
             failure: None,
+            buffers: BulkBuffers::default(),
+            readbacks: Readbacks::default(),
+            issued: Vec::new(),
+            record_work,
         }
+    }
+
+    fn issue_work(
+        session: &mut Session<A>,
+        buffers: &mut BulkBuffers,
+        readbacks: &mut Readbacks,
+        issued: &mut Vec<RequestId>,
+        record_work: &mut Recorder,
+        device: &RenderDevice,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        for (id, spec) in session.bulk().iter() {
+            buffers.ensure(&device.device, id, spec);
+        }
+        issued.clear();
+        session.issue_work(|order| {
+            issued.push(order.request);
+            record_work(WorkContext {
+                gpu: device,
+                encoder,
+                order,
+                buffers,
+                readbacks,
+            });
+        });
+    }
+
+    fn recover_work(
+        session: &mut Session<A>,
+        buffers: &mut BulkBuffers,
+        readbacks: &mut Readbacks,
+        device: &RenderDevice,
+    ) -> Result<(), HostError> {
+        session.cancel_work();
+        readbacks.cancel();
+        for (id, spec) in session.bulk().iter() {
+            buffers.remove(id);
+            buffers.ensure(&device.device, id, spec);
+            match spec.snapshot {
+                SnapshotPolicy::Authoritative => match session.checkpoint_rows(id) {
+                    Some(rows) => buffers.write(&device.queue, id, rows),
+                    None => {
+                        return Err(HostError::Host(format!(
+                            "{} is authoritative and has no checkpoint to recover",
+                            spec.name
+                        )))
+                    }
+                },
+                SnapshotPolicy::Reinitializable => buffers.reinitialize(&device.queue, id),
+                SnapshotPolicy::Derived => {}
+            }
+        }
+        Ok(())
     }
 
     fn stop(&mut self, elwt: &ActiveEventLoop, error: HostError) {
@@ -129,10 +215,18 @@ impl<A: Stores> Host<A> {
         });
     }
 
+    fn swap_input(&mut self) -> Input {
+        std::mem::replace(&mut self.input, std::mem::take(&mut self.spare))
+    }
+
     fn reclaim_input(&mut self) {
-        self.input = self.session.take_input();
-        self.input.pointers.clear();
-        self.input.actions.clear();
+        let mut reclaimed = self.session.take_input();
+        reclaimed.pointers.clear();
+        reclaimed.actions.clear();
+        self.input.held.clear();
+        self.input.held.extend_from_slice(&reclaimed.held);
+        reclaimed.held.clear();
+        self.spare = reclaimed;
     }
 
     fn frame(&mut self, elwt: &ActiveEventLoop) {
@@ -152,7 +246,33 @@ impl<A: Stores> Host<A> {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        let input = std::mem::take(&mut self.input);
+        let mut broken = None;
+        {
+            let Host {
+                session,
+                readbacks,
+                device,
+                ..
+            } = self;
+            if let Some(device) = device.as_ref() {
+                readbacks.poll(&device.device, |request, rows| {
+                    if session.land_readback(request, rows) == Landing::Failed {
+                        broken = Some(request);
+                    }
+                });
+            }
+        }
+        if let Some(request) = broken {
+            return self.stop(
+                elwt,
+                HostError::Host(format!("a GPU readback failed for {request:?}")),
+            );
+        }
+        let input = if self.session.waiting().is_some() {
+            Input::default()
+        } else {
+            self.swap_input()
+        };
         {
             let _dispatch = frame_trace::scope("dispatch");
             if let Err(error) = self.session.boundary(input) {
@@ -167,7 +287,9 @@ impl<A: Stores> Host<A> {
                 }
             }
         }
-        self.reclaim_input();
+        if self.session.waiting().is_none() {
+            self.reclaim_input();
+        }
         let (Some(device), Some(presenter)) = (self.device.as_mut(), self.presenter.as_mut())
         else {
             return;
@@ -179,6 +301,14 @@ impl<A: Stores> Host<A> {
             }
             if let Err(error) = presenter.attach(device) {
                 return self.stop(elwt, failed(error));
+            }
+            if let Err(error) = Self::recover_work(
+                &mut self.session,
+                &mut self.buffers,
+                &mut self.readbacks,
+                device,
+            ) {
+                return self.stop(elwt, error);
             }
             return;
         }
@@ -224,6 +354,15 @@ impl<A: Stores> Host<A> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("loam-app::session"),
             });
+        Self::issue_work(
+            &mut self.session,
+            &mut self.buffers,
+            &mut self.readbacks,
+            &mut self.issued,
+            &mut self.record_work,
+            device,
+            &mut encoder,
+        );
         presenter.record(
             &device.device,
             &mut encoder,
@@ -239,6 +378,10 @@ impl<A: Stores> Host<A> {
         }
         device.queue.submit(Some(encoder.finish()));
         presenter.after_submit();
+        self.readbacks.after_submit();
+        while let Some(request) = self.issued.pop() {
+            self.session.submitted(request);
+        }
         frame.present();
     }
 }
@@ -371,13 +514,17 @@ mod tests {
     fn a_warmed_frame_with_input_allocates_in_the_hosts_input_conversion() {
         let bindings = Bindings::new().key(Key::Letter('w'), WALK);
         let session = Session::new(Empty::default(), SimConfig::default());
-        let mut host = Host::new(session, HostConfig::new("input", bindings));
+        let mut host = Host::new(
+            session,
+            HostConfig::new("input", bindings),
+            Box::new(|_| {}),
+        );
         let cycle = |host: &mut Host<Empty>| {
             host.on_action(Key::Letter('w'), true);
             host.on_pointer([0.1, 0.2], [0.01, 0.0], PointerPhase::Began);
             host.on_pointer([0.2, 0.2], [0.1, 0.0], PointerPhase::Moved);
             host.on_action(Key::Letter('w'), false);
-            let input = std::mem::take(&mut host.input);
+            let input = host.swap_input();
             host.session.boundary(input).unwrap();
             host.session.tick().unwrap();
             host.reclaim_input();
