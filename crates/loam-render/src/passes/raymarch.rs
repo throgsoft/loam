@@ -1,0 +1,94 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use wgpu::{CommandEncoder, Queue, TextureFormat};
+
+use crate::device::{GpuContext, MissingGpuCapability};
+use crate::pass::{FramePass, FrameTarget, PassOrder};
+use crate::raymarch::{RayMarchNode, RayMarchUniforms};
+use crate::Viewport;
+
+struct State {
+    source: String,
+    format: TextureFormat,
+    sample_count: u32,
+    uniforms: RayMarchUniforms,
+    node: Option<RayMarchNode>,
+    queue: Option<Queue>,
+}
+
+/// A [`RayMarchNode`] over a scene's WGSL, recorded before the scene draw from the uniforms an application publishes.
+#[derive(Clone)]
+pub struct RaymarchPass {
+    shared: Rc<RefCell<State>>,
+}
+
+impl RaymarchPass {
+    pub fn new(source: String, format: TextureFormat, sample_count: u32) -> Self {
+        Self {
+            shared: Rc::new(RefCell::new(State {
+                source,
+                format,
+                sample_count,
+                uniforms: RayMarchUniforms::default(),
+                node: None,
+                queue: None,
+            })),
+        }
+    }
+
+    /// `resolution` comes from the frame target, not from here.
+    pub fn publish(&self, uniforms: RayMarchUniforms) {
+        self.shared.borrow_mut().uniforms = uniforms;
+    }
+}
+
+impl FramePass for RaymarchPass {
+    fn name(&self) -> &'static str {
+        "raymarch"
+    }
+
+    fn order(&self) -> PassOrder {
+        PassOrder::BeforeScene
+    }
+
+    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+        let mut state = self.shared.borrow_mut();
+        let State {
+            uniforms,
+            node,
+            queue,
+            ..
+        } = &mut *state;
+        let (Some(node), Some(queue)) = (node.as_mut(), queue.as_ref()) else {
+            return;
+        };
+        uniforms.resolution = [target.size.0 as f32, target.size.1 as f32];
+        *node.uniforms_mut() = *uniforms;
+        node.flush_uniforms(queue);
+        node.record(
+            encoder,
+            target.color,
+            None,
+            Viewport::full([target.size.0, target.size.1]),
+        );
+    }
+
+    fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+        let mut state = self.shared.borrow_mut();
+        let module = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("loam-render::passes::raymarch"),
+                source: wgpu::ShaderSource::Wgsl(state.source.clone().into()),
+            });
+        state.node = Some(RayMarchNode::new(
+            &gpu.device,
+            state.format,
+            &module,
+            state.sample_count,
+        ));
+        state.queue = Some(gpu.queue.clone());
+        Ok(())
+    }
+}
