@@ -10,8 +10,8 @@ use loam_shape::field::DistanceField;
 
 use loam_math::hyperbolic::{in_poincare_ball, poincare_to_hyperboloid};
 use loam_math::{
-    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Space, WPlane,
-    WgslSpace,
+    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Rotor4, Space,
+    WPlane, WgslSpace,
 };
 use loam_shape::polytope::{polytope_section_faces_append, polytope_section_perimeter_append};
 
@@ -202,6 +202,8 @@ pub trait DomainSpace:
     /// Names the first non-finite coordinate or reports the chart boundary; nothing is clamped.
     fn check(&self, point: Self::Point) -> Result<(), DomainError>;
 
+    fn chart_dimension(&self) -> u32;
+
     fn chart_point(&self, point: Self::Point) -> ChartPoint;
 
     /// Reads the leading coordinates the space has and ignores the rest.
@@ -230,6 +232,14 @@ fn finite(values: [f32; 4]) -> Result<(), DomainError> {
         if !value.is_finite() {
             return Err(DomainError::InvalidCoordinate(axis));
         }
+    }
+    Ok(())
+}
+
+fn put_row<T>(store: &mut Store<T>, entity: Entity, row: T) -> Result<(), Rejection> {
+    match store.get_mut(entity) {
+        Some(slot) => *slot = row,
+        None => store.insert(entity, row)?,
     }
     Ok(())
 }
@@ -291,6 +301,10 @@ impl DomainSpace for EuclideanR4 {
         finite(point.to_array())
     }
 
+    fn chart_dimension(&self) -> u32 {
+        4
+    }
+
     fn chart_point(&self, point: Self::Point) -> ChartPoint {
         ChartPoint {
             chart: ChartId(0),
@@ -310,12 +324,18 @@ impl DomainSpace for EuclideanR4 {
         }
     }
 
-    fn pose_from_chart(&self, _pose: &ChartPose) -> Result<Self::Iso, DomainError> {
-        todo!()
+    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Self::Iso, DomainError> {
+        finite(pose.coordinates)?;
+        let rotation = Rotor4::from_mat4(&pose.frame).ok_or(DomainError::InvalidFrame)?;
+        Ok(Iso4Flat {
+            rotation,
+            translation: Vec4::from_array(pose.coordinates),
+        })
     }
 
-    fn tangent_from_chart(&self, _tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
-        todo!()
+    fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
+        finite(tangent.vector)?;
+        Ok(Vec4::from_array(tangent.vector))
     }
 
     fn transvection(&self, to: Self::Point) -> Self::Iso {
@@ -345,6 +365,10 @@ impl DomainSpace for HyperbolicH3 {
         in_poincare_ball(point)
             .then_some(())
             .ok_or(DomainError::ChartBoundary)
+    }
+
+    fn chart_dimension(&self) -> u32 {
+        3
     }
 
     fn chart_point(&self, point: Self::Point) -> ChartPoint {
@@ -428,6 +452,10 @@ impl DomainSpace for EuclideanR3 {
 
     fn check(&self, point: Self::Point) -> Result<(), DomainError> {
         finite(point.extend(0.0).to_array())
+    }
+
+    fn chart_dimension(&self) -> u32 {
+        3
     }
 
     fn chart_point(&self, point: Self::Point) -> ChartPoint {
@@ -1187,6 +1215,24 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             }
         }
         match command {
+            ChartCommand::Place { entity, pose } => {
+                let placed = Pose(self.space.pose_from_chart(pose)?);
+                put_row(&mut self.poses, *entity, placed)?;
+                Ok(Outcome::Done)
+            }
+            ChartCommand::Attach { entity, instance } => {
+                put_row(&mut self.instances, *entity, *instance)?;
+                Ok(Outcome::Done)
+            }
+            ChartCommand::Walk {
+                entity,
+                tangent,
+                dt,
+            } => {
+                let velocity = self.space.tangent_from_chart(tangent)?;
+                self.walk(*entity, velocity, *dt)?;
+                Ok(Outcome::Done)
+            }
             ChartCommand::Move { entity, point } => {
                 self.move_to(*entity, *point)?;
                 Ok(Outcome::Done)

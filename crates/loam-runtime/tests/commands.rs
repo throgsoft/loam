@@ -1,12 +1,38 @@
 use std::any::Any;
 
-use loam_math::{EuclideanR4, Iso4Flat};
+use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso4Flat, IsometryGroup, Space};
 use loam_runtime::{
-    Access, ActionEvent, ActionId, AppCommand, Command, CommandResult, Commands, Ctx, Dispatch,
-    DomainBuilder, DomainError, DomainHandle, Domains, Entity, Facility, Input, Order, Outcome,
-    Phase, Pose, Rejection, RequestId, Reservation, RestoreError, Session, SimConfig, SpawnBundle,
-    Step, Store, StoreError, DOMAIN_STEP,
+    Access, ActionEvent, ActionId, AppCommand, ChartCommand, ChartId, ChartPose, ChartTangent,
+    Command, CommandResult, Commands, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle,
+    Domains, Entity, Facility, Input, Instance, Material, Order, Outcome, Phase, Pose,
+    PreparedGeometry, Rejection, RequestId, Reservation, RestoreError, Session, SimConfig,
+    SpawnBundle, Step, Store, StoreError, DOMAIN_STEP,
 };
+
+type Vec3 = <EuclideanR3 as Space>::Point;
+type Vec4 = <EuclideanR4 as Space>::Point;
+
+const IDENTITY_FRAME: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+const QUARTER_TURN: [[f32; 4]; 4] = [
+    [0.0, 1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+fn chart(coordinates: [f32; 4], frame: [[f32; 4]; 4]) -> ChartPose {
+    ChartPose {
+        chart: ChartId(0),
+        coordinates,
+        frame,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Tag(u32);
@@ -389,4 +415,128 @@ fn system_after_the_domain_step_does_not_see_the_steps_writes() {
     assert_eq!(*session.app.sample.get(), [Some(0.0), Some(dt)]);
     session.tick().unwrap();
     assert_eq!(*session.app.sample.get(), [Some(dt), Some(dt + dt)]);
+}
+
+#[test]
+fn a_chart_spawn_lands_at_the_pose_and_instance_the_chart_names() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
+    let r3 = session.register_domain(DomainBuilder::new("r3", EuclideanR3));
+    let h3 = session.register_domain(DomainBuilder::new("h3", HyperbolicH3));
+    let stub = session.prepare(PreparedGeometry::Lines4 {
+        segments: vec![[[0.05, 0.0, 0.0, 0.0], [-0.05, 0.0, 0.0, 0.0]]],
+    });
+    let material = session.add_material(Material::flat([1.0; 4]));
+    let instance = Instance::new(stub, material);
+
+    let (flat4, flat3, curved) = session.dispatch(|d| {
+        (
+            d.spawn(
+                SpawnBundle::new()
+                    .at_chart(r4.id(), chart([2.0, 3.0, 5.0, 7.0], QUARTER_TURN))
+                    .instance(instance),
+            )
+            .unwrap(),
+            d.spawn(
+                SpawnBundle::new().at_chart(r3.id(), chart([1.0, 2.0, 3.0, 0.0], QUARTER_TURN)),
+            )
+            .unwrap(),
+            d.spawn(
+                SpawnBundle::new().at_chart(h3.id(), chart([0.5, 0.0, 0.0, 0.0], IDENTITY_FRAME)),
+            )
+            .unwrap(),
+        )
+    });
+
+    let domain4 = session.domains_mut().typed(r4).unwrap();
+    let pose4 = domain4.poses.get(flat4).unwrap().0;
+    let landed4 = EuclideanR4.iso_apply(pose4, Vec4::X);
+    assert!(
+        (landed4 - Vec4::new(2.0, 4.0, 5.0, 7.0)).length() < 1e-5,
+        "the quarter turn put local x at {landed4}"
+    );
+    assert_eq!(domain4.instances.get(flat4), Some(&instance));
+
+    let pose3 = session
+        .domains_mut()
+        .typed(r3)
+        .unwrap()
+        .poses
+        .get(flat3)
+        .unwrap()
+        .0;
+    let landed3 = EuclideanR3.iso_apply(pose3, Vec3::X);
+    assert!(
+        (landed3 - Vec3::new(1.0, 3.0, 3.0)).length() < 1e-5,
+        "the quarter turn put local x at {landed3}"
+    );
+
+    let curved_pose = session
+        .domains_mut()
+        .typed(h3)
+        .unwrap()
+        .poses
+        .get(curved)
+        .unwrap()
+        .0;
+    let landed = HyperbolicH3.iso_apply(curved_pose, Vec3::ZERO);
+    assert!(
+        (landed - Vec3::new(0.5, 0.0, 0.0)).length() < 1e-5,
+        "the transvection put the origin at {landed}"
+    );
+}
+
+#[test]
+fn a_non_orthonormal_chart_frame_is_refused_and_places_nothing() {
+    let (mut session, r4) = session();
+    let skewed = [
+        [1.0, 0.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let refusal = session
+        .dispatch(|d| d.spawn(SpawnBundle::new().at_chart(r4.id(), chart([0.0; 4], skewed))))
+        .unwrap_err();
+    assert_eq!(refusal, Rejection::Domain(DomainError::InvalidFrame));
+    assert_eq!(session.domains_mut().typed(r4).unwrap().poses.len(), 0);
+}
+
+#[test]
+fn a_chart_walk_advances_the_pose_by_the_tangent_it_names() {
+    let (mut session, r4) = session();
+    let walker = session
+        .dispatch(|d| {
+            d.spawn(SpawnBundle::new().at_chart(r4.id(), chart([0.0; 4], IDENTITY_FRAME)))
+        })
+        .unwrap();
+    session
+        .dispatch(|d| {
+            d.apply(Command::Chart(
+                r4.id(),
+                ChartCommand::Walk {
+                    entity: walker,
+                    tangent: ChartTangent {
+                        chart: ChartId(0),
+                        vector: [1.0, 0.0, 0.0, 2.0],
+                    },
+                    dt: 0.5,
+                },
+            ))
+        })
+        .unwrap();
+
+    let walked = session
+        .domains_mut()
+        .typed(r4)
+        .unwrap()
+        .poses
+        .get(walker)
+        .unwrap()
+        .0
+        .translation;
+    assert!(
+        (walked - Vec4::new(0.5, 0.0, 0.0, 1.0)).length() < 1e-5,
+        "half a second along (1, 0, 0, 2) ended at {walked}"
+    );
 }
