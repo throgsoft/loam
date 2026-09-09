@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use loam_app::args::Args;
-use loam_app::egui;
 use loam_render::raymarch::RaymarchShape;
 use loam_shape::polytope::Polytope4;
 
@@ -106,42 +105,6 @@ pub(crate) const SHAPE_CATALOG: &[ShapeEntry] = &[
         body_color: [0.85, 0.55, 0.75],
         label: "spherinder",
         long_name: "spherinder (B³ × interval)",
-    },
-];
-
-pub(crate) fn render_shape_catalog_menu(ui: &mut egui::Ui, mut on_select: impl FnMut(ShapeEntry)) {
-    for cat in SHAPE_CATEGORIES {
-        ui.menu_button(cat.name, |ui| {
-            for entry in &SHAPE_CATALOG[cat.start..cat.end] {
-                if ui
-                    .button(entry.label)
-                    .on_hover_text(entry.long_name)
-                    .clicked()
-                {
-                    on_select(*entry);
-                    ui.close_kind(egui::UiKind::Menu);
-                }
-            }
-        });
-    }
-}
-
-struct ShapeCategory {
-    name: &'static str,
-    start: usize,
-    end: usize,
-}
-
-const SHAPE_CATEGORIES: &[ShapeCategory] = &[
-    ShapeCategory {
-        name: "Regular polychora",
-        start: 0,
-        end: 6,
-    },
-    ShapeCategory {
-        name: "Smooth solids",
-        start: 6,
-        end: 10,
     },
 ];
 
