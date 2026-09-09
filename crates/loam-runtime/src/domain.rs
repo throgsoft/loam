@@ -1162,9 +1162,35 @@ impl Domains {
         prepared: &[PreparedGeometry],
         ndc: [f32; 2],
     ) -> Option<Pick> {
+        self.nearest(views, prepared, ndc, false)
+    }
+
+    pub fn pick_lifted(
+        &self,
+        views: &Views,
+        prepared: &[PreparedGeometry],
+        ndc: [f32; 2],
+    ) -> Option<Pick> {
+        self.nearest(views, prepared, ndc, true)
+    }
+
+    fn nearest(
+        &self,
+        views: &Views,
+        prepared: &[PreparedGeometry],
+        ndc: [f32; 2],
+        lifted_only: bool,
+    ) -> Option<Pick> {
         let mut nearest: Option<Pick> = None;
         for domain in self.iter() {
             for target in domain.views() {
+                if lifted_only
+                    && !domain
+                        .view(target.view)
+                        .is_some_and(|summary| summary.ray_lift)
+                {
+                    continue;
+                }
                 let Some(placement) = views.to_root(target.image).and_then(|to| to.rigid()) else {
                     continue;
                 };

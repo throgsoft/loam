@@ -669,17 +669,14 @@ impl<A: Stores> Session<A> {
 
     /// Picks, refuses a view without a ray lift by name, and records a drag plane through the hit facing the root eye.
     pub fn grab(&mut self, ndc: [f32; 2], time: f64) -> Result<Pick, DragError> {
-        let pick = self.pick(ndc).ok_or(DragError::NoPick)?;
+        let pick = self
+            .domains
+            .pick_lifted(&self.views, &self.prepared, ndc)
+            .ok_or(DragError::NoPick)?;
         let domain = self
             .domains
             .get(pick.domain)
             .ok_or(DomainError::UnknownDomain(pick.domain))?;
-        let summary = domain
-            .view(pick.view)
-            .ok_or(DomainError::Unsupported("unknown view"))?;
-        if !summary.ray_lift {
-            return Err(DragError::NoLift(summary.name));
-        }
         let into = self
             .views
             .to_root(pick.image)
@@ -1164,6 +1161,59 @@ mod tests {
     crate::stores! {
         #[derive(Default)]
         pub struct Quiet {}
+    }
+
+    #[test]
+    fn a_grab_takes_the_view_it_can_lift_while_a_plain_pick_keeps_the_nearer_one() {
+        use crate::view::{Eye, Projection4, Section4, Vec4, ViewId};
+        use loam_math::{EuclideanR4, Iso4Flat};
+
+        const DEPTH: f32 = 4.0;
+        const FOCAL: f32 = 2.5;
+        const AT_W: f32 = -2.5;
+
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let edges = session.prepare(PreparedGeometry::Lines4 {
+            segments: vec![[[0.5, 0.0, 0.0, 0.0], [-0.5, 0.0, 0.0, 0.0]]],
+        });
+        let white = session.add_material(Material::lines([1.0; 4], 1.0));
+        let root = session.views().root();
+        let (section, projection) = session
+            .dispatch(|d| -> Result<(ViewId, ViewId), Rejection> {
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))?;
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(
+                            r4,
+                            Pose(Iso4Flat::from_translation(Vec4::new(
+                                0.0, 0.0, -DEPTH, AT_W,
+                            ))),
+                        )
+                        .instance(Instance::new(edges, white)),
+                )?;
+                let domain = d.domains.typed(r4)?;
+                let section = domain.add_view(ViewSpec::new(root, eye, Section4 { w: AT_W }));
+                let projection =
+                    domain.add_view(ViewSpec::new(root, eye, Projection4 { focal: FOCAL }));
+                Ok((section, projection))
+            })
+            .expect("the two views registered");
+        session.views_mut().root_mut().eye = Eye::default();
+
+        let picked = session
+            .pick([0.0, 0.0])
+            .expect("both views cover the origin");
+        assert_eq!(
+            picked.view, projection,
+            "the plain pick lost the nearer projection layer"
+        );
+        let grabbed = session.grab([0.0, 0.0], 0.0).expect("the section lifts");
+        assert_eq!(
+            grabbed.view, section,
+            "the grab resolved to a view it cannot lift, so a drag is a coin flip"
+        );
     }
 
     #[test]

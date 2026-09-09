@@ -57,7 +57,6 @@ pub(crate) fn step_bound(kind: FieldKind) -> bool {
 pub enum DragError {
     NoPick,
     NotGrabbed,
-    NoLift(&'static str),
     /// The pointer ray runs parallel to the drag plane, so no point on it is nearer than another.
     Ambiguous(&'static str),
     Domain(DomainError),

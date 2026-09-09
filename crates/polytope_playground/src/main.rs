@@ -12,8 +12,8 @@ use loam_runtime::host::{run_headless, HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, Bindings, Command, Commands, Ctx, DomainBuilder, DomainHandle, Domains,
     Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId, Orbit, Phase,
-    PhysicsConfig, Pointer, PointerPhase, Pose, PreparedGeometry, PreparedId, Rejection, Section4,
-    SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
+    PhysicsConfig, Pointer, PointerPhase, Pose, PreparedGeometry, PreparedId, Projection4,
+    Rejection, Section4, SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
 };
 
 #[cfg(test)]
@@ -88,6 +88,7 @@ const SECTION_COLOR: [f32; 4] = [1.0, 0.85, 0.35, 1.0];
 const SECTION_WIDTH_PX: f32 = 2.0;
 const EDGE_WIDTH_PX: f32 = 1.4;
 const HEADLESS_STEPS: u32 = 8;
+const FOCAL: f32 = 2.5;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
@@ -184,9 +185,17 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
             d.spawn(bundle)?;
         }
         let eye = d.spawn(SpawnBundle::new().at(domain, Pose(Iso4Flat::IDENTITY)))?;
-        Ok(d.domains
-            .typed(domain)?
-            .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 })))
+        let projection_eye = d.spawn(
+            SpawnBundle::new().at(domain, Pose(Iso4Flat::from_translation(Vec4::W * FOCAL))),
+        )?;
+        let r4 = d.domains.typed(domain)?;
+        let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
+        r4.add_view(ViewSpec::new(
+            root,
+            projection_eye,
+            Projection4 { focal: FOCAL },
+        ));
+        Ok(section)
     })?;
     session.views_mut().root_mut().eye =
         Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
@@ -360,7 +369,8 @@ pub(crate) fn frame_sections(frame: &Frame) -> Vec<&'static str> {
         .filter(|pass| pass.order() == PassOrder::BeforeScene)
         .count();
     let ordered: Vec<&'static str> = schedule.names().collect();
-    let mut names: Vec<&'static str> = ordered.iter().take(before).copied().collect();
+    let mut names: Vec<&'static str> = vec!["present-clear"];
+    names.extend(ordered.iter().take(before).copied());
     names.push("present-draw");
     names.extend(ordered.iter().skip(before).copied());
     names
@@ -689,16 +699,17 @@ mod tests {
     fn the_published_wireframe_carries_every_edge_of_the_24_cell() {
         let (mut booted, _intents) = one_slot();
         let mut records = Records::default();
-        let count = published(&mut booted.session, &mut records, |publication| {
+        let counts = published(&mut booted.session, &mut records, |publication| {
             publication
                 .views
                 .iter()
                 .map(|view| view.records.segments().len())
-                .sum::<usize>()
+                .collect::<Vec<_>>()
         });
         assert_eq!(
-            count, 96,
-            "the 24-cell has 96 edges; publication emitted {count}"
+            counts,
+            [96, 96],
+            "the 24-cell has 96 edges in each of the section and projection layers"
         );
     }
 
@@ -910,7 +921,8 @@ mod tests {
             lines[0]
         );
         assert!(
-            lines[2].contains("sky-ground")
+            lines[2].contains("present-clear")
+                && lines[2].contains("sky-ground")
                 && lines[2].contains("present-draw")
                 && lines[2].contains("hyperslice")
                 && lines[2].contains("section"),
