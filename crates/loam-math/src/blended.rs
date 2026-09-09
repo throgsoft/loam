@@ -286,8 +286,24 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
     n_steps: u32,
     max_iters: u32,
 ) -> Vec3 {
+    gauss_newton_log_checked(space, from, to, n_steps, max_iters).0
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogError {
+    Singular,
+    NoConvergence,
+}
+
+pub fn gauss_newton_log_checked<S: ConformallyFlat>(
+    space: &S,
+    from: Vec3,
+    to: Vec3,
+    n_steps: u32,
+    max_iters: u32,
+) -> (Vec3, Option<LogError>) {
     if from == to {
-        return Vec3::ZERO;
+        return (Vec3::ZERO, None);
     }
 
     let mut v = to - from;
@@ -296,7 +312,7 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
         let endpoint = rk4_geodesic(space, from, v, n_steps).0;
         let residual = to - endpoint;
         if residual.length() < LOG_RESIDUAL_TOL {
-            return v;
+            return (v, None);
         }
 
         let two_eps = 2.0 * LOG_JACOBIAN_EPS;
@@ -316,7 +332,7 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
                 "gauss_newton_log: singular Jacobian at iter {iter} (det = {det:e}); \
                  returning best guess. `to` may be in the cut locus of `from`."
             );
-            return v;
+            return (v, Some(LogError::Singular));
         }
 
         let next = v + jac.inverse() * residual;
@@ -325,7 +341,7 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
                 "gauss_newton_log: non-finite Newton update at iter {iter}; \
                  returning best guess."
             );
-            return v;
+            return (v, Some(LogError::NoConvergence));
         }
         v = next;
     }
@@ -334,7 +350,7 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
         "gauss_newton_log: did not converge in {max_iters} iters; \
          residual remained > {LOG_RESIDUAL_TOL}. Returning best guess."
     );
-    v
+    (v, Some(LogError::NoConvergence))
 }
 
 impl<A, B, F> ConformallyFlat for BlendedSpace<A, B, F>
