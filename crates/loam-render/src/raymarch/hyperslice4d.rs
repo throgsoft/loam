@@ -618,6 +618,7 @@ impl StripCellUniforms {
 pub struct Hyperslice4DNode {
     device: Device,
     pipeline: RenderPipeline,
+    strip_pipeline: Option<RenderPipeline>,
     uniforms: Hyperslice4DUniforms,
     uniform_buf: Buffer,
     bodies: Vec<BodyUniform>,
@@ -695,51 +696,29 @@ impl Hyperslice4DNode {
             push_constant_ranges: &[],
         });
 
-        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("hyperslice4d pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: VertexState {
+        let pipeline = hyperslice_pipeline(
+            device,
+            &pipeline_layout,
+            module,
+            surface_format,
+            depth,
+            sample_count,
+        );
+        let strip_pipeline = depth.is_active().then(|| {
+            hyperslice_pipeline(
+                device,
+                &pipeline_layout,
                 module,
-                entry_point: Some("vs_fullscreen"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(FragmentState {
-                module,
-                entry_point: Some(if depth.is_active() {
-                    "fs_depth"
-                } else {
-                    "fs_main"
-                }),
-                targets: &[Some(ColorTargetState {
-                    format: surface_format,
-                    blend: None,
-                    write_mask: ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: depth.format().map(|format| DepthStencilState {
-                format,
-                depth_write_enabled: depth.writes(),
-                depth_compare: crate::view::DEPTH_COMPARE,
-                stencil: StencilState::default(),
-                bias: DepthBiasState::default(),
-            }),
-            multisample: MultisampleState {
-                count: sample_count,
-                ..Default::default()
-            },
-            multiview: None,
-            cache: None,
+                surface_format,
+                crate::DepthMode::Off,
+                sample_count,
+            )
         });
 
         Self {
             device: device.clone(),
             pipeline,
+            strip_pipeline,
             uniforms: Hyperslice4DUniforms::default(),
             uniform_buf,
             bodies: Vec::with_capacity(INITIAL_BODY_CAPACITY),
@@ -947,7 +926,7 @@ impl Hyperslice4DNode {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            rp.set_pipeline(&self.pipeline);
+            rp.set_pipeline(self.strip_pipeline.as_ref().unwrap_or(&self.pipeline));
             let mut slot = 0usize;
             for (viewport, _, _) in cells {
                 if viewport.width == 0 || viewport.height == 0 {
@@ -961,6 +940,57 @@ impl Hyperslice4DNode {
         }
         Ok(())
     }
+}
+
+fn hyperslice_pipeline(
+    device: &Device,
+    layout: &PipelineLayout,
+    module: &ShaderModule,
+    surface_format: TextureFormat,
+    depth: crate::DepthMode,
+    sample_count: u32,
+) -> RenderPipeline {
+    device.create_render_pipeline(&RenderPipelineDescriptor {
+        label: Some("hyperslice4d pipeline"),
+        layout: Some(layout),
+        vertex: VertexState {
+            module,
+            entry_point: Some("vs_fullscreen"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(FragmentState {
+            module,
+            entry_point: Some(if depth.is_active() {
+                "fs_depth"
+            } else {
+                "fs_main"
+            }),
+            targets: &[Some(ColorTargetState {
+                format: surface_format,
+                blend: None,
+                write_mask: ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: PrimitiveState {
+            topology: PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: depth.format().map(|format| DepthStencilState {
+            format,
+            depth_write_enabled: depth.writes(),
+            depth_compare: crate::view::DEPTH_COMPARE,
+            stencil: StencilState::default(),
+            bias: DepthBiasState::default(),
+        }),
+        multisample: MultisampleState {
+            count: sample_count,
+            ..Default::default()
+        },
+        multiview: None,
+        cache: None,
+    })
 }
 
 #[cfg(test)]
