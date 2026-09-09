@@ -71,7 +71,7 @@ impl Presenter {
         self.schedule.after_submit();
     }
 
-    /// Skips a view whose records were built by a publication it already uploaded; when any view rebuilt, refills the section fills of every view, each mapped by its placement.
+    /// Skips a slot whose domain, view, and built stamp match what it last uploaded; when any slot rebuilt, refills the section fills of every view, each mapped by its placement.
     pub fn upload(
         &mut self,
         device: &Device,

@@ -107,7 +107,7 @@ impl std::error::Error for PassError {}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GpuTime {
-    /// No timer, no free slot, or no result mapped yet; never a zero duration.
+    /// No timer, no free slot, or no result mapped yet; `Measured` can hold zero for a trivial pass.
     Unavailable,
     Measured(Duration),
 }
@@ -149,7 +149,7 @@ impl PassSchedule {
         &self.sections
     }
 
-    /// Inserts after every pass it must follow and before every pass that reads its writes; a depth writer under another convention is refused.
+    /// Appends the pass and recomputes a stable topological order, every BeforeScene before every AfterScene, producer before consumer on a shared resource, registration order breaking ties; a depth writer under another convention, a scene output before the scene, or a true cycle is refused and dropped.
     pub fn register(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {
         if let Some(declared) = pass.depth_convention() {
             if declared != self.convention {

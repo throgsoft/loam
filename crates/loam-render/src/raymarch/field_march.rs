@@ -336,7 +336,7 @@ fn same_structure(previous: &[u32], next: &[u32]) -> bool {
             .all(|(was, now)| was[0] == now[0] && (was[0] == OP_SMOOTH_UNION || was[1] == now[1]))
 }
 
-/// Compiles a specialized module off the frame path; `take` hands it over once and `discard` drops a build the node no longer wants.
+/// Builds a specialized pipeline off the frame path from a `SpecializationRequest`; `take` hands the finished pipeline over once and `discard` drops a build the node no longer wants.
 pub trait SpecializationBuilder: Send {
     fn submit(&mut self, revision: u64, request: SpecializationRequest);
 
@@ -345,6 +345,7 @@ pub trait SpecializationBuilder: Send {
     fn discard(&mut self);
 }
 
+/// Everything a builder needs to compile the module and its pipeline away from the node; `build` does both on the calling thread.
 pub struct SpecializationRequest {
     pub device: Device,
     pub layout: PipelineLayout,
