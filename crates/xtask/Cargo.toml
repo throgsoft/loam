@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+wasm-bindgen-cli-support = "=0.2.118"
+
+[lints]
+workspace = true
