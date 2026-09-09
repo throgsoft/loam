@@ -6,8 +6,8 @@ pub enum EditError {
     NotFinite,
     InvalidMass,
     InvalidInertia,
-    /// Also a half-space on a body with mass.
     UnsupportedCollider,
+    DynamicHalfSpace,
     /// The world's narrowphase registrations differ from the snapshot's.
     RegistrationMismatch,
 }
@@ -20,6 +20,7 @@ impl fmt::Display for EditError {
             Self::InvalidMass => "the mass is negative, not finite, or too small to invert",
             Self::InvalidInertia => "the inertia is negative, not finite, or too small to invert",
             Self::UnsupportedCollider => "the space cannot use this collider",
+            Self::DynamicHalfSpace => "a half-space collider needs zero mass",
             Self::RegistrationMismatch => "the narrowphase registrations are not the snapshot's",
         };
         f.write_str(text)

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::body::{BodyArena, BodyId};
+use crate::body::BodyArena;
 use crate::collider::ColliderKind;
 use crate::geometry::GeometryStore;
 use crate::integrator::PhysicsSpace;
@@ -12,7 +12,6 @@ pub struct WorldState<S: PhysicsSpace> {
     pub bodies: BodyArena<S>,
     pub geometry: GeometryStore,
     pub manifolds: BTreeMap<PairKey, Manifold<S>>,
-    pub dirty: Vec<BodyId>,
     pub time: f32,
     pub(crate) registrations: Vec<(ColliderKind, ColliderKind)>,
 }

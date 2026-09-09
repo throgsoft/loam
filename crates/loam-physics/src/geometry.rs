@@ -1,3 +1,7 @@
+use std::collections::hash_map::{DefaultHasher, Entry as MapEntry};
+use std::collections::HashMap;
+use std::hash::Hasher;
+
 use crate::collider::{Collider, ColliderKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -45,6 +49,7 @@ impl ColliderRef {
 struct Entry {
     version: u32,
     uses: u32,
+    hash: u64,
     shape: Option<Collider>,
 }
 
@@ -55,29 +60,32 @@ pub struct GeometryStore {
     entries: Vec<Entry>,
     free: Vec<u32>,
     released: Vec<Collider>,
+    index: HashMap<u64, Vec<GeometryId>>,
+    buckets: Vec<Vec<GeometryId>>,
 }
 
 impl GeometryStore {
     /// A shape equal to one already held shares its entry, and the duplicate joins the released pool.
     pub fn prepare(&mut self, shape: Collider) -> ColliderRef {
         let kind = shape.kind();
-        let shared = self.entries.iter().position(|entry| {
-            entry
-                .shape
-                .as_ref()
-                .is_some_and(|prepared| same_shape(prepared, &shape))
+        let hash = shape_hash(&shape);
+        let entries = &mut self.entries;
+        let shared = self.index.get(&hash).and_then(|bucket| {
+            bucket.iter().copied().find(|id| {
+                entries[id.0 as usize]
+                    .shape
+                    .as_ref()
+                    .is_some_and(|prepared| same_shape(prepared, &shape))
+            })
         });
-        if let Some(slot) = shared {
-            let entry = &mut self.entries[slot];
+        if let Some(id) = shared {
+            let entry = &mut self.entries[id.0 as usize];
             entry.uses += 1;
             let version = entry.version;
             self.stash(shape);
             return ColliderRef {
                 kind,
-                geometry: GeometryRef {
-                    id: GeometryId(slot as u32),
-                    version,
-                },
+                geometry: GeometryRef { id, version },
             };
         }
 
@@ -85,6 +93,7 @@ impl GeometryStore {
             Some(slot) => {
                 let entry = &mut self.entries[slot as usize];
                 entry.uses = 1;
+                entry.hash = hash;
                 entry.shape = Some(shape);
                 slot
             }
@@ -92,15 +101,29 @@ impl GeometryStore {
                 self.entries.push(Entry {
                     version: 0,
                     uses: 1,
+                    hash,
                     shape: Some(shape),
                 });
                 (self.entries.len() - 1) as u32
             }
         };
+        let id = GeometryId(slot);
+        let spare = self.buckets.pop().unwrap_or_default();
+        match self.index.entry(hash) {
+            MapEntry::Occupied(mut held) => {
+                held.get_mut().push(id);
+                self.buckets.push(spare);
+            }
+            MapEntry::Vacant(empty) => {
+                let mut bucket = spare;
+                bucket.push(id);
+                empty.insert(bucket);
+            }
+        }
         ColliderRef {
             kind,
             geometry: GeometryRef {
-                id: GeometryId(slot),
+                id,
                 version: self.entries[slot as usize].version,
             },
         }
@@ -119,6 +142,16 @@ impl GeometryStore {
             return;
         }
         let freed = entry.shape.take();
+        let hash = entry.hash;
+        if let Some(bucket) = self.index.get_mut(&hash) {
+            bucket.retain(|held| *held != collider.geometry.id);
+            if bucket.is_empty() {
+                if let Some(spare) = self.index.remove(&hash) {
+                    self.buckets.push(spare);
+                }
+            }
+        }
+        let entry = &mut self.entries[slot];
         if let Some(next) = entry.version.checked_add(1) {
             entry.version = next;
             self.free.push(slot as u32);
@@ -152,6 +185,65 @@ impl GeometryStore {
             .iter()
             .filter(|entry| entry.shape.is_some())
             .count()
+    }
+}
+
+fn shape_hash(shape: &Collider) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write_u8(kind_tag(shape));
+    match shape {
+        Collider::Sphere { center, radius } => {
+            hash_f32s(&mut hasher, center.as_ref());
+            hasher.write_u32(radius.to_bits());
+        }
+        Collider::HyperSphere4D { center, radius } => {
+            hash_f32s(&mut hasher, center.as_ref());
+            hasher.write_u32(radius.to_bits());
+        }
+        Collider::HalfSpace { normal, offset } => {
+            hash_f32s(&mut hasher, normal.as_ref());
+            hasher.write_u32(offset.to_bits());
+        }
+        Collider::HalfSpace4D { normal, offset } => {
+            hash_f32s(&mut hasher, normal.as_ref());
+            hasher.write_u32(offset.to_bits());
+        }
+        Collider::Box3 { half_extents } => hash_f32s(&mut hasher, half_extents.as_ref()),
+        Collider::Polygon2D { vertices } => {
+            for v in vertices {
+                hash_f32s(&mut hasher, v.as_ref());
+            }
+        }
+        Collider::ConvexPolytope3D { vertices } => {
+            for v in vertices {
+                hash_f32s(&mut hasher, v.as_ref());
+            }
+        }
+        Collider::ConvexPolytope4D { vertices } => {
+            for v in vertices {
+                hash_f32s(&mut hasher, v.as_ref());
+            }
+        }
+    }
+    hasher.finish()
+}
+
+fn hash_f32s(hasher: &mut DefaultHasher, values: &[f32]) {
+    for value in values {
+        hasher.write_u32(value.to_bits());
+    }
+}
+
+fn kind_tag(shape: &Collider) -> u8 {
+    match shape.kind() {
+        ColliderKind::Sphere => 0,
+        ColliderKind::HalfSpace => 1,
+        ColliderKind::HalfSpace4D => 2,
+        ColliderKind::Box3 => 3,
+        ColliderKind::Polygon2D => 4,
+        ColliderKind::ConvexPolytope3D => 5,
+        ColliderKind::ConvexPolytope4D => 6,
+        ColliderKind::HyperSphere4D => 7,
     }
 }
 

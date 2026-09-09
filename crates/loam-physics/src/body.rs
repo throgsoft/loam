@@ -178,7 +178,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
             return Err(EditError::InvalidMass);
         }
         if mass > 0.0 && is_halfspace_kind(self.collider.kind()) {
-            return Err(EditError::UnsupportedCollider);
+            return Err(EditError::DynamicHalfSpace);
         }
         self.mass = mass;
         self.inv_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
@@ -194,6 +194,10 @@ impl<S: PhysicsSpace> RigidBody<S> {
         collider: Collider,
         inertia: S::Inertia,
     ) -> Result<(), EditError> {
+        if self.mass > 0.0 && is_halfspace_kind(collider.kind()) {
+            geometry.stash(collider);
+            return Err(EditError::DynamicHalfSpace);
+        }
         if !valid_collider(space, &collider, self.mass) {
             geometry.stash(collider);
             return Err(EditError::UnsupportedCollider);

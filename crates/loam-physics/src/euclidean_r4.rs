@@ -45,6 +45,28 @@ impl PhysicsSpace for EuclideanR4 {
         vector.is_finite()
     }
 
+    fn valid_orientation(&self, orientation: Iso4Flat) -> bool {
+        let r = orientation.rotation;
+        r.s.is_finite()
+            && r.xy.is_finite()
+            && r.xz.is_finite()
+            && r.xw.is_finite()
+            && r.yz.is_finite()
+            && r.yw.is_finite()
+            && r.zw.is_finite()
+            && r.xyzw.is_finite()
+            && orientation.translation.is_finite()
+    }
+
+    fn valid_angular_velocity(&self, angular_velocity: Bivector4) -> bool {
+        angular_velocity.xy.is_finite()
+            && angular_velocity.xz.is_finite()
+            && angular_velocity.xw.is_finite()
+            && angular_velocity.yz.is_finite()
+            && angular_velocity.yw.is_finite()
+            && angular_velocity.zw.is_finite()
+    }
+
     fn valid_inertia(&self, inertia: f32) -> bool {
         inertia.is_finite() && inertia >= 0.0 && (inertia == 0.0 || inertia.recip().is_finite())
     }

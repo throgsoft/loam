@@ -62,6 +62,16 @@ impl PhysicsSpace for EuclideanR3 {
         vector.is_finite()
     }
 
+    fn valid_orientation(&self, orientation: Iso3) -> bool {
+        orientation.rotation.is_finite() && orientation.translation.is_finite()
+    }
+
+    fn valid_angular_velocity(&self, angular_velocity: Bivector3) -> bool {
+        angular_velocity.xy.is_finite()
+            && angular_velocity.yz.is_finite()
+            && angular_velocity.zx.is_finite()
+    }
+
     fn valid_inertia(&self, inertia: f32) -> bool {
         inertia.is_finite() && inertia >= 0.0 && (inertia == 0.0 || inertia.recip().is_finite())
     }

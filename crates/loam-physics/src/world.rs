@@ -184,7 +184,7 @@ impl<S: PhysicsSpace> World<S> {
         if self.bodies.get(id).is_none() {
             return Err(EditError::StaleHandle);
         }
-        if !self.space.valid_point(position) {
+        if !self.space.valid_point(position) || !self.space.valid_orientation(orientation) {
             return Err(EditError::NotFinite);
         }
         let body = &mut self.bodies[id];
@@ -205,7 +205,9 @@ impl<S: PhysicsSpace> World<S> {
         if self.bodies.get(id).is_none() {
             return Err(EditError::StaleHandle);
         }
-        if !self.space.valid_vector(velocity) {
+        if !self.space.valid_vector(velocity)
+            || !self.space.valid_angular_velocity(angular_velocity)
+        {
             return Err(EditError::NotFinite);
         }
         let body = &mut self.bodies[id];
@@ -243,9 +245,11 @@ impl<S: PhysicsSpace> World<S> {
         inertia: S::Inertia,
     ) -> Result<(), EditError> {
         if self.bodies.get(id).is_none() {
+            self.geometry.stash(collider);
             return Err(EditError::StaleHandle);
         }
         if !self.space.valid_inertia(inertia) {
+            self.geometry.stash(collider);
             return Err(EditError::InvalidInertia);
         }
         let Self {
@@ -332,7 +336,6 @@ impl<S: PhysicsSpace> World<S> {
             bodies: self.bodies.clone(),
             geometry: self.geometry.clone(),
             manifolds: self.manifolds.clone(),
-            dirty: self.dirty.recorded().to_vec(),
             time: self.time,
             registrations: self.narrowphase.registrations().to_vec(),
         }
@@ -347,7 +350,7 @@ impl<S: PhysicsSpace> World<S> {
         self.geometry = state.geometry.clone();
         self.manifolds = state.manifolds.clone();
         self.time = state.time;
-        self.dirty.reset(&state.dirty);
+        self.dirty.mark_every(&self.bodies);
         self.pair_order.clear();
         self.constraints.clear();
         self.touched_pairs.clear();
@@ -1750,6 +1753,7 @@ mod tests {
         let orientation = world.bodies[id].orientation;
         let stale = BodyId::forge(u32::MAX, 0);
         let impulses = normal_impulses(&world, key);
+        let _ = world.drain_dirty().count();
         assert!(
             impulses.iter().any(|&jn| jn > 0.0),
             "the fixture carries no warm start, so a preserved contact proves nothing"
@@ -1773,17 +1777,39 @@ mod tests {
             ),
             Err(EditError::UnsupportedCollider)
         );
+        while world.reclaim_geometry().is_some() {}
         assert_eq!(
             world.set_collider(id, Collider::sphere_at_origin(0.5), f32::INFINITY),
             Err(EditError::InvalidInertia)
+        );
+        assert!(
+            world.reclaim_geometry().is_some(),
+            "a rejected inertia swallowed the caller's collider"
         );
         assert_eq!(
             world.set_pose(id, Vec3::splat(f32::NAN), orientation),
             Err(EditError::NotFinite)
         );
+        let spun = loam_math::Iso3 {
+            rotation: glam::Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0),
+            translation: Vec3::ZERO,
+        };
+        assert_eq!(
+            world.set_pose(id, Vec3::ZERO, spun),
+            Err(EditError::NotFinite)
+        );
+        assert_eq!(
+            world.set_velocity(id, Vec3::ZERO, Bivector3::new(f32::NAN, 0.0, 0.0)),
+            Err(EditError::NotFinite)
+        );
         assert_eq!(
             world.set_velocity(stale, Vec3::ZERO, Bivector3::ZERO),
             Err(EditError::StaleHandle)
+        );
+        assert_eq!(
+            world.drain_dirty().count(),
+            0,
+            "a rejected edit published a pose change"
         );
 
         assert_eq!(body_state(&world, id), before);
@@ -1841,7 +1867,7 @@ mod tests {
 
         world.step(EDIT_DT);
         assert!(
-            !world.drain_dirty().any(|dirty| dirty == id),
+            !world.drain_dirty().any(|(dirty, _)| dirty == id),
             "a sleeping body was published as if it had moved"
         );
 
@@ -1849,7 +1875,7 @@ mod tests {
         let elsewhere = Vec3::new(40.0, 9.0, 0.0);
         assert!(world.set_pose(id, elsewhere, orientation).is_ok());
         assert!(
-            world.drain_dirty().any(|dirty| dirty == id),
+            world.drain_dirty().any(|(dirty, _)| dirty == id),
             "the teleport never reached the dirty set"
         );
         assert_eq!(world.bodies[id].position, elsewhere);
@@ -1945,7 +1971,7 @@ mod tests {
             doomed.slot(),
             "the slot was not recycled, so this test is not exercising aliasing"
         );
-        let published: Vec<BodyId> = world.drain_dirty().collect();
+        let published: Vec<BodyId> = world.drain_dirty().map(|(id, _)| id).collect();
         assert!(
             !published.contains(&doomed),
             "a removed row was published for mirroring"
@@ -1999,6 +2025,113 @@ mod tests {
             0,
             "the last body's hull outlived it"
         );
+    }
+
+    #[test]
+    fn a_restored_sleeping_body_publishes_the_pose_the_restore_gave_it() {
+        let (mut world, _, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
+        let id = spheres[0];
+        assert!(world.sleep_body(id).is_ok());
+        let settled = world.bodies[id].position;
+
+        let state = world.snapshot();
+        let orientation = world.bodies[id].orientation;
+        assert!(world
+            .set_pose(id, Vec3::new(40.0, 9.0, 0.0), orientation)
+            .is_ok());
+        assert!(world.sleep_body(id).is_ok());
+        let _ = world.drain_dirty().count();
+
+        assert!(world.restore(&state).is_ok());
+        assert_eq!(world.bodies[id].position, settled);
+        assert!(world.bodies[id].is_sleeping());
+        assert!(
+            world.drain_dirty().any(|(dirty, _)| dirty == id),
+            "a restore moved a sleeping body without publishing it"
+        );
+    }
+
+    #[test]
+    fn a_drained_row_is_readable_without_copying_the_ids_out_first() {
+        let (mut world, _, spheres) = settled_islands(EDIT_DT, 4);
+        let _ = world.drain_dirty().count();
+        world.step(EDIT_DT);
+
+        let mut mirror: BTreeMap<BodyId, Vec3> = BTreeMap::new();
+        for (id, body) in world.drain_dirty() {
+            mirror.insert(id, body.position);
+        }
+
+        assert_eq!(mirror.len(), spheres.len());
+        for id in &spheres {
+            assert_eq!(mirror.get(id), Some(&world.bodies[*id].position));
+        }
+    }
+
+    #[test]
+    fn a_half_space_on_a_body_with_mass_is_not_reported_as_an_unsupported_collider() {
+        let mut world = World::new(EuclideanR3);
+        let id = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 0.5, 2.0).unwrap());
+        let floor = Collider::HalfSpace {
+            normal: Vec3::Y,
+            offset: 0.0,
+        };
+        assert!(
+            world.space.supports_collider(floor.kind()),
+            "the space rejects half-spaces outright, so this cannot tell the two apart"
+        );
+
+        assert_eq!(
+            world.set_collider(id, floor, 1.0),
+            Err(EditError::DynamicHalfSpace)
+        );
+        assert_eq!(world.bodies[id].mass(), 2.0);
+
+        let ground = world.push_body(halfspace_body_r3(Vec3::Y, 0.0).unwrap());
+        assert_eq!(
+            world.set_mass_properties(ground, 3.0, 1.0),
+            Err(EditError::DynamicHalfSpace)
+        );
+        assert_eq!(world.bodies[ground].mass(), 0.0);
+    }
+
+    #[test]
+    fn registration_order_does_not_refuse_a_snapshot_of_the_same_pairs() {
+        fn never(
+            _a: &RigidBody<EuclideanR3>,
+            _b: &RigidBody<EuclideanR3>,
+            _geometry: &crate::geometry::GeometryStore,
+            _space: &EuclideanR3,
+        ) -> Option<crate::response::Contact<EuclideanR3>> {
+            None
+        }
+
+        use crate::collider::ColliderKind;
+
+        let pairs = [
+            (ColliderKind::Sphere, ColliderKind::HalfSpace),
+            (ColliderKind::Sphere, ColliderKind::ConvexPolytope3D),
+            (ColliderKind::ConvexPolytope3D, ColliderKind::HalfSpace),
+        ];
+        assert_ne!(
+            pairs.first(),
+            pairs.last(),
+            "the registration sequence is symmetric, so reversing it changes nothing"
+        );
+
+        let mut forward = World::new(EuclideanR3);
+        for &(a, b) in &pairs {
+            forward.narrowphase.register(a, b, never);
+        }
+        let mut reversed = World::new(EuclideanR3);
+        for &(a, b) in pairs.iter().rev() {
+            reversed.narrowphase.register(a, b, never);
+        }
+        forward.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 0.5, 1.0).unwrap());
+
+        assert!(reversed.restore(&forward.snapshot()).is_ok());
+        assert!(forward.restore(&reversed.snapshot()).is_ok());
+        assert_eq!(reversed.bodies.len(), 1);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::body::{BodyArena, BodyId};
+use crate::body::{BodyArena, BodyId, RigidBody};
 use crate::integrator::PhysicsSpace;
 
 #[derive(Default)]
@@ -26,17 +26,13 @@ impl DirtyBodies {
         }
     }
 
-    pub(crate) fn recorded(&self) -> &[BodyId] {
-        &self.ids
-    }
-
-    pub(crate) fn reset(&mut self, ids: &[BodyId]) {
+    pub(crate) fn mark_every<S: PhysicsSpace>(&mut self, bodies: &BodyArena<S>) {
         self.ids.clear();
         for flag in &mut self.marked {
             *flag = false;
         }
-        for &id in ids {
-            self.mark(id);
+        for dense in 0..bodies.len() {
+            self.mark(bodies.id_at(dense));
         }
     }
 
@@ -59,16 +55,17 @@ pub struct DirtyDrain<'a, S: PhysicsSpace> {
     ids: std::vec::Drain<'a, BodyId>,
 }
 
-impl<S: PhysicsSpace> Iterator for DirtyDrain<'_, S> {
-    type Item = BodyId;
+impl<'a, S: PhysicsSpace> Iterator for DirtyDrain<'a, S> {
+    type Item = (BodyId, &'a RigidBody<S>);
 
-    fn next(&mut self) -> Option<BodyId> {
+    fn next(&mut self) -> Option<Self::Item> {
+        let bodies = self.bodies;
         for id in self.ids.by_ref() {
             if let Some(flag) = self.marked.get_mut(id.slot() as usize) {
                 *flag = false;
             }
-            if self.bodies.dense_index(id).is_some() {
-                return Some(id);
+            if let Some(body) = bodies.get(id) {
+                return Some((id, body));
             }
         }
         None

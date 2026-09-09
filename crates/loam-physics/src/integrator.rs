@@ -17,6 +17,10 @@ pub trait PhysicsSpace: Space + IsometryGroup {
 
     fn valid_inertia(&self, inertia: Self::Inertia) -> bool;
 
+    fn valid_orientation(&self, orientation: Self::Iso) -> bool;
+
+    fn valid_angular_velocity(&self, angular_velocity: Self::AngVel) -> bool;
+
     fn valid_initial_state(
         &self,
         position: Self::Point,
