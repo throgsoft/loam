@@ -650,7 +650,7 @@ impl<A: Stores> Session<A> {
         if self.entities().resolve(spec.anchor).is_none() {
             return Err(BridgeError::Stale(spec.anchor));
         }
-        let (summary, has_fields) = {
+        let (summary, has_fields, marched, name) = {
             let source = self
                 .domains
                 .get(spec.source)
@@ -658,7 +658,12 @@ impl<A: Stores> Session<A> {
             let summary = source
                 .view(spec.view)
                 .ok_or(BridgeError::UnknownView(spec.view))?;
-            (summary, source.has_fields())
+            (
+                summary,
+                source.has_fields(),
+                source.shader_prelude().is_some(),
+                source.name(),
+            )
         };
         if spec.placement.rigid().is_none() {
             return Err(BridgeError::Nonlinear(summary.name));
@@ -666,6 +671,9 @@ impl<A: Stores> Session<A> {
         if has_fields {
             if !summary.ray_lift {
                 return Err(BridgeError::NoRayLift(summary.name));
+            }
+            if !marched {
+                return Err(BridgeError::NoPrelude(name));
             }
             let source = self
                 .domains

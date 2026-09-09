@@ -29,6 +29,7 @@ pub enum BridgeError {
     UnknownImage(ImageSpaceId),
     Nonlinear(&'static str),
     NoRayLift(&'static str),
+    NoPrelude(&'static str),
     NoStepBound(&'static str, FieldKind),
     Domain(DomainError),
     Link(StoreError),
