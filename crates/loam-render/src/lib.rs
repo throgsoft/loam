@@ -41,6 +41,7 @@ pub enum DepthConvention {
 }
 
 impl DepthConvention {
+    /// `standard_z` is the node's own compare; `ReversedZ` substitutes [`view::DEPTH_COMPARE`].
     pub fn compare(self, standard_z: wgpu::CompareFunction) -> wgpu::CompareFunction {
         match self {
             Self::StandardZ => standard_z,

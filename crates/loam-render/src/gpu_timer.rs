@@ -166,6 +166,7 @@ impl GpuTimer {
     }
 }
 
+/// Sixteen sections per frame; a result arrives a frame late, and a frame whose map is still in flight measures nothing.
 pub struct SectionTimer {
     query_set: QuerySet,
     resolve_buffer: Buffer,
@@ -239,6 +240,7 @@ impl SectionTimer {
         encoder.write_timestamp(&self.query_set, (slot * 2 + 1) as u32);
     }
 
+    /// The last mapped result for `slot` while its section keeps the same name.
     pub fn elapsed(&self, slot: usize) -> Option<Duration> {
         let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         (last.names[slot] == self.names[slot]).then(|| last.elapsed[slot])

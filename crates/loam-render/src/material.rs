@@ -15,6 +15,7 @@ pub struct MaterialSpec<'a> {
     pub vertex_entry: &'a str,
     pub fragment_entry: &'a str,
     pub vertex_layouts: &'a [VertexBufferLayout<'a>],
+    /// One bind group layout per entry, in group order.
     pub resources: &'a [&'a [BindGroupLayoutEntry]],
     pub features: FeatureRequest,
     pub topology: PrimitiveTopology,
@@ -41,6 +42,7 @@ impl MaterialPipeline {
 }
 
 impl MaterialSpec<'_> {
+    /// Resolves `features` before creating any GPU object, so a refusal leaves the device untouched.
     pub fn build(
         &self,
         gpu: &GpuContext,

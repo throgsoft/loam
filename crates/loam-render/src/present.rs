@@ -36,6 +36,7 @@ impl Presenter {
         }
     }
 
+    /// Call at startup and after a device loss; it drops device objects, rebuilds the passes, and installs the timer.
     pub fn attach(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
         self.depth = None;
         self.views.clear();

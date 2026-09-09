@@ -149,7 +149,7 @@ impl Default for Hyperslice4DUniforms {
     }
 }
 
-/// Prefixed with [`crate::sky_ground::SKY_GROUND_WGSL`]; the user's `Scene4` emit supplies `loam_scene_sdf`.
+/// Prefixed with [`crate::sky_ground::SKY_GROUND_WGSL`] and the shared `loam_projective_depth`; the user's `Scene4` emit supplies `loam_scene_sdf`.
 pub const HYPERSLICE_KERNEL_WGSL: &str = concat!(
     include_str!("../sky_ground.wgsl"),
     include_str!("../shader/projective_depth.wgsl"),

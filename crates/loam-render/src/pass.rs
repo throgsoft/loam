@@ -38,6 +38,7 @@ pub trait FramePass {
 
     fn order(&self) -> PassOrder;
 
+    /// `None` means the pass writes no depth; `Some` must match the frame's convention to register.
     fn depth_convention(&self) -> Option<DepthConvention> {
         None
     }
@@ -82,6 +83,7 @@ impl std::error::Error for PassError {}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GpuTime {
+    /// No timer, no free slot, or no result mapped yet; never a zero duration.
     Unavailable,
     Measured(Duration),
 }
@@ -89,6 +91,7 @@ pub enum GpuTime {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     pub name: &'static str,
+    /// Time spent recording the section into the encoder, not running it.
     pub cpu: Duration,
     pub gpu: GpuTime,
 }
@@ -126,6 +129,7 @@ impl PassSchedule {
         &self.sections
     }
 
+    /// Inserts after every pass it must follow and before every pass that reads its writes; a depth writer under another convention is refused.
     pub fn register(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {
         if let Some(declared) = pass.depth_convention() {
             if declared != self.convention {

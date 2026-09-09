@@ -22,6 +22,7 @@ fn project_perspective_4d(p4: vec4<f32>, focal: f32) -> vec3<f32> {
     return p4.xyz * scale;
 }
 
+// wgpu clip space keeps 0 ≤ z ≤ w, so the near plane is z = 0 under standard Z and z = w under reversed Z.
 fn near_side(clip: vec4<f32>, reversed: bool) -> f32 {
     return select(clip.z, clip.w - clip.z, reversed);
 }
