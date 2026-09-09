@@ -1,4 +1,5 @@
 use glam::Vec4;
+use loam_runtime::{EdgeShading, PaletteId};
 use loam_shape::polytope::{vertex_color_by_position, Polytope4Topology};
 
 // Matches the depth cue in the LineRasterStaticR4 shader.
@@ -31,6 +32,28 @@ impl ColorMode {
 
     pub(crate) fn from_token(token: &str) -> Option<Self> {
         ColorMode::ALL.into_iter().find(|mode| mode.name() == token)
+    }
+}
+
+/// The palettes and the depth extent one polytope's edges are coloured from.
+#[derive(Clone, Copy)]
+pub(crate) struct Shades {
+    pub(crate) gradient: PaletteId,
+    pub(crate) unique: PaletteId,
+    pub(crate) extent: f32,
+}
+
+impl Shades {
+    pub(crate) fn of(self, mode: ColorMode) -> EdgeShading {
+        match mode {
+            ColorMode::VertexGradient => EdgeShading::Palette(self.gradient),
+            ColorMode::UniqueEdge => EdgeShading::Palette(self.unique),
+            ColorMode::WDepth => EdgeShading::Depth {
+                back: W_DEPTH_BACK,
+                front: W_DEPTH_FRONT,
+                extent: self.extent,
+            },
+        }
     }
 }
 

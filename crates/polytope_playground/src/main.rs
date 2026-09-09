@@ -11,9 +11,9 @@ use loam_render::{DepthConvention, HyperslicePass, LinePass, PointPass, SkyGroun
 use loam_runtime::host::{run_headless, HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, Bindings, Command, Commands, Ctx, DomainBuilder, DomainHandle, Domains,
-    EdgeShading, Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId, Orbit,
-    PaletteId, Phase, PhysicsConfig, Pointer, PointerPhase, Pose, PreparedGeometry, PreparedId,
-    Rejection, Section4, SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
+    Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId, Orbit, Phase,
+    PhysicsConfig, Pointer, PointerPhase, Pose, PreparedGeometry, PreparedId, Rejection, Section4,
+    SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
 };
 
 #[cfg(test)]
@@ -72,14 +72,14 @@ mod toy;
 mod ui;
 
 use catalog::ShapeEntry;
-use color::ColorMode;
+use color::{ColorMode, Shades};
 use composer::{Composer, Term};
 use consts::{BODY_SIZE, BODY_X_SPACING, BODY_Y, GRAVITY, W_SCRUB_RATE};
 use gimbal::Gimbal;
 use mode::{
     ClearComposer, ClearDraft, CommitDraft, DraftPlane, DropTerm, Mode, PushTerm, SetActive,
-    SetColorMode, SetMode, SetProjection, SetRunning, SetScrub, SetSlice, Spin, ToggleGimbal,
-    TogglePlane, TogglePoints, TurnRow,
+    SetColorMode, SetMode, SetProjection, SetRunning, SetScrub, SetShape, SetSlice, Spin,
+    ToggleGimbal, TogglePlane, TogglePoints, TurnRow,
 };
 use projection::Family;
 
@@ -153,6 +153,7 @@ pub(crate) enum Intent {
     Turn(loam_math::Rotor4),
     Color(ColorMode),
     Points,
+    Shape(usize, usize),
 }
 
 pub(crate) type Intents = Arc<Mutex<Vec<Intent>>>;
@@ -185,34 +186,7 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
             ),
     );
     let root = session.views().root();
-    let prepared: Vec<Option<PreparedId>> = row
-        .iter()
-        .map(|entry| {
-            entry.shape.polytope4().map(|polytope| {
-                session.prepare(PreparedGeometry::edges_of(polytope.topology(), BODY_SIZE))
-            })
-        })
-        .collect();
-    let shades: Vec<Option<Shades>> = row
-        .iter()
-        .map(|entry| {
-            entry.shape.polytope4().map(|polytope| {
-                let topology = polytope.topology();
-                Shades {
-                    gradient: session.add_palette(color::vertex_gradient_colors(topology)),
-                    unique: session.add_palette(color::unique_edge_colors(topology.edges)),
-                    extent: color::w_extent(topology, BODY_SIZE),
-                }
-            })
-        })
-        .collect();
-    let materials: Vec<MaterialId> = row
-        .iter()
-        .map(|entry| {
-            let [r, g, b] = entry.body_color;
-            session.add_material(Material::lines([r, g, b, 0.9], EDGE_WIDTH_PX))
-        })
-        .collect();
+    let cards = prepare_catalog(&mut session);
 
     let layers = session.dispatch(|d| -> Result<Layers, Rejection> {
         for (index, entry) in row.iter().enumerate() {
@@ -224,8 +198,10 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
                     entry: *entry,
                     rest,
                 });
-            if let Some(geometry) = prepared[index] {
-                bundle = bundle.instance(Instance::new(geometry, materials[index]));
+            if let Some(card) = card_of(entry) {
+                if let Some(geometry) = cards[card].geometry {
+                    bundle = bundle.instance(Instance::new(geometry, cards[card].material));
+                }
             }
             d.spawn(bundle)?;
         }
@@ -242,7 +218,7 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
         Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
     session.app.floor.set(true);
 
-    install_systems(&mut session, domain, layers, shades, intents);
+    install_systems(&mut session, domain, layers, cards, intents);
     session.set_initial()?;
     Ok(Boot { session, domain })
 }
@@ -253,36 +229,53 @@ struct Layers {
     projection: ViewId,
 }
 
+/// One prepared wireframe, material, and palette set per catalogue entry, built once at boot.
 #[derive(Clone, Copy)]
-struct Shades {
-    gradient: PaletteId,
-    unique: PaletteId,
-    extent: f32,
+struct Card {
+    geometry: Option<PreparedId>,
+    material: MaterialId,
+    shades: Option<Shades>,
 }
 
-impl Shades {
-    fn of(self, mode: ColorMode) -> EdgeShading {
-        match mode {
-            ColorMode::VertexGradient => EdgeShading::Palette(self.gradient),
-            ColorMode::UniqueEdge => EdgeShading::Palette(self.unique),
-            ColorMode::WDepth => EdgeShading::Depth {
-                back: color::W_DEPTH_BACK,
-                front: color::W_DEPTH_FRONT,
-                extent: self.extent,
-            },
-        }
-    }
+fn card_of(entry: &ShapeEntry) -> Option<usize> {
+    catalog::SHAPE_CATALOG.iter().position(|held| held == entry)
+}
+
+fn prepare_catalog(session: &mut Session<Playground>) -> Vec<Card> {
+    catalog::SHAPE_CATALOG
+        .iter()
+        .map(|entry| {
+            let [r, g, b] = entry.body_color;
+            let material = session.add_material(Material::lines([r, g, b, 0.9], EDGE_WIDTH_PX));
+            let polytope = entry.shape.polytope4();
+            Card {
+                geometry: polytope.map(|polytope| {
+                    session.prepare(PreparedGeometry::edges_of(polytope.topology(), BODY_SIZE))
+                }),
+                material,
+                shades: polytope.map(|polytope| {
+                    let topology = polytope.topology();
+                    Shades {
+                        gradient: session.add_palette(color::vertex_gradient_colors(topology)),
+                        unique: session.add_palette(color::unique_edge_colors(topology.edges)),
+                        extent: color::w_extent(topology, BODY_SIZE),
+                    }
+                }),
+            }
+        })
+        .collect()
 }
 
 fn install_systems(
     session: &mut Session<Playground>,
     domain: DomainHandle<EuclideanR4>,
     layers: Layers,
-    shades: Vec<Option<Shades>>,
+    cards: Vec<Card>,
     intents: &Intents,
 ) {
     let queued = intents.clone();
     let mut drained: Vec<Intent> = Vec::new();
+    let submitted = cards.clone();
     session.system(
         Phase::Dispatch,
         "intents",
@@ -296,7 +289,7 @@ fn install_systems(
                 std::mem::swap(&mut *held, &mut drained);
             }
             for intent in drained.drain(..) {
-                submit(commands, domain, intent);
+                submit(commands, domain, &submitted, intent);
             }
         },
     );
@@ -374,7 +367,7 @@ fn install_systems(
                 return;
             };
             for (entity, slot) in app.slots.iter() {
-                let Some(shades) = shades.get(slot.index).copied().flatten() else {
+                let Some(shades) = card_of(&slot.entry).and_then(|card| cards[card].shades) else {
                     continue;
                 };
                 if let Some(instance) = r4.instances.get_mut(entity) {
@@ -434,7 +427,12 @@ fn install_systems(
     );
 }
 
-fn submit(commands: &mut Commands<Playground>, domain: DomainHandle<EuclideanR4>, intent: Intent) {
+fn submit(
+    commands: &mut Commands<Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    cards: &[Card],
+    intent: Intent,
+) {
     match intent {
         Intent::Mode(mode) => commands.app(SetMode { mode, domain }),
         Intent::Active(slot) => commands.app(SetActive { slot }),
@@ -453,6 +451,19 @@ fn submit(commands: &mut Commands<Playground>, domain: DomainHandle<EuclideanR4>
         Intent::Turn(rotor) => commands.app(TurnRow { rotor, domain }),
         Intent::Color(mode) => commands.app(SetColorMode { mode }),
         Intent::Points => commands.app(TogglePoints),
+        Intent::Shape(slot, card) => {
+            let Some(entry) = catalog::SHAPE_CATALOG.get(card) else {
+                return;
+            };
+            commands.app(SetShape {
+                slot,
+                entry: *entry,
+                geometry: cards[card].geometry,
+                material: cards[card].material,
+                shades: cards[card].shades,
+                domain,
+            })
+        }
     };
 }
 
@@ -528,6 +539,7 @@ struct Scratch {
     segments: Vec<SegmentRecord>,
     cutter: section::Cutter,
     cloud: points::Cloud,
+    anchors: Vec<(usize, &'static str, glam::Vec3)>,
 }
 
 impl Scratch {
@@ -539,6 +551,7 @@ impl Scratch {
             segments: Vec::new(),
             cutter: section::Cutter::new(SECTION_COLOR, SECTION_WIDTH_PX),
             cloud: points::Cloud::new(row.iter().filter_map(|entry| entry.shape.polytope4())),
+            anchors: Vec::new(),
         }
     }
 }
@@ -559,6 +572,14 @@ fn collect(
             .iter()
             .map(|(entity, slot)| (entity, slot.entry)),
     );
+    scratch.anchors.clear();
+    scratch.anchors.extend(
+        session
+            .app
+            .slots
+            .iter()
+            .map(|(_, slot)| (slot.index, slot.entry.label, glam::Vec3::ZERO)),
+    );
     scratch.bodies.clear();
     scratch.segments.clear();
     scratch.cloud.clear();
@@ -566,11 +587,15 @@ fn collect(
     let Ok(r4) = session.domains_mut().typed(domain) else {
         return;
     };
-    for (entity, entry) in &scratch.slots {
+    for (at, (entity, entry)) in scratch.slots.iter().enumerate() {
         let Some(pose) = r4.poses.get(*entity) else {
             continue;
         };
-        sum += pose.0.translation.truncate();
+        let center = pose.0.translation.truncate();
+        sum += center;
+        if let Some(anchor) = scratch.anchors.get_mut(at) {
+            anchor.2 = center;
+        }
         scratch.bodies.push(scene::body_of(entry, &pose.0));
         let Some(polytope) = entry.shape.polytope4() else {
             continue;
@@ -783,6 +808,7 @@ fn main() -> Result<(), HostError> {
             cloud.publish(&eye, scratch.cloud.records());
             if let Some(context) = hook.ui {
                 ui::draw(context, hook.session, &mut panel, &ui_intents);
+                ui::callouts(context, hook.session, &scratch.anchors);
             }
         });
     launch(booted.session, app)
@@ -1196,6 +1222,48 @@ mod tests {
             (pose.x - dragged).abs() < 1e-3,
             "the step overwrote the drag from a body that never moved: pose x {}",
             pose.x
+        );
+    }
+
+    #[test]
+    fn a_shape_card_respawns_the_slot_in_place_with_the_new_polytopes_edges() {
+        let (mut booted, intents) = one_slot();
+        let rest = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .map(|(_, slot)| slot.rest)
+            .next()
+            .expect("the row has a slot");
+
+        push(&intents, Intent::Shape(0, 0));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        let held: Vec<Slot> = booted.session.app.slots.iter().map(|(_, s)| *s).collect();
+        assert_eq!(held.len(), 1, "the swap left {} slots", held.len());
+        assert_eq!(held[0].entry.label, "5-cell");
+        assert_eq!(held[0].index, 0);
+        assert_eq!(
+            held[0].rest, rest,
+            "the replacement moved off the slot's rest"
+        );
+
+        let mut records = Records::default();
+        let counts = published(&mut booted.session, &mut records, |publication| {
+            publication
+                .views
+                .iter()
+                .map(|view| view.records.segments().len())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            counts,
+            [10, 10],
+            "the swapped slot still publishes the old polytope's edges"
         );
     }
 

@@ -20,6 +20,30 @@ fn arena() -> [(Vec4, f32); 7] {
     ]
 }
 
+pub(crate) fn add_body(
+    dispatch: &mut Dispatch<'_, Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    entity: Entity,
+    polytope: loam_shape::polytope::Polytope4,
+    rest: Vec4,
+) -> Result<(), Rejection> {
+    let vertices = polytope
+        .topology()
+        .vertices
+        .iter()
+        .map(|vertex| *vertex * BODY_SIZE)
+        .collect();
+    let body = polytope_body_r4(rest, Vec4::ZERO, vertices, BODY_MASS)
+        .ok_or(Rejection::Unsupported("invalid toy body"))?;
+    dispatch
+        .domains
+        .typed(domain)?
+        .physics_mut()
+        .ok_or(Rejection::Unsupported("the domain has no physics"))?
+        .spawn(entity, body);
+    Ok(())
+}
+
 pub(crate) fn populate(
     dispatch: &mut Dispatch<'_, Playground>,
     domain: DomainHandle<EuclideanR4>,

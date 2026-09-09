@@ -1,7 +1,12 @@
+use loam_math::Iso4Flat;
 use loam_math::{Bivector, Bivector4, EuclideanR4, Plane4, Rotor, Rotor4};
-use loam_runtime::{AppCommand, Dispatch, DomainHandle, Outcome, Rejection};
+use loam_runtime::{
+    AppCommand, Dispatch, DomainHandle, EdgeShading, Instance, MaterialId, Outcome, Pose,
+    PreparedId, Rejection, SpawnBundle,
+};
 
-use crate::color::ColorMode;
+use crate::catalog::ShapeEntry;
+use crate::color::{ColorMode, Shades};
 use crate::composer::Term;
 use crate::consts::{BASE_ROTATION_RATE, W_RANGE};
 use crate::projection::Family;
@@ -371,6 +376,55 @@ impl AppCommand<Playground> for TogglePoints {
     fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
         let shown = *dispatch.app.points.get();
         dispatch.app.points.set(!shown);
+        Ok(Outcome::Done)
+    }
+}
+
+/// Despawns the row's slot and spawns its replacement in place, with the toybox body when that mode is live.
+pub(crate) struct SetShape {
+    pub(crate) slot: usize,
+    pub(crate) entry: ShapeEntry,
+    pub(crate) geometry: Option<PreparedId>,
+    pub(crate) material: MaterialId,
+    pub(crate) shades: Option<Shades>,
+    pub(crate) domain: DomainHandle<EuclideanR4>,
+}
+
+impl AppCommand<Playground> for SetShape {
+    fn name(&self) -> &'static str {
+        self.entry.label
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        let held = dispatch
+            .app
+            .slots
+            .iter()
+            .find(|(_, slot)| slot.index == self.slot)
+            .map(|(entity, slot)| (entity, *slot))
+            .ok_or(Rejection::Unsupported("no such slot"))?;
+        let (entity, mut row) = held;
+        if row.entry == self.entry {
+            return Ok(Outcome::Done);
+        }
+        row.entry = self.entry;
+        dispatch.despawn(entity)?;
+        let mut bundle = SpawnBundle::new()
+            .at(self.domain, Pose(Iso4Flat::from_translation(row.rest)))
+            .row(row);
+        if let Some(geometry) = self.geometry {
+            let mode = *dispatch.app.color.get();
+            let shading = self
+                .shades
+                .map_or(EdgeShading::Material, |shades| shades.of(mode));
+            bundle = bundle.instance(Instance::new(geometry, self.material).shaded(shading));
+        }
+        let spawned = dispatch.spawn(bundle)?;
+        if *dispatch.app.mode.get() == Mode::Toybox {
+            if let Some(polytope) = self.entry.collider_polytope() {
+                toy::add_body(dispatch, self.domain, spawned, polytope, row.rest)?;
+            }
+        }
         Ok(Outcome::Done)
     }
 }

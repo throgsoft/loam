@@ -6,7 +6,7 @@ use crate::composer::{parse_term, Composer};
 use crate::consts::W_RANGE;
 use crate::mode::Mode;
 use crate::projection::Family;
-use crate::{push, Intent, Intents, Playground};
+use crate::{catalog, push, Intent, Intents, Playground};
 
 const PLANE_LABELS: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
 
@@ -123,13 +123,29 @@ pub(crate) fn draw(
             let mut slots: Vec<_> = app.slots.iter().map(|(_, slot)| *slot).collect();
             slots.sort_by_key(|slot| slot.index);
             for slot in slots {
-                if ui
-                    .selectable_label(slot.index == active, slot.entry.label)
-                    .on_hover_text(slot.entry.long_name)
-                    .clicked()
-                {
-                    push(intents, Intent::Active(slot.index));
-                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(slot.index == active, slot.entry.label)
+                        .on_hover_text(slot.entry.long_name)
+                        .clicked()
+                    {
+                        push(intents, Intent::Active(slot.index));
+                    }
+                    let swap = ui.small_button("swap");
+                    egui::Popup::menu(&swap).show(|ui| {
+                        ui.set_min_width(140.0);
+                        for (card, entry) in catalog::SHAPE_CATALOG.iter().enumerate() {
+                            if ui
+                                .button(entry.label)
+                                .on_hover_text(entry.long_name)
+                                .clicked()
+                            {
+                                push(intents, Intent::Shape(slot.index, card));
+                                ui.close();
+                            }
+                        }
+                    });
+                });
             }
         });
 }
@@ -209,5 +225,42 @@ fn composer(ui: &mut egui::Ui, composer: &Composer, panel: &mut Panel, intents: 
         {
             push(intents, Intent::Scrub(degrees.to_radians()));
         }
+    }
+}
+
+const CALLOUT_INSET_PT: f32 = 10.0;
+
+/// Anchors one label per slot at the body's own image point, through the root view's NDC.
+pub(crate) fn callouts(
+    context: &egui::Context,
+    session: &Session<Playground>,
+    anchors: &[(usize, &'static str, glam::Vec3)],
+) {
+    let screen = context.viewport_rect();
+    let half = screen.size() * 0.5;
+    for (index, label, point) in anchors {
+        let Some([x, y]) = session.views().ndc(point.to_array()) else {
+            continue;
+        };
+        let at = egui::pos2(
+            screen.center().x + x * half.x,
+            screen.center().y - y * half.y - CALLOUT_INSET_PT,
+        );
+        if !screen.contains(at) {
+            continue;
+        }
+        egui::Area::new(egui::Id::new(("callout", index)))
+            .fixed_pos(at)
+            .pivot(egui::Align2::CENTER_BOTTOM)
+            .order(egui::Order::Foreground)
+            .show(context, |ui| {
+                egui::Frame::default()
+                    .fill(egui::Color32::from_black_alpha(160))
+                    .inner_margin(egui::Margin::symmetric(6, 2))
+                    .corner_radius(3)
+                    .show(ui, |ui| {
+                        ui.monospace(*label);
+                    });
+            });
     }
 }
