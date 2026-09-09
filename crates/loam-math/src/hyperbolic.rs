@@ -261,6 +261,17 @@ fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> 
     let conformal = (1.0 - dot(p_to_clamped, p_to_clamped)) / (1.0 - dot(p_from_clamped, p_from_clamped));
     return conformal * loam_gyr_apply(p_to_clamped, -p_from_clamped, v);
 }
+
+// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7.
+fn loam_poincare_to_hyperboloid(p: vec3<f32>) -> vec4<f32> {
+    let r2 = min(dot(p, p), LOAM_H3_R2_MAX);
+    let den = 1.0 - r2;
+    return vec4<f32>(2.0 * p / den, (1.0 + r2) / den);
+}
+
+fn loam_hyperboloid_to_klein(h: vec4<f32>) -> vec3<f32> {
+    return h.xyz / max(h.w, 1.0);
+}
 "#;
 
 fn artanh(x: f32) -> f32 {
@@ -289,7 +300,8 @@ fn gyr_apply(a: Vec3, b: Vec3, v: Vec3) -> Vec3 {
     v + (2.0 / norm2) * (scalar * axis.cross(v) + axis.cross(axis.cross(v)))
 }
 
-fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
+// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7: the Lorentz embedding of the ball.
+pub fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     let r2 = p.length_squared().min(POINCARE_R2_MAX);
     let den = 1.0 - r2;
     Vec4::new(
@@ -300,9 +312,32 @@ fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     )
 }
 
-fn hyperboloid_to_poincare(h: Vec4) -> Vec3 {
+pub fn hyperboloid_to_poincare(h: Vec4) -> Vec3 {
     let den = (1.0 + h.w).max(1e-7);
     Vec3::new(h.x / den, h.y / den, h.z / den)
+}
+
+// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7: Klein is the hyperboloid seen from the origin.
+pub fn hyperboloid_to_klein(h: Vec4) -> Vec3 {
+    Vec3::new(h.x, h.y, h.z) / h.w.max(1.0)
+}
+
+pub fn klein_to_hyperboloid(k: Vec3) -> Vec4 {
+    let w = 1.0 / (1.0 - k.length_squared().min(POINCARE_R2_MAX)).sqrt();
+    Vec4::new(k.x * w, k.y * w, k.z * w, w)
+}
+
+pub fn poincare_to_klein(p: Vec3) -> Vec3 {
+    hyperboloid_to_klein(poincare_to_hyperboloid(p))
+}
+
+pub fn klein_to_poincare(k: Vec3) -> Vec3 {
+    hyperboloid_to_poincare(klein_to_hyperboloid(k))
+}
+
+/// Klein point at hyperbolic distance `t` from the origin along unit `dir`; geodesics from the origin are straight.
+pub fn klein_ray(dir: Vec3, t: f32) -> Vec3 {
+    dir * t.tanh()
 }
 
 fn poincare_to_hyperboloid_tangent(p: Vec3, v: Vec3) -> Vec4 {
@@ -607,6 +642,45 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn klein_chart_through_the_embedding_matches_its_closed_form() {
+        for p in ball_sweep() {
+            let expected = 2.0 * p / (1.0 + p.length_squared());
+            let k = poincare_to_klein(p);
+            assert!(
+                (k - expected).length() <= 1e-6,
+                "Klein of {p:?} is {k:?}, closed form {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn klein_ray_parameter_is_hyperbolic_arc_length() {
+        let s = h3();
+        let dir = Vec3::new(0.6, -0.48, 0.64);
+        for t in [0.1_f32, 1.0, 3.0, 6.0] {
+            let p = klein_to_poincare(klein_ray(dir, t));
+            assert_relative_eq!(s.distance(Vec3::ZERO, p), t, epsilon = 2e-4 * t);
+        }
+    }
+
+    #[test]
+    fn geodesics_are_straight_in_the_klein_chart() {
+        let s = h3();
+        let at = Vec3::new(0.3, -0.2, 0.5);
+        let v = Vec3::new(0.02, 0.05, -0.03);
+        let k0 = poincare_to_klein(at);
+        let chord = (poincare_to_klein(s.exp(at, 20.0 * v)) - k0).normalize();
+        for i in 1..20 {
+            let k = poincare_to_klein(s.exp(at, i as f32 * v));
+            let off = (k - k0).cross(chord).length();
+            assert!(
+                off <= 1e-5,
+                "geodesic sample {i} leaves the Klein chord by {off}"
+            );
         }
     }
 
