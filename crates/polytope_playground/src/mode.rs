@@ -2,6 +2,7 @@ use loam_math::{Bivector4, EuclideanR4, Plane4};
 use loam_runtime::{AppCommand, Dispatch, DomainHandle, Outcome, Rejection};
 
 use crate::consts::{BASE_ROTATION_RATE, W_RANGE};
+use crate::projection::Family;
 use crate::toy;
 use crate::Playground;
 
@@ -149,6 +150,21 @@ impl AppCommand<Playground> for SetRunning {
 
     fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
         dispatch.app.spin.get_mut().running = self.running;
+        Ok(Outcome::Done)
+    }
+}
+
+pub(crate) struct SetProjection {
+    pub(crate) family: Family,
+}
+
+impl AppCommand<Playground> for SetProjection {
+    fn name(&self) -> &'static str {
+        self.family.name()
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        dispatch.app.projection.set(self.family);
         Ok(Outcome::Done)
     }
 }

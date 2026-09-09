@@ -12,8 +12,8 @@ use loam_runtime::host::{run_headless, HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, Bindings, Command, Commands, Ctx, DomainBuilder, DomainHandle, Domains,
     Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId, Orbit, Phase,
-    PhysicsConfig, Pointer, PointerPhase, Pose, PreparedGeometry, PreparedId, Projection4,
-    Rejection, Section4, SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
+    PhysicsConfig, Pointer, PointerPhase, Pose, PreparedGeometry, PreparedId, Rejection, Section4,
+    SegmentRecord, Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
 };
 
 #[cfg(test)]
@@ -61,6 +61,7 @@ static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 mod catalog;
 mod consts;
 mod mode;
+mod projection;
 mod scene;
 mod section;
 mod toy;
@@ -68,7 +69,8 @@ mod ui;
 
 use catalog::ShapeEntry;
 use consts::{BODY_SIZE, BODY_X_SPACING, BODY_Y, GRAVITY, W_SCRUB_RATE};
-use mode::{Mode, SetActive, SetMode, SetRunning, SetSlice, Spin, TogglePlane};
+use mode::{Mode, SetActive, SetMode, SetProjection, SetRunning, SetSlice, Spin, TogglePlane};
+use projection::Family;
 
 const SPIN: ActionId = ActionId(0);
 const SLICE_UP: ActionId = ActionId(1);
@@ -88,7 +90,6 @@ const SECTION_COLOR: [f32; 4] = [1.0, 0.85, 0.35, 1.0];
 const SECTION_WIDTH_PX: f32 = 2.0;
 const EDGE_WIDTH_PX: f32 = 1.4;
 const HEADLESS_STEPS: u32 = 8;
-const FOCAL: f32 = 2.5;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
@@ -109,6 +110,7 @@ loam_runtime::stores! {
         spin: Value<Spin>,
         active: Value<usize>,
         slice: Value<f32>,
+        projection: Value<Family>,
         pointer: Value<Option<Pointer>>,
         floor: Value<bool>,
     }
@@ -121,6 +123,7 @@ pub(crate) enum Intent {
     Slice(f32),
     Plane(usize),
     Running(bool),
+    Projection(Family),
 }
 
 pub(crate) type Intents = Arc<Mutex<Vec<Intent>>>;
@@ -169,7 +172,7 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
         })
         .collect();
 
-    let section = session.dispatch(|d| -> Result<ViewId, Rejection> {
+    let layers = session.dispatch(|d| -> Result<Layers, Rejection> {
         for (index, entry) in row.iter().enumerate() {
             let rest = rest_of(index, row.len());
             let mut bundle = SpawnBundle::new()
@@ -185,31 +188,33 @@ pub(crate) fn boot(row: &[ShapeEntry], intents: &Intents) -> Result<Boot, HostEr
             d.spawn(bundle)?;
         }
         let eye = d.spawn(SpawnBundle::new().at(domain, Pose(Iso4Flat::IDENTITY)))?;
-        let projection_eye = d.spawn(
-            SpawnBundle::new().at(domain, Pose(Iso4Flat::from_translation(Vec4::W * FOCAL))),
-        )?;
         let r4 = d.domains.typed(domain)?;
         let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
-        r4.add_view(ViewSpec::new(
-            root,
-            projection_eye,
-            Projection4 { focal: FOCAL },
-        ));
-        Ok(section)
+        let projection = r4.add_view(ViewSpec::new(root, eye, Family::default().mapping(None, 0)));
+        Ok(Layers {
+            section,
+            projection,
+        })
     })?;
     session.views_mut().root_mut().eye =
         Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
     session.app.floor.set(true);
 
-    install_systems(&mut session, domain, section, intents);
+    install_systems(&mut session, domain, layers, intents);
     session.set_initial()?;
     Ok(Boot { session, domain })
+}
+
+#[derive(Clone, Copy)]
+struct Layers {
+    section: ViewId,
+    projection: ViewId,
 }
 
 fn install_systems(
     session: &mut Session<Playground>,
     domain: DomainHandle<EuclideanR4>,
-    section: ViewId,
+    layers: Layers,
     intents: &Intents,
 ) {
     let queued = intents.clone();
@@ -279,11 +284,38 @@ fn install_systems(
             let Ok(r4) = domains.typed(domain) else {
                 return;
             };
-            let Some(spec) = r4.view_mut(section) else {
+            let Some(spec) = r4.view_mut(layers.section) else {
                 return;
             };
             spec.mapping = Box::new(Section4 { w });
             applied = w;
+        },
+    );
+
+    let mut shown: Option<(Family, Option<loam_shape::polytope::Polytope4>)> = None;
+    session.system(
+        Phase::Dispatch,
+        "projection view",
+        Access::new().domain(domain.id()),
+        move |app: &mut Playground, domains: &mut Domains| {
+            let family = *app.projection.get();
+            let active = *app.active.get();
+            let subject = app
+                .slots
+                .iter()
+                .find(|(_, slot)| slot.index == active)
+                .and_then(|(_, slot)| slot.entry.shape.polytope4());
+            if shown == Some((family, subject)) {
+                return;
+            }
+            let Ok(r4) = domains.typed(domain) else {
+                return;
+            };
+            let Some(spec) = r4.view_mut(layers.projection) else {
+                return;
+            };
+            spec.mapping = Box::new(family.mapping(subject, 0));
+            shown = Some((family, subject));
         },
     );
 
@@ -315,6 +347,7 @@ fn submit(commands: &mut Commands<Playground>, domain: DomainHandle<EuclideanR4>
         Intent::Slice(w) => commands.app(SetSlice { w }),
         Intent::Plane(plane) => commands.app(TogglePlane { plane }),
         Intent::Running(running) => commands.app(SetRunning { running }),
+        Intent::Projection(family) => commands.app(SetProjection { family }),
     };
 }
 
@@ -451,6 +484,7 @@ fn main() -> Result<(), HostError> {
     let slice_intents = intents.clone();
     let spin_intents = intents.clone();
     let shape_intents = intents.clone();
+    let projection_intents = intents.clone();
     let domain = booted.domain;
     let mut scratch = Scratch::default();
     let mut orbit = Orbit::around([0.0, BODY_Y, 0.0], 9.0);
@@ -517,6 +551,20 @@ fn main() -> Result<(), HostError> {
                         out.line(format!("shape: slot {slot} requested"));
                     }
                     None => out.line("usage: shape <slot>"),
+                }
+                Ok(())
+            },
+        )
+        .command(
+            "project",
+            "choose the projection the second layer draws (perspective | stereographic | schlegel)",
+            move |args, _submit, out| {
+                match args.first().copied().and_then(Family::from_token) {
+                    Some(family) => {
+                        push(&projection_intents, Intent::Projection(family));
+                        out.line(format!("projection: {} requested", family.name()));
+                    }
+                    None => out.line("usage: project perspective | stereographic | schlegel"),
                 }
                 Ok(())
             },

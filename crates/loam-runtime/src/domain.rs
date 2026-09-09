@@ -447,9 +447,9 @@ fn image_of<S: DomainSpace>(
     pose: &Pose<S>,
     local: [f32; 4],
 ) -> Option<[f32; 3]> {
-    let point = space.iso_apply(pose.0, space.local_point(local));
-    space.check(point).ok()?;
-    mapping.image_point(eye, point)
+    let local = space.local_point(local);
+    space.check(space.iso_apply(pose.0, local)).ok()?;
+    mapping.image_local(space, eye, pose, local)
 }
 
 fn push_segments<S: DomainSpace>(
@@ -812,8 +812,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         segments.clear();
         let records = self.instances.iter().filter_map(|(entity, instance)| {
             let pose = poses.get(entity)?;
-            let point = space.iso_apply(pose.0, origin);
-            let image_point = mapping.image_point(eye, point)?;
+            let image_point = mapping.image_local(space, eye, pose, origin)?;
             push_segments(space, mapping, eye, pose, &library, instance, segments);
             Some((
                 entity,
@@ -900,8 +899,8 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let spec = self.views.get(view.index())?;
         let eye = self.poses.get(spec.eye)?;
         let pose = self.poses.get(entity)?;
-        let point = self.space.iso_apply(pose.0, self.space.origin());
-        spec.mapping.image_point(eye, point)
+        spec.mapping
+            .image_local(&self.space, eye, pose, self.space.origin())
     }
 
     fn lift_origin(&self, view: ViewId, ray: &ImageRay) -> Result<ChartPoint, DomainError> {

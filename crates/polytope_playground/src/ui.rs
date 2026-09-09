@@ -3,6 +3,7 @@ use loam_runtime::Session;
 
 use crate::consts::W_RANGE;
 use crate::mode::Mode;
+use crate::projection::Family;
 use crate::{push, Intent, Intents, Playground};
 
 const PLANE_LABELS: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
@@ -51,6 +52,19 @@ pub(crate) fn draw(context: &egui::Context, session: &Session<Playground>, inten
             {
                 push(intents, Intent::Slice(slice));
             }
+
+            ui.separator();
+            ui.label("projection");
+            ui.horizontal_wrapped(|ui| {
+                for family in Family::ALL {
+                    if ui
+                        .selectable_label(*app.projection.get() == family, family.name())
+                        .clicked()
+                    {
+                        push(intents, Intent::Projection(family));
+                    }
+                }
+            });
 
             ui.separator();
             ui.label("row");

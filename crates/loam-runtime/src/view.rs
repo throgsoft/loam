@@ -426,6 +426,17 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
 
     fn image_point(&self, eye: &Pose<S>, point: S::Point) -> Option<[f32; 3]>;
 
+    /// Image of `local`, a point in the frame of an entity at `pose`; a map that would otherwise carry the pose through its own nonlinearity adds the pose's image offset after its map.
+    fn image_local(
+        &self,
+        space: &S,
+        eye: &Pose<S>,
+        pose: &Pose<S>,
+        local: S::Point,
+    ) -> Option<[f32; 3]> {
+        self.image_point(eye, space.iso_apply(pose.0, local))
+    }
+
     fn lift(&self, eye: &Pose<S>, ray: &ImageRay) -> Option<DomainRay<S>>;
 
     /// True when `lift` recovers a domain ray from any image ray; a map without one refuses grabs and field bridges by name.
