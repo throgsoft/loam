@@ -3,9 +3,8 @@
 ## Crate boundaries
 
 The manifests define the dependency graph. Stable crates never depend on volatile
-ones: math, shape, scene, and time sit below physics and the runtime, the renderer
-above the runtime, and the hosts above everything. Platform code lives only in
-`loam-app`.
+ones: math, shape, scene, and time sit below physics and the runtime, the renderer above
+the runtime, and the hosts above everything. Platform code lives only in `loam-app`.
 
 | Crate | Owns | Loam dependencies |
 |---|---|---|
@@ -18,7 +17,7 @@ above the runtime, and the hosts above everything. Platform code lives only in
 | `loam-physics` | Bodies, integration, collision, contacts, constraints, field contacts, certified broadphase, per-space features, persistent saves | `loam-math`, `loam-shape`, `loam-time` |
 | `loam-runtime` | Entities, typed stores, domains, views and bridges, phases, commands, work orders and bulk stores, field programs, an optional physics world per domain | `loam-math`, `loam-shape`, and `loam-physics` behind the `physics` feature |
 | `loam-render` | The GPU context, records, view maps and projective depth, materials, passes and the schedule, the presenter, raster and raymarch nodes, the field interpreter and specialization, work items and readbacks | `loam-math`, `loam-runtime`, `loam-shape`, `loam-time` |
-| `loam-text` | Glyph overlay and extruded letter solids | `loam-shape` |
+| `loam-text` | Glyph overlay, extruded letter solids, and the text pass | `loam-shape`, `loam-render` |
 | `loam-egui` | The debug layer's winit input and console panel | `loam-console`, `loam-math` |
 | `loam-app` | The session hosts (winit loop and browser worker), args, console, capture, pacing, traces, the frame script | `loam-console`, `loam-egui`, `loam-input`, `loam-math`, `loam-render`, `loam-runtime`, `loam-time` |
 | `loam` | Re-exports | `loam-math`, `loam-render`, `loam-time` |
@@ -28,8 +27,7 @@ above the runtime, and the hosts above everything. Platform code lives only in
 
 `Space` is the geometry abstraction; `IsometryGroup`, `WgslSpace`, `RasterizableSpace`,
 and `PhysicsSpace` express separate requirements, so rendering support does not imply
-rigid-body support. WGSL emitted by the CPU crates is a shader ABI shared with
-`loam-render`; the renderer owns no simulation state.
+rigid-body support. WGSL emitted by the CPU crates is a shader ABI shared with `loam-render`.
 
 ## The session
 
@@ -80,11 +78,14 @@ velocity.
 ## Presentation
 
 `Session::publish` fills a `Publication` with one `PublishedView` per view that
-reaches the root, each carrying `ViewRecords` of instances, segments, and points
-stamped with the tick and a sequence. `Records<A>` lends and releases those buffers;
-`ViewRecords::built` names the publication that built a view, and `Presenter::upload`
-skips one it already uploaded. `MaterialSpec` describes a pipeline, and `Material`
-values from `add_material` name what an instance draws with.
+reaches the root, each carrying `ViewRecords` of instances, segments, triangles, and
+points stamped with the tick and a sequence. An `Instance` with `section` set on a
+`PreparedGeometry::Polytope4` also publishes the perimeter and fan-filled faces of its
+cut at the map's `SectionCut`, and its `EdgeShading` reads segment colours from a
+palette or a w-depth ramp instead of the material. `Records<A>` lends and releases those
+buffers; `ViewRecords::built` names the publication that built a view, and
+`Presenter::upload` skips one it already uploaded. `MaterialSpec` describes a pipeline,
+and `Material` values from `add_material` name what an instance draws with.
 
 A `FramePass` declares a name, the resources it reads and writes (`SCENE_COLOR`,
 `SCENE_DEPTH`, or its own), a `PassOrder` of `BeforeScene` or `AfterScene`, and an
@@ -97,10 +98,11 @@ time and a `GpuTime`, `Unavailable` when the adapter has no timestamp queries.
 `Presenter::attach` runs at startup and after a device loss: it drops device objects,
 installs the timer, and hands every pass a `FrameFormat` through `FramePass::attach`.
 An application publishes into the pass wrappers from its frame hook: `SkyGroundPass`,
-`RaymarchPass`, `FieldPass`, `HyperslicePass`, `LinePass`, and `PointPass` each keep
-the last `publish` and share one state across clones. `TriangleFeed` holds a mesh,
-view, and optional ground for the pass it builds; `edit` bumps a revision, and the
-pass uploads once per revision and again after a device loss.
+`RaymarchPass`, `FieldPass`, `HyperslicePass`, `LinePass`, `PointPass`, and
+`loam_text::TextPass` each keep the last `publish` and share one state across clones.
+`TriangleFeed` holds a mesh, view, and optional ground for the pass it builds; `edit`
+bumps a revision, and the pass uploads once per revision and again after a device loss.
+The presenter owns one such feed and draws every view's section fills through it.
 
 ## Physics
 
@@ -134,9 +136,8 @@ beat the best distance found, with the same hits as the unculled walk.
 `DEFAULT_SPECIALIZE_AFTER` frames of an unchanged program, asks its
 `SpecializationBuilder` for a kernel with the program inlined; `InlineBuilder` builds
 on the calling thread. [PERF.md](PERF.md) records a thousand spheres: 21000
-evaluations per ray unculled against 784 through the hierarchy, a full compile of
-1999 nodes reporting 2999 program writes and 3997 index writes, and a pose-only
-compile rewriting every node.
+evaluations per ray unculled against 784 through the hierarchy, and a full compile of
+1999 nodes reporting 2999 program writes and 3997 index writes.
 
 ## GPU work
 
@@ -194,24 +195,25 @@ the workspace.
 
 [PERF.md](PERF.md) holds stamped measurements: the trace capture method, the physics
 island solve and broadphase sweep, the presentation edit-to-result path, and the field
-compile, traversal, hierarchy, and contact figures; a claim about frame time or
-hot-path cost points at a block there. The headless bins print lines a person checks
-by hand while their tests hold the analytic values: `twospace --headless N` prints the
-pick through the bridge, the dragged position, each domain's landmark pick, and the
-ball's height after `N` ticks; `hero --headless N` prints the first letter's height;
-`polytope_playground --headless` prints the active polytope with its edge count, the
-published segment count, and the frame's section list.
+compile, traversal, hierarchy, and contact figures. The headless bins print lines a
+person checks by hand while their tests hold the analytic values: `twospace --headless N`
+prints the pick through the bridge, the dragged position, each domain's landmark pick,
+and the ball's height after `N` ticks; `hero --headless N` prints the first letter's
+height; `polytope_playground --headless` prints the composer probe, the active polytope
+with its edge count, the published segment count, the section fill count, the filmstrip
+cell count, and the frame's section list.
 
 ## Open items
 
 Field binding into a domain's physics waits on a replace operation in `loam-physics`.
 A threaded `SpecializationBuilder` is not installed; `InlineBuilder` compiles on the
 calling thread. No exit channel exists for a finished script or a stopped capture, so
-the host runs until a person closes the window. The playground's move onto the session
-host dropped its HUD, the hypergimbal drag control, filmstrip capture, the director
-timelines and composer, projection modes, colour schemes, spin presets, the wider verb
-table (`alpha`, `perspective`, `wide`, `width`, `wireframe`), and throwing on release;
-a later row restores them. `EuclideanR4` leaves `pose_from_chart` and
-`tangent_from_chart` unimplemented. `cargo xtask web` builds the playground in a debug
-profile unless `--release` is passed, skipping `wasm-opt`, and the debug bundle's size
-is not recorded.
+the host runs until a person closes the window. The playground still lacks the Active
+colour mode, the director timelines, composer drag-and-drop, arrow-key shortcuts (`Key`
+has no arrows), the gimbal's translate shafts, three simultaneous projections, conformal
+caps for the stereographic and Schlegel maps, a schedule-level viewport grid (the
+filmstrip lives in the hyperslice pass), the `alpha`, `wide`, `width`, and `wireframe`
+verbs, and throwing on release; scrubbing boxes a new mapping per changed frame because
+`ViewSpec::mapping` cannot be mutated in place. `EuclideanR4` leaves `pose_from_chart`
+and `tangent_from_chart` unimplemented. `cargo xtask web` builds a debug profile unless
+`--release` is passed, skipping `wasm-opt`; the debug bundle's size is not recorded.

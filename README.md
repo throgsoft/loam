@@ -21,7 +21,7 @@ Rotate 4D shapes and inspect their 3D cross-sections.
 
 ![Regular 4-polytopes turning through a rotation plane while their 3D cross-sections change](assets/readme/rotate.webp)
 
-Pick up and throw objects in the 4D Toybox, inspired by
+Pick up and move objects in the 4D Toybox, inspired by
 [Marc ten Bosch](https://marctenbosch.com/)'s [4D Toys](https://4dtoys.com/).
 
 ![Polychora dropped into a box under 4D gravity, picked up and thrown](assets/readme/toybox.webp)
