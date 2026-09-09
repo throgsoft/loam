@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "egui integration for Loam: event glue, wgpu paint pass, console panel, world-anchored labels."
+description = "egui integration for Loam: the debug layer's winit input and console panel."
 keywords = ["egui", "gui", "wgpu", "winit", "gamedev"]
 categories = ["game-development", "gui"]
 

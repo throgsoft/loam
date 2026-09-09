@@ -6,9 +6,10 @@ Loam is a Rust game engine in development for games in higher dimensions,
 curved spaces, and quotient spaces.
 
 The engine has geometry, rigid-body physics in flat 2D through 4D, SDF and
-raster rendering, and native and browser app runners. Rhai gameplay
-scripting is a design target. The current script runner plays console
-commands at specified frame indices.
+raster rendering, and native and browser session hosts. Rhai gameplay
+scripting is a design target. A frame script, passed as `--script=path`,
+plays console lines at the frame indices it names; the window stays open
+when the script ends.
 
 [Project thesis](docs/THESIS.md) explains the purpose.
 [Architecture](docs/ARCHITECTURE.md) describes the implementation and its limits.
@@ -46,8 +47,9 @@ cd loam
 cargo run --release --locked -p polytope_playground
 ```
 
-Use the Demo menu to switch scenes. Space pauses rotation. Backtick opens
-the console.
+The side panel and the console verbs `mode`, `slice`, `spin`, and `shape`
+choose the mode, the slice, the rotation planes, and the active shape.
+Space pauses rotation. Backtick opens the console.
 
 For the browser build:
 
