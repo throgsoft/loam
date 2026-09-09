@@ -5,12 +5,15 @@ use std::time::{Duration, Instant};
 use glam::{Vec3, Vec4};
 use loam_app::session::run;
 use loam_math::{EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat};
+use loam_physics::euclidean_r4::{
+    halfspace4_body_r4, register_default_narrowphase, sphere_body_r4,
+};
 use loam_runtime::host::{self, HostConfig, HostError};
 use loam_runtime::{
     Access, ActionEvent, ActionId, Bindings, BridgeSpec, Ctx, DomainBuilder, DomainHandle, Domains,
-    Entity, Input, Instance, Key, Klein, LogCapacity, Material, Phase, Pick, Placement, Pose,
-    PreparedGeometry, Projection4, Publication, Rejection, Rigid, Section4, Session, SimConfig,
-    SpawnBundle, Step, ViewId, ViewSpec,
+    Entity, Input, Instance, Key, Klein, LogCapacity, Material, Phase, PhysicsConfig, Pick,
+    Placement, Pose, PreparedGeometry, Projection4, Publication, Rejection, Rigid, Section4,
+    Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
 };
 use loam_shape::polytope::Polytope4;
 
@@ -32,6 +35,11 @@ const DRAG_SECONDS: f64 = 0.25;
 const EDIT: ActionId = ActionId(4);
 const EDIT_STEP: f32 = 0.05;
 const LATENCY_SAMPLES: usize = 128;
+const BALL_RADIUS: f32 = 0.5;
+const BALL_MASS: f32 = 1.0;
+const BALL_SPAWN: Vec4 = Vec4::new(0.0, 0.8, 0.0, 0.0);
+const GRAVITY: f32 = 1.0;
+const FLOOR_HEIGHT: f32 = 0.0;
 
 #[derive(Clone, Copy)]
 struct Player {
@@ -59,6 +67,7 @@ struct Scene {
     landmark4: Entity,
     landmark3: Entity,
     walker4: Entity,
+    ball: Option<Entity>,
 }
 
 fn heading(input: &Input) -> [f32; 2] {
@@ -94,10 +103,16 @@ fn bindings() -> Bindings {
         .key(Key::Letter('e'), EDIT)
 }
 
-fn build() -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
+fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
     let mut session = Session::new(TwoSpaceStores::default(), SimConfig::default());
-    let r4 = session
-        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let flat = DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default());
+    let r4 = session.register_domain(if physics {
+        flat.physics(
+            PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::NEG_Y * GRAVITY),
+        )
+    } else {
+        flat
+    });
     let h3 = session
         .register_domain(DomainBuilder::new("h3", HyperbolicH3).tracked(LogCapacity::default()));
     let topology = Polytope4::Tesseract.topology();
@@ -106,8 +121,9 @@ fn build() -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
     let white = session.add_material(Material::lines([1.0, 1.0, 1.0, 0.95], 1.6));
     let root = session.views().root();
 
-    let (landmark4, landmark3, walker4) =
-        session.dispatch(|d| -> Result<(Entity, Entity, Entity), Rejection> {
+    type Built = (Entity, Entity, Entity, Option<Entity>);
+    let (landmark4, landmark3, walker4, ball) =
+        session.dispatch(|d| -> Result<Built, Rejection> {
             let landmark4 = d.spawn(
                 SpawnBundle::new()
                     .at(r4, Pose(Iso4Flat::from_translation(LANDMARK_R4)))
@@ -134,7 +150,27 @@ fn build() -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
             d.domains
                 .typed(h3)?
                 .add_view(ViewSpec::new(root, walker3, Klein));
-            Ok((landmark4, landmark3, walker4))
+            let ball = match physics {
+                false => None,
+                true => {
+                    let ball = d.spawn(
+                        SpawnBundle::new().at(r4, Pose(Iso4Flat::from_translation(BALL_SPAWN))),
+                    )?;
+                    let world = d
+                        .domains
+                        .typed(r4)?
+                        .physics_mut()
+                        .ok_or(Rejection::Unsupported("physics on r4"))?;
+                    let floor = halfspace4_body_r4(Vec4::Y, FLOOR_HEIGHT)
+                        .ok_or(Rejection::Unsupported("half-space floor"))?;
+                    world.world_mut().push_body(floor);
+                    let sphere = sphere_body_r4(BALL_SPAWN, Vec4::ZERO, BALL_RADIUS, BALL_MASS)
+                        .ok_or(Rejection::Unsupported("hypersphere body"))?;
+                    world.spawn(ball, sphere);
+                    Some(ball)
+                }
+            };
+            Ok((landmark4, landmark3, walker4, ball))
         })?;
 
     session.system(
@@ -210,8 +246,15 @@ fn build() -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
         landmark4,
         landmark3,
         walker4,
+        ball,
     };
     Ok((session, scene))
+}
+
+fn ball_height(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Option<f32> {
+    let ball = scene.ball?;
+    let domain = session.domains_mut().typed(scene.r4).ok()?;
+    Some(domain.poses.get(ball)?.0.translation.y)
 }
 
 fn published_point(
@@ -332,7 +375,13 @@ fn headless(
             }
         }
     }
-    Ok(all_matched && bridged(session, scene)?)
+    let matched = all_matched && bridged(session, scene)?;
+    if scene.ball.is_some() {
+        let y = ball_height(session, scene)
+            .ok_or_else(|| HostError::Host("the r4 ball lost its pose".into()))?;
+        println!("r4 ball after {steps} ticks: y = {y:.4}");
+    }
+    Ok(matched)
 }
 
 fn edit_input() -> Input {
@@ -395,7 +444,7 @@ fn edit_latency(
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--edit-latency") {
-        let outcome = build().and_then(|(mut session, scene)| {
+        let outcome = build(false).and_then(|(mut session, scene)| {
             edit_latency(&mut session, &scene, LATENCY_SAMPLES).map(|()| true)
         });
         return match outcome {
@@ -416,9 +465,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         Some(Some(steps)) => {
-            build().and_then(|(mut session, scene)| headless(&mut session, &scene, steps))
+            build(true).and_then(|(mut session, scene)| headless(&mut session, &scene, steps))
         }
-        None => build().and_then(|(session, _)| {
+        None => build(false).and_then(|(session, _)| {
             run(session, HostConfig::new("twospace", bindings())).map(|()| true)
         }),
     };
@@ -439,9 +488,25 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
+    const SETTLE_TICKS: u32 = 120;
+    const HAND_REST_Y: f32 = 0.493_611_1;
+
+    #[test]
+    fn the_r4_ball_settles_at_the_hand_derived_rest_height() {
+        let (mut session, scene) = build(true).unwrap();
+        let config = HostConfig::new("twospace", bindings());
+        let holds = [(Key::Letter('w'), HEADLESS_WALK)];
+        host::run_headless(&mut session, &config, SETTLE_TICKS, &holds).unwrap();
+        let y = ball_height(&mut session, &scene).unwrap();
+        assert!(
+            (y - HAND_REST_Y).abs() < 1e-5,
+            "the ball rested at {y}, not {HAND_REST_Y}"
+        );
+    }
+
     #[test]
     fn reset_keeps_relations_but_a_handle_from_before_it_still_resolves() {
-        let (mut session, scene) = build().unwrap();
+        let (mut session, scene) = build(false).unwrap();
         let config = HostConfig::new("twospace", bindings());
         let holds = [(Key::Letter('w'), HEADLESS_WALK)];
         host::run_headless(&mut session, &config, HEADLESS_WALK.end, &holds).unwrap();

@@ -255,6 +255,9 @@ pub enum RestoreError {
     Readback(&'static str),
     NoCheckpoint(&'static str),
     CheckpointTick(&'static str),
+    /// A domain's world refused its snapshot before anything was touched.
+    #[cfg(feature = "physics")]
+    Edit(loam_physics::EditError),
 }
 
 /// The simulation entry `Session::new` registers; `system_at` places app entries around it.

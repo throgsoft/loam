@@ -29,6 +29,9 @@ pub enum Rejection {
     Restore(RestoreError),
     Cancelled,
     Unsupported(&'static str),
+    /// A world-owned edit refused the command before any change.
+    #[cfg(feature = "physics")]
+    Edit(loam_physics::EditError),
 }
 
 impl From<DomainError> for Rejection {

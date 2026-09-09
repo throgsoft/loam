@@ -508,8 +508,8 @@ impl<S: IsometryGroup> Clone for Pose<S> {
 
 impl<S: IsometryGroup> Copy for Pose<S> {}
 
-/// Engine-owned work inside one domain, run by the simulation phase's domain-step entry.
-pub trait Facility<S: DomainSpace>: Send + 'static {
+/// Engine-owned work inside one domain: `step` runs in the simulation phase's domain-step entry, `release` at dispatch before the stores forget the entity, and `apply` gets first offer of a chart command.
+pub trait Facility<S: DomainSpace>: Any + Send + 'static {
     fn name(&self) -> &'static str;
 
     fn step(&mut self, poses: &mut Store<Pose<S>>, step: Step) -> Result<(), DomainError>;
@@ -517,6 +517,13 @@ pub trait Facility<S: DomainSpace>: Send + 'static {
     fn snapshot(&self) -> Box<dyn Any + Send>;
 
     fn restore(&mut self, from: &(dyn Any + Send)) -> Result<(), RestoreError>;
+
+    fn release(&mut self, _entity: Entity) {}
+
+    /// `Some` claims the command with its outcome; `None` leaves it to the domain.
+    fn apply(&mut self, _command: &ChartCommand) -> Option<Result<Outcome, Rejection>> {
+        None
+    }
 }
 
 /// A primitive, or an operator over the entities it lists.
@@ -649,7 +656,7 @@ pub struct TypedDomain<S: DomainSpace> {
     fields: Option<Store<Field>>,
     views: Vec<ViewSpec<S>>,
     targets: Vec<ViewTarget>,
-    facilities: Vec<Box<dyn Facility<S>>>,
+    pub(crate) facilities: Vec<Box<dyn Facility<S>>>,
     compiler: FieldCompiler,
 }
 
@@ -930,6 +937,9 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     }
 
     fn release(&mut self, entity: Entity) {
+        for facility in &mut self.facilities {
+            facility.release(entity);
+        }
         self.poses.release(entity);
         self.instances.release(entity);
         if let Some(fields) = &mut self.fields {
@@ -983,6 +993,11 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     }
 
     fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection> {
+        for facility in &mut self.facilities {
+            if let Some(outcome) = facility.apply(command) {
+                return outcome;
+            }
+        }
         match command {
             ChartCommand::Move { entity, point } => {
                 self.move_to(*entity, *point)?;
@@ -1016,7 +1031,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
 /// Registers only the facilities the domain uses.
 pub struct DomainBuilder<S: DomainSpace> {
     name: &'static str,
-    space: S,
+    pub(crate) space: S,
     tracking: Option<LogCapacity>,
     fields: bool,
     facilities: Vec<Box<dyn Facility<S>>>,
