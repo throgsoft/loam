@@ -432,6 +432,7 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
         space: &S,
         eye: &Pose<S>,
         pose: &Pose<S>,
+        _relative: &S::Relative,
         local: S::Point,
     ) -> Option<[f32; 3]> {
         self.image_point(eye, space.place(&space.prepare(pose), local))

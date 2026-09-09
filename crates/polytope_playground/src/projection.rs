@@ -104,13 +104,13 @@ impl ViewMapping<EuclideanR4> for Projected {
     fn image_local(
         &self,
         space: &EuclideanR4,
-        eye: &Pose<EuclideanR4>,
-        pose: &Pose<EuclideanR4>,
+        _eye: &Pose<EuclideanR4>,
+        _pose: &Pose<EuclideanR4>,
+        relative: &<EuclideanR4 as DomainSpace>::Relative,
         local: Vec4,
     ) -> Option<[f32; 3]> {
-        let relative = space.relative(eye, pose).ok()?;
-        let origin = space.place_relative(&relative, Vec4::ZERO).ok()?;
-        let point = space.place_relative(&relative, local).ok()?;
+        let origin = space.place_relative(relative, Vec4::ZERO).ok()?;
+        let point = space.place_relative(relative, local).ok()?;
         let placed = self.project(point - origin) + origin.truncate();
         placed.is_finite().then(|| placed.to_array())
     }
@@ -149,13 +149,10 @@ mod tests {
 
     fn placed(family: Family, local: Vec4) -> Vec3 {
         let mapping = family.mapping(Some(Polytope4::Tesseract), 0, 0.0);
+        let (eye, pose) = (Pose::at(Vec4::ZERO), Pose::at(OFFSET));
+        let relative = EuclideanR4.relative(&eye, &pose).expect("the eye places");
         let image = mapping
-            .image_local(
-                &EuclideanR4,
-                &Pose::at(Vec4::ZERO),
-                &Pose::at(OFFSET),
-                local,
-            )
+            .image_local(&EuclideanR4, &eye, &pose, &relative, local)
             .expect("the map places the vertex");
         Vec3::from_array(image)
     }

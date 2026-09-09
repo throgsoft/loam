@@ -1029,11 +1029,12 @@ fn image_of<S: DomainSpace>(
     eye: &Pose<S>,
     pose: &Pose<S>,
     placement: &S::Placement,
+    relative: &S::Relative,
     local: [f32; 4],
 ) -> Option<[f32; 3]> {
     let local = space.local_point(local);
     space.check(space.place(placement, local)).ok()?;
-    mapping.image_local(space, eye, pose, local)
+    mapping.image_local(space, eye, pose, relative, local)
 }
 
 fn lerp_color(back: [f32; 4], front: [f32; 4], t: f32) -> [f32; 4] {
@@ -1062,6 +1063,9 @@ fn push_segments<S: DomainSpace>(
         _ => &[],
     };
     let placement = space.prepare(pose);
+    let Ok(relative) = space.relative(eye, pose) else {
+        return;
+    };
     let origin_depth = space
         .chart_point(space.place(&placement, space.origin()))
         .coordinates[3];
@@ -1085,8 +1089,8 @@ fn push_segments<S: DomainSpace>(
     };
     let mut push = |index: usize, a: [f32; 4], b: [f32; 4]| {
         let (Some(start), Some(end)) = (
-            image_of(space, mapping, eye, pose, &placement, a),
-            image_of(space, mapping, eye, pose, &placement, b),
+            image_of(space, mapping, eye, pose, &placement, &relative, a),
+            image_of(space, mapping, eye, pose, &placement, &relative, b),
         ) else {
             return;
         };
@@ -1145,10 +1149,10 @@ fn push_section<S: DomainSpace>(
     else {
         return;
     };
-    let Some(place) = mapping.image_local(space, eye, pose, space.origin()) else {
+    let Ok(relative) = space.relative(eye, pose) else {
         return;
     };
-    let Ok(relative) = space.relative(eye, pose) else {
+    let Some(place) = mapping.image_local(space, eye, pose, &relative, space.origin()) else {
         return;
     };
     let Ok(origin) = space.place_relative(&relative, space.origin()) else {
@@ -1563,7 +1567,8 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let segments = &mut into.segments;
         let records = self.instances.iter().filter_map(|(entity, instance)| {
             let pose = poses.get(entity)?;
-            let image_point = mapping.image_local(space, eye, pose, origin)?;
+            let relative = space.relative(eye, pose).ok()?;
+            let image_point = mapping.image_local(space, eye, pose, &relative, origin)?;
             push_segments(space, mapping, eye, pose, &library, instance, segments);
             Some((
                 entity,
@@ -1650,8 +1655,9 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let spec = self.views.get(view.index())?;
         let eye = self.poses.get(spec.eye)?;
         let pose = self.poses.get(entity)?;
+        let relative = self.space.relative(eye, pose).ok()?;
         spec.mapping
-            .image_local(&self.space, eye, pose, self.space.origin())
+            .image_local(&self.space, eye, pose, &relative, self.space.origin())
     }
 
     fn lift_origin(&self, view: ViewId, ray: &ImageRay) -> Result<ChartPoint, DomainError> {
@@ -2040,13 +2046,13 @@ mod tests {
         fn image_local(
             &self,
             space: &EuclideanR4,
-            eye: &Pose<EuclideanR4>,
-            pose: &Pose<EuclideanR4>,
+            _eye: &Pose<EuclideanR4>,
+            _pose: &Pose<EuclideanR4>,
+            relative: &<EuclideanR4 as DomainSpace>::Relative,
             local: Vec4,
         ) -> Option<[f32; 3]> {
-            let relative = space.relative(eye, pose).ok()?;
-            let origin = space.place_relative(&relative, Vec4::ZERO).ok()?;
-            let point = space.place_relative(&relative, local).ok()?;
+            let origin = space.place_relative(relative, Vec4::ZERO).ok()?;
+            let point = space.place_relative(relative, local).ok()?;
             let placed = (point - origin).truncate() + origin.truncate();
             Some(placed.to_array())
         }
