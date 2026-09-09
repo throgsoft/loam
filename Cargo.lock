@@ -651,6 +651,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
+name = "examples"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "loam-math",
+ "loam-runtime",
+ "loam-shape",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1468,6 +1478,14 @@ dependencies = [
  "tracing",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "loam-runtime"
+version = "0.1.0"
+dependencies = [
+ "loam-math",
+ "loam-shape",
 ]
 
 [[package]]
