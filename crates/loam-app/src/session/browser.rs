@@ -19,7 +19,7 @@ use super::pacing::Pace;
 use super::WorkContext;
 use crate::wasm::input_queue::{self, InputMessage};
 use crate::wasm::messages;
-use crate::wasm::worker::{install_logging_idempotent, post_failure, worker_scope};
+use crate::wasm::{install_logging_idempotent, post_failure, worker_scope};
 
 /// [`launch`] with a default [`SessionApp`]; on the page it returns at once and the worker owns the loop.
 pub fn run<A: Stores>(session: Session<A>, config: HostConfig) -> Result<(), HostError> {

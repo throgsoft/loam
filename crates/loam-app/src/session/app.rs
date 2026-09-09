@@ -8,6 +8,7 @@ use super::pacing::Pacer;
 use super::WorkContext;
 use crate::args::Args;
 use crate::capture::CaptureRequest;
+use crate::script::{driver_from_args, ScriptDriver};
 
 /// Runs each frame between publication and presentation, with capture control; `sections` are the previous frame's, since the presenter clears them at upload.
 pub struct FrameHook<'a, A: Stores> {
@@ -52,6 +53,7 @@ pub struct SessionApp<A: Stores> {
     pub(crate) work: WorkFn,
     pub(crate) captures: Vec<CaptureRequest>,
     pub(crate) debug_layer: bool,
+    pub(crate) script: Option<ScriptDriver>,
     pub wasm: crate::WasmConfig,
 }
 
@@ -72,13 +74,14 @@ impl<A: Stores> SessionApp<A> {
             work: Box::new(|_| {}),
             captures: Vec::new(),
             debug_layer: true,
+            script: None,
             wasm: crate::WasmConfig::default(),
         };
         host.apply_args();
         host
     }
 
-    /// Reads `--fps` and `--vsync` from `args`.
+    /// Reads `--fps`, `--vsync`, and `--script` from `args`; a script that fails to load is logged and dropped.
     pub fn apply_args(&mut self) {
         if let Some(fps) = self.args.parse::<f32>("fps") {
             self.pacer.set_target_fps(fps);
@@ -89,6 +92,10 @@ impl<A: Stores> SessionApp<A> {
             _ => None,
         } {
             self.vsync = Some(vsync);
+        }
+        match driver_from_args(&self.args) {
+            Ok(driver) => self.script = driver,
+            Err(error) => tracing::error!("--script ignored: {error:#}"),
         }
     }
 
