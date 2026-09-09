@@ -1,5 +1,6 @@
 use loam_shape::polytope::Polytope4Topology;
 
+use crate::bridge::{self, Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
 use crate::bulk::{
     Bulk, BulkAction, BulkCheckpoint, BulkError, BulkId, BulkSnapshot, BulkSpec, InFlight, Landed,
     Landing, SnapshotPolicy, Wait, WorkOrder, WorkStats,
@@ -8,7 +9,8 @@ use crate::command::{
     Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
 };
 use crate::domain::{
-    DomainBuilder, DomainError, DomainHandle, DomainId, DomainSnapshot, DomainSpace, Domains,
+    ChartCommand, ChartPoint, DomainBuilder, DomainError, DomainHandle, DomainId, DomainSnapshot,
+    DomainSpace, Domains,
 };
 use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
 use crate::input::Input;
@@ -16,9 +18,10 @@ use crate::phase::{
     Access, Ctx, Entry, EntryId, Order, Phase, Phases, Schedule, Step, System, SystemEntry, Tick,
     WorkItem,
 };
-use crate::store::SchemaId;
+use crate::relation::{LinkId, Relation, RelationSnapshot};
+use crate::store::{SchemaId, StoreField};
 use crate::stores::Stores;
-use crate::view::{Pick, ViewRecords, ViewTarget, Views};
+use crate::view::{ImageRay, Pick, Rigid, ViewRecords, ViewTarget, Views, ViewsSnapshot};
 
 /// Fixed steps on both hosts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +171,7 @@ impl Library<'_> {
 pub struct PublishedView {
     pub domain: DomainId,
     pub target: ViewTarget,
+    pub placement: Rigid,
     pub records: ViewRecords,
 }
 
@@ -234,6 +238,8 @@ pub struct SessionSnapshot<A: Stores> {
     pub app: A::Snapshot,
     pub entities: EntitiesSnapshot,
     pub domains: Vec<DomainSnapshot>,
+    pub views: ViewsSnapshot,
+    pub bridges: RelationSnapshot<Bridge>,
     pub tick: Tick,
     pub config: SimConfig,
     pub next_request: RequestId,
@@ -259,6 +265,8 @@ pub struct Session<A: Stores> {
     pub app: A,
     domains: Domains,
     views: Views,
+    bridges: Relation<Bridge>,
+    drag: Option<Drag>,
     phases: Phases<A>,
     commands: Commands<A>,
     batch: Vec<Request<A>>,
@@ -304,10 +312,14 @@ impl<A: Stores> Session<A> {
                 },
             )),
         );
+        let mut bridges = Relation::new();
+        StoreField::bind(&mut bridges, scene);
         Self {
             app,
             domains: Domains::new(scene.runtime),
             views: Views::new(),
+            bridges,
+            drag: None,
             phases,
             commands: Commands::new(scene),
             batch: Vec::new(),
@@ -580,7 +592,177 @@ impl<A: Stores> Session<A> {
             &mut self.views,
             self.commands.entities_mut(),
         );
-        f(&mut dispatch)
+        let result = f(&mut dispatch);
+        self.reconcile_bridges();
+        result
+    }
+
+    fn reconcile_bridges(&mut self) {
+        loop {
+            let entities = self.commands.entities();
+            let stale = self
+                .bridges
+                .ids()
+                .iter()
+                .zip(self.bridges.links())
+                .find(|(_, link)| {
+                    entities.resolve(link.from).is_none() || entities.resolve(link.to).is_none()
+                })
+                .map(|(id, link)| (*id, link.data));
+            let Some((id, bridge)) = stale else {
+                return;
+            };
+            self.views.unplace(bridge.image);
+            let _ = self.bridges.unlink(id);
+        }
+    }
+
+    pub fn bridges(&self) -> &Relation<Bridge> {
+        &self.bridges
+    }
+
+    pub fn bridge(&mut self, spec: BridgeSpec) -> Result<LinkId, BridgeError> {
+        if self.entities().resolve(spec.anchor).is_none() {
+            return Err(BridgeError::Stale(spec.anchor));
+        }
+        let (summary, has_fields) = {
+            let source = self
+                .domains
+                .get(spec.source)
+                .ok_or(BridgeError::UnknownDomain(spec.source))?;
+            let summary = source
+                .view(spec.view)
+                .ok_or(BridgeError::UnknownView(spec.view))?;
+            (summary, source.has_fields())
+        };
+        if spec.placement.rigid().is_none() {
+            return Err(BridgeError::Nonlinear(summary.name));
+        }
+        if has_fields {
+            if !summary.ray_lift {
+                return Err(BridgeError::NoRayLift(summary.name));
+            }
+            let source = self
+                .domains
+                .facade(spec.source)
+                .ok_or(BridgeError::UnknownDomain(spec.source))?;
+            source.compile_fields()?;
+            let kind = source.field_program().kind;
+            if !bridge::step_bound(kind) {
+                return Err(BridgeError::NoStepBound(summary.name, kind));
+            }
+        }
+        let image = self
+            .views
+            .place(spec.into, spec.placement)
+            .ok_or(BridgeError::UnknownImage(spec.into))?;
+        let link = self.bridges.link(
+            spec.anchor,
+            summary.eye,
+            Bridge {
+                source: spec.source,
+                view: spec.view,
+                image,
+            },
+        );
+        let link = match link {
+            Ok(link) => link,
+            Err(error) => {
+                self.views.unplace(image);
+                return Err(BridgeError::Link(error));
+            }
+        };
+        let source = self
+            .domains
+            .facade(spec.source)
+            .ok_or(BridgeError::UnknownDomain(spec.source))?;
+        source.retarget(spec.view, image)?;
+        Ok(link)
+    }
+
+    pub fn dragging(&self) -> Option<Drag> {
+        self.drag
+    }
+
+    pub fn grab(&mut self, ndc: [f32; 2], time: f64) -> Result<Pick, DragError> {
+        let pick = self.pick(ndc).ok_or(DragError::NoPick)?;
+        let domain = self
+            .domains
+            .get(pick.domain)
+            .ok_or(DomainError::UnknownDomain(pick.domain))?;
+        let summary = domain
+            .view(pick.view)
+            .ok_or(DomainError::Unsupported("unknown view"))?;
+        if !summary.ray_lift {
+            return Err(DragError::NoLift(summary.name));
+        }
+        let into = self
+            .views
+            .to_root(pick.image)
+            .and_then(|to| to.rigid())
+            .ok_or(DomainError::Unsupported("image space"))?
+            .inverse();
+        let center = domain
+            .image_of(pick.view, pick.entity)
+            .ok_or(DomainError::Stale(pick.entity))?;
+        let forward = self
+            .views
+            .get(self.views.root())
+            .ok_or(DomainError::Unsupported("image space"))?
+            .eye
+            .forward;
+        let plane = into.apply(pick.image_point);
+        self.drag = Some(Drag {
+            entity: pick.entity,
+            domain: pick.domain,
+            view: pick.view,
+            image: pick.image,
+            plane,
+            normal: into.direction(forward),
+            center,
+            at: plane,
+            time,
+            velocity: [0.0; 3],
+        });
+        Ok(pick)
+    }
+
+    pub fn drag(&mut self, ndc: [f32; 2], time: f64) -> Result<ChartPoint, DragError> {
+        let mut drag = self.drag.ok_or(DragError::NotGrabbed)?;
+        let domain = self
+            .domains
+            .get(drag.domain)
+            .ok_or(DomainError::UnknownDomain(drag.domain))?;
+        let name = domain
+            .view(drag.view)
+            .ok_or(DomainError::Unsupported("unknown view"))?
+            .name;
+        let ray = self
+            .views
+            .ray(drag.image, ndc)
+            .ok_or(DomainError::Unsupported("image space"))?;
+        let at = drag.meet(&ray).ok_or(DragError::Ambiguous(name))?;
+        let point = domain.lift_origin(
+            drag.view,
+            &ImageRay {
+                origin: drag.moved(at),
+                direction: drag.normal,
+            },
+        )?;
+        drag.sample(at, time);
+        self.drag = Some(drag);
+        self.commands.submit(Command::Chart(
+            drag.domain,
+            ChartCommand::Move {
+                entity: drag.entity,
+                point,
+            },
+        ));
+        Ok(point)
+    }
+
+    pub fn release(&mut self) -> Option<DragRelease> {
+        self.drag.take().map(|drag| drag.released())
     }
 
     /// Commits deferred commands, runs each dispatch entry and then its commands, and counts what grew; runs while paused, and a call that resumes a suspended entry keeps the input it started with.
@@ -748,14 +930,17 @@ impl<A: Stores> Session<A> {
             sequence: self.sequence,
         };
         self.app.publish(&mut into.app, stamp);
-        let root = self.views.root();
         let library = Library {
             geometry: &self.prepared,
             materials: &self.materials,
         };
         let mut count = 0;
         for domain in self.domains.iter() {
-            for &target in domain.views().iter().filter(|target| target.image == root) {
+            for &target in domain.views() {
+                let Some(placement) = self.views.to_root(target.image).and_then(|to| to.rigid())
+                else {
+                    continue;
+                };
                 let current = into
                     .views
                     .get(count)
@@ -765,9 +950,11 @@ impl<A: Stores> Session<A> {
                     into.views.push(PublishedView {
                         domain: domain.id(),
                         target,
+                        placement,
                         records: ViewRecords::default(),
                     });
                 }
+                into.views[count].placement = placement;
                 domain.publish(target.view, library, &mut into.views[count].records, stamp)?;
                 count += 1;
             }
@@ -815,6 +1002,8 @@ impl<A: Stores> Session<A> {
                 .iter()
                 .map(|domain| domain.snapshot())
                 .collect(),
+            views: self.views.snapshot(),
+            bridges: StoreField::snapshot(&self.bridges),
             tick: self.tick,
             config: self.config,
             next_request: self.commands.next_request(),
@@ -871,6 +1060,9 @@ impl<A: Stores> Session<A> {
             domain.restore(snapshot, scene)?;
         }
         self.app.restore(&from.app, scene);
+        self.views.restore(&from.views);
+        StoreField::restore(&mut self.bridges, &from.bridges, scene);
+        self.drag = None;
         self.tick = from.tick;
         self.config = from.config;
         Ok(())

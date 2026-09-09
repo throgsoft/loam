@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use loam_math::hyperbolic::{
     hyperboloid_to_klein, klein_to_poincare, poincare_to_hyperboloid, H3_DEPTH_ENVELOPE,
 };
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, IsometryGroup, Space};
+use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Space};
 
 use crate::domain::{ChartPoint, ChartPose, DomainId, DomainSpace, Pose};
 use crate::entity::Entity;
@@ -134,17 +134,113 @@ pub struct ImageSpace {
     pub eye: Eye,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rigid {
+    pub pose: Iso3,
+    pub scale: f32,
+}
+
+impl Rigid {
+    pub const IDENTITY: Self = Self {
+        pose: Iso3::IDENTITY,
+        scale: 1.0,
+    };
+
+    pub fn apply(&self, point: [f32; 3]) -> [f32; 3] {
+        EuclideanR3
+            .iso_apply(self.pose, Vec3::from(point) * self.scale)
+            .to_array()
+    }
+
+    pub fn compose(&self, inner: &Rigid) -> Rigid {
+        Rigid {
+            pose: EuclideanR3.iso_compose(
+                self.pose,
+                Iso3 {
+                    rotation: inner.pose.rotation,
+                    translation: inner.pose.translation * self.scale,
+                },
+            ),
+            scale: self.scale * inner.scale,
+        }
+    }
+
+    pub fn inverse(&self) -> Rigid {
+        let inverse = EuclideanR3.iso_inverse(self.pose);
+        Rigid {
+            pose: Iso3 {
+                rotation: inverse.rotation,
+                translation: inverse.translation / self.scale,
+            },
+            scale: 1.0 / self.scale,
+        }
+    }
+
+    pub fn direction(&self, direction: [f32; 3]) -> [f32; 3] {
+        EuclideanR3
+            .iso_transport(self.pose, Vec3::ZERO, Vec3::from(direction))
+            .to_array()
+    }
+
+    pub fn ray(&self, ray: &ImageRay) -> ImageRay {
+        ImageRay {
+            origin: self.apply(ray.origin),
+            direction: self.direction(ray.direction),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Placement {
+    Rigid(Rigid),
+    Nonlinear(&'static str),
+}
+
+impl Placement {
+    pub fn compose(&self, inner: &Placement) -> Placement {
+        match (self, inner) {
+            (Placement::Rigid(outer), Placement::Rigid(inner)) => {
+                Placement::Rigid(outer.compose(inner))
+            }
+            (Placement::Nonlinear(kind), _) | (_, Placement::Nonlinear(kind)) => {
+                Placement::Nonlinear(kind)
+            }
+        }
+    }
+
+    pub fn rigid(&self) -> Option<Rigid> {
+        match self {
+            Placement::Rigid(rigid) => Some(*rigid),
+            Placement::Nonlinear(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Placed {
+    parent: ImageSpaceId,
+    placement: Placement,
+    live: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct ViewsSnapshot {
+    placed: Vec<Placed>,
+}
+
 /// R³ image spaces; the root one projects to the screen and every hit has a position in one.
 pub struct Views {
-    spaces: Vec<ImageSpace>,
+    root: ImageSpace,
+    placed: Vec<Placed>,
 }
 
 impl Views {
     pub(crate) fn new() -> Self {
         Self {
-            spaces: vec![ImageSpace {
+            root: ImageSpace {
                 eye: Eye::default(),
-            }],
+            },
+            placed: Vec::new(),
         }
     }
 
@@ -153,20 +249,65 @@ impl Views {
     }
 
     pub fn root_mut(&mut self) -> &mut ImageSpace {
-        &mut self.spaces[0]
+        &mut self.root
     }
 
     pub fn get(&self, id: ImageSpaceId) -> Option<&ImageSpace> {
-        self.spaces.get(id.index())
+        (id.0 == 0).then_some(&self.root)
     }
 
     pub fn get_mut(&mut self, id: ImageSpaceId) -> Option<&mut ImageSpace> {
-        self.spaces.get_mut(id.index())
+        (id.0 == 0).then_some(&mut self.root)
+    }
+
+    pub(crate) fn place(
+        &mut self,
+        parent: ImageSpaceId,
+        placement: Placement,
+    ) -> Option<ImageSpaceId> {
+        self.to_root(parent)?;
+        self.placed.push(Placed {
+            parent,
+            placement,
+            live: true,
+        });
+        Some(ImageSpaceId(self.placed.len() as u32))
+    }
+
+    pub(crate) fn unplace(&mut self, id: ImageSpaceId) {
+        if let Some(placed) = self.placed.get_mut(id.index().wrapping_sub(1)) {
+            placed.live = false;
+        }
+    }
+
+    pub fn placed(&self, id: ImageSpaceId) -> bool {
+        self.placed
+            .get(id.index().wrapping_sub(1))
+            .is_some_and(|placed| placed.live)
+    }
+
+    pub fn to_root(&self, image: ImageSpaceId) -> Option<Placement> {
+        let mut composed = Placement::Rigid(Rigid::IDENTITY);
+        let mut current = image;
+        while current.0 != 0 {
+            let placed = self
+                .placed
+                .get(current.index() - 1)
+                .filter(|placed| placed.live)?;
+            composed = placed.placement.compose(&composed);
+            current = placed.parent;
+        }
+        Some(composed)
     }
 
     /// The ray from `image`'s eye through a y-up NDC point.
     pub fn ray(&self, image: ImageSpaceId, ndc: [f32; 2]) -> Option<ImageRay> {
-        let eye = &self.get(image)?.eye;
+        let root = self.root_ray(ndc)?;
+        Some(self.to_root(image)?.rigid()?.inverse().ray(&root))
+    }
+
+    fn root_ray(&self, ndc: [f32; 2]) -> Option<ImageRay> {
+        let eye = &self.root.eye;
         let half = (eye.fov_y * 0.5).tan();
         let direction = Vec3::from(eye.right) * (ndc[0] * half * eye.aspect)
             + Vec3::from(eye.up) * (ndc[1] * half)
@@ -179,14 +320,14 @@ impl Views {
 
     /// The root eye's projective depth of an image-space position; `None` nearer than its near plane.
     pub fn depth(&self, point: [f32; 3]) -> Option<f32> {
-        let eye = &self.spaces[0].eye;
+        let eye = &self.root.eye;
         let (_, forward) = eye.forward_distance(point);
         (forward >= eye.near).then(|| eye.near / forward)
     }
 
     /// Inverse of [`Views::ray`] on the root image space.
     pub fn ndc(&self, point: [f32; 3]) -> Option<[f32; 2]> {
-        let eye = &self.spaces[0].eye;
+        let eye = &self.root.eye;
         let (relative, forward) = eye.forward_distance(point);
         if forward < eye.near {
             return None;
@@ -196,6 +337,17 @@ impl Views {
             relative.dot(Vec3::from(eye.right)) / (forward * half * eye.aspect),
             relative.dot(Vec3::from(eye.up)) / (forward * half),
         ])
+    }
+
+    pub(crate) fn snapshot(&self) -> ViewsSnapshot {
+        ViewsSnapshot {
+            placed: self.placed.clone(),
+        }
+    }
+
+    pub(crate) fn restore(&mut self, from: &ViewsSnapshot) {
+        self.placed.clear();
+        self.placed.extend_from_slice(&from.placed);
     }
 }
 
@@ -236,6 +388,10 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
     fn image_point(&self, eye: &Pose<S>, point: S::Point) -> Option<[f32; 3]>;
 
     fn lift(&self, eye: &Pose<S>, ray: &ImageRay) -> Option<DomainRay<S>>;
+
+    fn ray_lift(&self) -> bool {
+        true
+    }
 
     /// Image-space radius of the metric ball of `radius` at `point`; isometric maps keep the default.
     fn image_radius(&self, _eye: &Pose<S>, _point: S::Point, radius: f32) -> f32 {
@@ -292,6 +448,10 @@ impl ViewMapping<EuclideanR4> for Projection4 {
 
     fn lift(&self, _eye: &Pose<EuclideanR4>, _ray: &ImageRay) -> Option<DomainRay<EuclideanR4>> {
         None
+    }
+
+    fn ray_lift(&self) -> bool {
+        false
     }
 
     fn image_radius(
@@ -498,7 +658,16 @@ pub struct Pick {
     pub entity: Entity,
     pub domain: DomainId,
     pub view: ViewId,
+    pub image: ImageSpaceId,
     pub image_point: [f32; 3],
     pub depth: f32,
     pub hit: Option<ChartPoint>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewSummary {
+    pub name: &'static str,
+    pub eye: Entity,
+    pub image: ImageSpaceId,
+    pub ray_lift: bool,
 }

@@ -22,8 +22,8 @@ use crate::phase::Step;
 use crate::session::{Library, MaterialId, PreparedGeometry, PreparedId, RestoreError, Stamp};
 use crate::store::{LogCapacity, Store, StoreField, StoreSnapshot};
 use crate::view::{
-    self, DomainRay, ImageRay, InstanceRecord, Pick, SegmentRecord, Vec3, Vec4, ViewId,
-    ViewMapping, ViewRecords, ViewSpec, ViewTarget, Views,
+    self, DomainRay, ImageRay, ImageSpaceId, InstanceRecord, Pick, Rigid, SegmentRecord, Vec3,
+    Vec4, ViewId, ViewMapping, ViewRecords, ViewSpec, ViewSummary, ViewTarget, Views,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -112,6 +112,10 @@ pub enum ChartCommand {
         entity: Entity,
         tangent: ChartTangent,
         dt: f32,
+    },
+    Move {
+        entity: Entity,
+        point: ChartPoint,
     },
     Remove {
         entity: Entity,
@@ -576,6 +580,7 @@ struct TypedSnapshot<S: DomainSpace> {
     instances: StoreSnapshot<Instance>,
     fields: Option<StoreSnapshot<Field>>,
     facilities: Vec<Box<dyn Any + Send>>,
+    targets: Vec<ViewTarget>,
 }
 
 /// The facade the session holds; `S` never appears here.
@@ -585,6 +590,12 @@ pub trait Domain: Send + 'static {
     fn name(&self) -> &'static str;
 
     fn views(&self) -> &[ViewTarget];
+
+    fn view(&self, id: ViewId) -> Option<ViewSummary>;
+
+    fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError>;
+
+    fn has_fields(&self) -> bool;
 
     fn publish(
         &self,
@@ -598,9 +609,14 @@ pub trait Domain: Send + 'static {
         &self,
         view: ViewId,
         ray: &ImageRay,
+        placement: Rigid,
         views: &Views,
         prepared: &[PreparedGeometry],
     ) -> Option<Pick>;
+
+    fn image_of(&self, view: ViewId, entity: Entity) -> Option<[f32; 3]>;
+
+    fn lift_origin(&self, view: ViewId, ray: &ImageRay) -> Result<ChartPoint, DomainError>;
 
     fn step(&mut self, step: Step) -> Result<(), DomainError>;
 
@@ -696,6 +712,26 @@ impl<S: DomainSpace> TypedDomain<S> {
         pose.0 = next;
         Ok(())
     }
+
+    pub fn move_to(&mut self, entity: Entity, point: ChartPoint) -> Result<(), DomainError> {
+        finite(point.coordinates)?;
+        let target = self.space.local_point(point.coordinates);
+        self.space.check(target)?;
+        let origin = self.space.origin();
+        let pose = self
+            .poses
+            .get_mut(entity)
+            .ok_or(DomainError::Stale(entity))?;
+        let here = self.space.iso_apply(pose.0, origin);
+        let frame = self.space.iso_compose(
+            self.space.iso_inverse(self.space.transvection(here)),
+            pose.0,
+        );
+        pose.0 = self
+            .space
+            .iso_compose(self.space.transvection(target), frame);
+        Ok(())
+    }
 }
 
 impl<S: DomainSpace> Domain for TypedDomain<S> {
@@ -709,6 +745,31 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
 
     fn views(&self) -> &[ViewTarget] {
         &self.targets
+    }
+
+    fn view(&self, id: ViewId) -> Option<ViewSummary> {
+        let spec = self.views.get(id.index())?;
+        Some(ViewSummary {
+            name: spec.mapping.name(),
+            eye: spec.eye,
+            image: spec.image,
+            ray_lift: spec.mapping.ray_lift(),
+        })
+    }
+
+    fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError> {
+        let spec = self
+            .views
+            .get_mut(view.index())
+            .ok_or(DomainError::Unsupported("unknown view"))?;
+        spec.image = image;
+        spec.revision = spec.revision.wrapping_add(1);
+        self.targets[view.index()].image = image;
+        Ok(())
+    }
+
+    fn has_fields(&self) -> bool {
+        self.fields.is_some()
     }
 
     fn publish(
@@ -766,6 +827,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         &self,
         view: ViewId,
         ray: &ImageRay,
+        placement: Rigid,
         views: &Views,
         prepared: &[PreparedGeometry],
     ) -> Option<Pick> {
@@ -806,6 +868,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             let Some((image_point, hit)) = hit else {
                 continue;
             };
+            let image_point = placement.apply(image_point);
             let Some(depth) = views.depth(image_point) else {
                 continue;
             };
@@ -816,12 +879,38 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
                 entity,
                 domain: self.id,
                 view,
+                image: spec.image,
                 image_point,
                 depth,
                 hit,
             });
         }
         nearest
+    }
+
+    fn image_of(&self, view: ViewId, entity: Entity) -> Option<[f32; 3]> {
+        let spec = self.views.get(view.index())?;
+        let eye = self.poses.get(spec.eye)?;
+        let pose = self.poses.get(entity)?;
+        let point = self.space.iso_apply(pose.0, self.space.origin());
+        spec.mapping.image_point(eye, point)
+    }
+
+    fn lift_origin(&self, view: ViewId, ray: &ImageRay) -> Result<ChartPoint, DomainError> {
+        let spec = self
+            .views
+            .get(view.index())
+            .ok_or(DomainError::Unsupported("unknown view"))?;
+        let eye = self
+            .poses
+            .get(spec.eye)
+            .ok_or(DomainError::Stale(spec.eye))?;
+        let lifted = spec
+            .mapping
+            .lift(eye, ray)
+            .ok_or(DomainError::Unsupported(spec.mapping.name()))?;
+        self.space.check(lifted.origin)?;
+        Ok(self.space.chart_point(lifted.origin))
     }
 
     fn step(&mut self, step: Step) -> Result<(), DomainError> {
@@ -857,6 +946,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
                 .iter()
                 .map(|facility| facility.snapshot())
                 .collect(),
+            targets: self.targets.clone(),
         }))
     }
 
@@ -867,6 +957,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             .ok_or(RestoreError::Domain(self.id))?;
         if from.facilities.len() != self.facilities.len()
             || from.fields.is_some() != self.fields.is_some()
+            || from.targets.len() != self.targets.len()
         {
             return Err(RestoreError::Domain(self.id));
         }
@@ -879,15 +970,25 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         if let (Some(fields), Some(snapshot)) = (&mut self.fields, &from.fields) {
             StoreField::restore(fields, snapshot, scene);
         }
-        for view in &mut self.views {
+        for (view, target) in self.views.iter_mut().zip(&from.targets) {
             view.eye = Entity::new(scene, view.eye.key());
+            view.image = target.image;
+            view.revision = view.revision.wrapping_add(1);
         }
+        self.targets.clear();
+        self.targets.extend_from_slice(&from.targets);
         self.compiler.invalidate();
         Ok(())
     }
 
-    fn apply(&mut self, _command: &ChartCommand) -> Result<Outcome, Rejection> {
-        todo!()
+    fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection> {
+        match command {
+            ChartCommand::Move { entity, point } => {
+                self.move_to(*entity, *point)?;
+                Ok(Outcome::Done)
+            }
+            _ => Err(Rejection::Unsupported("chart command")),
+        }
     }
 
     fn compile_fields(&mut self) -> Result<FieldCost, DomainError> {
@@ -1004,6 +1105,10 @@ impl Domains {
         self.list.is_empty()
     }
 
+    pub fn get(&self, id: DomainId) -> Option<&dyn Domain> {
+        self.list.get(id.index()).map(|domain| domain.as_ref())
+    }
+
     pub fn facade(&mut self, id: DomainId) -> Option<&mut dyn Domain> {
         self.list.get_mut(id.index()).map(|domain| domain.as_mut())
     }
@@ -1041,12 +1146,16 @@ impl Domains {
         prepared: &[PreparedGeometry],
         ndc: [f32; 2],
     ) -> Option<Pick> {
-        let root = views.root();
-        let ray = views.ray(root, ndc)?;
         let mut nearest: Option<Pick> = None;
         for domain in self.iter() {
-            for target in domain.views().iter().filter(|target| target.image == root) {
-                let Some(pick) = domain.pick(target.view, &ray, views, prepared) else {
+            for target in domain.views() {
+                let Some(placement) = views.to_root(target.image).and_then(|to| to.rigid()) else {
+                    continue;
+                };
+                let Some(ray) = views.ray(target.image, ndc) else {
+                    continue;
+                };
+                let Some(pick) = domain.pick(target.view, &ray, placement, views, prepared) else {
                     continue;
                 };
                 if nearest.is_none_or(|best| pick.depth > best.depth) {

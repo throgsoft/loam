@@ -81,6 +81,10 @@ impl<T> Relation<T> {
         &self.links
     }
 
+    pub fn ids(&self) -> &[LinkId] {
+        &self.ids
+    }
+
     /// `Occupied` when the endpoint's slot still lists links of an older generation.
     pub fn link(&mut self, from: Entity, to: Entity, data: T) -> Result<LinkId, StoreError> {
         for endpoint in [from, to] {
