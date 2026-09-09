@@ -11,6 +11,7 @@ use loam_math::{
 
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
+use crate::field::{self, FieldCompiler, FieldCost, FieldError, FieldOp, FieldPrimitive};
 use crate::phase::Step;
 use crate::session::{Library, MaterialId, PreparedGeometry, PreparedId, RestoreError, Stamp};
 use crate::store::{LogCapacity, Store, StoreField, StoreSnapshot};
@@ -135,6 +136,8 @@ pub enum DomainError {
     NoConvergence,
     ErrorBudget,
     Unsupported(&'static str),
+    FieldCycle(Entity),
+    FieldArity(Entity),
 }
 
 /// A space a domain is built over; its poses cross the facade as chart data.
@@ -506,26 +509,53 @@ pub trait Facility<S: DomainSpace>: Send + 'static {
     fn restore(&mut self, from: &(dyn Any + Send)) -> Result<(), RestoreError>;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FieldKind {
+    #[default]
     ExactDistance,
     ConservativeBound,
     Implicit,
+}
+
+impl FieldKind {
+    fn rank(self) -> u8 {
+        match self {
+            FieldKind::ExactDistance => 0,
+            FieldKind::ConservativeBound => 1,
+            FieldKind::Implicit => 2,
+        }
+    }
+
+    pub fn weaker(self, other: Self) -> Self {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
 }
 
 /// A primitive, or an operator over the entities it lists.
 #[derive(Clone, Debug)]
 pub struct Field {
     pub kind: FieldKind,
+    pub op: FieldOp,
     pub operands: Vec<Entity>,
 }
 
 /// Primitive buffer, postfix program, and stack requirement for the fixed traverser.
 #[derive(Clone, Debug, Default)]
 pub struct FieldProgram {
-    pub primitives: Vec<f32>,
+    pub primitives: Vec<FieldPrimitive>,
     pub program: Vec<u32>,
     pub stack: u32,
+    pub kind: FieldKind,
+}
+
+impl FieldProgram {
+    pub fn evaluate(&self, point: [f32; 4]) -> Result<(f32, FieldKind), FieldError> {
+        field::evaluate(&self.program, &self.primitives, point).map(|value| (value, self.kind))
+    }
 }
 
 pub struct DomainSnapshot(pub Box<dyn Any + Send>);
@@ -573,7 +603,9 @@ pub trait Domain: Send + 'static {
 
     fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection>;
 
-    fn compile_fields(&mut self) -> Result<FieldProgram, DomainError>;
+    fn compile_fields(&mut self) -> Result<FieldCost, DomainError>;
+
+    fn field_program(&self) -> &FieldProgram;
 
     fn shader_prelude(&self) -> Cow<'static, str>;
 
@@ -591,6 +623,7 @@ pub struct TypedDomain<S: DomainSpace> {
     views: Vec<ViewSpec<S>>,
     targets: Vec<ViewTarget>,
     facilities: Vec<Box<dyn Facility<S>>>,
+    compiler: FieldCompiler,
 }
 
 impl<S: DomainSpace> TypedDomain<S> {
@@ -838,6 +871,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         for view in &mut self.views {
             view.eye = Entity::new(scene, view.eye.key());
         }
+        self.compiler.invalidate();
         Ok(())
     }
 
@@ -845,8 +879,16 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         todo!()
     }
 
-    fn compile_fields(&mut self) -> Result<FieldProgram, DomainError> {
-        todo!()
+    fn compile_fields(&mut self) -> Result<FieldCost, DomainError> {
+        let fields = self
+            .fields
+            .as_ref()
+            .ok_or(DomainError::Unsupported("fields"))?;
+        self.compiler.compile(&self.space, fields, &self.poses)
+    }
+
+    fn field_program(&self) -> &FieldProgram {
+        self.compiler.program()
     }
 
     fn shader_prelude(&self) -> Cow<'static, str> {
@@ -913,6 +955,7 @@ impl<S: DomainSpace> DomainBuilder<S> {
             views: Vec::new(),
             targets: Vec::new(),
             facilities: self.facilities,
+            compiler: FieldCompiler::new(),
         }
     }
 }

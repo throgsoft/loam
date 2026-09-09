@@ -27,7 +27,7 @@ pub use pass::{
 };
 pub use point_raster::{PointRasterNode, PointRasterUniforms};
 pub use present::Presenter;
-pub use raymarch::{RayMarchNode, RayMarchUniforms};
+pub use raymarch::{FieldMarchNode, FieldMarchUniforms, MarchMode, RayMarchNode, RayMarchUniforms};
 pub use sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
 pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,

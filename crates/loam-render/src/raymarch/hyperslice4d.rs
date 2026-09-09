@@ -7,8 +7,7 @@ use bytemuck::{Pod, Zeroable};
 use loam_math::Rotor4;
 use wgpu::*;
 
-/// The uniform layout is fixed-size, so raising this is a recompile.
-pub const MAX_BODIES: usize = 32;
+const INITIAL_BODY_CAPACITY: usize = 32;
 
 /// Mirrored as `SHAPE_*` in [`HYPERSLICE_KERNEL_WGSL`]; keep in sync.
 pub const SHAPE_PENTATOPE: u32 = 0;
@@ -120,8 +119,8 @@ pub struct Hyperslice4DUniforms {
     pub viewport_origin: [f32; 2],
     pub params: [f32; 4],
     pub near: f32,
-    pub _pad3: [f32; 3],
-    pub bodies: [BodyUniform; MAX_BODIES],
+    pub body_offset: f32,
+    pub _pad3: [f32; 2],
 }
 
 impl Default for Hyperslice4DUniforms {
@@ -143,8 +142,8 @@ impl Default for Hyperslice4DUniforms {
             viewport_origin: [0.0, 0.0],
             params: [0.0; 4],
             near: 0.05,
-            _pad3: [0.0; 3],
-            bodies: [BodyUniform::default(); MAX_BODIES],
+            body_offset: 0.0,
+            _pad3: [0.0; 2],
         }
     }
 }
@@ -154,7 +153,7 @@ pub const HYPERSLICE_KERNEL_WGSL: &str = concat!(
     include_str!("../sky_ground.wgsl"),
     include_str!("../shader/projective_depth.wgsl"),
     r#"
-const MAX_BODIES: u32 = 32u;
+const NO_BODY: u32 = 0xffffffffu;
 
 const BODY_KIND_SPHERE: u32 = 0u;
 const BODY_KIND_POLYTOPE: u32 = 1u;
@@ -198,10 +197,15 @@ struct Uniforms {
     viewport_origin: vec2<f32>,
     params: vec4<f32>,
     near: f32,
-    bodies: array<BodyUniform, MAX_BODIES>,
+    body_offset: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var<storage, read> bodies: array<BodyUniform>;
+
+fn body_at(index: u32) -> BodyUniform {
+    return bodies[u32(u.body_offset + 0.5) + index];
+}
 
 fn body_sphere_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     return length(p4 - b.position) - b.radius_or_shape;
@@ -352,7 +356,7 @@ fn loam_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
     let body_count = u32(u.body_count + 0.5);
     var sdf: f32 = 1.0e9;
     for (var i: u32 = 0u; i < body_count; i = i + 1u) {
-        let b = u.bodies[i];
+        let b = body_at(i);
         let kind = u32(b.kind + 0.5);
         if (kind == BODY_KIND_SPHERE) {
             sdf = min(sdf, body_sphere_sdf_4d(p4, b));
@@ -364,9 +368,9 @@ fn loam_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
 }
 
 fn loam_body_sdf_at(p3: vec3<f32>, body_idx: u32) -> f32 {
-    if (body_idx >= MAX_BODIES) { return 1.0e9; }
+    if (body_idx >= u32(u.body_count + 0.5)) { return 1.0e9; }
     let p4 = vec4<f32>(p3, u.w_slice);
-    let b = u.bodies[body_idx];
+    let b = body_at(body_idx);
     let kind = u32(b.kind + 0.5);
     if (kind == BODY_KIND_SPHERE) {
         return body_sphere_sdf_4d(p4, b);
@@ -387,9 +391,9 @@ fn loam_total_sdf(p3: vec3<f32>) -> HitInfo {
     let p4 = vec4<f32>(p3, u.w_slice);
     let body_count = u32(u.body_count + 0.5);
     var dyn_d: f32 = 1.0e9;
-    var dyn_idx: u32 = MAX_BODIES;
+    var dyn_idx: u32 = NO_BODY;
     for (var i: u32 = 0u; i < body_count; i = i + 1u) {
-        let b = u.bodies[i];
+        let b = body_at(i);
         let kind = u32(b.kind + 0.5);
         var d: f32 = 1.0e9;
         if (kind == BODY_KIND_SPHERE) {
@@ -404,7 +408,7 @@ fn loam_total_sdf(p3: vec3<f32>) -> HitInfo {
     }
 
     if (scene_d <= dyn_d) {
-        return HitInfo(scene_d, MAX_BODIES);
+        return HitInfo(scene_d, NO_BODY);
     }
     return HitInfo(dyn_d, dyn_idx);
 }
@@ -417,7 +421,7 @@ fn vs_fullscreen(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32
 
 fn estimate_normal(p: vec3<f32>, body_idx: u32) -> vec3<f32> {
     let h = 0.001;
-    if (body_idx >= MAX_BODIES) {
+    if (body_idx == NO_BODY) {
         let dx = loam_scene_sdf(p + vec3<f32>(h, 0.0, 0.0))
                - loam_scene_sdf(p - vec3<f32>(h, 0.0, 0.0));
         let dy = loam_scene_sdf(p + vec3<f32>(0.0, h, 0.0))
@@ -460,7 +464,7 @@ fn shade(frag_pos: vec4<f32>) -> Shaded {
     let scene_max_t = loam_scene_max_t(ro, rd);
     let max_t = min(60.0, scene_max_t + 1.0);
     var hit = false;
-    var hit_idx: u32 = MAX_BODIES + 1u;
+    var hit_idx: u32 = NO_BODY;
     // Every composed SDF is a 1-Lipschitz lower bound, so the full step cannot tunnel.
     let hit_eps = 0.001;
     let min_step = 0.0001;
@@ -482,7 +486,7 @@ fn shade(frag_pos: vec4<f32>) -> Shaded {
     }
 
     let p_hit = ro + rd * t;
-    if (hit_idx >= MAX_BODIES) {
+    if (hit_idx == NO_BODY) {
         if (loam_scene_at(p_hit).kind == LOAM_PRIM_HALFSPACE4D) {
             discard;
             return Shaded(vec4<f32>(0.0, 0.0, 0.0, 0.0), 0.0);
@@ -493,8 +497,8 @@ fn shade(frag_pos: vec4<f32>) -> Shaded {
     let lambert = max(dot(n, light_dir), 0.0);
     let ambient = 0.20;
     var base = vec3<f32>(0.65, 0.65, 0.72);
-    if (hit_idx < MAX_BODIES) {
-        base = u.bodies[hit_idx].color;
+    if (hit_idx != NO_BODY) {
+        base = body_at(hit_idx).color;
     }
     let lit = base * (ambient + lambert * 0.85);
     let fog = 1.0 - exp(-t * 0.05);
@@ -527,19 +531,53 @@ fn strip_cell_uniforms(
     base: &Hyperslice4DUniforms,
     viewport: crate::Viewport,
     w_slice: f32,
-    body: &BodyUniform,
+    slot: usize,
 ) -> Hyperslice4DUniforms {
     let mut cell = *base;
-    cell.bodies[0] = *body;
     cell.body_count = 1.0;
+    cell.body_offset = slot as f32;
     cell.w_slice = w_slice;
     cell.resolution = viewport.resolution_f32();
     cell.viewport_origin = [viewport.x as f32, viewport.y as f32];
     cell
 }
 
+const BODY_SIZE: u64 = std::mem::size_of::<BodyUniform>() as u64;
+
+fn body_buffer(device: &Device, label: &'static str, capacity: usize) -> Buffer {
+    device.create_buffer(&BufferDescriptor {
+        label: Some(label),
+        size: BODY_SIZE * capacity.max(1) as u64,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn body_bind_group(
+    device: &Device,
+    layout: &BindGroupLayout,
+    uniforms: BindingResource<'_>,
+    bodies: &Buffer,
+) -> BindGroup {
+    device.create_bind_group(&BindGroupDescriptor {
+        label: Some("hyperslice4d bg"),
+        layout,
+        entries: &[
+            BindGroupEntry {
+                binding: 0,
+                resource: uniforms,
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: bodies.as_entire_binding(),
+            },
+        ],
+    })
+}
+
 struct StripCellUniforms {
     buffer: Buffer,
+    bodies: Buffer,
     bind_groups: Vec<BindGroup>,
     stride: u64,
 }
@@ -553,24 +591,24 @@ impl StripCellUniforms {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let bodies = body_buffer(device, "hyperslice4d strip cell bodies", cell_count);
         let bind_groups = (0..cell_count)
             .map(|i| {
-                device.create_bind_group(&BindGroupDescriptor {
-                    label: Some("hyperslice4d strip cell bg"),
+                body_bind_group(
+                    device,
                     layout,
-                    entries: &[BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::Buffer(BufferBinding {
-                            buffer: &buffer,
-                            offset: i as u64 * stride,
-                            size: BufferSize::new(HYPERSLICE_UNIFORMS_SIZE),
-                        }),
-                    }],
-                })
+                    BindingResource::Buffer(BufferBinding {
+                        buffer: &buffer,
+                        offset: i as u64 * stride,
+                        size: BufferSize::new(HYPERSLICE_UNIFORMS_SIZE),
+                    }),
+                    &bodies,
+                )
             })
             .collect();
         Self {
             buffer,
+            bodies,
             bind_groups,
             stride,
         }
@@ -578,9 +616,13 @@ impl StripCellUniforms {
 }
 
 pub struct Hyperslice4DNode {
+    device: Device,
     pipeline: RenderPipeline,
     uniforms: Hyperslice4DUniforms,
     uniform_buf: Buffer,
+    bodies: Vec<BodyUniform>,
+    body_buf: Buffer,
+    body_capacity: usize,
     bind_group: BindGroup,
     bind_group_layout: BindGroupLayout,
     clear_color: Color,
@@ -620,26 +662,32 @@ impl Hyperslice4DNode {
 
         let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("hyperslice4d bgl"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
 
-        let bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("hyperslice4d bg"),
-            layout: &bgl,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: uniform_buf.as_entire_binding(),
-            }],
-        });
+        let body_buf = body_buffer(device, "hyperslice4d bodies", INITIAL_BODY_CAPACITY);
+        let bind_group = body_bind_group(device, &bgl, uniform_buf.as_entire_binding(), &body_buf);
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("hyperslice4d pipeline layout"),
@@ -690,9 +738,13 @@ impl Hyperslice4DNode {
         });
 
         Self {
+            device: device.clone(),
             pipeline,
             uniforms: Hyperslice4DUniforms::default(),
             uniform_buf,
+            bodies: Vec::with_capacity(INITIAL_BODY_CAPACITY),
+            body_buf,
+            body_capacity: INITIAL_BODY_CAPACITY,
             bind_group,
             bind_group_layout: bgl,
             clear_color: crate::sky_ground::SKY_HORIZON,
@@ -715,27 +767,39 @@ impl Hyperslice4DNode {
 
     pub fn flush_uniforms(&self, queue: &Queue) {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
+        if !self.bodies.is_empty() {
+            queue.write_buffer(&self.body_buf, 0, bytemuck::cast_slice(&self.bodies));
+        }
     }
 
     pub fn set_clear_color(&mut self, color: Color) {
         self.clear_color = color;
     }
 
+    pub fn body_capacity(&self) -> usize {
+        self.body_capacity
+    }
+
     /// Does not auto-flush; pair with [`Self::flush_uniforms`].
     pub fn set_bodies(&mut self, bodies: &[BodyUniform]) {
-        let n = bodies.len().min(MAX_BODIES);
-        self.uniforms.bodies[..n].copy_from_slice(&bodies[..n]);
-        self.uniforms.body_count = n as f32;
-    }
-
-    pub fn set_body(&mut self, index: usize, body: BodyUniform) {
-        if index < MAX_BODIES {
-            self.uniforms.bodies[index] = body;
+        if bodies.len() > self.body_capacity {
+            let mut capacity = self.body_capacity.max(1);
+            while capacity < bodies.len() {
+                capacity *= 2;
+            }
+            self.body_buf = body_buffer(&self.device, "hyperslice4d bodies", capacity);
+            self.body_capacity = capacity;
+            self.bind_group = body_bind_group(
+                &self.device,
+                &self.bind_group_layout,
+                self.uniform_buf.as_entire_binding(),
+                &self.body_buf,
+            );
         }
-    }
-
-    pub fn set_body_count(&mut self, count: usize) {
-        self.uniforms.body_count = count.min(MAX_BODIES) as f32;
+        self.bodies.clear();
+        self.bodies.extend_from_slice(bodies);
+        self.uniforms.body_count = bodies.len() as f32;
+        self.uniforms.body_offset = 0.0;
     }
 }
 
@@ -836,14 +900,32 @@ impl Hyperslice4DNode {
                 .write_buffer_with(&strip.buffer, 0, upload_size)
                 .context("mapping the filmstrip's per-cell uniform staging buffer")?;
             let mut slot = 0usize;
-            for (viewport, w_slice, body) in cells {
+            for (viewport, w_slice, _) in cells {
                 if viewport.width == 0 || viewport.height == 0 {
                     continue;
                 }
-                let cell = strip_cell_uniforms(&self.uniforms, *viewport, *w_slice, body);
+                let cell = strip_cell_uniforms(&self.uniforms, *viewport, *w_slice, slot);
                 let start = slot * strip.stride as usize;
                 staging[start..start + HYPERSLICE_UNIFORMS_SIZE as usize]
                     .copy_from_slice(bytemuck::bytes_of(&cell));
+                slot += 1;
+            }
+        }
+
+        {
+            let upload_size =
+                BufferSize::new(drawn as u64 * BODY_SIZE).context("empty strip body storage")?;
+            let mut staging = queue
+                .write_buffer_with(&strip.bodies, 0, upload_size)
+                .context("mapping the filmstrip's per-cell body staging buffer")?;
+            let mut slot = 0usize;
+            for (viewport, _, body) in cells {
+                if viewport.width == 0 || viewport.height == 0 {
+                    continue;
+                }
+                let start = slot * BODY_SIZE as usize;
+                staging[start..start + BODY_SIZE as usize]
+                    .copy_from_slice(bytemuck::bytes_of(body));
                 slot += 1;
             }
         }
@@ -1121,6 +1203,17 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         );
     }
 
+    #[test]
+    fn set_bodies_grows_past_the_old_thirty_two_body_ceiling() {
+        let gpu = crate::device::noop_context();
+        let module = strip_probe_module(&gpu.device);
+        let mut node = Hyperslice4DNode::new(&gpu.device, TextureFormat::Rgba8Unorm, &module, 1);
+        let bodies = vec![BodyUniform::sphere([0.0; 4], 1.0, [1.0; 3]); 33];
+        node.set_bodies(&bodies);
+        assert_eq!(node.uniforms().body_count, 33.0);
+        assert!(node.body_capacity() >= 33);
+    }
+
     const DEPTH_PROBE_SIZE: u32 = 64;
     const DEPTH_PROBE_NEAR: f32 = 0.05;
     const DEPTH_PROBE_CENTER: [f32; 4] = [0.0, 0.0, -3.0, 0.0];
@@ -1145,6 +1238,81 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         assert!(gap > 0.0, "the probe ray misses the body");
         let t = along - gap.sqrt();
         crate::view::projective_depth(rd * t, DEPTH_PROBE_NEAR)
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn the_thirty_third_body_still_shades_a_pixel_gpu_probe() {
+        const SIZE: u32 = 64;
+        let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
+        let module = strip_probe_module(&device);
+        let target = device.create_texture(&TextureDescriptor {
+            label: Some("hyperslice4d 33-body probe"),
+            size: Extent3d {
+                width: SIZE,
+                height: SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&TextureViewDescriptor::default());
+
+        let mut bodies = vec![BodyUniform::default(); 32];
+        bodies.push(BodyUniform::sphere(
+            [0.0, 0.0, -3.0, 0.0],
+            0.9,
+            [1.0, 0.0, 0.0],
+        ));
+        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module, 1);
+        node.set_uniforms(
+            &queue,
+            Hyperslice4DUniforms {
+                camera_pos: [0.0; 3],
+                resolution: [SIZE as f32; 2],
+                ..Hyperslice4DUniforms::default()
+            },
+        );
+        node.set_bodies(&bodies);
+        node.flush_uniforms(&queue);
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("hyperslice4d 33-body clear"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color::BLACK),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        node.record(
+            &mut encoder,
+            &view,
+            None,
+            crate::Viewport::full([SIZE, SIZE]),
+        );
+        queue.submit(Some(encoder.finish()));
+
+        let pixels = read_back_rgba(&device, &queue, &target, [SIZE, SIZE]);
+        let center = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
+        assert!(
+            pixels[center] > pixels[center + 2],
+            "the 33rd body must shade the centre pixel, not the background: {:?}",
+            &pixels[center..center + 4]
+        );
     }
 
     #[test]
@@ -1188,20 +1356,16 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             Hyperslice4DUniforms {
                 camera_pos: [0.0; 3],
                 resolution: [DEPTH_PROBE_SIZE as f32; 2],
-                body_count: 1.0,
                 near: DEPTH_PROBE_NEAR,
-                bodies: {
-                    let mut bodies = [BodyUniform::default(); MAX_BODIES];
-                    bodies[0] = BodyUniform::sphere(
-                        DEPTH_PROBE_CENTER,
-                        DEPTH_PROBE_RADIUS,
-                        [1.0, 1.0, 1.0],
-                    );
-                    bodies
-                },
                 ..Hyperslice4DUniforms::default()
             },
         );
+        node.set_bodies(&[BodyUniform::sphere(
+            DEPTH_PROBE_CENTER,
+            DEPTH_PROBE_RADIUS,
+            [1.0, 1.0, 1.0],
+        )]);
+        node.flush_uniforms(&queue);
 
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("hyperslice4d depth probe"),
