@@ -105,7 +105,7 @@ impl Access {
         self
     }
 
-    /// The entry does not run until the named work item's required readback has landed.
+    /// The entry does not run until the named work item's required readback has landed, failed, or been cancelled.
     pub fn awaits(mut self, work: &'static str) -> Self {
         self.awaits = Some(work);
         self
@@ -263,7 +263,7 @@ pub enum Schedule {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Readback {
     None,
-    /// An entry that awaits the item cannot run until the result lands, and `snapshot` refuses while it is outstanding.
+    /// An entry that awaits the item waits until the result lands, fails, or is cancelled, and `snapshot` refuses while it is outstanding.
     Required,
     /// Never holds an entry; the landed result carries the tick that produced it.
     Optional,

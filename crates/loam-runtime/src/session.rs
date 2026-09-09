@@ -456,7 +456,7 @@ impl<A: Stores> Session<A> {
         }
     }
 
-    /// Drains the plan in order into `execute`; a full in-flight queue stops the drain and counts a delay until a result is released.
+    /// Drains the plan in order into `execute`; a full in-flight queue stops the drain and counts a delay until a slot frees, on `submitted` for a `Readback::None` order and on `release_readback` otherwise.
     pub fn issue_work(&mut self, mut execute: impl FnMut(&WorkOrder)) -> usize {
         let mut issued = 0;
         while let Some(order) = self.work.get(self.work_head).copied() {
@@ -485,6 +485,7 @@ impl<A: Stores> Session<A> {
         issued
     }
 
+    /// Call once per issued order after the queue submit; a `Readback::None` order frees its slot here.
     pub fn submitted(&mut self, request: RequestId) -> bool {
         self.flight.submitted(request)
     }
@@ -503,7 +504,7 @@ impl<A: Stores> Session<A> {
         self.flight.release(request)
     }
 
-    /// The entry stopped for a required readback; `boundary` and `tick` resume there once it lands.
+    /// The entry stopped for a required readback; `boundary` and `tick` resume there once it lands or fails, or after `cancel_work` drops it.
     pub fn waiting(&self) -> Option<Wait> {
         self.wait
     }
