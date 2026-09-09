@@ -14,7 +14,6 @@ members = [
   "crates/loam-egui",
   "crates/loam-runtime",
   "crates/examples",
-  "crates/hero",
   "crates/polytope_playground",
   "crates/tesseract_demo",
   "crates/xtask",

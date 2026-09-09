@@ -45,7 +45,7 @@ jobs:
       - name: grep crates/ for target_arch = "wasm32" outside the allowed paths
         run: |
           ! grep -rn --include='*.rs' --exclude-dir=loam-app 'target_arch = "wasm32"' crates/ \
-            | grep -v -e '^crates/loam-console/src/lib.rs:' -e '^crates/hero/src/main.rs:'
+            | grep -v -e '^crates/loam-console/src/lib.rs:'
 
   test:
     name: test
@@ -116,4 +116,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: rustup target add wasm32-unknown-unknown
-      - run: cargo build --target wasm32-unknown-unknown -p loam-math -p loam-shape -p loam-scene -p loam-physics -p loam-time
+      - run: cargo build --target wasm32-unknown-unknown -p loam-math -p loam-shape -p loam-scene -p loam-physics -p loam-time -p examples
