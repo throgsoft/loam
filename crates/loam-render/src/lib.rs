@@ -57,3 +57,18 @@ impl DepthMode {
         matches!(self, DepthMode::ReadWrite { .. })
     }
 }
+
+#[cfg(test)]
+pub(crate) fn depth_passes(compare: wgpu::CompareFunction, incoming: f32, stored: f32) -> bool {
+    use wgpu::CompareFunction;
+    match compare {
+        CompareFunction::Never => false,
+        CompareFunction::Less => incoming < stored,
+        CompareFunction::Equal => incoming == stored,
+        CompareFunction::LessEqual => incoming <= stored,
+        CompareFunction::Greater => incoming > stored,
+        CompareFunction::NotEqual => incoming != stored,
+        CompareFunction::GreaterEqual => incoming >= stored,
+        CompareFunction::Always => true,
+    }
+}

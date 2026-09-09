@@ -192,13 +192,20 @@ fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32)
             samples,
         ),
         // A depth test hides a vertex behind its own cap under drop-w.
-        points: PointRasterNode::new(device, format, DepthMode::Off, samples),
+        points: PointRasterNode::new(
+            device,
+            format,
+            DepthMode::Off,
+            DepthConvention::StandardZ,
+            samples,
+        ),
         section_faces: TriangleRasterNode::new(
             device,
             format,
             DepthMode::ReadWrite {
                 format: SECTION_FACES_DEPTH_FORMAT,
             },
+            DepthConvention::StandardZ,
             loam_render::FragmentShading::FaceNormalLambert,
             samples,
         ),
@@ -208,6 +215,7 @@ fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32)
             DepthMode::ReadOnly {
                 format: SECTION_FACES_DEPTH_FORMAT,
             },
+            DepthConvention::StandardZ,
             loam_render::FragmentShading::FaceNormalLambert,
             samples,
         ),
@@ -274,6 +282,7 @@ impl Demo {
                 &ctx.rd.device,
                 ctx.rd.target_format(),
                 SECTION_FACES_DEPTH_FORMAT,
+                DepthConvention::StandardZ,
                 ctx.rd.sample_count(),
             ),
             sdf_upload_pending: true,

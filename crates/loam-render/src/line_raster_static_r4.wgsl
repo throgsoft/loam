@@ -22,14 +22,18 @@ fn project_perspective_4d(p4: vec4<f32>, focal: f32) -> vec3<f32> {
     return p4.xyz * scale;
 }
 
-@vertex
-fn vs_main(
-    @location(0) corner:      u32,
-    @location(1) start_pos:   vec4<f32>,
-    @location(2) end_pos:     vec4<f32>,
-    @location(3) start_color: vec4<f32>,
-    @location(4) end_color:   vec4<f32>,
-    @location(5) width_px:    f32,
+fn near_side(clip: vec4<f32>, reversed: bool) -> f32 {
+    return select(clip.z, clip.w - clip.z, reversed);
+}
+
+fn vs_shared(
+    corner:      u32,
+    start_pos:   vec4<f32>,
+    end_pos:     vec4<f32>,
+    start_color: vec4<f32>,
+    end_color:   vec4<f32>,
+    width_px:    f32,
+    reversed:    bool,
 ) -> VsOut {
     let s_4d = transform.rotor_matrix * start_pos;
     let e_4d = transform.rotor_matrix * end_pos;
@@ -38,7 +42,9 @@ fn vs_main(
     var a = transform.view_projection * vec4<f32>(s_3d, 1.0);
     var b = transform.view_projection * vec4<f32>(e_3d, 1.0);
 
-    if (a.z < 0.0 && b.z < 0.0) {
+    let a_side = near_side(a, reversed);
+    let b_side = near_side(b, reversed);
+    if (a_side < 0.0 && b_side < 0.0) {
         var culled: VsOut;
         culled.clip       = vec4<f32>(0.0, 0.0, -1.0, 1.0);
         culled.coverage_t = 0.0;
@@ -46,10 +52,10 @@ fn vs_main(
         culled.color      = vec4<f32>(0.0);
         return culled;
     }
-    if (a.z < 0.0) {
-        a = mix(a, b, a.z / (a.z - b.z));
-    } else if (b.z < 0.0) {
-        b = mix(b, a, b.z / (b.z - a.z));
+    if (a_side < 0.0) {
+        a = mix(a, b, a_side / (a_side - b_side));
+    } else if (b_side < 0.0) {
+        b = mix(b, a, b_side / (b_side - a_side));
     }
     let s_ndc  = a.xyz / a.w;
     let e_ndc  = b.xyz / b.w;
@@ -86,6 +92,30 @@ fn vs_main(
     out.width_px   = width_px;
     out.color      = color;
     return out;
+}
+
+@vertex
+fn vs_main(
+    @location(0) corner:      u32,
+    @location(1) start_pos:   vec4<f32>,
+    @location(2) end_pos:     vec4<f32>,
+    @location(3) start_color: vec4<f32>,
+    @location(4) end_color:   vec4<f32>,
+    @location(5) width_px:    f32,
+) -> VsOut {
+    return vs_shared(corner, start_pos, end_pos, start_color, end_color, width_px, false);
+}
+
+@vertex
+fn vs_reversed_z(
+    @location(0) corner:      u32,
+    @location(1) start_pos:   vec4<f32>,
+    @location(2) end_pos:     vec4<f32>,
+    @location(3) start_color: vec4<f32>,
+    @location(4) end_color:   vec4<f32>,
+    @location(5) width_px:    f32,
+) -> VsOut {
+    return vs_shared(corner, start_pos, end_pos, start_color, end_color, width_px, true);
 }
 
 @fragment

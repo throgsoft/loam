@@ -14,7 +14,8 @@ use loam_physics::euclidean_r4::{
 };
 use loam_physics::{BodyId, World};
 use loam_render::{
-    DepthBuffer, DepthMode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode, Viewport,
+    DepthBuffer, DepthConvention, DepthMode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode,
+    Viewport,
 };
 use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
 #[cfg(test)]
@@ -666,6 +667,7 @@ pub(crate) fn build_triangles(
         DepthMode::ReadWrite {
             format: DEPTH_FORMAT,
         },
+        DepthConvention::StandardZ,
         loam_render::triangle_raster::FragmentShading::FaceNormalLambert,
         samples,
     )
@@ -854,6 +856,7 @@ impl HeroScene {
                 &ctx.rd.device,
                 ctx.rd.target_format(),
                 DEPTH_FORMAT,
+                DepthConvention::StandardZ,
                 ctx.rd.sample_count(),
             ),
             depth: None,

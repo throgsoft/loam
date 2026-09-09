@@ -1347,6 +1347,7 @@ fn build_caps(
         device,
         format,
         depth,
+        DepthConvention::StandardZ,
         loam_render::triangle_raster::FragmentShading::FaceNormalLambert,
         samples,
     )
@@ -1447,6 +1448,7 @@ impl ToyboxScene {
                 &ctx.rd.device,
                 ctx.rd.target_format(),
                 DEPTH_FORMAT,
+                DepthConvention::StandardZ,
                 ctx.rd.sample_count(),
             ),
             depth: None,

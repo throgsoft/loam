@@ -414,23 +414,10 @@ mod tests {
     use glam::Vec3;
     use loam_math::{EuclideanR3, Iso3};
     use loam_shape::LineMesh;
-    use wgpu::CompareFunction;
 
+    use crate::depth_passes as passes;
     use crate::view::{eye_relative, projective_depth, root_view_projection, DEPTH_FORMAT};
     use crate::{DepthConvention, DepthMode};
-
-    fn passes(compare: CompareFunction, incoming: f32, stored: f32) -> bool {
-        match compare {
-            CompareFunction::Never => false,
-            CompareFunction::Less => incoming < stored,
-            CompareFunction::Equal => incoming == stored,
-            CompareFunction::LessEqual => incoming <= stored,
-            CompareFunction::Greater => incoming > stored,
-            CompareFunction::NotEqual => incoming != stored,
-            CompareFunction::GreaterEqual => incoming >= stored,
-            CompareFunction::Always => true,
-        }
-    }
 
     #[test]
     fn line_raster_hides_the_nearer_line_under_the_convention_its_pipeline_declares() {

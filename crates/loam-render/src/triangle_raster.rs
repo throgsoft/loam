@@ -81,6 +81,7 @@ impl TriangleRasterNode {
         device: &Device,
         surface_format: TextureFormat,
         depth: crate::DepthMode,
+        convention: crate::DepthConvention,
         shading: FragmentShading,
         sample_count: u32,
     ) -> Self {
@@ -177,13 +178,7 @@ impl TriangleRasterNode {
                 topology: PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: depth.format().map(|format| DepthStencilState {
-                format,
-                depth_write_enabled: depth.writes(),
-                depth_compare: CompareFunction::Less,
-                stencil: StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            depth_stencil: depth_state(depth, convention),
             multisample: MultisampleState {
                 count: sample_count,
                 ..Default::default()
@@ -343,5 +338,79 @@ impl TriangleRasterNode {
         rp.set_vertex_buffer(0, self.vertex_buf.slice(..));
         rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
         rp.draw_indexed(0..self.index_count, 0, 0..1);
+    }
+}
+
+fn depth_state(
+    depth: crate::DepthMode,
+    convention: crate::DepthConvention,
+) -> Option<DepthStencilState> {
+    depth.format().map(|format| DepthStencilState {
+        format,
+        depth_write_enabled: depth.writes(),
+        depth_compare: match convention {
+            crate::DepthConvention::StandardZ => CompareFunction::Less,
+            crate::DepthConvention::ReversedZ => crate::view::DEPTH_COMPARE,
+        },
+        stencil: StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use glam::Vec3;
+    use loam_math::Iso3;
+    use loam_runtime::Eye;
+
+    use crate::depth_passes;
+    use crate::view::{eye_relative, root_view_projection, DEPTH_FORMAT};
+    use crate::{DepthConvention, DepthMode};
+
+    #[test]
+    fn triangle_raster_hides_the_nearer_face_under_the_convention_its_pipeline_declares() {
+        let eye = Eye {
+            position: [0.0, 0.0, 3.0],
+            ..Eye::default()
+        };
+        let standing = Iso3 {
+            rotation: glam::Quat::IDENTITY,
+            translation: Vec3::from(eye.position),
+        };
+        let near_point = Vec3::new(0.2, -0.1, 0.0);
+        let far_point = Vec3::new(0.2, -0.1, -4.0);
+
+        for (convention, projection) in [
+            (DepthConvention::ReversedZ, root_view_projection(&eye)),
+            (
+                DepthConvention::StandardZ,
+                Mat4::perspective_rh(eye.fov_y, eye.aspect, eye.near, eye.far)
+                    * eye_relative(standing),
+            ),
+        ] {
+            let depth = |point: Vec3| {
+                let clip = projection * point.extend(1.0);
+                clip.z / clip.w
+            };
+            let state = depth_state(
+                DepthMode::ReadWrite {
+                    format: DEPTH_FORMAT,
+                },
+                convention,
+            )
+            .unwrap();
+            assert!(
+                depth_passes(state.depth_compare, depth(near_point), depth(far_point)),
+                "{convention:?} with {:?} hides the nearer face",
+                state.depth_compare
+            );
+            assert!(!depth_passes(
+                state.depth_compare,
+                depth(far_point),
+                depth(near_point)
+            ));
+        }
     }
 }

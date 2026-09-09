@@ -4,7 +4,9 @@ use loam_render::shader::ShaderDb;
 use loam_render::view::{
     self, DEPTH_FORMAT, H3_DEPTH_ENVELOPE, H3_DEPTH_SEPARATION, H3_EYE_CHART_REACH,
 };
-use loam_render::{DepthMode, LineRasterStaticR4Node, RayMarchNode, RayMarchUniforms, Viewport};
+use loam_render::{
+    DepthConvention, DepthMode, LineRasterStaticR4Node, RayMarchNode, RayMarchUniforms, Viewport,
+};
 use loam_shape::LineMesh;
 use wgpu::*;
 
@@ -203,7 +205,13 @@ impl Gpu {
             format: DEPTH_FORMAT,
         };
         let march = RayMarchNode::with_depth(&device, COLOR_FORMAT, db.module(id), depth, 1);
-        let lines = LineRasterStaticR4Node::new(&device, COLOR_FORMAT, depth, 1);
+        let lines = LineRasterStaticR4Node::new(
+            &device,
+            COLOR_FORMAT,
+            depth,
+            DepthConvention::ReversedZ,
+            1,
+        );
         Self {
             device,
             queue,

@@ -5,8 +5,8 @@
 use glam::{Mat4, Vec3};
 use loam_math::{EuclideanR3, Projection};
 use loam_render::{
-    DepthMode, FragmentShading, Ground, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode,
-    Viewport,
+    DepthConvention, DepthMode, FragmentShading, Ground, SkyGroundNode, SkyGroundUniforms,
+    TriangleRasterNode, Viewport,
 };
 use loam_shape::TriangleMesh;
 use wgpu::*;
@@ -108,7 +108,13 @@ fn render(device: &Device, queue: &Queue, eye: Vec3, show_ground: bool) -> Vec<u
     let color_view = color.create_view(&TextureViewDescriptor::default());
     let depth_view = depth.create_view(&TextureViewDescriptor::default());
 
-    let background = SkyGroundNode::new(device, TARGET_FORMAT, DEPTH_FORMAT, 1);
+    let background = SkyGroundNode::new(
+        device,
+        TARGET_FORMAT,
+        DEPTH_FORMAT,
+        DepthConvention::StandardZ,
+        1,
+    );
     background.set_uniforms(
         queue,
         &SkyGroundUniforms::new(
@@ -130,6 +136,7 @@ fn render(device: &Device, queue: &Queue, eye: Vec3, show_ground: bool) -> Vec<u
         DepthMode::ReadWrite {
             format: DEPTH_FORMAT,
         },
+        DepthConvention::StandardZ,
         FragmentShading::Flat,
         1,
     );

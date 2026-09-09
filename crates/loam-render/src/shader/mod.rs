@@ -7,4 +7,7 @@ mod db;
 pub use db::{validate_wgsl, ShaderDb, ShaderId, ShaderOwner, WgslValidationError};
 
 /// Assembled between the scene SDF and user shading by [`ShaderDb::load_geodesic_scene`].
-pub const GEODESIC_MARCH_KERNEL: &str = include_str!("kernel.wgsl");
+pub const GEODESIC_MARCH_KERNEL: &str = concat!(
+    include_str!("projective_depth.wgsl"),
+    include_str!("kernel.wgsl")
+);
