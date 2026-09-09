@@ -8,6 +8,8 @@ pub mod input;
 mod frame;
 
 #[cfg(target_arch = "wasm32")]
+mod animation;
+#[cfg(target_arch = "wasm32")]
 mod browser;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
