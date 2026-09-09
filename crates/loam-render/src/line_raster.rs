@@ -344,10 +344,7 @@ fn depth_state(
         format,
         depth_write_enabled: depth.writes(),
         // Equal depth passes so coplanar outlines survive the filled surface.
-        depth_compare: match convention {
-            crate::DepthConvention::StandardZ => CompareFunction::LessEqual,
-            crate::DepthConvention::ReversedZ => crate::view::DEPTH_COMPARE,
-        },
+        depth_compare: convention.compare(CompareFunction::LessEqual),
         stencil: StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     })

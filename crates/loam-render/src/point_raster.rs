@@ -348,10 +348,7 @@ fn depth_state(
     depth.format().map(|format| DepthStencilState {
         format,
         depth_write_enabled: depth.writes(),
-        depth_compare: match convention {
-            crate::DepthConvention::StandardZ => CompareFunction::LessEqual,
-            crate::DepthConvention::ReversedZ => crate::view::DEPTH_COMPARE,
-        },
+        depth_compare: convention.compare(CompareFunction::LessEqual),
         stencil: StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     })

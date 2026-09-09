@@ -7,18 +7,29 @@ use glam::Mat4;
 use loam_math::{Projection, RasterizableSpace};
 use loam_shape::TriangleMesh;
 use wgpu::{
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState,
-    Buffer, BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    CompareFunction, DepthStencilState, Device, FragmentState, LoadOp, MultisampleState,
-    Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
-    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
-    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
-    StencilState, StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
-    VertexState, VertexStepMode,
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutEntry, BindingType,
+    BlendComponent, BlendFactor, BlendOperation, BlendState, Buffer, BufferBindingType,
+    BufferDescriptor, BufferUsages, CompareFunction, Device, Features, Limits, LoadOp, Operations,
+    PrimitiveTopology, Queue, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    RenderPassDescriptor, RenderPipeline, ShaderStages, StoreOp, TextureFormat, VertexAttribute,
+    VertexBufferLayout, VertexFormat, VertexStepMode,
 };
 
+use crate::device::{FeatureRequest, GpuContext, MissingGpuCapability};
+use crate::material::MaterialSpec;
+
 const TRIANGLE_RASTER_WGSL: &str = include_str!("triangle_raster.wgsl");
+
+const CAMERA_BINDING: [BindGroupLayoutEntry; 1] = [BindGroupLayoutEntry {
+    binding: 0,
+    visibility: ShaderStages::VERTEX_FRAGMENT,
+    ty: BindingType::Buffer {
+        ty: BufferBindingType::Uniform,
+        has_dynamic_offset: false,
+        min_binding_size: None,
+    },
+    count: None,
+}];
 
 /// Matches the WGSL `CameraUniform`.
 #[repr(C)]
@@ -78,54 +89,14 @@ pub struct TriangleRasterNode {
 
 impl TriangleRasterNode {
     pub fn new(
-        device: &Device,
+        gpu: &GpuContext,
         surface_format: TextureFormat,
         depth: crate::DepthMode,
         convention: crate::DepthConvention,
         shading: FragmentShading,
         sample_count: u32,
-    ) -> Self {
-        let module = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("triangle_raster shader"),
-            source: ShaderSource::Wgsl(TRIANGLE_RASTER_WGSL.into()),
-        });
-
-        let uniform_buf = device.create_buffer(&BufferDescriptor {
-            label: Some("triangle_raster uniforms"),
-            size: std::mem::size_of::<TriangleRasterUniforms>() as u64,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("triangle_raster bgl"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::VERTEX_FRAGMENT,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
-        let bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("triangle_raster bg"),
-            layout: &bgl,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: uniform_buf.as_entire_binding(),
-            }],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("triangle_raster pipeline layout"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
-        });
-
+    ) -> Result<Self, MissingGpuCapability> {
+        let device = &gpu.device;
         let vertex_attrs = [
             VertexAttribute {
                 format: VertexFormat::Float32x3,
@@ -138,53 +109,54 @@ impl TriangleRasterNode {
                 shader_location: 1,
             },
         ];
-        let vertex_layout = VertexBufferLayout {
-            array_stride: std::mem::size_of::<TriangleVertex>() as u64,
-            step_mode: VertexStepMode::Vertex,
-            attributes: &vertex_attrs,
-        };
-
-        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-            label: Some("triangle_raster pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                buffers: &[vertex_layout],
-                compilation_options: Default::default(),
+        let material = MaterialSpec {
+            label: "triangle_raster",
+            shader: TRIANGLE_RASTER_WGSL,
+            vertex_entry: "vs_main",
+            fragment_entry: shading.entry_point(),
+            vertex_layouts: &[VertexBufferLayout {
+                array_stride: std::mem::size_of::<TriangleVertex>() as u64,
+                step_mode: VertexStepMode::Vertex,
+                attributes: &vertex_attrs,
+            }],
+            resources: &[&CAMERA_BINDING],
+            features: FeatureRequest {
+                required_features: Features::empty(),
+                optional_features: Features::empty(),
+                required_limits: Limits::downlevel_webgl2_defaults(),
             },
-            fragment: Some(FragmentState {
-                module: &module,
-                entry_point: Some(shading.entry_point()),
-                targets: &[Some(ColorTargetState {
-                    format: surface_format,
-                    blend: Some(BlendState {
-                        color: BlendComponent {
-                            src_factor: BlendFactor::SrcAlpha,
-                            dst_factor: BlendFactor::OneMinusSrcAlpha,
-                            operation: BlendOperation::Add,
-                        },
-                        alpha: BlendComponent {
-                            src_factor: BlendFactor::One,
-                            dst_factor: BlendFactor::OneMinusSrcAlpha,
-                            operation: BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
+            topology: PrimitiveTopology::TriangleList,
+            blend: Some(BlendState {
+                color: BlendComponent {
+                    src_factor: BlendFactor::SrcAlpha,
+                    dst_factor: BlendFactor::OneMinusSrcAlpha,
+                    operation: BlendOperation::Add,
+                },
+                alpha: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::OneMinusSrcAlpha,
+                    operation: BlendOperation::Add,
+                },
             }),
-            primitive: PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: depth_state(depth, convention),
-            multisample: MultisampleState {
-                count: sample_count,
-                ..Default::default()
-            },
-            multiview: None,
-            cache: None,
+            depth,
+            convention,
+            standard_z_compare: CompareFunction::Less,
+        };
+        let built = material.build(gpu, surface_format, sample_count)?;
+
+        let uniform_buf = device.create_buffer(&BufferDescriptor {
+            label: Some("triangle_raster uniforms"),
+            size: std::mem::size_of::<TriangleRasterUniforms>() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("triangle_raster bg"),
+            layout: &built.pipeline.get_bind_group_layout(0),
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            }],
         });
 
         let vertex_buf = device.create_buffer(&BufferDescriptor {
@@ -200,8 +172,8 @@ impl TriangleRasterNode {
             mapped_at_creation: false,
         });
 
-        Self {
-            pipeline,
+        Ok(Self {
+            pipeline: built.pipeline,
             uniform_buf,
             bind_group,
             vertex_buf,
@@ -211,7 +183,7 @@ impl TriangleRasterNode {
             index_count: 0,
             has_depth: depth.is_active(),
             vertices_scratch: Vec::new(),
-        }
+        })
     }
 
     /// Call before [`Self::record`] each frame.
@@ -341,22 +313,6 @@ impl TriangleRasterNode {
     }
 }
 
-fn depth_state(
-    depth: crate::DepthMode,
-    convention: crate::DepthConvention,
-) -> Option<DepthStencilState> {
-    depth.format().map(|format| DepthStencilState {
-        format,
-        depth_write_enabled: depth.writes(),
-        depth_compare: match convention {
-            crate::DepthConvention::StandardZ => CompareFunction::Less,
-            crate::DepthConvention::ReversedZ => crate::view::DEPTH_COMPARE,
-        },
-        stencil: StencilState::default(),
-        bias: wgpu::DepthBiasState::default(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,8 +322,8 @@ mod tests {
     use loam_runtime::Eye;
 
     use crate::depth_passes;
-    use crate::view::{eye_relative, root_view_projection, DEPTH_FORMAT};
-    use crate::{DepthConvention, DepthMode};
+    use crate::view::{eye_relative, root_view_projection};
+    use crate::DepthConvention;
 
     #[test]
     fn triangle_raster_hides_the_nearer_face_under_the_convention_its_pipeline_declares() {
@@ -394,23 +350,12 @@ mod tests {
                 let clip = projection * point.extend(1.0);
                 clip.z / clip.w
             };
-            let state = depth_state(
-                DepthMode::ReadWrite {
-                    format: DEPTH_FORMAT,
-                },
-                convention,
-            )
-            .unwrap();
+            let compare = convention.compare(CompareFunction::Less);
             assert!(
-                depth_passes(state.depth_compare, depth(near_point), depth(far_point)),
-                "{convention:?} with {:?} hides the nearer face",
-                state.depth_compare
+                depth_passes(compare, depth(near_point), depth(far_point)),
+                "{convention:?} with {compare:?} hides the nearer face"
             );
-            assert!(!depth_passes(
-                state.depth_compare,
-                depth(far_point),
-                depth(near_point)
-            ));
+            assert!(!depth_passes(compare, depth(far_point), depth(near_point)));
         }
     }
 }

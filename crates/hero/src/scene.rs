@@ -13,6 +13,7 @@ use loam_physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
 };
 use loam_physics::{BodyId, World};
+use loam_render::device::{GpuContext, MissingGpuCapability};
 use loam_render::{
     DepthBuffer, DepthConvention, DepthMode, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode,
     Viewport,
@@ -657,12 +658,12 @@ pub(crate) fn hero_font_bytes() -> &'static [u8] {
 }
 
 pub(crate) fn build_triangles(
-    device: &wgpu::Device,
+    gpu: &GpuContext,
     format: wgpu::TextureFormat,
     samples: u32,
-) -> TriangleRasterNode {
+) -> Result<TriangleRasterNode, MissingGpuCapability> {
     TriangleRasterNode::new(
-        device,
+        gpu,
         format,
         DepthMode::ReadWrite {
             format: DEPTH_FORMAT,
@@ -847,11 +848,7 @@ impl HeroScene {
             orbit,
             console,
             environment: Environment::default(),
-            triangles: build_triangles(
-                &ctx.rd.device,
-                ctx.rd.target_format(),
-                ctx.rd.sample_count(),
-            ),
+            triangles: build_triangles(ctx.rd, ctx.rd.target_format(), ctx.rd.sample_count())?,
             sky_ground: SkyGroundNode::new(
                 &ctx.rd.device,
                 ctx.rd.target_format(),
