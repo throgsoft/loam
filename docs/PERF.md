@@ -92,7 +92,7 @@ instructions and the hits agree to 1e-4. The two differ only in
 per-instruction dispatch, and both are linear in the population until a
 hierarchy prunes it. The CPU model and OS were not recorded.
 
-### Hierarchy, contact query, and build, 2026-09-09, unit6b-field-bounds d6ee385
+### Hierarchy, contact query, and build, 2026-09-09, unit6b-field-bounds d6ee385, specialized row and build costs 91cbbc7
 
 `cargo test -p loam-render --test field_traversal -- --nocapture` for the
 CPU rows, and the same with `--include-ignored --test-threads=1` for the
@@ -110,6 +110,7 @@ per ray.
 | cube, CPU | hierarchy | 14 of 16 | 27.44 | 1041.9 | 9854.7 | 3899.1 |
 | balanced, GPU | unculled | 1014 pixels | | 26226.8 | | |
 | balanced, GPU | hierarchy | 1014 pixels | | 894.9 | 8112.3 | 3174.3 |
+| balanced, GPU | specialized | 1014 pixels | | 894.9 | 8112.3 | 3174.3 |
 | cube, GPU | unculled | 848 pixels | | 31988.2 | | |
 | cube, GPU | hierarchy | 848 pixels | | 1181.2 | 10766.6 | 4218.1 |
 
@@ -128,3 +129,12 @@ against 47.7 us unculled; the `FieldNarrowphase::test` wrapper measured
 below the clock's resolution. These two timings came from throwaway tests
 the writer deleted, because no crate links both loam-physics with `r3` and
 loam-runtime; nothing in the tree reproduces them.
+
+The specialized kernel walks the same tree and matches the hierarchy
+interpreter bit for bit on the balanced scene, the `specialized` row
+above. Its build, in release, from throwaway tests the writer deleted:
+emit 68 us, 279 us, and 1.7 ms and pipeline build 1.17 s, 8.70 s, and
+55.7 s at 64, 256, and 1000 cuts, with module sizes 24.6 KB, 83 KB, and
+334 KB, growing about as n^1.4. A first draft that emitted the whole
+program as a 1000-term min chain took 154 s to build before the no-tree
+case was delegated to the interpreter's range function.
