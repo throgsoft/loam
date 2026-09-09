@@ -36,7 +36,6 @@ impl Presenter {
         }
     }
 
-    /// Takes the context's section timer and rebuilds every registered pass on it.
     pub fn attach(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
         self.depth = None;
         self.views.clear();
@@ -45,7 +44,6 @@ impl Presenter {
         self.schedule.rebuild(gpu)
     }
 
-    /// Refused when the pass writes depth under another convention.
     pub fn register_pass(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {
         self.schedule.register(pass)
     }
@@ -54,7 +52,6 @@ impl Presenter {
         self.schedule.sections()
     }
 
-    /// Call after the frame's queue submit.
     pub fn after_submit(&mut self) {
         self.schedule.after_submit();
     }

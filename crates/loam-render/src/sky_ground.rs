@@ -114,7 +114,6 @@ fn shade(frag_pos: vec4<f32>, near_ndc: f32, far_ndc: f32, background_depth: f32
     let uv = (frag_pos.xy - u.viewport_origin) / u.resolution;
     let ndc_xy = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let near = unproject(vec3<f32>(ndc_xy, near_ndc));
-    // The far corner is at infinity under reversed-Z, where its w is zero.
     let far = u.inv_view_proj * vec4<f32>(ndc_xy, far_ndc, 1.0);
     let rd = normalize(far.xyz - near * far.w);
 

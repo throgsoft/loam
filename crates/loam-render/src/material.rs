@@ -9,21 +9,18 @@ use wgpu::{
 use crate::device::{FeatureRequest, GpuContext, MissingGpuCapability};
 use crate::{DepthConvention, DepthMode};
 
-/// Everything a render pipeline needs, declared before any device is asked for it.
 pub struct MaterialSpec<'a> {
     pub label: &'a str,
     pub shader: &'a str,
     pub vertex_entry: &'a str,
     pub fragment_entry: &'a str,
     pub vertex_layouts: &'a [VertexBufferLayout<'a>],
-    /// One entry list per bind group, in group order.
     pub resources: &'a [&'a [BindGroupLayoutEntry]],
     pub features: FeatureRequest,
     pub topology: PrimitiveTopology,
     pub blend: Option<BlendState>,
     pub depth: DepthMode,
     pub convention: DepthConvention,
-    /// The comparison under [`DepthConvention::StandardZ`]; reversed-Z uses [`crate::view::DEPTH_COMPARE`].
     pub standard_z_compare: CompareFunction,
 }
 

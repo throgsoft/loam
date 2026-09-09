@@ -119,7 +119,6 @@ pub struct Hyperslice4DUniforms {
     /// Framebuffer pixel of the viewport's top-left.
     pub viewport_origin: [f32; 2],
     pub params: [f32; 4],
-    /// Near distance of the root projection; see [`crate::view`].
     pub near: f32,
     pub _pad3: [f32; 3],
     pub bodies: [BodyUniform; MAX_BODIES],
@@ -605,7 +604,6 @@ impl Hyperslice4DNode {
         )
     }
 
-    /// The kernel writes [`crate::view`]'s projective depth of its hit as `frag_depth`.
     pub fn with_depth(
         device: &Device,
         surface_format: TextureFormat,
@@ -752,7 +750,6 @@ impl Hyperslice4DNode {
         self.record(encoder, view, None, viewport);
     }
 
-    /// Loads both attachments; `depth_view` is `Some` iff the pipeline has depth.
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,

@@ -166,7 +166,6 @@ impl GpuTimer {
     }
 }
 
-/// One timestamp pair per recorded section, reported a frame late.
 pub struct SectionTimer {
     query_set: QuerySet,
     resolve_buffer: Buffer,
@@ -232,14 +231,12 @@ impl SectionTimer {
         encoder.write_timestamp(&self.query_set, (slot * 2 + 1) as u32);
     }
 
-    /// The previous frame's measurement of the section in `slot`.
     pub fn elapsed(&self, slot: usize) -> Option<Duration> {
         let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         let (name, elapsed) = last.get(slot)?;
         (*name == self.names[slot]).then_some(*elapsed)
     }
 
-    /// Skipped while the previous frame's copy is still mapped.
     pub fn resolve(&mut self, encoder: &mut CommandEncoder) {
         if self.open == 0 || self.in_flight.load(Ordering::Acquire) {
             return;
@@ -255,7 +252,6 @@ impl SectionTimer {
         self.in_flight.store(true, Ordering::Release);
     }
 
-    /// Call after the frame's queue submit.
     pub fn after_submit(&mut self) {
         if !self.in_flight.load(Ordering::Acquire) {
             return;

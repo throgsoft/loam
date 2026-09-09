@@ -32,7 +32,6 @@ struct Player {
     speed: f32,
 }
 
-/// The edit a dispatch system turns into a command, and when it submitted one.
 #[derive(Clone, Copy, Default)]
 struct Edit {
     step: u32,
@@ -272,7 +271,6 @@ fn median<T: Copy + Ord>(mut samples: Vec<T>) -> T {
     samples[samples.len() / 2]
 }
 
-/// Ticks and wall time from the command a boundary submits to the publication that carries it.
 fn edit_latency(
     session: &mut Session<TwoSpaceStores>,
     scene: &Scene,

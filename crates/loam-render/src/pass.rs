@@ -8,7 +8,6 @@ use crate::device::{GpuContext, MissingGpuCapability};
 use crate::gpu_timer::SectionTimer;
 use crate::DepthConvention;
 
-/// A frame resource a pass reads or writes, by name.
 pub type ResourceId = &'static str;
 
 pub const SCENE_COLOR: ResourceId = "scene-color";
@@ -26,7 +25,6 @@ pub struct FrameTarget<'a> {
     pub size: (u32, u32),
 }
 
-/// A native application's own pass, recorded inside the engine's encoder.
 pub trait FramePass {
     fn name(&self) -> &'static str;
 
@@ -40,14 +38,12 @@ pub trait FramePass {
 
     fn order(&self) -> PassOrder;
 
-    /// `None` when the pass writes no fragment depth.
     fn depth_convention(&self) -> Option<DepthConvention> {
         None
     }
 
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>);
 
-    /// Called with the replacement context after a device loss.
     fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability>;
 }
 
@@ -97,7 +93,6 @@ pub struct Section {
     pub gpu: GpuTime,
 }
 
-/// Custom passes in dependency order, plus the timing of everything the frame records.
 pub struct PassSchedule {
     convention: DepthConvention,
     passes: Vec<Box<dyn FramePass>>,
@@ -131,7 +126,6 @@ impl PassSchedule {
         &self.sections
     }
 
-    /// Places the pass after everything it reads from and before everything that reads it.
     pub fn register(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {
         if let Some(declared) = pass.depth_convention() {
             if declared != self.convention {
@@ -188,7 +182,6 @@ impl PassSchedule {
         }
     }
 
-    /// Times `body` on the CPU, and on the GPU when the frame's timer has a free slot.
     pub fn section(
         &mut self,
         name: &'static str,
@@ -213,7 +206,6 @@ impl PassSchedule {
         }
     }
 
-    /// Call after the frame's encoder is submitted.
     pub fn end_frame(&mut self, encoder: &mut CommandEncoder) {
         if let Some(timer) = self.timer.as_mut() {
             timer.resolve(encoder);
