@@ -325,7 +325,7 @@ impl<S: PhysicsSpace> World<S> {
         self.manifolds.retain(|&(a, b), _| a != id && b != id);
     }
 
-    /// Yields each body spawned, integrated, or edited since the last drain, skipping despawned ones.
+    /// Yields each body spawned, integrated, edited, or restored since the last drain, skipping despawned ones.
     pub fn drain_dirty(&mut self) -> DirtyDrain<'_, S> {
         let Self { bodies, dirty, .. } = self;
         dirty.drain(bodies)
