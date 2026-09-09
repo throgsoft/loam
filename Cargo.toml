@@ -15,7 +15,6 @@ members = [
   "crates/loam-runtime",
   "crates/examples",
   "crates/polytope_playground",
-  "crates/tesseract_demo",
   "crates/xtask",
 ]
 resolver = "2"
