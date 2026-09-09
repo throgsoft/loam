@@ -14,7 +14,6 @@ const CONTACT_BREAK_DISTANCE_SQ: f32 = CONTACT_BREAK_DISTANCE * CONTACT_BREAK_DI
 
 const MERGE_RADIUS_SQ: f32 = CONTACT_BREAK_DISTANCE_SQ;
 
-#[derive(Clone, Copy)]
 pub struct ContactPoint<S: PhysicsSpace> {
     pub world_point: S::Point,
     /// Witness in A's local frame.
@@ -34,6 +33,14 @@ pub struct ContactPoint<S: PhysicsSpace> {
     pub velocity_bias: f32,
 }
 
+impl<S: PhysicsSpace> Clone for ContactPoint<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: PhysicsSpace> Copy for ContactPoint<S> {}
+
 pub struct Manifold<S: PhysicsSpace> {
     /// Always `< body_b`.
     pub body_a: BodyId,
@@ -42,6 +49,17 @@ pub struct Manifold<S: PhysicsSpace> {
     pub restitution: f32,
     /// `len() ≤ MAX_POINTS`.
     pub points: Vec<ContactPoint<S>>,
+}
+
+impl<S: PhysicsSpace> Clone for Manifold<S> {
+    fn clone(&self) -> Self {
+        Self {
+            body_a: self.body_a,
+            body_b: self.body_b,
+            restitution: self.restitution,
+            points: self.points.clone(),
+        }
+    }
 }
 
 impl<S: PhysicsSpace> Manifold<S>

@@ -25,6 +25,25 @@ pub struct RigidBody<S: PhysicsSpace> {
     pub collision_mask: u32,
 }
 
+impl<S: PhysicsSpace> Clone for RigidBody<S> {
+    fn clone(&self) -> Self {
+        Self {
+            position: self.position,
+            velocity: self.velocity,
+            orientation: self.orientation,
+            angular_velocity: self.angular_velocity,
+            mass: self.mass,
+            inv_mass: self.inv_mass,
+            sleeping: self.sleeping,
+            inertia: self.inertia,
+            collider: self.collider.clone(),
+            restitution: self.restitution,
+            collision_group: self.collision_group,
+            collision_mask: self.collision_mask,
+        }
+    }
+}
+
 pub const GROUP_DEFAULT: u32 = 1;
 
 pub const MASK_ALL: u32 = u32::MAX;
@@ -141,6 +160,32 @@ impl<S: PhysicsSpace> RigidBody<S> {
         Ok(std::mem::replace(&mut self.collider, collider))
     }
 
+    pub(crate) fn set_mass_properties(&mut self, mass: f32, inertia: S::Inertia) -> bool {
+        if !valid_mass(mass) || (mass > 0.0 && is_halfspace(&self.collider)) {
+            return false;
+        }
+        self.mass = mass;
+        self.inv_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
+        self.inertia = inertia;
+        self.wake();
+        true
+    }
+
+    pub(crate) fn replace_collider(
+        &mut self,
+        space: &S,
+        collider: Collider,
+        inertia: S::Inertia,
+    ) -> bool {
+        if !valid_collider(space, &collider, self.mass) {
+            return false;
+        }
+        self.collider = collider;
+        self.inertia = inertia;
+        self.wake();
+        true
+    }
+
     // Baraff 1997, "Physically Based Modeling: Rigid Body Simulation", colliding contact.
     pub fn apply_impulse(&mut self, impulse: S::Vector)
     where
@@ -253,6 +298,7 @@ impl BodyId {
 
 const STALE_HANDLE: &str = "BodyId refers to a despawned body";
 
+#[derive(Clone)]
 struct Slot {
     generation: u32,
     dense: Option<u32>,
@@ -264,6 +310,17 @@ pub struct BodyArena<S: PhysicsSpace> {
     ids: Vec<BodyId>,
     slots: Vec<Slot>,
     free: Vec<u32>,
+}
+
+impl<S: PhysicsSpace> Clone for BodyArena<S> {
+    fn clone(&self) -> Self {
+        Self {
+            dense: self.dense.clone(),
+            ids: self.ids.clone(),
+            slots: self.slots.clone(),
+            free: self.free.clone(),
+        }
+    }
 }
 
 impl<S: PhysicsSpace> Default for BodyArena<S> {

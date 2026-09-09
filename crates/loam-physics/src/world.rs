@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ops::{Add, Mul};
 
 use loam_math::{EuclideanR2, EuclideanR3, EuclideanR4};
 use loam_time::StateHash;
@@ -6,6 +7,7 @@ use loam_time::StateHash;
 use crate::body::{BodyArena, BodyId, RigidBody};
 use crate::collider::Collider;
 use crate::collision::VectorOps;
+use crate::dirty::{DirtyBodies, DirtyDrain};
 use crate::integrator::{integrate_body, PhysicsSpace};
 use crate::manifold::{
     ContactPoint, Manifold, BAUMGARTE_BETA, DEFAULT_PGS_ITERS, MAX_LINEAR_CORRECTION,
@@ -13,6 +15,7 @@ use crate::manifold::{
 };
 use crate::narrowphase::Narrowphase;
 use crate::response::FRICTION_COEFF;
+use crate::state::WorldState;
 
 /// Handles in ascending order.
 pub type PairKey = (BodyId, BodyId);
@@ -91,6 +94,7 @@ pub struct World<S: PhysicsSpace> {
     pub manifolds: BTreeMap<PairKey, Manifold<S>>,
     pub pgs_iters: usize,
     pub time: f32,
+    dirty: DirtyBodies,
     pair_order: Vec<PairKey>,
     constraints: Vec<ConstraintUnit>,
     broadphase_intervals: Vec<RadialInterval>,
@@ -117,6 +121,7 @@ impl<S: PhysicsSpace> World<S> {
             manifolds: BTreeMap::new(),
             pgs_iters: DEFAULT_PGS_ITERS,
             time: 0.0,
+            dirty: DirtyBodies::default(),
             pair_order: Vec::new(),
             constraints: Vec::new(),
             broadphase_intervals: Vec::new(),
@@ -128,7 +133,9 @@ impl<S: PhysicsSpace> World<S> {
     }
 
     pub fn push_body(&mut self, body: RigidBody<S>) -> BodyId {
-        self.bodies.spawn(body)
+        let id = self.bodies.spawn(body);
+        self.dirty.mark(id);
+        id
     }
 
     /// Also removes every manifold the body takes part in.
@@ -136,7 +143,189 @@ impl<S: PhysicsSpace> World<S> {
         if self.bodies.despawn(id).is_none() {
             return false;
         }
+        self.drop_contacts_of(id);
+        self.dirty.forget(id);
+        true
+    }
+
+    pub fn set_pose(&mut self, id: BodyId, position: S::Point, orientation: S::Iso) -> bool {
+        let Some(body) = self.bodies.get(id) else {
+            return false;
+        };
+        if !self
+            .space
+            .valid_initial_state(position, body.velocity, body.inertia)
+        {
+            return false;
+        }
+        let body = &mut self.bodies[id];
+        body.position = position;
+        body.orientation = orientation;
+        body.wake();
+        self.drop_contacts_of(id);
+        self.dirty.mark(id);
+        true
+    }
+
+    pub fn set_velocity(
+        &mut self,
+        id: BodyId,
+        velocity: S::Vector,
+        angular_velocity: S::AngVel,
+    ) -> bool {
+        let Some(body) = self.bodies.get(id) else {
+            return false;
+        };
+        if !self
+            .space
+            .valid_initial_state(body.position, velocity, body.inertia)
+        {
+            return false;
+        }
+        let body = &mut self.bodies[id];
+        body.velocity = velocity;
+        body.angular_velocity = angular_velocity;
+        body.wake();
+        self.dirty.mark(id);
+        true
+    }
+
+    pub fn set_mass_properties(&mut self, id: BodyId, mass: f32, inertia: S::Inertia) -> bool {
+        let Some(body) = self.bodies.get(id) else {
+            return false;
+        };
+        if !self
+            .space
+            .valid_initial_state(body.position, body.velocity, inertia)
+        {
+            return false;
+        }
+        if !self.bodies[id].set_mass_properties(mass, inertia) {
+            return false;
+        }
+        self.drop_contacts_of(id);
+        self.dirty.mark(id);
+        true
+    }
+
+    pub fn set_collider(&mut self, id: BodyId, collider: Collider, inertia: S::Inertia) -> bool {
+        let Some(body) = self.bodies.get(id) else {
+            return false;
+        };
+        if !self
+            .space
+            .valid_initial_state(body.position, body.velocity, inertia)
+        {
+            return false;
+        }
+        let space = &self.space;
+        let body = &mut self.bodies[id];
+        if !body.replace_collider(space, collider, inertia) {
+            return false;
+        }
+        self.drop_contacts_of(id);
+        self.dirty.mark(id);
+        true
+    }
+
+    pub fn apply_impulse(&mut self, id: BodyId, impulse: S::Vector) -> bool
+    where
+        S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
+    {
+        let Some(body) = self.bodies.get(id) else {
+            return false;
+        };
+        if !self
+            .space
+            .valid_initial_state(body.position, impulse, body.inertia)
+        {
+            return false;
+        }
+        self.bodies[id].apply_impulse(impulse);
+        self.dirty.mark(id);
+        true
+    }
+
+    pub fn apply_impulse_at_point(
+        &mut self,
+        id: BodyId,
+        impulse: S::Vector,
+        point: S::Point,
+    ) -> bool
+    where
+        S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
+    {
+        let Some(body) = self.bodies.get(id) else {
+            return false;
+        };
+        if !self
+            .space
+            .valid_initial_state(body.position, impulse, body.inertia)
+            || !self.space.valid_initial_state(point, impulse, body.inertia)
+        {
+            return false;
+        }
+        let space = &self.space;
+        self.bodies[id].apply_impulse_at_point(space, impulse, point);
+        self.dirty.mark(id);
+        true
+    }
+
+    pub fn sleep_body(&mut self, id: BodyId) -> bool
+    where
+        S::Vector: Default,
+    {
+        let Some(body) = self.bodies.get_mut(id) else {
+            return false;
+        };
+        body.sleep();
+        self.dirty.mark(id);
+        true
+    }
+
+    pub fn wake_body(&mut self, id: BodyId) -> bool {
+        let Some(body) = self.bodies.get_mut(id) else {
+            return false;
+        };
+        body.wake();
+        self.dirty.mark(id);
+        true
+    }
+
+    fn drop_contacts_of(&mut self, id: BodyId) {
         self.manifolds.retain(|&(a, b), _| a != id && b != id);
+    }
+
+    pub fn drain_dirty(&mut self) -> DirtyDrain<'_, S> {
+        let Self { bodies, dirty, .. } = self;
+        dirty.drain(bodies)
+    }
+
+    pub fn snapshot(&self) -> WorldState<S> {
+        WorldState {
+            bodies: self.bodies.clone(),
+            manifolds: self.manifolds.clone(),
+            dirty: self.dirty.recorded().to_vec(),
+            time: self.time,
+            registrations: self.narrowphase.registrations().to_vec(),
+        }
+    }
+
+    pub fn restore(&mut self, state: &WorldState<S>) -> bool {
+        if self.narrowphase.registrations() != state.registrations {
+            return false;
+        }
+        self.bodies = state.bodies.clone();
+        self.manifolds = state.manifolds.clone();
+        self.time = state.time;
+        self.dirty.reset(&state.dirty);
+        self.pair_order.clear();
+        self.constraints.clear();
+        self.touched_pairs.clear();
+        self.broadphase_intervals.clear();
+        self.broadphase_active.clear();
+        self.island_parent.clear();
+        self.island_labels.clear();
         true
     }
 
@@ -176,7 +365,12 @@ impl<S: PhysicsSpace> World<S> {
         S::Vector: VectorOps,
     {
         for i in 0..self.bodies.len() {
+            if self.bodies[i].inv_mass() == 0.0 {
+                continue;
+            }
             integrate_body(&self.space, &mut self.bodies[i], dt);
+            let id = self.bodies.id_at(i);
+            self.dirty.mark(id);
         }
     }
 
@@ -1499,6 +1693,230 @@ mod tests {
         assert!(
             !world.manifolds.contains_key(&(floor, doomed)),
             "a manifold keyed on the despawned body came back with the slot"
+        );
+    }
+
+    const EDIT_DT: f32 = 1.0 / 240.0;
+    const EDIT_SETTLE_STEPS: usize = 400;
+
+    #[test]
+    fn a_rejected_edit_leaves_the_body_its_inertia_and_its_contacts_untouched() {
+        let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
+        let id = spheres[0];
+        let key = (floor, id);
+        let before = body_state(&world, id);
+        let mass = world.bodies[id].mass();
+        let inv_mass = world.bodies[id].inv_mass();
+        let inertia = world.bodies[id].inertia;
+        let orientation = world.bodies[id].orientation;
+        let impulses = normal_impulses(&world, key);
+        assert!(
+            impulses.iter().any(|&jn| jn > 0.0),
+            "the fixture carries no warm start, so a preserved contact proves nothing"
+        );
+
+        assert!(!world.set_mass_properties(id, f32::NAN, 1.0));
+        assert!(!world.set_mass_properties(id, 3.0, f32::NAN));
+        assert!(!world.set_collider(
+            id,
+            Collider::Box3 {
+                half_extents: Vec3::ONE
+            },
+            2.0
+        ));
+        assert!(!world.set_collider(id, Collider::sphere_at_origin(0.5), f32::INFINITY));
+        assert!(!world.set_pose(id, Vec3::splat(f32::NAN), orientation));
+
+        assert_eq!(body_state(&world, id), before);
+        assert_eq!(world.bodies[id].mass(), mass);
+        assert_eq!(world.bodies[id].inv_mass(), inv_mass);
+        assert_eq!(world.bodies[id].inertia, inertia);
+        assert_eq!(normal_impulses(&world, key), impulses);
+    }
+
+    #[test]
+    fn warm_start_impulses_survive_a_step_and_a_snapshot_restore() {
+        let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
+        let key = (floor, spheres[0]);
+        let settled = normal_impulses(&world, key);
+        assert!(settled.iter().any(|&jn| jn > 0.0));
+
+        let state = world.snapshot();
+        world.step(EDIT_DT);
+
+        let stepped = normal_impulses(&world, key);
+        assert_eq!(
+            stepped.len(),
+            settled.len(),
+            "a step dropped a contact slot"
+        );
+        for (after, before) in stepped.iter().zip(&settled) {
+            assert!(
+                *after > 0.0 && (after - before).abs() < 1e-3,
+                "a step reset the accumulator: {before} became {after}"
+            );
+        }
+
+        assert!(world.apply_impulse(spheres[0], Vec3::new(0.0, 20.0, 0.0)));
+        for _ in 0..30 {
+            world.step(EDIT_DT);
+        }
+        assert!(
+            !world.manifolds.contains_key(&key),
+            "the launched sphere kept its contact, so the restore has nothing to undo"
+        );
+
+        assert!(world.restore(&state));
+        assert_eq!(normal_impulses(&world, key), settled);
+        assert_eq!(world.time, state.time);
+    }
+
+    #[test]
+    fn a_teleported_sleeping_body_publishes_its_pose_change() {
+        let (mut world, _, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
+        let id = spheres[0];
+        assert!(world.sleep_body(id));
+        assert!(world.drain_dirty().count() > 0);
+
+        world.step(EDIT_DT);
+        assert!(
+            !world.drain_dirty().any(|dirty| dirty == id),
+            "a sleeping body was published as if it had moved"
+        );
+
+        let orientation = world.bodies[id].orientation;
+        let elsewhere = Vec3::new(40.0, 9.0, 0.0);
+        assert!(world.set_pose(id, elsewhere, orientation));
+        assert!(
+            world.drain_dirty().any(|dirty| dirty == id),
+            "the teleport never reached the dirty set"
+        );
+        assert_eq!(world.bodies[id].position, elsewhere);
+    }
+
+    #[test]
+    fn a_restored_world_rebuilds_its_configuration_and_reproduces_the_snapshot() {
+        let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
+        let key = (floor, spheres[0]);
+        let state = world.snapshot();
+
+        let mut unregistered = World::new(EuclideanR3);
+        assert!(
+            !unregistered.restore(&state),
+            "restore accepted a world whose dispatch table cannot serve the snapshot"
+        );
+        assert_eq!(unregistered.bodies.len(), 0);
+
+        let mut rebuilt = World::new(EuclideanR3);
+        register_default_narrowphase(&mut rebuilt.narrowphase);
+        rebuilt.gravity = world.gravity;
+        assert!(rebuilt.restore(&state));
+
+        assert_eq!(
+            rebuilt.state_hash(sample_body_r3),
+            world.state_hash(sample_body_r3)
+        );
+        assert_eq!(normal_impulses(&rebuilt, key), normal_impulses(&world, key));
+
+        for _ in 0..60 {
+            world.step(EDIT_DT);
+            rebuilt.step(EDIT_DT);
+        }
+        assert_eq!(
+            rebuilt.state_hash(sample_body_r3),
+            world.state_hash(sample_body_r3),
+            "the restored world solved with a different dispatch table"
+        );
+    }
+
+    #[test]
+    fn a_collider_replacement_drops_the_previous_shapes_inertia() {
+        let mut world = World::new(EuclideanR3);
+        register_default_narrowphase(&mut world.narrowphase);
+        let id = world.push_body(box_body(Vec3::ZERO, Vec3::ZERO, Vec3::ONE, 2.0).unwrap());
+        let previous = world.bodies[id].inertia;
+        let replacement = 0.5;
+        assert_ne!(
+            previous, replacement,
+            "the two shapes share an inertia, so the swap cannot be seen"
+        );
+
+        assert!(world.set_collider(id, Collider::sphere_at_origin(0.25), replacement));
+        assert!(matches!(
+            world.bodies[id].collider(),
+            Collider::Sphere { .. }
+        ));
+        assert!(world.apply_impulse_at_point(
+            id,
+            Vec3::new(3.0, 0.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0)
+        ));
+
+        assert_eq!(world.bodies[id].velocity, Vec3::new(1.5, 0.0, 0.0));
+        assert_eq!(
+            world.bodies[id].angular_velocity,
+            Bivector3::new(-12.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn a_despawn_leaves_no_contact_or_dirty_row_naming_the_removed_body() {
+        let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
+        let doomed = spheres[1];
+        assert!(world.manifolds.contains_key(&(floor, doomed)));
+        assert!(world.set_velocity(doomed, Vec3::new(0.0, 3.0, 0.0), Bivector3::ZERO));
+
+        assert!(world.despawn_body(doomed));
+
+        assert!(
+            !world
+                .manifolds
+                .keys()
+                .any(|&(a, b)| a == doomed || b == doomed),
+            "a contact outlived the body it names"
+        );
+        let reborn = world.push_body(island_sphere(ISLAND_X[1]));
+        assert_eq!(
+            reborn.slot(),
+            doomed.slot(),
+            "the slot was not recycled, so this test is not exercising aliasing"
+        );
+        let published: Vec<BodyId> = world.drain_dirty().collect();
+        assert!(
+            !published.contains(&doomed),
+            "a removed row was published for mirroring"
+        );
+        assert!(
+            published.contains(&reborn),
+            "the row that took the removed slot was never published"
+        );
+
+        world.step(EDIT_DT);
+        assert!(!world
+            .manifolds
+            .keys()
+            .any(|&(a, b)| a == doomed || b == doomed));
+    }
+
+    #[test]
+    fn dirty_publication_allocates_nothing_on_a_warmed_world() {
+        let (mut world, _, spheres) = settled_islands(EDIT_DT, 4);
+        for _ in 0..2 {
+            world.step(EDIT_DT);
+            assert!(world.drain_dirty().count() > 0);
+        }
+
+        let bytes = alloc_probe::bytes_allocated_by(|| {
+            for _ in 0..16 {
+                for &id in &spheres {
+                    assert!(world.wake_body(id));
+                }
+                assert_eq!(world.drain_dirty().count(), spheres.len());
+            }
+        });
+        assert_eq!(
+            bytes, 0,
+            "16 dirty publications over a steady body set asked the allocator for {bytes} bytes"
         );
     }
 

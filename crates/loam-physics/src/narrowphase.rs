@@ -10,12 +10,14 @@ pub type NarrowphaseFn<S> = fn(a: &RigidBody<S>, b: &RigidBody<S>, space: &S) ->
 
 pub struct Narrowphase<S: PhysicsSpace> {
     dispatch: HashMap<(ColliderKind, ColliderKind), NarrowphaseFn<S>>,
+    order: Vec<(ColliderKind, ColliderKind)>,
 }
 
 impl<S: PhysicsSpace> Default for Narrowphase<S> {
     fn default() -> Self {
         Self {
             dispatch: HashMap::new(),
+            order: Vec::new(),
         }
     }
 }
@@ -26,7 +28,13 @@ impl<S: PhysicsSpace> Narrowphase<S> {
     }
 
     pub fn register(&mut self, a: ColliderKind, b: ColliderKind, f: NarrowphaseFn<S>) {
-        self.dispatch.insert((a, b), f);
+        if self.dispatch.insert((a, b), f).is_none() {
+            self.order.push((a, b));
+        }
+    }
+
+    pub fn registrations(&self) -> &[(ColliderKind, ColliderKind)] {
+        &self.order
     }
 
     pub fn test(&self, a: &RigidBody<S>, b: &RigidBody<S>, space: &S) -> Option<Contact<S>>
