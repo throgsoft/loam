@@ -645,7 +645,7 @@ impl<A: Stores> Session<A> {
         &self.bridges
     }
 
-    /// Checks the anchor, domain, view, and placement kind, and for a field domain the ray lift and step bound; then places a child space, links anchor to the view's eye, and retargets the view into it.
+    /// Checks the anchor, domain, view, and placement kind, and for a field domain the ray lift, the shader prelude, and the step bound; then places a child space, links anchor to the view's eye, and retargets the view into it.
     pub fn bridge(&mut self, spec: BridgeSpec) -> Result<LinkId, BridgeError> {
         if self.entities().resolve(spec.anchor).is_none() {
             return Err(BridgeError::Stale(spec.anchor));

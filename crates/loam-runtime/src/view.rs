@@ -426,7 +426,7 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
 
     fn image_point(&self, eye: &Pose<S>, point: S::Point) -> Option<[f32; 3]>;
 
-    /// Image of `local`, a point in the frame of an entity at `pose`; the default maps the posed point, and a nonlinear map overrides it to map the rotated point and add the entity's image position after.
+    /// Image of `local`, a point in the frame of an entity at `pose`; the default places it and maps the point, and a nonlinear map overrides it to place through `relative` and add the entity's image position after.
     fn image_local(
         &self,
         space: &S,

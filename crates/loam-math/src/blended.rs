@@ -289,12 +289,14 @@ pub fn gauss_newton_log<S: ConformallyFlat>(
     gauss_newton_log_checked(space, from, to, n_steps, max_iters).0
 }
 
+/// Why `gauss_newton_log_checked` stopped short: a singular Jacobian at the cut locus, or no convergence within the iteration cap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogError {
     Singular,
     NoConvergence,
 }
 
+/// `gauss_newton_log` with its failure reported instead of hidden; the vector is still the last finite iterate.
 pub fn gauss_newton_log_checked<S: ConformallyFlat>(
     space: &S,
     from: Vec3,

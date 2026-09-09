@@ -192,7 +192,7 @@ pub enum DomainError {
     FieldArity(Entity),
 }
 
-/// A space a domain is built over; its poses cross the facade as chart data.
+/// A space a domain is built over, naming no isometry group; its poses cross the facade as chart data, and a space with a group implements `Homogeneous` as well.
 pub trait DomainSpace:
     Space<Vector: Mul<f32, Output = <Self as Space>::Vector>> + Send + Sync + Sized + 'static
 {
@@ -219,26 +219,32 @@ pub trait DomainSpace:
 
     fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError>;
 
-    /// Metric distance from the origin to a point at chart radius `radius`.
+    /// Metric distance across a chart radius `radius` around `at`; H³ converts at the chart origin whatever `at` is, so a displaced landmark's pick radius is the origin's.
     fn chart_reach(&self, at: Self::Point, radius: f32) -> f32;
 
     /// Arc length along `ray` into the metric ball of `radius` around `center`: zero from inside, `None` on a miss.
     fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32>;
 
+    /// What `place` needs from a pose, derived once per entity; a homogeneous space's isometry.
     fn prepare(&self, pose: &Pose<Self>) -> Self::Placement;
 
+    /// The point at `local` in the entity's frame, one isometry application per vertex on a homogeneous space.
     fn place(&self, placement: &Self::Placement, local: Self::Point) -> Self::Point;
 
+    /// `point` in the entity's own frame; a blended chart refuses with `NoConvergence` when its log fails to converge and `ErrorBudget` when the metric error would exceed 1e-3, never returning a best guess.
     fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError>;
 
+    /// The eye-relative element prepared once per entity, so `place_relative` costs one application per vertex and no per-vertex inverse.
     fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError>;
 
+    /// `place` into the eye's frame through a prepared `relative`.
     fn place_relative(
         &self,
         relative: &Self::Relative,
         local: Self::Point,
     ) -> Result<Self::Point, DomainError>;
 
+    /// Transports `tangent`, given in the entity's frame, to the point at `local`, refusing a transport that does not converge with `NoConvergence`.
     fn carry(
         &self,
         pose: &Pose<Self>,
@@ -246,8 +252,10 @@ pub trait DomainSpace:
         tangent: Self::Vector,
     ) -> Result<Self::Vector, DomainError>;
 
+    /// The pose at `to` with the frame carried from the pose's point: transvection on a homogeneous space, per-column transport on a conformally flat chart.
     fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError>;
 
+    /// The pose after `dt` along `tangent`, read in the pose's frame at its point: `ChartBoundary` past the chart, `InvalidCoordinate` for a non-finite step, `NoConvergence` when a transport fails, and never a best guess.
     fn walk(
         &self,
         pose: &Pose<Self>,
@@ -261,6 +269,7 @@ pub trait DomainSpace:
     }
 }
 
+/// A domain space with an isometry group: `iso_of` and `pose_of` convert a pose to and from a group element, the `homogeneous_` helpers implement the capabilities through it, and the physics facility requires it.
 pub trait Homogeneous: DomainSpace + IsometryGroup {
     fn iso_of(&self, pose: &Pose<Self>) -> Self::Iso;
 
@@ -927,6 +936,7 @@ where
         self.conformal_factor(at).sqrt() * radius
     }
 
+    // Chart-flat: a straight chart ray against a chart-radius ball; no blended map lifts a ray yet, so nothing reaches it.
     fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32> {
         let unit = ray.direction.try_normalize()?;
         let chart_radius = radius / self.conformal_factor(center).sqrt();
@@ -989,6 +999,7 @@ where
     ) -> Result<Self::Vector, DomainError> {
         let to = self.place(&self.prepare(pose), local);
         self.check(to)?;
+        // Transports along the geodesic to `to` instead of solving the Jacobi equation; exact at the origin only.
         let carried = self.parallel_transport(pose.point, to, pose.frame * tangent);
         carried
             .is_finite()
@@ -1231,12 +1242,14 @@ fn push_section<S: DomainSpace>(
     }
 }
 
+/// A point and a frame orthonormal in the metric at that point, implying no isometry; a homogeneous space converts through `Homogeneous::iso_of`.
 pub struct Pose<S: Space> {
     pub point: S::Point,
     pub frame: S::Frame,
 }
 
 impl<S: Space> Pose<S> {
+    /// The origin frame carried to `point` by `Space::frame_at`.
     pub fn new(space: &S, point: S::Point) -> Self {
         Self {
             point,
@@ -1457,7 +1470,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         self.fields.as_mut()
     }
 
-    /// Exponential along `velocity`, a chart tangent in the entity's own frame, for `dt`, with the frame carried by parallel transport.
+    /// `DomainSpace::walk` for `dt` along `velocity`, a tangent in the entity's frame at its point, with the frame carried by parallel transport.
     pub fn walk(
         &mut self,
         entity: Entity,
@@ -1474,7 +1487,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         Ok(())
     }
 
-    /// Moves the origin to `point` by transvection, keeping the frame.
+    /// `DomainSpace::moved` to `point`: transvection on a homogeneous space, per-column transport on a conformally flat chart.
     pub fn move_to(&mut self, entity: Entity, point: ChartPoint) -> Result<(), DomainError> {
         finite(point.coordinates)?;
         let target = self.space.local_point(point.coordinates);
@@ -1819,7 +1832,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     }
 }
 
-/// Registers only the facilities the domain uses.
+/// Registers only the facilities the domain uses, and the WGSL prelude through `marched`.
 pub struct DomainBuilder<S: DomainSpace> {
     name: &'static str,
     pub(crate) space: S,
@@ -1883,6 +1896,7 @@ impl<S: DomainSpace> DomainBuilder<S> {
 }
 
 impl<S: DomainSpace + WgslSpace> DomainBuilder<S> {
+    /// Records the space's WGSL prelude; without it the domain is neither marched nor accepted as the field domain of a bridge.
     pub fn marched(mut self) -> Self {
         self.prelude = Some(self.space.wgsl_impl());
         self
