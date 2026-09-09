@@ -55,10 +55,19 @@ pub(crate) fn draw(
                     }
                 }
             });
-            let running = app.spin.get().running;
-            if ui.button(if running { "pause" } else { "spin" }).clicked() {
-                push(intents, Intent::Running(!running));
-            }
+            ui.horizontal(|ui| {
+                let running = app.spin.get().running;
+                if ui.button(if running { "pause" } else { "spin" }).clicked() {
+                    push(intents, Intent::Running(!running));
+                }
+                if ui
+                    .selectable_label(*app.gimbal.get(), "gimbal")
+                    .on_hover_text("drag a ring to turn the whole row")
+                    .clicked()
+                {
+                    push(intents, Intent::Gimbal);
+                }
+            });
 
             if *app.mode.get() == Mode::Compose {
                 ui.separator();

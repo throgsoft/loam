@@ -1,4 +1,4 @@
-use loam_math::{Bivector, Bivector4, EuclideanR4, Plane4, Rotor};
+use loam_math::{Bivector, Bivector4, EuclideanR4, Plane4, Rotor, Rotor4};
 use loam_runtime::{AppCommand, Dispatch, DomainHandle, Outcome, Rejection};
 
 use crate::composer::Term;
@@ -305,6 +305,42 @@ impl AppCommand<Playground> for SetScrub {
                 pose.0.rotation = turned.exp().normalize();
             }
         }
+        Ok(Outcome::Done)
+    }
+}
+
+pub(crate) struct TurnRow {
+    pub(crate) rotor: Rotor4,
+    pub(crate) domain: DomainHandle<EuclideanR4>,
+}
+
+impl AppCommand<Playground> for TurnRow {
+    fn name(&self) -> &'static str {
+        "turn"
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        let entities = dispatch.app.slots.iter().map(|(entity, _)| entity);
+        let r4 = dispatch.domains.typed(self.domain)?;
+        for entity in entities {
+            if let Some(pose) = r4.poses.get_mut(entity) {
+                pose.0.rotation = (self.rotor * pose.0.rotation).normalize();
+            }
+        }
+        Ok(Outcome::Done)
+    }
+}
+
+pub(crate) struct ToggleGimbal;
+
+impl AppCommand<Playground> for ToggleGimbal {
+    fn name(&self) -> &'static str {
+        "gimbal"
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        let shown = *dispatch.app.gimbal.get();
+        dispatch.app.gimbal.set(!shown);
         Ok(Outcome::Done)
     }
 }

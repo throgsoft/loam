@@ -61,6 +61,7 @@ static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
 mod catalog;
 mod composer;
 mod consts;
+mod gimbal;
 mod mode;
 mod projection;
 mod scene;
@@ -71,9 +72,11 @@ mod ui;
 use catalog::ShapeEntry;
 use composer::{Composer, Term};
 use consts::{BODY_SIZE, BODY_X_SPACING, BODY_Y, GRAVITY, W_SCRUB_RATE};
+use gimbal::Gimbal;
 use mode::{
     ClearComposer, ClearDraft, CommitDraft, DraftPlane, DropTerm, Mode, PushTerm, SetActive,
-    SetMode, SetProjection, SetRunning, SetScrub, SetSlice, Spin, TogglePlane,
+    SetMode, SetProjection, SetRunning, SetScrub, SetSlice, Spin, ToggleGimbal, TogglePlane,
+    TurnRow,
 };
 use projection::Family;
 
@@ -82,6 +85,7 @@ const SLICE_UP: ActionId = ActionId(1);
 const SLICE_DOWN: ActionId = ActionId(2);
 const NEXT_MODE: ActionId = ActionId(3);
 const RESET: ActionId = ActionId(4);
+const GIMBAL: ActionId = ActionId(5);
 const PLANE: [ActionId; 6] = [
     ActionId(10),
     ActionId(11),
@@ -120,6 +124,7 @@ loam_runtime::stores! {
         slice: Value<f32>,
         projection: Value<Family>,
         pointer: Value<Option<Pointer>>,
+        gimbal: Value<bool>,
         floor: Value<bool>,
     }
 }
@@ -139,6 +144,8 @@ pub(crate) enum Intent {
     ClearDraft,
     ClearTerms,
     Scrub(f32),
+    Gimbal,
+    Turn(loam_math::Rotor4),
 }
 
 pub(crate) type Intents = Arc<Mutex<Vec<Intent>>>;
@@ -273,6 +280,9 @@ fn install_systems(
             if ctx.input.pressed(RESET) {
                 ctx.commands.submit(Command::Reset);
             }
+            if ctx.input.pressed(GIMBAL) {
+                ctx.commands.app(ToggleGimbal);
+            }
             for (index, action) in PLANE.into_iter().enumerate() {
                 if ctx.input.pressed(action) {
                     ctx.commands.app(TogglePlane { plane: index });
@@ -372,6 +382,8 @@ fn submit(commands: &mut Commands<Playground>, domain: DomainHandle<EuclideanR4>
         Intent::ClearDraft => commands.app(ClearDraft),
         Intent::ClearTerms => commands.app(ClearComposer),
         Intent::Scrub(scrub) => commands.app(SetScrub { scrub, domain }),
+        Intent::Gimbal => commands.app(ToggleGimbal),
+        Intent::Turn(rotor) => commands.app(TurnRow { rotor, domain }),
     };
 }
 
@@ -381,6 +393,7 @@ pub(crate) fn bindings() -> Bindings {
         .key(Key::Letter('t'), SPIN)
         .key(Key::Letter('m'), NEXT_MODE)
         .key(Key::Letter('r'), RESET)
+        .key(Key::Letter('g'), GIMBAL)
         .key(Key::Letter('e'), SLICE_UP)
         .key(Key::Letter('q'), SLICE_DOWN);
     for (index, action) in PLANE.into_iter().enumerate() {
@@ -393,6 +406,7 @@ pub(crate) struct Frame {
     sky: SkyGroundPass,
     hyperslice: HyperslicePass,
     cut: LinePass,
+    rings: LinePass,
 }
 
 impl Frame {
@@ -401,6 +415,7 @@ impl Frame {
             sky: SkyGroundPass::new(scene::ground(true)),
             hyperslice: HyperslicePass::new(scene::shader_source()),
             cut: LinePass::new("section"),
+            rings: LinePass::new("gimbal"),
         }
     }
 
@@ -409,6 +424,7 @@ impl Frame {
             Box::new(self.sky.clone()),
             Box::new(self.hyperslice.clone()),
             Box::new(self.cut.clone()),
+            Box::new(self.rings.clone()),
         ]
     }
 }
@@ -434,6 +450,7 @@ pub(crate) fn frame_sections(frame: &Frame) -> Vec<&'static str> {
 }
 
 struct Scratch {
+    center: glam::Vec3,
     slots: Vec<(Entity, ShapeEntry)>,
     bodies: Vec<BodyUniform>,
     segments: Vec<SegmentRecord>,
@@ -443,6 +460,7 @@ struct Scratch {
 impl Default for Scratch {
     fn default() -> Self {
         Self {
+            center: glam::Vec3::ZERO,
             slots: Vec::new(),
             bodies: Vec::new(),
             segments: Vec::new(),
@@ -467,6 +485,7 @@ fn collect(
     );
     scratch.bodies.clear();
     scratch.segments.clear();
+    let mut sum = glam::Vec3::ZERO;
     let Ok(r4) = session.domains_mut().typed(domain) else {
         return;
     };
@@ -474,6 +493,7 @@ fn collect(
         let Some(pose) = r4.poses.get(*entity) else {
             continue;
         };
+        sum += pose.0.translation.truncate();
         scratch.bodies.push(scene::body_of(entry, &pose.0));
         let Some(polytope) = entry.shape.polytope4() else {
             continue;
@@ -486,6 +506,7 @@ fn collect(
             &mut scratch.segments,
         );
     }
+    scratch.center = sum / scratch.slots.len().max(1) as f32;
 }
 
 fn main() -> Result<(), HostError> {
@@ -503,6 +524,9 @@ fn main() -> Result<(), HostError> {
     let sky = frame.sky.clone();
     let hyperslice = frame.hyperslice.clone();
     let cut = frame.cut.clone();
+    let rings = frame.rings.clone();
+    let turn_intents = intents.clone();
+    let mut gimbal = Gimbal::default();
     let ui_intents = intents.clone();
     let mode_intents = intents.clone();
     let slice_intents = intents.clone();
@@ -634,8 +658,18 @@ fn main() -> Result<(), HostError> {
         )
         .on_frame(move |hook: &mut FrameHook<'_, Playground>| {
             let wants_pointer = hook.ui.is_some_and(|context| context.wants_pointer_input());
-            drive_pointer(hook.session, wants_pointer, &grabbed);
-            if !grabbed.load(Ordering::Relaxed) && !wants_pointer {
+            gimbal.enabled = *hook.session.app.gimbal.get();
+            let turning = drive_gimbal(
+                hook.session,
+                wants_pointer,
+                &mut gimbal,
+                scratch.center,
+                &turn_intents,
+            );
+            if !turning {
+                drive_pointer(hook.session, wants_pointer, &grabbed);
+            }
+            if !turning && !grabbed.load(Ordering::Relaxed) && !wants_pointer {
                 orbit.drag(pointer_drag(hook.session));
             }
             hook.session.views_mut().root_mut().eye = orbit.eye();
@@ -647,6 +681,7 @@ fn main() -> Result<(), HostError> {
             sky.publish(&eye, scene::ground(floor));
             hyperslice.publish(scene::uniforms(&eye, slice, floor), &scratch.bodies);
             cut.publish(&eye, &scratch.segments);
+            rings.publish(&eye, gimbal.rings(scratch.center));
             if let Some(context) = hook.ui {
                 ui::draw(context, hook.session, &mut panel, &ui_intents);
             }
@@ -658,6 +693,42 @@ fn pointer_drag(session: &Session<Playground>) -> [f32; 2] {
     match *session.app.pointer.get() {
         Some(pointer) if pointer.phase == PointerPhase::Moved => pointer.delta,
         _ => [0.0; 2],
+    }
+}
+
+/// True while the gimbal owns the pointer, so the body grab and the orbit stay out of the drag.
+fn drive_gimbal(
+    session: &mut Session<Playground>,
+    wants_pointer: bool,
+    gimbal: &mut Gimbal,
+    center: glam::Vec3,
+    intents: &Intents,
+) -> bool {
+    let root = session.views().root();
+    let pointer = *session.app.pointer.get();
+    let ray = pointer.and_then(|pointer| session.views().ray(root, pointer.ndc));
+    if !gimbal.enabled {
+        gimbal.release();
+        return false;
+    }
+    gimbal.aim(ray.as_ref(), center);
+    let (Some(pointer), Some(ray)) = (pointer, ray) else {
+        return gimbal.held();
+    };
+    match pointer.phase {
+        PointerPhase::Began if !wants_pointer => gimbal.press(&ray, center),
+        PointerPhase::Moved if gimbal.held() => {
+            if let Some(rotor) = gimbal.turn(&ray) {
+                push(intents, Intent::Turn(rotor));
+            }
+            true
+        }
+        PointerPhase::Ended | PointerPhase::Cancelled => {
+            let held = gimbal.held();
+            gimbal.release();
+            held
+        }
+        _ => gimbal.held(),
     }
 }
 
@@ -743,7 +814,7 @@ fn headless(booted: &mut Boot, frame: &Frame, config: &HostConfig) -> Result<(),
 #[cfg(test)]
 mod tests {
     use loam_render::raymarch::RaymarchShape;
-    use loam_runtime::Records;
+    use loam_runtime::{AppCommand, Records};
     use loam_shape::polytope::Polytope4;
 
     use super::*;
@@ -1087,6 +1158,71 @@ mod tests {
         assert!(
             (across + kept * -1.0).magnitude() < 1e-4,
             "the scrub disturbed the turn across its own bivector: {across:?} rather than {kept:?}"
+        );
+    }
+
+    #[test]
+    fn the_gimbal_rotor_turns_the_row_by_the_angle_its_ring_names() {
+        use loam_math::{Bivector, Plane4, Rotor};
+
+        let (mut booted, _intents) = one_slot();
+        const ANGLE: f32 = 0.4;
+        let domain = booted.domain;
+        booted.session.dispatch(|d| {
+            TurnRow {
+                rotor: (Plane4::Xw.unit_bivector() * ANGLE).exp(),
+                domain,
+            }
+            .apply(d)
+            .expect("the turn applies")
+        });
+
+        let entity = slot_entity(&booted);
+        let r4 = booted
+            .session
+            .domains_mut()
+            .typed(booted.domain)
+            .expect("the r4 domain");
+        let turned = r4
+            .poses
+            .get(entity)
+            .expect("pose")
+            .0
+            .rotation
+            .apply(Vec4::X);
+        let expected = Vec4::new(ANGLE.cos(), 0.0, 0.0, ANGLE.sin());
+        assert!(
+            (turned - expected).length() < 1e-5,
+            "the ring's rotor sent x to {turned} rather than the analytic {expected}"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_pointer_releases_a_live_grab() {
+        let (mut booted, _intents) = one_slot();
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        booted
+            .session
+            .grab([0.0, 0.0], 0.0)
+            .expect("the ray through the slot centre picks it");
+        let grabbed = AtomicBool::new(true);
+        booted.session.app.pointer.set(Some(Pointer {
+            id: 0,
+            ndc: [0.0, 0.0],
+            delta: [0.0; 2],
+            phase: PointerPhase::Cancelled,
+            time: 1.0,
+        }));
+
+        drive_pointer(&mut booted.session, false, &grabbed);
+
+        assert!(!grabbed.load(Ordering::Relaxed));
+        assert!(
+            booted.session.drag([0.5, 0.0], 2.0).is_err(),
+            "the grab survived the focus change that cancelled the pointer"
         );
     }
 
