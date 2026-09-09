@@ -1,4 +1,4 @@
-<!-- Removed when the worker reports preview_ready. -->
+<!-- Hidden when the worker reports preview_ready; shown again with the message on a worker error. -->
 <style>
     #loam-page-loader {
         position: fixed;
@@ -9,6 +9,9 @@
         background: #0e0e12;
         z-index: 1;
         pointer-events: none;
+    }
+    #loam-page-loader[hidden] {
+        display: none;
     }
     #loam-page-loader .loam-progress-track {
         width: 240px;
@@ -24,6 +27,17 @@
         width: 0%;
         transition: width 200ms ease-out;
     }
+    #loam-page-loader .loam-page-loader-message {
+        max-width: 36em;
+        margin: 0 24px;
+        color: #e8b4b4;
+        font-size: 14px;
+        line-height: 1.5;
+        text-align: center;
+        white-space: pre-wrap;
+        pointer-events: auto;
+        user-select: text;
+    }
     @media (prefers-reduced-motion: reduce) {
         #loam-page-loader .loam-progress-fill {
             transition: none;
@@ -35,4 +49,5 @@
          aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div class="loam-progress-fill" id="loam-page-loader-fill"></div>
     </div>
+    <p class="loam-page-loader-message" id="loam-page-loader-message" role="alert" hidden></p>
 </div>

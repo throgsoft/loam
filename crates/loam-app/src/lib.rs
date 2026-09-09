@@ -1,3 +1,4 @@
+pub mod assets;
 mod capability;
 mod runtime;
 mod sim_config;
@@ -47,7 +48,7 @@ use winit::{
 
 use loam_egui::UiIntegration;
 use loam_input::{FrameInput, InputState};
-use loam_render::device::RenderDevice;
+use loam_render::device::{DeviceLoss, RenderDevice};
 use loam_time::FixedTimestep;
 
 pub use loam_camera::{
@@ -56,6 +57,7 @@ pub use loam_camera::{
 pub use loam_egui::{egui, world_to_screen, UiCapture};
 pub use loam_input::FrameInput as Input;
 pub use loam_input::{Pointer, PointerPhase};
+pub use loam_render::device::{FeatureRequest, GpuContext, MissingGpuCapability};
 pub use loam_render::shader::{ShaderDb, ShaderOwner};
 pub use watcher::FileWatcher;
 
@@ -168,6 +170,8 @@ pub struct FrameCtx<'a> {
     pub input: FrameInput,
     /// This frame's mouse and touch samples in arrival order; empty in event callbacks.
     pub pointers: &'a [Pointer],
+    /// This frame's asset results; empty in event callbacks.
+    pub assets: &'a [assets::AssetEvent],
     pub time: f32,
     pub fps: f32,
     pub n_ticks: usize,
@@ -183,6 +187,8 @@ pub struct RunConfig {
     pub sim: SimConfig,
     /// Launch fails on the first of these the host does not provide.
     pub required: &'static [Capability],
+    /// A required feature or limit the adapter lacks fails launch by name.
+    pub features: FeatureRequest,
     /// `None` keeps the installed subscriber or `RUST_LOG`.
     pub log_filter: Option<String>,
     pub esc_exits: bool,
@@ -222,6 +228,7 @@ impl Default for RunConfig {
                 .with_visible(false),
             sim: SimConfig::default(),
             required: &[],
+            features: FeatureRequest::default(),
             log_filter: None,
             esc_exits: true,
             render_error_budget: 8,
@@ -236,9 +243,14 @@ impl Default for RunConfig {
 pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
     HostProfile::host().require(config.required)?;
     #[cfg(target_arch = "wasm32")]
+    let config = RunConfig {
+        features: browser_request(config.features),
+        ..config
+    };
+    #[cfg(target_arch = "wasm32")]
     {
         if wasm::is_worker_context() {
-            return wasm::worker::run::<A>();
+            return wasm::worker::run::<A>(config.features);
         }
         if wasm::launch::is_manual_mode(&config.wasm.host_id) {
             return wasm::launch_on_click(
@@ -250,6 +262,30 @@ pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
         }
     }
     run_with_config::<A>(config)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn browser_request(request: FeatureRequest) -> FeatureRequest {
+    FeatureRequest {
+        optional_features: wgpu::Features::empty(),
+        ..request
+    }
+}
+
+pub(crate) fn device_loss_error(
+    loss: &DeviceLoss,
+    presentation: anyhow::Result<()>,
+) -> anyhow::Error {
+    let cause = format!("GPU device lost ({:?}: {})", loss.reason, loss.message);
+    match presentation {
+        Ok(()) => anyhow::anyhow!(
+            "{cause}; the presentation resources were rebuilt, but the shader database, \
+             the UI renderer, and the app's GPU resources are not regenerable; recovery failed"
+        ),
+        Err(error) => error.context(format!(
+            "{cause}; the presentation resources were not rebuilt"
+        )),
+    }
 }
 
 fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
@@ -388,6 +424,13 @@ fn attach_canvas_to_dom(win: &winit::window::Window) -> anyhow::Result<()> {
 
 const MOUSE_POINTER_ID: u64 = 0;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lifecycle {
+    Idle,
+    Initializing,
+    Active,
+}
+
 struct Runner<A: App> {
     runtime: Runtime,
     config: RunConfig,
@@ -396,7 +439,9 @@ struct Runner<A: App> {
     timestep: FixedTimestep,
     input: InputState,
     start: Instant,
+    asset_events: Vec<assets::AssetEvent>,
 
+    lifecycle: Lifecycle,
     window: Option<Arc<Window>>,
     artifacts: Option<InitArtifacts<A>>,
 
@@ -434,6 +479,8 @@ impl<A: App> Runner<A> {
             timestep,
             input: InputState::default(),
             start: Instant::now(),
+            asset_events: Vec::new(),
+            lifecycle: Lifecycle::Idle,
             window: None,
             artifacts: None,
             ui_capture: UiCapture::default(),
@@ -479,7 +526,17 @@ impl<A: App> Runner<A> {
         }
     }
 
+    fn begin_session(&mut self) -> bool {
+        if self.lifecycle != Lifecycle::Idle {
+            tracing::debug!("resume ignored: the session is {:?}", self.lifecycle);
+            return false;
+        }
+        self.lifecycle = Lifecycle::Initializing;
+        true
+    }
+
     fn install_init(&mut self, win: Arc<Window>, artifacts: InitArtifacts<A>) {
+        self.lifecycle = Lifecycle::Active;
         self.window = Some(win.clone());
         self.artifacts = Some(artifacts);
         self.minimized = false;
@@ -550,6 +607,9 @@ fn capture_consume(
 impl<A: App> ApplicationHandler for Runner<A> {
     #[cfg(target_arch = "wasm32")]
     fn resumed(&mut self, elwt: &ActiveEventLoop) {
+        if !self.begin_session() {
+            return;
+        }
         // `prevent_default` would swallow Ctrl+R and F12 before browser chrome sees them.
         use winit::platform::web::WindowAttributesExtWebSys;
         let attrs = self.config.window.clone().with_prevent_default(false);
@@ -569,6 +629,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
         }
 
         let msaa = self.config.msaa_samples;
+        let request = self.config.features.clone();
         let win_for_future = win.clone();
         let runtime = self.runtime.clone();
         let cell: PendingInit<A> = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -579,7 +640,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
 
         wasm_bindgen_futures::spawn_local(async move {
             let result = async {
-                let rd = RenderDevice::new(win_for_future.clone(), msaa)
+                let rd = RenderDevice::new(win_for_future.clone(), request, msaa)
                     .await
                     .map_err(|e| anyhow::anyhow!("RenderDevice::new: {e:#}"))?;
                 setup_after_device::<A>(&win_for_future, rd, &runtime)
@@ -591,6 +652,9 @@ impl<A: App> ApplicationHandler for Runner<A> {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn resumed(&mut self, elwt: &ActiveEventLoop) {
+        if !self.begin_session() {
+            return;
+        }
         let win = match elwt.create_window(self.config.window.clone()) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -600,8 +664,11 @@ impl<A: App> ApplicationHandler for Runner<A> {
             }
         };
 
-        let rd = match pollster::block_on(RenderDevice::new(win.clone(), self.config.msaa_samples))
-        {
+        let rd = match pollster::block_on(RenderDevice::new(
+            win.clone(),
+            self.config.features.clone(),
+            self.config.msaa_samples,
+        )) {
             Ok(r) => r,
             Err(e) => {
                 self.deferred_error = Some(anyhow::anyhow!("RenderDevice::new: {e:#}"));
@@ -755,6 +822,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 rd,
                 input: FrameInput::default(),
                 pointers: &[],
+                assets: &[],
                 time: now,
                 fps,
                 n_ticks: 0,
@@ -829,6 +897,15 @@ impl<A: App> Runner<A> {
         else {
             return;
         };
+        if let Some(loss) = rd.take_device_loss() {
+            #[cfg(not(target_arch = "wasm32"))]
+            let presentation = pollster::block_on(rd.recover());
+            #[cfg(target_arch = "wasm32")]
+            let presentation = Err(anyhow::anyhow!("no recovery on the browser main thread"));
+            self.deferred_error = Some(device_loss_error(&loss, presentation));
+            elwt.exit();
+            return;
+        }
         self.runtime.apply_present_mode(rd);
 
         {
@@ -895,6 +972,8 @@ impl<A: App> Runner<A> {
 
         let _frame_scope = loam_time::frame_trace::scope("frame");
 
+        self.asset_events.clear();
+        self.runtime.pump_assets(&mut self.asset_events);
         command::apply_drained(
             app,
             &self.runtime,
@@ -930,6 +1009,7 @@ impl<A: App> Runner<A> {
                 rd,
                 input,
                 pointers: self.input.pointers(),
+                assets: &self.asset_events,
                 time: self.start.elapsed().as_secs_f32(),
                 fps: self.fps,
                 n_ticks,
@@ -1012,7 +1092,7 @@ impl<A: App> Runner<A> {
                 let render_view = rd.msaa_view().or(rd.scene_view()).unwrap_or(&swap_view);
 
                 // Separate submit so the start timestamp lands before the scene passes.
-                if let Some(timer) = rd.gpu_timer.as_ref() {
+                if let Some(timer) = rd.context.gpu_timer.as_ref() {
                     let mut t_enc =
                         rd.device
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1107,7 +1187,7 @@ impl<A: App> Runner<A> {
 
                 rd.queue
                     .submit(callbacks.drain(..).chain(Some(encoder.finish())));
-                if let Some(timer) = rd.gpu_timer.as_ref() {
+                if let Some(timer) = rd.context.gpu_timer.as_ref() {
                     let mut t_enc =
                         rd.device
                             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1122,7 +1202,7 @@ impl<A: App> Runner<A> {
                     frame.present();
                 }
 
-                if let Some(timer) = rd.gpu_timer.as_mut() {
+                if let Some(timer) = rd.context.gpu_timer.as_mut() {
                     timer.tick();
                 }
                 if let Some(err) = last_err {
@@ -1250,6 +1330,21 @@ mod tests {
         assert_eq!(
             stuttered, expected,
             "catching up ten ticks in one frame must yield the same time sequence"
+        );
+    }
+
+    #[test]
+    fn a_repeat_resume_does_not_start_a_second_session() {
+        let mut runner = Runner::<TickRecorder>::new(RunConfig::default());
+        assert!(runner.begin_session());
+        assert!(
+            !runner.begin_session(),
+            "a resume during initialization started a second session"
+        );
+        runner.lifecycle = Lifecycle::Active;
+        assert!(
+            !runner.begin_session(),
+            "a resume of an active app started a second session"
         );
     }
 
