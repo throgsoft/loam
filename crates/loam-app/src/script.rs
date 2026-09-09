@@ -1,4 +1,4 @@
-//! Frame scripts automate demos through the command queue; they are not simulation replays.
+//! Frame scripts play console lines at frame indices through the session console; a driver reports `Finished` after a settle margin, and the host keeps running because no exit channel exists.
 
 use std::path::Path;
 

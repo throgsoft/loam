@@ -1,5 +1,3 @@
-//! Gate pointer controls and hotkeys separately with [`UiCapture`].
-
 mod bivector_matrix;
 mod capture;
 pub mod console;

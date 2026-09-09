@@ -81,7 +81,7 @@ impl<A: Stores> SessionApp<A> {
         host
     }
 
-    /// Reads `--fps` and `--vsync` from `args`.
+    /// Reads `--fps`, `--vsync`, and `--script` from `args`; a script that fails to load is logged and dropped.
     pub fn apply_args(&mut self) {
         if let Some(fps) = self.args.parse::<f32>("fps") {
             self.pacer.set_target_fps(fps);
