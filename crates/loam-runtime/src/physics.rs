@@ -21,6 +21,7 @@ const IDENTITY_FRAME: [[f32; 4]; 4] = [
     [0.0, 0.0, 0.0, 1.0],
 ];
 
+/// Gravity and the narrowphase registration a domain's world is built with.
 pub struct PhysicsConfig<S: PhysicsSpace> {
     pub gravity: Option<S::Vector>,
     pub register: fn(&mut Narrowphase<S>),
@@ -40,6 +41,7 @@ impl<S: PhysicsSpace> PhysicsConfig<S> {
     }
 }
 
+/// A domain's world plus the map between its entities and bodies; each step writes every dirty body's pose into its entity's row, and it claims `Place` with an identity frame and `Walk` for entities that have a body.
 pub struct Physics<S: PhysicsSpace> {
     world: World<S>,
     to_body: Vec<Option<(u32, BodyId)>>,
@@ -97,6 +99,7 @@ where
         entity_at(&self.to_entity, body)
     }
 
+    /// Replaces any body the entity already has.
     pub fn spawn(&mut self, entity: Entity, body: BodyDef<S>) -> BodyId {
         let _ = self.despawn(entity);
         let id = self.world.push_body(body);
@@ -245,6 +248,7 @@ where
     S::Vector: VectorOps + Default,
     S::Point: Sub<Output = S::Vector>,
 {
+    /// Only a space that is also a `PhysicsSpace` can name this, so a domain over any other space never builds a world.
     pub fn physics(self, config: PhysicsConfig<S>) -> Self {
         let mut world = World::new(self.space);
         world.gravity = config.gravity;

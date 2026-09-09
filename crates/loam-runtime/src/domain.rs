@@ -508,7 +508,7 @@ impl<S: IsometryGroup> Clone for Pose<S> {
 
 impl<S: IsometryGroup> Copy for Pose<S> {}
 
-/// Engine-owned work inside one domain, run by the simulation phase's domain-step entry.
+/// Engine-owned work inside one domain: `step` runs in the simulation phase's domain-step entry, `release` at dispatch before the stores forget the entity, and `apply` gets first offer of a chart command.
 pub trait Facility<S: DomainSpace>: Any + Send + 'static {
     fn name(&self) -> &'static str;
 
@@ -520,6 +520,7 @@ pub trait Facility<S: DomainSpace>: Any + Send + 'static {
 
     fn release(&mut self, _entity: Entity) {}
 
+    /// `Some` claims the command with its outcome; `None` leaves it to the domain.
     fn apply(&mut self, _command: &ChartCommand) -> Option<Result<Outcome, Rejection>> {
         None
     }
