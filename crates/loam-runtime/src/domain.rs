@@ -260,11 +260,30 @@ pub trait Homogeneous: DomainSpace + IsometryGroup {
     fn transvection(&self, to: Self::Point) -> Self::Iso;
 }
 
+#[cfg(test)]
+pub(crate) mod applied {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn bump() {
+        COUNT.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn taken() -> u64 {
+        COUNT.with(|count| count.replace(0))
+    }
+}
+
 pub fn homogeneous_place<S: Homogeneous>(
     space: &S,
     placement: &S::Iso,
     local: S::Point,
 ) -> S::Point {
+    #[cfg(test)]
+    applied::bump();
     space.iso_apply(*placement, local)
 }
 
@@ -273,6 +292,8 @@ pub fn homogeneous_local<S: Homogeneous>(
     pose: &Pose<S>,
     point: S::Point,
 ) -> Result<S::Point, DomainError> {
+    #[cfg(test)]
+    applied::bump();
     Ok(space.iso_apply(space.iso_inverse(space.iso_of(pose)), point))
 }
 
@@ -282,6 +303,8 @@ pub fn homogeneous_carry<S: Homogeneous>(
     local: S::Point,
     tangent: S::Vector,
 ) -> Result<S::Vector, DomainError> {
+    #[cfg(test)]
+    applied::bump();
     Ok(space.iso_transport(space.iso_of(pose), local, tangent))
 }
 
@@ -1892,5 +1915,66 @@ impl Domains {
             }
         }
         nearest
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::SpawnBundle;
+    use crate::session::{Material, Publication, Session, SimConfig};
+    use crate::store::LogCapacity;
+    use crate::view::Section4;
+
+    crate::stores! {
+        #[derive(Default)]
+        pub struct Probe {
+            tags: Store<u8>,
+        }
+    }
+
+    const SEGMENTS: usize = 3;
+
+    #[test]
+    fn a_published_vertex_costs_more_isometry_applications_than_a_posed_vertex_did() {
+        let mut session = Session::new(Probe::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let stub = session.prepare(PreparedGeometry::Lines4 {
+            segments: (0..SEGMENTS)
+                .map(|i| {
+                    let x = 0.1 + i as f32 * 0.1;
+                    [[x, 0.0, 0.0, 0.0], [-x, 0.0, 0.0, 0.0]]
+                })
+                .collect(),
+        });
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        session.dispatch(|d| {
+            let eye = d
+                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
+                .expect("eye");
+            d.spawn(
+                SpawnBundle::new()
+                    .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, 0.0)))
+                    .instance(Instance::new(stub, material)),
+            )
+            .expect("object");
+            d.domains
+                .typed(r4)
+                .expect("the r4 domain")
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
+        });
+
+        let mut publication = Publication::default();
+        let _ = applied::taken();
+        session.publish(&mut publication).expect("publish");
+        let applications = applied::taken();
+
+        let [view] = publication.views.as_slice() else {
+            panic!("one view publishes");
+        };
+        assert_eq!(view.records.segments().len(), SEGMENTS);
+        assert_eq!(applications, 3 + 6 * SEGMENTS as u64);
     }
 }
