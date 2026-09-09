@@ -29,18 +29,6 @@ impl Executor for ScopedThreads {
             while chunks.run_next() {}
         });
     }
-
-    fn join(&self, a: &mut (dyn FnMut() + Send), b: &mut (dyn FnMut() + Send)) {
-        if self.threads < 2 {
-            a();
-            b();
-            return;
-        }
-        thread::scope(|scope| {
-            scope.spawn(b);
-            a();
-        });
-    }
 }
 
 pub fn install() {

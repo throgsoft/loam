@@ -11,8 +11,6 @@ pub trait Executor: Send + Sync {
 
     /// `workers` is a request; each worker drains `chunks` until `run_next` is false.
     fn for_each_chunk(&self, workers: usize, chunks: &(dyn ChunkSource + Sync));
-
-    fn join(&self, a: &mut (dyn FnMut() + Send), b: &mut (dyn FnMut() + Send));
 }
 
 pub struct Sequential;
@@ -24,11 +22,6 @@ impl Executor for Sequential {
 
     fn for_each_chunk(&self, _workers: usize, chunks: &(dyn ChunkSource + Sync)) {
         while chunks.run_next() {}
-    }
-
-    fn join(&self, a: &mut (dyn FnMut() + Send), b: &mut (dyn FnMut() + Send)) {
-        a();
-        b();
     }
 }
 

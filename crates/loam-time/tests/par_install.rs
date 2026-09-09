@@ -15,11 +15,6 @@ impl Executor for Counting {
         DRAINS.fetch_add(1, Ordering::Relaxed);
         while chunks.run_next() {}
     }
-
-    fn join(&self, a: &mut (dyn FnMut() + Send), b: &mut (dyn FnMut() + Send)) {
-        a();
-        b();
-    }
 }
 
 #[test]
