@@ -29,6 +29,8 @@ pub enum Rejection {
     Restore(RestoreError),
     Cancelled,
     Unsupported(&'static str),
+    #[cfg(feature = "physics")]
+    Edit(loam_physics::EditError),
 }
 
 impl From<DomainError> for Rejection {

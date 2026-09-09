@@ -14,7 +14,8 @@ glam.workspace = true
 
 loam-app     = { path = "../loam-app",     version = "0.1.0" }
 loam-math    = { path = "../loam-math",    version = "0.1.0" }
-loam-runtime = { path = "../loam-runtime", version = "0.1.0" }
+loam-physics = { path = "../loam-physics", version = "0.1.0", default-features = false, features = ["r4"] }
+loam-runtime = { path = "../loam-runtime", version = "0.1.0", features = ["physics"] }
 loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
 
 [lints]

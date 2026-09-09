@@ -688,6 +688,7 @@ dependencies = [
  "glam",
  "loam-app",
  "loam-math",
+ "loam-physics",
  "loam-runtime",
  "loam-shape",
 ]
@@ -1553,6 +1554,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "loam-math",
+ "loam-physics",
  "loam-shape",
 ]
 

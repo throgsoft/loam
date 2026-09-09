@@ -9,6 +9,8 @@ pub mod field;
 pub mod host;
 pub mod input;
 pub mod phase;
+#[cfg(feature = "physics")]
+pub mod physics;
 pub mod relation;
 pub mod session;
 pub mod store;
@@ -44,6 +46,8 @@ pub use phase::{
     Access, Ctx, Entry, EntryId, Order, Phase, Readback, Schedule, Step, StoreId, System,
     SystemEntry, Tick, WorkItem,
 };
+#[cfg(feature = "physics")]
+pub use physics::{Physics, PhysicsConfig};
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
     Growth, Library, Material, MaterialId, PreparedGeometry, PreparedId, Publication, PublishError,

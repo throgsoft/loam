@@ -10,11 +10,15 @@ description = "Loam runtime: entities, typed stores, domains behind one facade, 
 keywords = ["gamedev", "runtime", "geometry", "4d", "non-euclidean"]
 categories = ["game-development", "game-engines"]
 
+[features]
+physics = ["dep:loam-physics"]
+
 [dependencies]
 bytemuck.workspace = true
 
-loam-math  = { path = "../loam-math",  version = "0.1.0" }
-loam-shape = { path = "../loam-shape", version = "0.1.0" }
+loam-math    = { path = "../loam-math",    version = "0.1.0" }
+loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
+loam-physics = { path = "../loam-physics", version = "0.1.0", default-features = false, features = ["r3", "r4"], optional = true }
 
 [lints]
 workspace = true
