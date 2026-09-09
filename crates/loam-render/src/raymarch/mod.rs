@@ -7,7 +7,8 @@ mod hyperslice4d;
 mod polytope_data;
 pub use field_march::{
     field_march_counting_wgsl, field_march_wgsl, field_specialized_wgsl, FieldMarchNode,
-    FieldMarchUniforms, InlineBuilder, MarchMode, SpecializationBuilder, DEFAULT_SPECIALIZE_AFTER,
+    FieldMarchUniforms, InlineBuilder, MarchMode, SpecializationBuilder, SpecializationRequest,
+    DEFAULT_SPECIALIZE_AFTER,
 };
 pub use hyperslice4d::{
     BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
