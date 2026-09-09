@@ -1,9 +1,10 @@
 use glam::{Vec2, Vec3, Vec4};
-use loam_math::{EuclideanR4, HyperbolicH3, Iso3H, Iso4Flat};
+use loam_math::{EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat};
 use loam_render::present::Presenter;
 use loam_runtime::{
-    DomainBuilder, Entity, Instance, Klein, LogCapacity, Material, Pose, PreparedGeometry,
-    Projection4, Publication, Session, SimConfig, SpawnBundle, ViewSpec,
+    BridgeSpec, DomainBuilder, Entity, Instance, Klein, LogCapacity, Material, Placement, Pose,
+    PreparedGeometry, Projection4, Publication, Rigid, Section4, Session, SimConfig, SpawnBundle,
+    ViewSpec,
 };
 use wgpu::*;
 
@@ -22,6 +23,11 @@ const REACH: f32 = 0.3;
 const LANDMARK_R4: Vec4 = Vec4::new(1.5, 0.0, -4.0, 0.0);
 const LANDMARK_H3: Vec3 = Vec3::new(-0.12, 0.0, -0.55);
 const EMPTY: (u32, u32) = (10, 118);
+const BRIDGE_SCALE: f32 = 0.25;
+const BRIDGE_SHIFT: f32 = 0.3;
+const SECTION_AT: Vec4 = Vec4::new(0.0, 0.0, -4.0, 0.0);
+const PLACED_NDC: f32 = 0.519_615_25;
+const TIP_NDC: f32 = 0.649_519;
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -190,6 +196,13 @@ fn render(publication: &Publication<Landmarks>) -> Vec<u8> {
     readback.slice(..).get_mapped_range().to_vec()
 }
 
+fn pixel(ndc: [f32; 2]) -> (u32, u32) {
+    (
+        ((ndc[0] + 1.0) * 0.5 * SIZE as f32) as u32,
+        ((1.0 - ndc[1]) * 0.5 * SIZE as f32) as u32,
+    )
+}
+
 fn texel(pixels: &[u8], (x, y): (u32, u32)) -> [u8; 4] {
     let i = ((y * SIZE + x) * 4) as usize;
     [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
@@ -226,5 +239,69 @@ fn published_landmarks_are_absent_from_their_own_ndc_positions_gpu_probe() {
     assert!(
         empty[0] <= BACKGROUND_MAX,
         "the pixel at {EMPTY:?} shows {empty:?}, not the background"
+    );
+}
+
+fn bridged() -> Session<Landmarks> {
+    let mut session = Session::new(Landmarks::default(), SimConfig::default());
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let edges = session.prepare(cross4(REACH));
+    let white = session.add_material(Material::lines([1.0, 1.0, 1.0, 1.0], 3.0));
+    let root = session.views().root();
+    let (section, anchor) = session.dispatch(|d| {
+        let eye = d
+            .spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))
+            .unwrap();
+        let anchor = d
+            .spawn(
+                SpawnBundle::new()
+                    .at(r4, Pose(Iso4Flat::from_translation(SECTION_AT)))
+                    .instance(Instance::new(edges, white)),
+            )
+            .unwrap();
+        let section =
+            d.domains
+                .typed(r4)
+                .unwrap()
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
+        (section, anchor)
+    });
+    session
+        .bridge(BridgeSpec {
+            anchor,
+            into: root,
+            source: r4.id(),
+            view: section,
+            placement: Placement::Rigid(Rigid {
+                pose: Iso3::from_translation(Vec3::new(BRIDGE_SHIFT, 0.0, 0.0)),
+                scale: BRIDGE_SCALE,
+            }),
+        })
+        .unwrap();
+    session
+}
+
+#[test]
+#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+fn a_bridged_view_rasterizes_where_its_placement_did_not_put_it_gpu_probe() {
+    let mut session = bridged();
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    let pixels = render(&publication);
+
+    for (name, ndc) in [("center", PLACED_NDC), ("tip", TIP_NDC)] {
+        let at = pixel([ndc, 0.0]);
+        let drawn = texel(&pixels, at);
+        assert!(
+            drawn[0] >= INK_MIN,
+            "the placed {name} at {at:?} shows {drawn:?}, not its lines"
+        );
+    }
+    let unplaced = pixel([0.0, 0.0]);
+    let drawn = texel(&pixels, unplaced);
+    assert!(
+        drawn[0] <= BACKGROUND_MAX,
+        "the unplaced center at {unplaced:?} shows {drawn:?}, so the placement was dropped"
     );
 }

@@ -81,7 +81,11 @@ impl Presenter {
         }
         self.views.truncate(views.len());
         for (slot, view) in self.views.iter_mut().zip(views) {
-            slot.node.set_root_camera(queue, eye, viewport);
+            slot.node.set_camera(
+                queue,
+                crate::view::placed_view_projection(eye, view.placement),
+                viewport,
+            );
             let built = view.records.built();
             if slot.uploaded == built {
                 continue;

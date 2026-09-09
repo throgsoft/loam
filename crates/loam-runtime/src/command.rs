@@ -1,8 +1,10 @@
+use crate::bridge::Bridge;
 use crate::domain::{
     ChartCommand, ChartPose, DomainError, DomainHandle, DomainId, DomainSpace, Domains, Instance,
     Pose,
 };
 use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
+use crate::relation::Relation;
 use crate::session::RestoreError;
 use crate::store::StoreError;
 use crate::stores::{HasStore, Stores};
@@ -314,6 +316,7 @@ pub struct Dispatch<'a, A> {
     pub domains: &'a mut Domains,
     pub views: &'a mut Views,
     entities: &'a mut Entities,
+    bridges: &'a mut Relation<Bridge>,
 }
 
 impl<'a, A: Stores> Dispatch<'a, A> {
@@ -322,12 +325,14 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         domains: &'a mut Domains,
         views: &'a mut Views,
         entities: &'a mut Entities,
+        bridges: &'a mut Relation<Bridge>,
     ) -> Self {
         Self {
             app,
             domains,
             views,
             entities,
+            bridges,
         }
     }
 
@@ -364,6 +369,17 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         self.app.release(entity);
         for domain in self.domains.iter_mut() {
             domain.release(entity);
+        }
+        while let Some(id) = self
+            .bridges
+            .outgoing(entity)
+            .next()
+            .or_else(|| self.bridges.incoming(entity).next())
+        {
+            let Ok(link) = self.bridges.unlink(id) else {
+                break;
+            };
+            self.views.unplace(link.data.image);
         }
     }
 

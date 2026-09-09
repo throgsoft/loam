@@ -4,12 +4,13 @@ use std::time::{Duration, Instant};
 
 use glam::{Vec3, Vec4};
 use loam_app::session::run;
-use loam_math::{EuclideanR4, HyperbolicH3, Iso3H, Iso4Flat};
+use loam_math::{EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat};
 use loam_runtime::host::{self, HostConfig, HostError};
 use loam_runtime::{
-    Access, ActionEvent, ActionId, Bindings, Ctx, DomainBuilder, DomainHandle, Domains, Entity,
-    Input, Instance, Key, Klein, LogCapacity, Material, Phase, Pick, Pose, PreparedGeometry,
-    Projection4, Publication, Rejection, Session, SimConfig, SpawnBundle, Step, ViewSpec,
+    Access, ActionEvent, ActionId, Bindings, BridgeSpec, Ctx, DomainBuilder, DomainHandle, Domains,
+    Entity, Input, Instance, Key, Klein, LogCapacity, Material, Phase, Pick, Placement, Pose,
+    PreparedGeometry, Projection4, Publication, Rejection, Rigid, Section4, Session, SimConfig,
+    SpawnBundle, Step, ViewId, ViewSpec,
 };
 use loam_shape::polytope::Polytope4;
 
@@ -23,6 +24,11 @@ const LANDMARK_SCALE: f32 = 0.15;
 const LANDMARK_R4: Vec4 = Vec4::new(1.5, 0.0, -4.0, 0.0);
 const LANDMARK_H3: Vec3 = Vec3::new(-0.12, 0.0, -0.55);
 const HEADLESS_WALK: Range<u32> = 0..6;
+const BRIDGE_POSITION: Vec3 = Vec3::new(0.5, 0.0, -1.2);
+const BRIDGE_SCALE: f32 = 0.2;
+const SECTION_W: f32 = 0.0;
+const DRAG_NDC: f32 = 0.15;
+const DRAG_SECONDS: f64 = 0.25;
 const EDIT: ActionId = ActionId(4);
 const EDIT_STEP: f32 = 0.05;
 const LATENCY_SAMPLES: usize = 128;
@@ -52,6 +58,7 @@ struct Scene {
     h3: DomainHandle<HyperbolicH3>,
     landmark4: Entity,
     landmark3: Entity,
+    walker4: Entity,
 }
 
 fn heading(input: &Input) -> [f32; 2] {
@@ -99,35 +106,36 @@ fn build() -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
     let white = session.add_material(Material::lines([1.0, 1.0, 1.0, 0.95], 1.6));
     let root = session.views().root();
 
-    let (landmark4, landmark3) = session.dispatch(|d| -> Result<(Entity, Entity), Rejection> {
-        let landmark4 = d.spawn(
-            SpawnBundle::new()
-                .at(r4, Pose(Iso4Flat::from_translation(LANDMARK_R4)))
-                .instance(Instance::new(edges4, white)),
-        )?;
-        let landmark3 = d.spawn(
-            SpawnBundle::new()
-                .at(h3, Pose(Iso3H::from_translation(LANDMARK_H3)))
-                .instance(Instance::new(edges3, white)),
-        )?;
-        let player = Player { speed: WALK_SPEED };
-        let walker4 = d.spawn(
-            SpawnBundle::new()
-                .at(r4, Pose(Iso4Flat::IDENTITY))
-                .row(player),
-        )?;
-        let walker3 = d.spawn(SpawnBundle::new().at(h3, Pose(Iso3H::IDENTITY)).row(player))?;
-        let projection = Projection4 {
-            focal: FOCAL_DISTANCE,
-        };
-        d.domains
-            .typed(r4)?
-            .add_view(ViewSpec::new(root, walker4, projection));
-        d.domains
-            .typed(h3)?
-            .add_view(ViewSpec::new(root, walker3, Klein));
-        Ok((landmark4, landmark3))
-    })?;
+    let (landmark4, landmark3, walker4) =
+        session.dispatch(|d| -> Result<(Entity, Entity, Entity), Rejection> {
+            let landmark4 = d.spawn(
+                SpawnBundle::new()
+                    .at(r4, Pose(Iso4Flat::from_translation(LANDMARK_R4)))
+                    .instance(Instance::new(edges4, white)),
+            )?;
+            let landmark3 = d.spawn(
+                SpawnBundle::new()
+                    .at(h3, Pose(Iso3H::from_translation(LANDMARK_H3)))
+                    .instance(Instance::new(edges3, white)),
+            )?;
+            let player = Player { speed: WALK_SPEED };
+            let walker4 = d.spawn(
+                SpawnBundle::new()
+                    .at(r4, Pose(Iso4Flat::IDENTITY))
+                    .row(player),
+            )?;
+            let walker3 = d.spawn(SpawnBundle::new().at(h3, Pose(Iso3H::IDENTITY)).row(player))?;
+            let projection = Projection4 {
+                focal: FOCAL_DISTANCE,
+            };
+            d.domains
+                .typed(r4)?
+                .add_view(ViewSpec::new(root, walker4, projection));
+            d.domains
+                .typed(h3)?
+                .add_view(ViewSpec::new(root, walker3, Klein));
+            Ok((landmark4, landmark3, walker4))
+        })?;
 
     session.system(
         Phase::Simulation,
@@ -201,17 +209,89 @@ fn build() -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
         h3,
         landmark4,
         landmark3,
+        walker4,
     };
     Ok((session, scene))
 }
 
-fn published_point(publication: &Publication<TwoSpaceStores>, entity: Entity) -> Option<[f32; 3]> {
+fn published_point(
+    publication: &Publication<TwoSpaceStores>,
+    entity: Entity,
+    through: Option<ViewId>,
+) -> Option<[f32; 3]> {
     publication
         .views
         .iter()
-        .flat_map(|view| view.records.instances.rows())
-        .find(|record| record.entity == entity)
-        .map(|record| record.image_point)
+        .filter(|view| through.is_none_or(|id| view.target.view == id))
+        .flat_map(|view| {
+            view.records
+                .instances
+                .rows()
+                .iter()
+                .map(|record| (record.entity, view.placement.apply(record.image_point)))
+        })
+        .find(|(row, _)| *row == entity)
+        .map(|(_, point)| point)
+}
+
+fn bridged(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool, HostError> {
+    let refused = |what: &str, error: String| HostError::Host(format!("{what} refused: {error}"));
+    let root = session.views().root();
+    let section = session.dispatch(|d| -> Result<ViewId, Rejection> {
+        Ok(d.domains.typed(scene.r4)?.add_view(ViewSpec::new(
+            root,
+            scene.walker4,
+            Section4 { w: SECTION_W },
+        )))
+    })?;
+    session
+        .bridge(BridgeSpec {
+            anchor: scene.landmark3,
+            into: root,
+            source: scene.r4.id(),
+            view: section,
+            placement: Placement::Rigid(Rigid {
+                pose: Iso3::from_translation(BRIDGE_POSITION),
+                scale: BRIDGE_SCALE,
+            }),
+        })
+        .map_err(|error| refused("bridge", format!("{error:?}")))?;
+
+    let mut publication = Publication::default();
+    session.publish(&mut publication)?;
+    let placed = published_point(&publication, scene.landmark4, Some(section));
+    let Some([x, y]) = placed.and_then(|point| session.views().ndc(point)) else {
+        println!("r4 landmark through the bridge: not published");
+        return Ok(false);
+    };
+
+    let pick = session
+        .grab([x, y], 0.0)
+        .map_err(|error| refused("grab", format!("{error:?}")))?;
+    let key = pick.entity.key();
+    println!(
+        "r4 landmark through the bridge at ({x:.3}, {y:.3}): pick returned entity {}.{} in image space {}, hit {:?}",
+        key.slot(),
+        key.generation(),
+        pick.image.index(),
+        pick.hit.map(|hit| hit.coordinates)
+    );
+    session
+        .drag([x + DRAG_NDC, y], DRAG_SECONDS)
+        .map_err(|error| refused("drag", format!("{error:?}")))?;
+    session.boundary(Input::default())?;
+    let at = session
+        .domains_mut()
+        .typed(scene.r4)?
+        .poses
+        .get(scene.landmark4)
+        .map(|pose| pose.0.translation)
+        .ok_or_else(|| HostError::Host("the landmark lost its pose".into()))?;
+    println!(
+        "r4 landmark dragged by ndc ({DRAG_NDC:.3}, 0.000): position ({:.4}, {:.4}, {:.4}, {:.4})",
+        at.x, at.y, at.z, at.w
+    );
+    Ok(pick.entity == scene.landmark4 && pick.view == section && pick.image != root)
 }
 
 fn headless(
@@ -227,8 +307,8 @@ fn headless(
         ("r4", scene.landmark4, scene.r4.id()),
         ("h3", scene.landmark3, scene.h3.id()),
     ] {
-        let ndc =
-            published_point(&publication, landmark).and_then(|point| session.views().ndc(point));
+        let ndc = published_point(&publication, landmark, None)
+            .and_then(|point| session.views().ndc(point));
         let pick = ndc.and_then(|ndc| session.pick(ndc));
         match (ndc, pick) {
             (Some([x, y]), Some(pick)) => {
@@ -252,7 +332,7 @@ fn headless(
             }
         }
     }
-    Ok(all_matched)
+    Ok(all_matched && bridged(session, scene)?)
 }
 
 fn edit_input() -> Input {
@@ -282,13 +362,13 @@ fn edit_latency(
     let mut wall_seen: Vec<Duration> = Vec::with_capacity(samples);
 
     for _ in 0..samples {
-        let before = published_point(&publication, scene.landmark4);
+        let before = published_point(&publication, scene.landmark4, None);
         session.boundary(edit_input())?;
         let mut ticks = 0;
         loop {
             session.tick()?;
             session.publish(&mut publication)?;
-            if published_point(&publication, scene.landmark4) != before {
+            if published_point(&publication, scene.landmark4, None) != before {
                 break;
             }
             ticks += 1;

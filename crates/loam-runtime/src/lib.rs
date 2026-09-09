@@ -1,5 +1,6 @@
 //! One session's CPU state: entities, typed stores, domains behind one facade, phases, commands, bulk stores, work orders, and checkpoints.
 
+pub mod bridge;
 pub mod bulk;
 pub mod command;
 pub mod domain;
@@ -15,6 +16,7 @@ pub mod stores;
 pub mod value;
 pub mod view;
 
+pub use bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
 pub use bulk::{
     Bulk, BulkAction, BulkCheckpoint, BulkError, BulkId, BulkSnapshot, BulkSpec, Landed, Landing,
     SnapshotPolicy, Wait, WorkOrder, WorkStats,
@@ -56,6 +58,6 @@ pub use stores::{HasRelation, HasStore, Stores};
 pub use value::Value;
 pub use view::{
     DepthEnvelope, DomainRay, Eye, Identity3, ImageRay, ImageSpace, ImageSpaceId, InstanceRecord,
-    Klein, Orbit, Pick, Projection4, Section4, SegmentRecord, ViewId, ViewMapping, ViewRecords,
-    ViewSpec, ViewTarget, Views,
+    Klein, Orbit, Pick, Placement, Projection4, Rigid, Section4, SegmentRecord, ViewId,
+    ViewMapping, ViewRecords, ViewSpec, ViewSummary, ViewTarget, Views, ViewsSnapshot,
 };
