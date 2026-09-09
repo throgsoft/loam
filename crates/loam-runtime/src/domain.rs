@@ -1383,7 +1383,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         Ok(())
     }
 
-    /// Moves the origin to `point`, keeping the frame.
+    /// Moves the origin to `point` by transvection, keeping the frame.
     pub fn move_to(&mut self, entity: Entity, point: ChartPoint) -> Result<(), DomainError> {
         finite(point.coordinates)?;
         let target = self.space.local_point(point.coordinates);
