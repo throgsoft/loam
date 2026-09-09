@@ -10,7 +10,7 @@ use crate::args::Args;
 use crate::capture::CaptureRequest;
 use crate::script::{driver_from_args, ScriptDriver};
 
-/// Runs each frame between publication and presentation, with capture control; `sections` are the previous frame's, since the presenter clears them at upload.
+/// Runs each frame between publication and presentation, with capture control; the presenter reads the root eye after it, and `sections` are the previous frame's, since the presenter clears them at upload.
 pub struct FrameHook<'a, A: Stores> {
     pub session: &'a mut Session<A>,
     pub sections: &'a [Section],
