@@ -19,7 +19,9 @@ use crate::field::{
     self, FieldCompiler, FieldCost, FieldError, FieldNode, FieldOp, FieldPrimitive,
 };
 use crate::phase::Step;
-use crate::session::{Library, MaterialId, PreparedGeometry, PreparedId, RestoreError, Stamp};
+use crate::session::{
+    Library, MaterialId, PaletteId, PreparedGeometry, PreparedId, RestoreError, Stamp,
+};
 use crate::store::{LogCapacity, Store, StoreField, StoreSnapshot};
 use crate::view::{
     self, DomainRay, ImageRay, ImageSpaceId, InstanceRecord, Pick, Rigid, SegmentRecord, Vec3,
@@ -122,16 +124,41 @@ pub enum ChartCommand {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Instance {
     pub geometry: PreparedId,
     pub material: MaterialId,
+    pub shading: EdgeShading,
 }
 
 impl Instance {
     pub fn new(geometry: PreparedId, material: MaterialId) -> Self {
-        Self { geometry, material }
+        Self {
+            geometry,
+            material,
+            shading: EdgeShading::Material,
+        }
     }
+
+    pub fn shaded(mut self, shading: EdgeShading) -> Self {
+        self.shading = shading;
+        self
+    }
+}
+
+/// Where publication reads a segment's colour; the default is the material's line colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum EdgeShading {
+    #[default]
+    Material,
+    /// Two colours per prepared segment, its start then its end, in the prepared geometry's own order.
+    Palette(PaletteId),
+    /// Reads `back` at `-extent` and `front` at `+extent` of the endpoint's last chart coordinate in the entity's own frame.
+    Depth {
+        back: [f32; 4],
+        front: [f32; 4],
+        extent: f32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -452,6 +479,14 @@ fn image_of<S: DomainSpace>(
     mapping.image_local(space, eye, pose, local)
 }
 
+fn lerp_color(back: [f32; 4], front: [f32; 4], t: f32) -> [f32; 4] {
+    let mut mixed = [0.0; 4];
+    for (channel, value) in mixed.iter_mut().enumerate() {
+        *value = back[channel] + (front[channel] - back[channel]) * t;
+    }
+    mixed
+}
+
 fn push_segments<S: DomainSpace>(
     space: &S,
     mapping: &dyn ViewMapping<S>,
@@ -465,33 +500,59 @@ fn push_segments<S: DomainSpace>(
         return;
     };
     let (color, width_px) = library.line_style(instance.material);
-    let mut push = |a: [f32; 4], b: [f32; 4]| {
+    let palette = match instance.shading {
+        EdgeShading::Palette(id) => library.palette(id),
+        _ => &[],
+    };
+    let origin_depth = space
+        .chart_point(space.iso_apply(pose.0, space.origin()))
+        .coordinates[3];
+    let depth_color = |local: [f32; 4]| match instance.shading {
+        EdgeShading::Depth {
+            back,
+            front,
+            extent,
+        } => {
+            let depth = space
+                .chart_point(space.iso_apply(pose.0, space.local_point(local)))
+                .coordinates[3]
+                - origin_depth;
+            Some(lerp_color(
+                back,
+                front,
+                (depth / extent.max(1e-6) * 0.5 + 0.5).clamp(0.0, 1.0),
+            ))
+        }
+        _ => None,
+    };
+    let mut push = |index: usize, a: [f32; 4], b: [f32; 4]| {
         let (Some(start), Some(end)) = (
             image_of(space, mapping, eye, pose, a),
             image_of(space, mapping, eye, pose, b),
         ) else {
             return;
         };
+        let painted = |at: usize| palette.get(at).copied().unwrap_or(color);
         into.push(SegmentRecord {
             start,
             _pad0: 0.0,
             end,
             _pad1: 0.0,
-            start_color: color,
-            end_color: color,
+            start_color: depth_color(a).unwrap_or_else(|| painted(index * 2)),
+            end_color: depth_color(b).unwrap_or_else(|| painted(index * 2 + 1)),
             width_px,
             _pad2: [0.0; 3],
         });
     };
     match geometry {
         PreparedGeometry::Lines4 { segments } => {
-            for &[a, b] in segments {
-                push(a, b);
+            for (index, &[a, b]) in segments.iter().enumerate() {
+                push(index, a, b);
             }
         }
         PreparedGeometry::Lines3 { segments } => {
-            for &[a, b] in segments {
-                push([a[0], a[1], a[2], 0.0], [b[0], b[1], b[2], 0.0]);
+            for (index, &[a, b]) in segments.iter().enumerate() {
+                push(index, [a[0], a[1], a[2], 0.0], [b[0], b[1], b[2], 0.0]);
             }
         }
         PreparedGeometry::Mesh3 { .. } => {}

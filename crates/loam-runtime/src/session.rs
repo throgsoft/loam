@@ -86,6 +86,15 @@ impl MaterialId {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PaletteId(u32);
+
+impl PaletteId {
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PreparedGeometry {
     Lines4 {
@@ -156,6 +165,7 @@ impl Material {
 pub struct Library<'a> {
     pub geometry: &'a [PreparedGeometry],
     pub materials: &'a [Material],
+    pub palettes: &'a [Vec<[f32; 4]>],
 }
 
 impl Library<'_> {
@@ -165,6 +175,12 @@ impl Library<'_> {
             Some(Material::Flat { color }) => (*color, 1.0),
             None => ([1.0; 4], 1.0),
         }
+    }
+
+    pub(crate) fn palette(&self, palette: PaletteId) -> &[[f32; 4]] {
+        self.palettes
+            .get(palette.index())
+            .map_or(&[][..], Vec::as_slice)
     }
 }
 
@@ -277,6 +293,7 @@ pub struct Session<A: Stores> {
     input: Input,
     prepared: Vec<PreparedGeometry>,
     materials: Vec<Material>,
+    palettes: Vec<Vec<[f32; 4]>>,
     config: SimConfig,
     tick: Tick,
     sequence: u64,
@@ -330,6 +347,7 @@ impl<A: Stores> Session<A> {
             input: Input::default(),
             prepared: Vec::new(),
             materials: Vec::new(),
+            palettes: Vec::new(),
             config,
             tick: Tick::default(),
             sequence: 0,
@@ -397,6 +415,16 @@ impl<A: Stores> Session<A> {
 
     pub fn prepared(&self, id: PreparedId) -> Option<&PreparedGeometry> {
         self.prepared.get(id.index())
+    }
+
+    /// One colour per prepared segment, read in the prepared geometry's own order.
+    pub fn add_palette(&mut self, colors: Vec<[f32; 4]>) -> PaletteId {
+        self.palettes.push(colors);
+        PaletteId((self.palettes.len() - 1) as u32)
+    }
+
+    pub fn palette(&self, id: PaletteId) -> Option<&[[f32; 4]]> {
+        self.palettes.get(id.index()).map(Vec::as_slice)
     }
 
     pub fn add_material(&mut self, material: Material) -> MaterialId {
@@ -943,6 +971,7 @@ impl<A: Stores> Session<A> {
         let library = Library {
             geometry: &self.prepared,
             materials: &self.materials,
+            palettes: &self.palettes,
         };
         let mut count = 0;
         for domain in self.domains.iter() {
@@ -1203,6 +1232,132 @@ mod tests {
     crate::stores! {
         #[derive(Default)]
         pub struct Quiet {}
+    }
+
+    fn shaded_segments(
+        shading: crate::domain::EdgeShading,
+        at_w: f32,
+        prepare: impl FnOnce(&mut Session<Quiet>) -> (PreparedId, MaterialId),
+    ) -> Vec<crate::view::SegmentRecord> {
+        use crate::view::{Eye, Section4, Vec4};
+
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let (geometry, material) = prepare(&mut session);
+        let root = session.views().root();
+        session
+            .dispatch(|d| -> Result<(), Rejection> {
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))?;
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(
+                            r4,
+                            Pose(Iso4Flat::from_translation(Vec4::new(0.0, 0.0, -4.0, at_w))),
+                        )
+                        .instance(Instance::new(geometry, material).shaded(shading)),
+                )?;
+                d.domains
+                    .typed(r4)?
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: at_w }));
+                Ok(())
+            })
+            .expect("the view registered");
+        session.views_mut().root_mut().eye = Eye::default();
+        let mut records = Records::default();
+        records.publish(&mut session).expect("published");
+        let publication = records.lend().expect("the buffer is free");
+        publication.views[0].records.segments().to_vec()
+    }
+
+    #[test]
+    fn a_depth_shaded_segment_reads_its_colour_from_the_endpoints_own_w_not_the_bodys() {
+        use crate::domain::EdgeShading;
+
+        const EXTENT: f32 = 0.5;
+        const BACK: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+        const FRONT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+        let shading = EdgeShading::Depth {
+            back: BACK,
+            front: FRONT,
+            extent: EXTENT,
+        };
+        let prepare = |session: &mut Session<Quiet>| {
+            (
+                session.prepare(PreparedGeometry::Lines4 {
+                    segments: vec![[[0.0; 4], [0.0, 0.0, 0.0, EXTENT]]],
+                }),
+                session.add_material(Material::lines([1.0; 4], 1.0)),
+            )
+        };
+
+        for lifted in [0.0, 3.0] {
+            let segments = shaded_segments(shading, lifted, prepare);
+            assert_eq!(
+                segments[0].start_color,
+                [0.5, 0.0, 0.5, 1.0],
+                "the midpoint of the depth ramp is wrong for a body at w {lifted}"
+            );
+            assert_eq!(
+                segments[0].end_color, FRONT,
+                "the far endpoint of the depth ramp is wrong for a body at w {lifted}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_palette_colours_each_segment_by_its_prepared_index_and_no_shading_keeps_the_material() {
+        use crate::domain::EdgeShading;
+
+        const COLORS: [[f32; 4]; 4] = [
+            [1.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0],
+        ];
+        const MATERIAL: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
+        let two_edges = vec![
+            [[0.0; 4], [0.5, 0.0, 0.0, 0.0]],
+            [[0.0; 4], [0.0, 0.5, 0.0, 0.0]],
+        ];
+
+        let painted = shaded_segments(EdgeShading::Material, 0.0, |session| {
+            (
+                session.prepare(PreparedGeometry::Lines4 {
+                    segments: two_edges.clone(),
+                }),
+                session.add_material(Material::lines(MATERIAL, 1.0)),
+            )
+        });
+        assert_eq!(
+            painted.iter().map(|s| s.start_color).collect::<Vec<_>>(),
+            [MATERIAL, MATERIAL],
+            "an instance with no shading lost the material's line colour"
+        );
+
+        let mut id = None;
+        let painted = shaded_segments(
+            EdgeShading::Palette(PaletteId(0)),
+            0.0,
+            |session: &mut Session<Quiet>| {
+                id = Some(session.add_palette(COLORS.to_vec()));
+                (
+                    session.prepare(PreparedGeometry::Lines4 {
+                        segments: two_edges,
+                    }),
+                    session.add_material(Material::lines(MATERIAL, 1.0)),
+                )
+            },
+        );
+        assert_eq!(id, Some(PaletteId(0)));
+        assert_eq!(
+            painted
+                .iter()
+                .flat_map(|s| [s.start_color, s.end_color])
+                .collect::<Vec<_>>(),
+            COLORS,
+            "the palette did not follow the prepared segment endpoints in order"
+        );
     }
 
     #[test]
