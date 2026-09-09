@@ -11,7 +11,12 @@ use loam_render::work::{BulkBuffers, Readbacks};
 #[cfg(not(target_arch = "wasm32"))]
 use loam_runtime::host::HostConfig;
 use loam_runtime::host::HostError;
-use loam_runtime::{Landing, Records, RequestId, Session, SnapshotPolicy, Stores};
+#[cfg(test)]
+use loam_runtime::Eye;
+use loam_runtime::{
+    BulkAction, Landing, Records, RequestId, RestoreError, Session, SessionSnapshot,
+    SnapshotPolicy, Stores,
+};
 use loam_time::{frame_trace, FixedTimestep};
 
 use super::app::{CaptureControl, FrameHook, SessionApp};
@@ -47,6 +52,9 @@ struct Inner<A: Stores> {
     callbacks: Vec<CommandBuffer>,
     input: InputMap,
     app: SessionApp<A>,
+    recovery: Option<SessionSnapshot<A>>,
+    #[cfg(test)]
+    presented: Option<Eye>,
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     capture: crate::capture::Capture,
 }
@@ -75,6 +83,9 @@ impl<A: Stores> Frame<A> {
                 callbacks: Vec::new(),
                 input: InputMap::default(),
                 app,
+                recovery: None,
+                #[cfg(test)]
+                presented: None,
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
                 capture: crate::capture::Capture::new(),
             },
@@ -192,9 +203,16 @@ impl<A: Stores> Inner<A> {
     fn recover_work(&mut self, gpu: &GpuContext) -> Result<(), HostError> {
         self.session.cancel_work();
         self.readbacks.cancel();
+        let restored = self.pair_checkpoints()?;
         for (id, spec) in self.session.bulk().iter() {
             self.buffers.remove(id);
             self.buffers.ensure(&gpu.device, id, spec);
+        }
+        if restored {
+            self.drain_restore(gpu);
+            return Ok(());
+        }
+        for (id, spec) in self.session.bulk().iter() {
             match spec.snapshot {
                 SnapshotPolicy::Authoritative => match self.session.checkpoint_rows(id) {
                     Some(rows) => self.buffers.write(&gpu.queue, id, rows),
@@ -212,6 +230,55 @@ impl<A: Stores> Inner<A> {
         Ok(())
     }
 
+    fn authoritative(&self) -> bool {
+        self.session
+            .bulk()
+            .iter()
+            .any(|(_, spec)| spec.snapshot == SnapshotPolicy::Authoritative)
+    }
+
+    fn pair_checkpoints(&mut self) -> Result<bool, HostError> {
+        if !self.authoritative() {
+            return Ok(false);
+        }
+        let stale = match self.session.snapshot() {
+            Ok(pair) => {
+                self.recovery = Some(pair);
+                return Ok(false);
+            }
+            Err(RestoreError::CheckpointTick(name)) => name,
+            Err(error) => {
+                return Err(HostError::Host(format!(
+                    "device recovery cannot pair the session with its checkpoints: {error:?}"
+                )))
+            }
+        };
+        let Inner {
+            session, recovery, ..
+        } = self;
+        let Some(pair) = recovery.as_ref() else {
+            return Err(HostError::Host(format!(
+                "{stale} is authoritative, its checkpoint is from another tick, and no session snapshot pairs with it"
+            )));
+        };
+        session.restore(pair).map_err(|error| {
+            HostError::Host(format!(
+                "device recovery could not restore the session paired with {stale}: {error:?}"
+            ))
+        })?;
+        Ok(true)
+    }
+
+    fn drain_restore(&mut self, gpu: &GpuContext) {
+        let Inner {
+            session, buffers, ..
+        } = self;
+        session.apply_restore(|id, action, rows| match action {
+            BulkAction::Replace => buffers.write(&gpu.queue, id, rows),
+            BulkAction::Reinitialize => buffers.reinitialize(&gpu.queue, id),
+        });
+    }
+
     fn advance(&mut self, now: Instant, gpu: &GpuContext) -> Result<(), HostError> {
         let controls = self.app.console.take_controls();
         if let Some(fps) = controls.target_fps {
@@ -220,16 +287,18 @@ impl<A: Stores> Inner<A> {
         if controls.vsync.is_some() {
             self.app.vsync = controls.vsync;
         }
+        let authoritative = self.authoritative();
         let Inner {
             session,
             readbacks,
             input,
             timestep,
             app,
+            recovery,
             ..
         } = self;
         let mut broken = None;
-        readbacks.poll(&gpu.device, |request, rows| {
+        let landed = readbacks.poll(&gpu.device, |request, rows| {
             if session.land_readback(request, rows) == Landing::Failed {
                 broken = Some(request);
             }
@@ -271,6 +340,11 @@ impl<A: Stores> Inner<A> {
             input.reclaim(session.take_input());
         }
         app.console.collect(session);
+        if landed > 0 && authoritative {
+            if let Ok(pair) = session.snapshot() {
+                *recovery = Some(pair);
+            }
+        }
         Ok(())
     }
 
@@ -286,14 +360,8 @@ impl<A: Stores> Inner<A> {
         self.advance(now, gpu)?;
 
         let (width, height) = target.size;
-        let eye = {
-            let root = self.session.views().root();
-            let Some(image) = self.session.views_mut().get_mut(root) else {
-                return Ok(());
-            };
-            image.eye.aspect = width as f32 / height as f32;
-            image.eye
-        };
+        let aspect = width as f32 / height as f32;
+        self.session.views_mut().root_mut().eye.aspect = aspect;
         let published = {
             let _publication = frame_trace::scope("publication");
             self.records
@@ -331,6 +399,15 @@ impl<A: Stores> Inner<A> {
         }
 
         let _presentation = frame_trace::scope("presentation");
+        let eye = {
+            let root = self.session.views_mut().root_mut();
+            root.eye.aspect = aspect;
+            root.eye
+        };
+        #[cfg(test)]
+        {
+            self.presented = Some(eye);
+        }
         presenter.upload(
             &gpu.device,
             &gpu.queue,
@@ -348,6 +425,7 @@ impl<A: Stores> Inner<A> {
         for (id, spec) in self.session.bulk().iter() {
             self.buffers.ensure(&gpu.device, id, spec);
         }
+        self.drain_restore(gpu);
         self.issued.clear();
         let Inner {
             session,
@@ -450,12 +528,13 @@ mod tests {
     use loam_render::device::{FeatureRequest, MissingGpuCapability};
     use loam_render::pass::{FramePass, FrameTarget, PassOrder};
     use loam_runtime::{
-        Access, ActionId, Bindings, BulkSpec, Commands, Ctx, HostConfig, Input, Key, Phase,
-        Readback, RequestId, Schedule, SimConfig, SnapshotPolicy, WorkItem,
+        Access, ActionId, Bindings, BulkId, BulkSpec, Commands, Ctx, HostConfig, Input, Key, Phase,
+        Readback, RequestId, Schedule, SimConfig, SnapshotPolicy, Tick, WorkItem,
     };
     use wgpu::{
-        BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
-        TextureDescriptor, TextureDimension, TextureUsages, TextureViewDescriptor,
+        BackendOptions, Backends, Buffer, BufferDescriptor, BufferUsages, Extent3d, Instance,
+        InstanceDescriptor, MapMode, NoopBackendOptions, PollType, TextureDescriptor,
+        TextureDimension, TextureUsages, TextureViewDescriptor,
     };
 
     use super::*;
@@ -463,6 +542,7 @@ mod tests {
 
     const FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
     const SIZE: (u32, u32) = (64, 48);
+    const ROWS: usize = 16;
 
     loam_runtime::stores! {
         #[derive(Default)]
@@ -557,6 +637,32 @@ mod tests {
         frame
             .step(gpu, &target, now, |_| {})
             .expect("the frame stepped");
+    }
+
+    fn authoritative_grid(session: &mut Session<Bare>) -> BulkId {
+        let grid = session.register_bulk(BulkSpec {
+            name: "grid",
+            element_size: 4,
+            count: (ROWS / 4) as u32,
+            readback: Readback::None,
+            snapshot: SnapshotPolicy::Authoritative,
+            schedule: Schedule::InStep,
+        });
+        session.work(
+            Phase::Simulation,
+            WorkItem::new("stir", Schedule::InStep, Readback::None).writes(grid),
+        );
+        grid
+    }
+
+    fn mapped_rows(gpu: &GpuContext, buffer: &Buffer) -> [u8; ROWS] {
+        let slice = buffer.slice(..);
+        slice.map_async(MapMode::Read, |_| {});
+        let _ = gpu.device.poll(PollType::wait_indefinitely());
+        let mut rows = [0u8; ROWS];
+        rows.copy_from_slice(&slice.get_mapped_range());
+        buffer.unmap();
+        rows
     }
 
     fn suspended_on_a_readback(runs: Arc<AtomicU32>) -> (Session<Watched>, RequestId) {
@@ -739,6 +845,145 @@ mod tests {
         assert_eq!(
             ticked, 1,
             "the frame that resumed the session paid the wait back as {ticked} catch-up ticks"
+        );
+    }
+
+    #[test]
+    fn a_reset_replaces_the_bulk_rows_before_the_next_frames_work_order() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        let grid = authoritative_grid(&mut session);
+        let tick = session.current_tick();
+        session
+            .checkpoint(grid, tick, &[1u8; ROWS])
+            .expect("the store accepted its checkpoint");
+        session.set_initial().expect("the initial snapshot");
+
+        let probe = gpu.device.create_buffer(&BufferDescriptor {
+            label: Some("restore probe"),
+            size: ROWS as u64,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let copy = probe.clone();
+        let stage = Arc::new(AtomicU32::new(0));
+        let phase = stage.clone();
+        let app = host::<Bare>("restore").work(move |ctx| {
+            let Some(buffer) = ctx.buffers.get(grid) else {
+                return;
+            };
+            match phase.load(Ordering::Relaxed) {
+                0 => ctx.gpu.queue.write_buffer(buffer, 0, &[9u8; ROWS]),
+                _ => ctx
+                    .encoder
+                    .copy_buffer_to_buffer(buffer, 0, &copy, 0, ROWS as u64),
+            }
+        });
+        let mut frame = Frame::new(session, app);
+        frame
+            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .expect("attached");
+        let start = Instant::now();
+        frame.reset_clock(start);
+        run_at(
+            &mut frame,
+            &gpu,
+            &texture,
+            start + Duration::from_millis(40),
+        );
+
+        frame.inner.session.reset().expect("the session reset");
+        stage.store(1, Ordering::Relaxed);
+        frame.reset_clock(start + Duration::from_millis(40));
+        run_at(
+            &mut frame,
+            &gpu,
+            &texture,
+            start + Duration::from_millis(80),
+        );
+
+        assert_eq!(
+            mapped_rows(&gpu, &probe),
+            [1u8; ROWS],
+            "the frame after the reset ordered work against the rows the reset replaced"
+        );
+    }
+
+    #[test]
+    fn device_recovery_refuses_a_checkpoint_from_another_tick_and_restores_the_pair_it_holds() {
+        let gpu = noop_gpu();
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        let grid = authoritative_grid(&mut session);
+        for _ in 0..3 {
+            session.boundary(Input::default()).expect("boundary");
+            session.tick().expect("tick");
+        }
+        let tick = session.current_tick();
+        session
+            .checkpoint(grid, tick, &[1u8; ROWS])
+            .expect("the store accepted its checkpoint");
+        let pair = session
+            .snapshot()
+            .expect("a snapshot paired with the checkpoint");
+        for _ in 0..4 {
+            session.boundary(Input::default()).expect("boundary");
+            session.tick().expect("tick");
+        }
+        assert_eq!(session.current_tick(), Tick(7));
+
+        let mut frame = Frame::new(session, host::<Bare>("recovery"));
+        let refused = frame
+            .recover(&gpu)
+            .expect_err("recovery uploaded a tick 3 checkpoint into a tick 7 session");
+        assert!(
+            matches!(&refused, HostError::Host(message) if message.contains("grid")),
+            "the refusal does not name the store that cannot be paired: {refused:?}"
+        );
+
+        frame.inner.recovery = Some(pair);
+        frame.recover(&gpu).expect("the retained pair recovered");
+        assert_eq!(frame.inner.session.current_tick(), Tick(3));
+        assert_eq!(
+            frame.inner.session.apply_restore(|_, _, _| {}),
+            0,
+            "recovery left its bulk plan undrained"
+        );
+    }
+
+    #[test]
+    fn the_presenter_reads_the_eye_the_frame_hook_published_against() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let published: Arc<Mutex<Option<Eye>>> = Arc::new(Mutex::new(None));
+        let recorded = published.clone();
+        let mut step = 0.0_f32;
+        let app = host::<Bare>("camera").on_frame(move |hook| {
+            step += 1.0;
+            let root = hook.session.views_mut().root_mut();
+            let aspect = root.eye.aspect;
+            root.eye = Eye {
+                aspect,
+                ..Eye::looking_at([step, 2.0, 3.0], [0.0; 3], [0.0, 1.0, 0.0])
+            };
+            *recorded.lock().unwrap_or_else(|error| error.into_inner()) = Some(root.eye);
+        });
+        let mut frame = bare(app);
+        frame
+            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .expect("attached");
+
+        run_one(&mut frame, &gpu, &texture);
+        run_one(&mut frame, &gpu, &texture);
+
+        let published = published
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .expect("the hook published an eye");
+        assert_eq!(
+            frame.inner.presented,
+            Some(published),
+            "the presenter drew with a camera the frame hook had already replaced"
         );
     }
 

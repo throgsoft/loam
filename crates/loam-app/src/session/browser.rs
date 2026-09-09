@@ -13,6 +13,7 @@ use loam_runtime::host::{HostConfig, HostError};
 use loam_runtime::{Session, Stores};
 use web_time::Instant;
 
+use super::animation::{self, Next};
 use super::app::SessionApp;
 use super::frame::{failed, Frame, Target};
 use super::pacing::Pace;
@@ -241,29 +242,45 @@ fn install_animation_frame<A: Stores>(
     let worker_for_closure = worker.clone();
     *callback.borrow_mut() = Some(Closure::wrap(Box::new(move |_timestamp: f64| {
         RAF_PENDING.with(|pending| pending.set(false));
-        if PAUSED.with(|paused| paused.get()) {
-            return;
+        let paused = PAUSED.with(|paused| paused.get());
+        let loss = match paused {
+            true => None,
+            false => worker_for_closure.borrow().rd.take_device_loss(),
+        };
+        match animation::frame(paused, loss.is_some(), || {
+            worker_for_closure.borrow_mut().animate()
+        }) {
+            Next::Idle => {}
+            Next::Frame => request_frame(&scope_for_closure, &callback_for_closure),
+            Next::Failed(message) => {
+                tracing::error!("loam-app::session::browser: {message}");
+                post_failure(&scope_for_closure, &message);
+            }
+            Next::Recover => {
+                let worker = worker_for_closure.clone();
+                let scope = scope_for_closure.clone();
+                let callback = callback_for_closure.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let outcome = match loss {
+                        Some(loss) => recover(&worker, &loss).await,
+                        None => Ok(()),
+                    };
+                    let paused = PAUSED.with(|paused| paused.get());
+                    let pending = RAF_PENDING.with(|pending| pending.get());
+                    match animation::recovered(paused, pending, outcome) {
+                        Next::Frame => {
+                            worker.borrow_mut().frame.reset_clock(Instant::now());
+                            request_frame(&scope, &callback);
+                        }
+                        Next::Failed(message) => {
+                            tracing::error!("loam-app::session::browser: {message}");
+                            post_failure(&scope, &message);
+                        }
+                        Next::Idle | Next::Recover => {}
+                    }
+                });
+            }
         }
-        let loss = worker_for_closure.borrow().rd.take_device_loss();
-        if let Some(loss) = loss {
-            let worker = worker_for_closure.clone();
-            let scope = scope_for_closure.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let message = recover(&worker, &loss).await;
-                if let Err(message) = message {
-                    tracing::error!("loam-app::session::browser: {message}");
-                    post_failure(&scope, &message);
-                }
-            });
-            return;
-        }
-        if let Err(error) = worker_for_closure.borrow_mut().animate() {
-            let message = format!("frame failed: {error:?}");
-            tracing::error!("loam-app::session::browser: {message}");
-            post_failure(&scope_for_closure, &message);
-            return;
-        }
-        request_frame(&scope_for_closure, &callback_for_closure);
     }) as Box<dyn FnMut(f64)>));
 
     let scope_for_kickoff = scope.clone();

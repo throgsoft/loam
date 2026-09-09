@@ -840,8 +840,15 @@ fn main() -> Result<(), HostError> {
             if !turning && !grabbed.load(Ordering::Relaxed) && !wants_pointer {
                 orbit.drag(pointer_drag(hook.session));
             }
-            hook.session.views_mut().root_mut().eye = orbit.eye();
-            let eye = orbit.eye();
+            let eye = {
+                let root = hook.session.views_mut().root_mut();
+                let aspect = root.eye.aspect;
+                root.eye = Eye {
+                    aspect,
+                    ..orbit.eye()
+                };
+                root.eye
+            };
 
             let slice = *hook.session.app.slice.get();
             let floor = *hook.session.app.floor.get();
