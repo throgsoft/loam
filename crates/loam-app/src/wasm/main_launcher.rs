@@ -69,7 +69,12 @@ fn spawn_worker_for_preview(
         .map_err(|e| anyhow!("transfer_control_to_offscreen: {e:?}"))?;
 
     let js_url = read_wasm_bundle_url()?;
-    let wasm_url = js_url.strip_suffix(".js").unwrap_or(&js_url).to_string() + "_bg.wasm";
+    let (js_path, query) = js_url.split_once('?').unwrap_or((js_url.as_str(), ""));
+    let wasm_url = format!(
+        "{}_bg.wasm{}{query}",
+        js_path.strip_suffix(".js").unwrap_or(js_path),
+        if query.is_empty() { "" } else { "?" }
+    );
     tracing::info!("loam_app::wasm::worker: spawning worker (js={js_url}, wasm={wasm_url})");
 
     let bootstrap_js =

@@ -53,8 +53,8 @@ For the browser build:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo install --locked trunk
-trunk serve crates/polytope_playground/index.html
+cargo xtask web
+cargo xtask serve
 ```
 
 ## License
