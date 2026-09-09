@@ -903,9 +903,37 @@ impl<A: Stores> Session<A> {
 
     /// Stamps every record buffer with the tick and a sequence that advances while paused.
     pub fn publish(&mut self, into: &mut Publication<A>) -> Result<(), DomainError> {
-        self.plan_ahead(self.tick);
-        self.plan(Phase::Publication, self.tick);
-        self.plan(Phase::Presentation, self.tick);
+        let step = Step {
+            tick: self.tick,
+            dt: self.config.dt().unwrap_or(0.0),
+        };
+        let suspended = self.wait.map(|wait| wait.entry).or(self.resume);
+        if suspended.is_some_and(|entry| entry.phase == Phase::Presentation) {
+            let index = suspended.map_or(0, |entry| entry.index as usize);
+            self.wait = None;
+            self.resume = None;
+            self.run_phase(Phase::Presentation, index, step)?;
+            return Ok(());
+        }
+        let late = match suspended {
+            Some(entry) if entry.phase == Phase::Publication => {
+                self.wait = None;
+                self.resume = None;
+                Some(entry.index as usize)
+            }
+            Some(_) => None,
+            None => {
+                self.plan_ahead(self.tick);
+                self.plan(Phase::Publication, self.tick);
+                self.plan(Phase::Presentation, self.tick);
+                Some(0)
+            }
+        };
+        if let Some(from) = late {
+            if !self.run_phase(Phase::Publication, from, step)? {
+                return Ok(());
+            }
+        }
         self.sequence += 1;
         let stamp = Stamp {
             tick: self.tick,
@@ -943,7 +971,21 @@ impl<A: Stores> Session<A> {
         }
         into.views.truncate(count);
         into.stamp = stamp;
+        if late.is_some() {
+            self.run_phase(Phase::Presentation, 0, step)?;
+        }
         Ok(())
+    }
+
+    fn run_phase(&mut self, phase: Phase, from: usize, step: Step) -> Result<bool, DomainError> {
+        let mut index = from;
+        while index < self.phases.entries(phase).len() {
+            if !self.run_entry(phase, index, step)? {
+                return Ok(false);
+            }
+            index += 1;
+        }
+        Ok(true)
     }
 
     /// Call after the frame's last tick; systems see an empty input until the next boundary.
@@ -1213,6 +1255,95 @@ mod tests {
         assert_eq!(
             grabbed.view, section,
             "the grab resolved to a view it cannot lift, so a drag is a coin flip"
+        );
+    }
+
+    crate::stores! {
+        #[derive(Default)]
+        pub struct Late {
+            published: Value<u32>,
+            presented: Value<u32>,
+        }
+    }
+
+    #[test]
+    fn a_system_in_each_late_phase_runs_once_per_publish() {
+        let mut session = Session::new(Late::default(), SimConfig::default());
+        session.system(
+            Phase::Publication,
+            "count published",
+            Access::new().writes::<u32>(),
+            |app: &mut Late| {
+                *app.published.get_mut() += 1;
+            },
+        );
+        session.system(
+            Phase::Presentation,
+            "count presented",
+            Access::new().writes::<u32>(),
+            |app: &mut Late| {
+                *app.presented.get_mut() += 1;
+            },
+        );
+        let mut publication = Publication::default();
+        for _ in 0..3 {
+            session.publish(&mut publication).expect("published");
+        }
+        assert_eq!(
+            (*session.app.published.get(), *session.app.presented.get()),
+            (3, 3),
+            "a system registered in a late phase never ran"
+        );
+    }
+
+    #[test]
+    fn a_publication_entry_awaiting_a_readback_suspends_publish_until_it_lands() {
+        let mut session = Session::new(Late::default(), SimConfig::default());
+        let grid = session.register_bulk(BulkSpec {
+            name: "grid",
+            element_size: 4,
+            count: 4,
+            readback: Readback::Required,
+            snapshot: SnapshotPolicy::Derived,
+            schedule: Schedule::InStep,
+        });
+        session.work(
+            Phase::Simulation,
+            WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
+        );
+        session.system(
+            Phase::Publication,
+            "consume",
+            Access::new().writes::<u32>().awaits("reduce"),
+            |app: &mut Late| {
+                *app.published.get_mut() += 1;
+            },
+        );
+        session.boundary(Input::default()).expect("boundary");
+        session.tick().expect("tick");
+        let mut issued: Option<RequestId> = None;
+        session.issue_work(|order| issued = Some(order.request));
+        let request = issued.expect("the tick ordered the work item");
+        session.submitted(request);
+
+        let mut publication = Publication::default();
+        session.publish(&mut publication).expect("published");
+        assert_eq!(
+            *session.app.published.get(),
+            0,
+            "the entry ran before the readback it awaits landed"
+        );
+        assert!(
+            session.waiting().is_some(),
+            "publish never suspended at the awaiting entry"
+        );
+
+        session.land_readback(request, Some(&[0u8; 16]));
+        session.publish(&mut publication).expect("published");
+        assert_eq!(
+            *session.app.published.get(),
+            1,
+            "the landed readback never resumed the suspended publication entry"
         );
     }
 
