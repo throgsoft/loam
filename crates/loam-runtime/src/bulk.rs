@@ -139,8 +139,9 @@ pub struct WorkOrder {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Landing {
     Applied,
-    /// Landed after a reset, a restore, a cancellation, or the store's removal; nothing was applied.
+    /// No slot held the request: a reset, a restore, a cancellation, or the store's removal came first; nothing was applied.
     Discarded,
+    /// The readback's map failed; the slot is freed and nothing was applied.
     Failed,
 }
 

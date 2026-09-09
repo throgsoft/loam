@@ -181,7 +181,7 @@ impl Readbacks {
         }
     }
 
-    /// Never blocks; delivers the copies whose maps have completed by this poll.
+    /// Never blocks; delivers each copy whose map has completed by this poll, with `None` for a failed map.
     pub fn poll(
         &mut self,
         device: &Device,
