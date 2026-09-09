@@ -236,7 +236,7 @@ impl HeroSequence {
 
     fn surface_speed_bound(&self) -> f32 {
         self.world.bodies.iter().fold(0.0_f32, |fastest, body| {
-            let Shape::ConvexPolytope4D { vertices } = body.collider() else {
+            let Some(Shape::ConvexPolytope4D { vertices }) = self.world.collider(body) else {
                 return fastest;
             };
             let radius = vertices
@@ -461,7 +461,7 @@ impl HeroSequence {
     fn deepest_dynamic_point(&self) -> f32 {
         let mut deepest = f32::INFINITY;
         for body in self.world.bodies.iter() {
-            let Shape::ConvexPolytope4D { vertices } = body.collider() else {
+            let Some(Shape::ConvexPolytope4D { vertices }) = self.world.collider(body) else {
                 continue;
             };
             for v in vertices {

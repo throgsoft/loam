@@ -67,7 +67,7 @@ pub(crate) struct PlaygroundPhysics {
     pub(crate) world: World<EuclideanR4>,
     synced: Vec<Option<SyncedSlot>>,
     hull_scratch: Vec<Vec4>,
-    spawn_scratch: Vec<loam_physics::RigidBody<EuclideanR4>>,
+    spawn_scratch: Vec<loam_physics::BodyDef<EuclideanR4>>,
 }
 
 impl PlaygroundPhysics {
@@ -94,7 +94,7 @@ impl PlaygroundPhysics {
         // A fresh arena restarts generations at 0 and would alias held handles.
         while let Some(last) = self.world.bodies.len().checked_sub(1) {
             let id = self.world.bodies.id_at(last);
-            self.world.despawn_body(id);
+            let _ = self.world.despawn_body(id);
         }
         for body in self.spawn_scratch.drain(..) {
             self.world.push_body(body);
@@ -120,7 +120,8 @@ impl PlaygroundPhysics {
             if self.synced[slot] == Some(desired) {
                 continue;
             }
-            let body = &mut self.world.bodies[slot];
+            let id = self.world.bodies.id_at(slot);
+            let mass = self.world.bodies[id].mass();
             let (collider, inertia) = if let Some(polytope) = entry.collider_polytope() {
                 self.hull_scratch.clear();
                 self.hull_scratch.extend(
@@ -134,31 +135,17 @@ impl PlaygroundPhysics {
                     Collider::ConvexPolytope4D {
                         vertices: std::mem::take(&mut self.hull_scratch),
                     },
-                    regular_polytope4_inertia(polytope, body.mass(), size),
+                    regular_polytope4_inertia(polytope, mass, size),
                 )
             } else {
-                (
-                    Collider::sphere_at_origin(size),
-                    ball4_inertia(body.mass(), size),
-                )
+                (Collider::sphere_at_origin(size), ball4_inertia(mass, size))
             };
-            let result = if inertia.is_finite() && inertia >= 0.0 {
-                body.set_collider(&EuclideanR4, collider)
+            if self.world.set_collider(id, collider, inertia).is_ok() {
+                self.synced[slot] = Some(desired);
             } else {
-                Err(collider)
-            };
-            let recycled = match result {
-                Ok(previous) => {
-                    body.inertia = inertia;
-                    self.synced[slot] = Some(desired);
-                    previous
-                }
-                Err(rejected) => {
-                    accepted = false;
-                    rejected
-                }
-            };
-            if let Collider::ConvexPolytope4D { vertices } = recycled {
+                accepted = false;
+            }
+            if let Some(Collider::ConvexPolytope4D { vertices }) = self.world.reclaim_geometry() {
                 self.hull_scratch = vertices;
             }
         }
@@ -277,7 +264,9 @@ mod tests {
         let shape = RaymarchShape::Polytope(Polytope4::Tesseract);
         let (mut physics, row, spins) = synced_row(shape, 1, RADIUS, Rotor4::IDENTITY);
         let id = physics.world.bodies.id_at(0);
-        let Collider::ConvexPolytope4D { vertices } = physics.world.bodies[id].collider() else {
+        let Some(Collider::ConvexPolytope4D { vertices }) =
+            physics.world.collider(&physics.world.bodies[id])
+        else {
             panic!("hull fixture")
         };
         let before = vertices.clone();
@@ -286,13 +275,17 @@ mod tests {
         assert_eq!(physics.world.bodies.len(), 1);
         assert!(physics.world.bodies.get(id).is_some());
         assert!(!physics.sync(&row, &spins, f32::NAN));
-        let Collider::ConvexPolytope4D { vertices } = physics.world.bodies[id].collider() else {
+        let Some(Collider::ConvexPolytope4D { vertices }) =
+            physics.world.collider(&physics.world.bodies[id])
+        else {
             panic!("rejected hull replaced valid hull")
         };
         assert_eq!(*vertices, before);
         assert!(physics.synced == cache);
         assert!(physics.sync(&row, &spins, RADIUS * 2.0));
-        let Collider::ConvexPolytope4D { vertices } = physics.world.bodies[id].collider() else {
+        let Some(Collider::ConvexPolytope4D { vertices }) =
+            physics.world.collider(&physics.world.bodies[id])
+        else {
             panic!("hull fixture")
         };
         for (got, old) in vertices.iter().zip(before) {
@@ -430,16 +423,12 @@ mod tests {
             let expected_hull = Polytope4::ALL
                 .iter()
                 .any(|p| entry.shape == RaymarchShape::Polytope(*p));
-            let got_hull = matches!(
-                physics.world.bodies[0].collider(),
-                Collider::ConvexPolytope4D { .. }
-            );
+            let collider = physics.world.collider(&physics.world.bodies[0]);
+            let got_hull = matches!(collider, Some(Collider::ConvexPolytope4D { .. }));
             assert_eq!(
-                got_hull,
-                expected_hull,
-                "{} collided as {:?}",
-                entry.label,
-                physics.world.bodies[0].collider()
+                got_hull, expected_hull,
+                "{} collided as {collider:?}",
+                entry.label
             );
         }
     }
@@ -453,7 +442,8 @@ mod tests {
                     synced_row(RaymarchShape::Polytope(polytope), 1, RADIUS, spin);
                 physics.world.bodies[0].orientation.rotation = orientation;
                 let pose = physics.pose(0, 1, spin);
-                let Collider::ConvexPolytope4D { vertices } = physics.world.bodies[0].collider()
+                let Some(Collider::ConvexPolytope4D { vertices }) =
+                    physics.world.collider(&physics.world.bodies[0])
                 else {
                     panic!("{polytope:?} lost its hull");
                 };

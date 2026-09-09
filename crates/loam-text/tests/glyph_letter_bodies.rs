@@ -60,7 +60,7 @@ fn drop_letter(world: &mut World<EuclideanR4>, letter: &GlyphSolid) -> (BodyId, 
 
 fn deepest_y(world: &World<EuclideanR4>, id: BodyId) -> f32 {
     let body = &world.bodies[id];
-    let Shape::ConvexPolytope4D { vertices } = body.collider() else {
+    let Some(Shape::ConvexPolytope4D { vertices }) = world.collider(body) else {
         unreachable!("spawned as a 4D polytope")
     };
     vertices

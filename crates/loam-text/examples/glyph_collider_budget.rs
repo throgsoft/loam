@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use glam::Vec4;
 use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
-use loam_physics::{RigidBody, World};
+use loam_physics::{BodyDef, World};
 use loam_shape::Shape;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 
@@ -145,7 +145,7 @@ fn time_word(letters: &[GlyphSolid]) -> Result<(usize, f64)> {
 
     for letter in letters {
         for (centre, hull) in letter.colliders_4d() {
-            let body = RigidBody::fixed(centre, hull, 1.0, &EuclideanR4)
+            let body = BodyDef::fixed(centre, hull, 1.0, &EuclideanR4)
                 .with_context(|| format!("invalid collider for glyph {:?}", letter.ch()))?;
             world.push_body(body);
         }

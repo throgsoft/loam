@@ -70,15 +70,15 @@ fn settled_scene(count: usize) -> World<EuclideanR3> {
     world
 }
 
-fn bounding_radius(collider: &Collider) -> f32 {
+fn bounding_radius(collider: Option<&Collider>) -> f32 {
     match collider {
-        Collider::Sphere { radius, .. } => *radius,
-        Collider::ConvexPolytope3D { vertices } => vertices
+        Some(Collider::Sphere { radius, .. }) => *radius,
+        Some(Collider::ConvexPolytope3D { vertices }) => vertices
             .iter()
             .map(|v| v.length_squared())
             .fold(0.0_f32, f32::max)
             .sqrt(),
-        Collider::HalfSpace { .. } => f32::INFINITY,
+        Some(Collider::HalfSpace { .. }) => f32::INFINITY,
         other => unreachable!("the scene builds spheres, boxes and one half-space, not {other:?}"),
     }
 }
@@ -89,7 +89,7 @@ fn scan(world: &World<EuclideanR3>, radii: &mut Vec<f32>, pairs: &mut Vec<PairKe
         world
             .bodies
             .iter()
-            .map(|body| bounding_radius(body.collider())),
+            .map(|body| bounding_radius(world.collider(body))),
     );
     pairs.clear();
     let n = world.bodies.len();

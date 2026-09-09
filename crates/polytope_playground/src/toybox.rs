@@ -635,7 +635,9 @@ impl Toybox {
     fn deepest_point(&self) -> f32 {
         let mut deepest = f32::INFINITY;
         for body in self.world.bodies.iter() {
-            let loam_physics::Collider::ConvexPolytope4D { vertices } = body.collider() else {
+            let Some(loam_physics::Collider::ConvexPolytope4D { vertices }) =
+                self.world.collider(body)
+            else {
                 continue;
             };
             for v in vertices {
@@ -1877,7 +1879,9 @@ mod tests {
     fn hull_reach(toybox: &Toybox) -> (f32, f32) {
         let (mut x, mut z) = (0.0_f32, 0.0_f32);
         for body in toybox.world.bodies.iter() {
-            let loam_physics::Collider::ConvexPolytope4D { vertices } = body.collider() else {
+            let Some(loam_physics::Collider::ConvexPolytope4D { vertices }) =
+                toybox.world.collider(body)
+            else {
                 continue;
             };
             for v in vertices {
