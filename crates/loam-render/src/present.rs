@@ -128,10 +128,7 @@ impl Presenter {
             depth: Some(&depth.view),
             size,
         };
-        self.schedule
-            .record(PassOrder::BeforeScene, encoder, &frame);
-        let views = &self.views;
-        self.schedule.section("present-draw", encoder, |encoder| {
+        self.schedule.section("present-clear", encoder, |encoder| {
             encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("loam-render present clear"),
                 color_attachments: &[Some(RenderPassColorAttachment {
@@ -154,6 +151,11 @@ impl Presenter {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+        });
+        self.schedule
+            .record(PassOrder::BeforeScene, encoder, &frame);
+        let views = &self.views;
+        self.schedule.section("present-draw", encoder, |encoder| {
             for slot in views {
                 slot.node.record(encoder, target, Some(&depth.view), None);
             }
@@ -344,6 +346,147 @@ mod tests {
         assert!(
             idle < busy,
             "the presenter uploads records it already holds: {idle} bytes idle against {busy} busy"
+        );
+    }
+
+    const PROBE_SIZE: u32 = 64;
+    const PAINT: Color = Color {
+        r: 1.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
+
+    struct Paint;
+
+    impl FramePass for Paint {
+        fn name(&self) -> &'static str {
+            "paint"
+        }
+
+        fn order(&self) -> PassOrder {
+            PassOrder::BeforeScene
+        }
+
+        fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+            encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("paint"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: target.color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(PAINT),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+
+        fn rebuild(&mut self, _gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+            Ok(())
+        }
+    }
+
+    fn first_pixel(gpu: &GpuContext, texture: &wgpu::Texture) -> [u8; 4] {
+        let row = PROBE_SIZE * 4;
+        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(row) * u64::from(PROBE_SIZE),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: PROBE_SIZE,
+                height: PROBE_SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+        let slice = staging.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        gpu.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("the readback polled");
+        receiver
+            .recv()
+            .expect("the map callback ran")
+            .expect("the staging buffer mapped");
+        let data = slice.get_mapped_range();
+        let pixel = [data[0], data[1], data[2], data[3]];
+        drop(data);
+        staging.unmap();
+        pixel
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn a_pass_before_the_scene_reaches_the_presented_frame_gpu_probe() {
+        let gpu = pollster::block_on(GpuContext::new(
+            wgpu::Instance::default(),
+            crate::device::FeatureRequest::default(),
+            None,
+        ))
+        .expect("a wgpu adapter");
+        let texture = gpu.device.create_texture(&TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: PROBE_SIZE,
+                height: PROBE_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1);
+        presenter
+            .register_pass(Box::new(Paint))
+            .expect("registered");
+        presenter.attach(&gpu).expect("attached");
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        presenter.record(
+            &gpu.device,
+            &mut encoder,
+            &view,
+            (PROBE_SIZE, PROBE_SIZE),
+            Color::BLACK,
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+
+        assert_eq!(
+            first_pixel(&gpu, &texture),
+            [255, 0, 0, 255],
+            "the presenter cleared the frame after the pass that runs before the scene"
         );
     }
 }
