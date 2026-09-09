@@ -157,7 +157,7 @@ impl ViewMapping<EuclideanR4> for DropW {
 fn reset_rewinds_external_identity_or_resolves_an_old_handle() {
     let (mut session, r4) = session();
     let kept = session.dispatch(|d| d.spawn(placed(r4, Tag(1)))).unwrap();
-    session.set_initial();
+    session.set_initial().unwrap();
     let later = session.dispatch(|d| d.spawn(placed(r4, Tag(2)))).unwrap();
     session.dispatch(|d| d.despawn(kept)).unwrap();
     let epoch = session.scene().epoch;
@@ -196,7 +196,7 @@ fn reset_rewinds_external_identity_or_resolves_an_old_handle() {
 #[test]
 fn pending_commands_or_reservations_survive_cancellation_into_the_restored_state() {
     let (mut session, r4) = session();
-    session.set_initial();
+    session.set_initial().unwrap();
     session.system(
         Phase::Simulation,
         "queue",
@@ -297,7 +297,7 @@ fn snapshot_is_taken_while_commands_are_pending_instead_of_being_refused() {
 #[test]
 fn request_queued_after_a_reset_in_the_same_batch_applies_to_the_restored_state() {
     let (mut session, _) = session();
-    session.set_initial();
+    session.set_initial().unwrap();
     session.system(
         Phase::Simulation,
         "reset",
@@ -424,4 +424,42 @@ fn domain_view_publishes_the_wrong_image_space_position_for_a_known_pose() {
     let second = publication.views[0].records.instances.stamp();
     assert_eq!((first.tick, second.tick), (Tick(0), Tick(0)));
     assert!(second.sequence > first.sequence);
+}
+
+#[test]
+fn cancelled_request_and_a_fresh_request_after_a_reset_share_an_id() {
+    let (mut session, _) = session();
+    session.set_initial().unwrap();
+    session.system(
+        Phase::Simulation,
+        "deferred",
+        Access::new().commands(),
+        |ctx: Ctx<'_, Probe>| {
+            if ctx.step.tick.0 == 0 {
+                ctx.commands.app(Mark(1));
+            }
+        },
+    );
+    session.system(
+        Phase::Dispatch,
+        "fresh",
+        Access::new().commands(),
+        |ctx: Ctx<'_, Probe>| {
+            ctx.commands.app(Mark(2));
+        },
+    );
+    session.tick().unwrap();
+    session.reset().unwrap();
+    let [cancelled] = session.results() else {
+        panic!("{} results after reset", session.results().len());
+    };
+    assert_eq!(cancelled.outcome, Err(Rejection::Cancelled));
+    let cancelled = cancelled.request;
+
+    session.boundary(Input::default()).unwrap();
+    let [fresh] = session.results() else {
+        panic!("{} results after the boundary", session.results().len());
+    };
+    assert_eq!(fresh.outcome, Ok(Outcome::Done));
+    assert!(fresh.request > cancelled);
 }

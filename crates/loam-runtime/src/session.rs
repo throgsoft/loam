@@ -414,11 +414,7 @@ impl<A: Stores> Session<A> {
         if !self.commands.is_empty() || self.entities().has_reservations() {
             return Err(RestoreError::Pending);
         }
-        Ok(self.capture())
-    }
-
-    fn capture(&self) -> SessionSnapshot<A> {
-        SessionSnapshot {
+        Ok(SessionSnapshot {
             app: self.app.snapshot(),
             entities: self.entities().snapshot(),
             domains: self
@@ -429,7 +425,7 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             config: self.config,
             next_request: self.commands.next_request(),
-        }
+        })
     }
 
     /// Cancels pending commands and reservations, then advances the epoch; every earlier external handle fails.
@@ -450,10 +446,10 @@ impl<A: Stores> Session<A> {
         Ok(())
     }
 
-    /// Cancels pending commands and reservations, then captures what `reset` restores.
-    pub fn set_initial(&mut self) {
-        self.commands.cancel_into(&mut self.results);
-        self.initial = Some(self.capture());
+    /// Refused like `snapshot`; `reset` restores what it captures.
+    pub fn set_initial(&mut self) -> Result<(), RestoreError> {
+        self.initial = Some(self.snapshot()?);
+        Ok(())
     }
 
     pub fn reset(&mut self) -> Result<(), RestoreError> {

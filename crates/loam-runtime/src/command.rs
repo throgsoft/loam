@@ -124,7 +124,7 @@ impl<A: Stores> Commands<A> {
 
     pub(crate) fn restore(&mut self, entities: &EntitiesSnapshot, next: RequestId) {
         self.entities.restore(entities);
-        self.next = next.0;
+        self.next = self.next.max(next.0);
     }
 
     pub fn submit(&mut self, command: Command<A>) -> RequestId {
