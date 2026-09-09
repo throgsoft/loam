@@ -28,17 +28,7 @@ impl crate::Runtime {
         let Some(enabled) = self.take_vsync_request() else {
             return;
         };
-        let target = if enabled {
-            wgpu::PresentMode::Fifo
-        } else {
-            [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate]
-                .into_iter()
-                .find(|mode| rd.supported_present_modes().contains(mode))
-                .unwrap_or(rd.present_mode())
-        };
-        if let Err(error) = rd.set_present_mode(target) {
-            tracing::warn!(?error, "present mode rejected");
-        }
+        apply_present_mode(rd, enabled);
     }
 
     pub(crate) fn take_vsync_request(&self) -> Option<bool> {
@@ -68,3 +58,18 @@ pub fn precise_sleep_until(deadline: Instant) {
 
 #[cfg(target_arch = "wasm32")]
 pub fn precise_sleep_until(_deadline: Instant) {}
+
+/// `enabled` asks for Fifo; otherwise the first of Mailbox and Immediate the surface supports, else the current mode.
+pub fn apply_present_mode(rd: &mut loam_render::device::RenderDevice, enabled: bool) {
+    let target = if enabled {
+        wgpu::PresentMode::Fifo
+    } else {
+        [wgpu::PresentMode::Mailbox, wgpu::PresentMode::Immediate]
+            .into_iter()
+            .find(|mode| rd.supported_present_modes().contains(mode))
+            .unwrap_or(rd.present_mode())
+    };
+    if let Err(error) = rd.set_present_mode(target) {
+        tracing::warn!(?error, "present mode rejected");
+    }
+}
