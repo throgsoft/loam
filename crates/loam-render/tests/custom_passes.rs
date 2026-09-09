@@ -69,6 +69,42 @@ impl FramePass for Recorder {
     }
 }
 
+const COPY_BYTES: u64 = 64 << 20;
+
+#[derive(Default)]
+struct Blit {
+    buffers: Option<(Buffer, Buffer)>,
+}
+
+impl FramePass for Blit {
+    fn name(&self) -> &'static str {
+        "blit"
+    }
+
+    fn order(&self) -> PassOrder {
+        PassOrder::AfterScene
+    }
+
+    fn record(&self, encoder: &mut CommandEncoder, _target: &FrameTarget<'_>) {
+        if let Some((source, sink)) = self.buffers.as_ref() {
+            encoder.copy_buffer_to_buffer(source, 0, sink, 0, COPY_BYTES);
+        }
+    }
+
+    fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+        let held = |usage| {
+            gpu.device.create_buffer(&BufferDescriptor {
+                label: Some("blit"),
+                size: COPY_BYTES,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        self.buffers = Some((held(BufferUsages::COPY_SRC), held(BufferUsages::COPY_DST)));
+        Ok(())
+    }
+}
+
 fn noop_context() -> GpuContext {
     let instance = Instance::new(&InstanceDescriptor {
         backends: Backends::NOOP,
@@ -192,29 +228,41 @@ fn a_timed_pass_reports_a_positive_gpu_duration_gpu_probe() {
         .features()
         .contains(loam_render::device::GPU_TIMER_FEATURES);
     let view = target(&gpu.device);
-    let mut presenter = presenter_on(&gpu);
+    let mut presenter = Presenter::new(COLOR_FORMAT, 1);
+    presenter
+        .register_pass(Box::new(Blit::default()))
+        .expect("registered");
+    presenter.attach(&gpu).expect("attach");
 
-    let mut measured = GpuTime::Unavailable;
+    let mut empty = GpuTime::Unavailable;
+    let mut loaded = GpuTime::Unavailable;
     for _ in 0..4 {
         frame(&gpu, &mut presenter, &view);
         gpu.device
             .poll(PollType::wait_indefinitely())
             .expect("poll");
-        if let Some(section) = presenter
-            .sections()
-            .iter()
-            .find(|section| section.name == "present-draw")
-        {
-            measured = section.gpu;
+        for section in presenter.sections() {
+            match section.name {
+                "present-draw" => empty = section.gpu,
+                "blit" => loaded = section.gpu,
+                _ => {}
+            }
         }
     }
-    match (timestamps, measured) {
-        (true, GpuTime::Measured(elapsed)) => assert!(
+    match (timestamps, empty, loaded) {
+        (true, GpuTime::Measured(_), GpuTime::Measured(elapsed)) => assert!(
             elapsed > std::time::Duration::ZERO,
-            "a timed pass reported {elapsed:?}"
+            "a {COPY_BYTES} byte copy reported {elapsed:?}"
         ),
-        (true, GpuTime::Unavailable) => panic!("the timer never reported a duration"),
-        (false, gpu) => assert_eq!(gpu, GpuTime::Unavailable),
+        (true, empty, loaded) => {
+            panic!("the timer left a section unmeasured: {empty:?} and {loaded:?}")
+        }
+        (false, empty, loaded) => {
+            assert_eq!(
+                (empty, loaded),
+                (GpuTime::Unavailable, GpuTime::Unavailable)
+            )
+        }
     }
 }
 
