@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
     <title>Tesseract &middot; Loam</title>
 
-    <link data-trunk rel="rust"
-          href="Cargo.toml"
-          data-cargo-no-default-features />
-
-    <link data-trunk rel="inline" href="../loam-app/static/worker_bundle.html" />
+    <script type="module">
+        window.__loam_wasm_url = new URL("{{LOAM_PUBLIC_URL}}{{LOAM_BIN}}/{{LOAM_BIN}}.js?v={{LOAM_HASH}}", document.baseURI).href;
+        import init from "./{{LOAM_BIN}}.js?v={{LOAM_HASH}}";
+        init({ module_or_path: "./{{LOAM_BIN}}_bg.wasm?v={{LOAM_HASH}}" });
+    </script>
 
     <style>
         html, body {
@@ -38,7 +38,7 @@
 <body>
     <div id="loam-canvas-host" data-mode="manual">
         <canvas id="loam-canvas" width="1280" height="800"></canvas>
-        <link data-trunk rel="inline" href="../loam-app/static/page_loader.html" />
+        {{LOAM_PAGE_LOADER}}
     </div>
 </body>
 </html>
