@@ -59,6 +59,31 @@ fn overflow_releases_held_input_before_new_events() {
     assert!(batch.is_empty());
 }
 
+#[test]
+fn overflow_keeps_pointer_transitions_so_a_drag_does_not_stick() {
+    enqueue(pointer(7, PointerPhase::Down, 1.0, 1));
+    enqueue(pointer(7, PointerPhase::Move, 2.0, 2));
+    enqueue(pointer(7, PointerPhase::Up, 3.0, 3));
+    for _ in 0..MESSAGE_QUEUE_CAPACITY {
+        enqueue(InputMessage::MouseWheel { dx: 0.0, dy: 1.0 });
+    }
+    let mut batch = VecDeque::new();
+    drain_messages_into(&mut batch);
+    let transitions: Vec<(PointerPhase, f32)> = batch
+        .iter()
+        .filter_map(|msg| match msg {
+            InputMessage::Pointer {
+                id: 7, phase, x, ..
+            } if *phase != PointerPhase::Move => Some((*phase, *x)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        transitions,
+        [(PointerPhase::Down, 1.0), (PointerPhase::Up, 3.0)]
+    );
+}
+
 fn pointer(id: u64, phase: PointerPhase, x: f32, millis: u64) -> InputMessage {
     InputMessage::Pointer {
         id,

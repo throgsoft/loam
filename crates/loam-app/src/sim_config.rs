@@ -6,9 +6,7 @@ pub const DEFAULT_MAX_TICKS_PER_FRAME: u32 = 4;
 pub struct SimConfig {
     pub fixed_hz: u32,
     pub catch_up: CatchUp,
-    /// Nothing reads this yet.
     pub seed: u64,
-    /// Nothing reads this yet.
     pub overlap: bool,
 }
 

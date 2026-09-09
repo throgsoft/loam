@@ -43,7 +43,6 @@ pub struct Modifiers {
     pub super_key: bool,
 }
 
-/// One mouse or touch sample.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pointer {
     /// Unique among active pointers; a mouse and a finger never share one.

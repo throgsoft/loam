@@ -126,7 +126,8 @@ pub fn enqueue(msg: InputMessage) {
             }
             let mut index = 0;
             q.retain(|queued| {
-                let keep = control_kind(queued).is_some_and(|kind| latest[kind] == Some(index));
+                let keep = control_kind(queued).is_some_and(|kind| latest[kind] == Some(index))
+                    || matches!(queued, InputMessage::Pointer { phase, .. } if *phase != PointerPhase::Move);
                 index += 1;
                 keep
             });

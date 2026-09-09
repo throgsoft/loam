@@ -1,6 +1,5 @@
 use std::fmt;
 
-/// Tier names and host services share one namespace until tiers resolve on their own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Capability {
     Native,
@@ -30,12 +29,10 @@ impl Capability {
     }
 }
 
-/// The capabilities one host registers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HostProfile(u32);
 
 impl HostProfile {
-    /// The profile of the host this binary runs on.
     pub fn host() -> Self {
         #[cfg(target_arch = "wasm32")]
         let profile = Self::default()

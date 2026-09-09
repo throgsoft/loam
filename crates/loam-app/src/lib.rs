@@ -232,7 +232,7 @@ impl Default for RunConfig {
     }
 }
 
-/// Dispatches native, wasm main-thread, and wasm worker mode.
+/// Dispatches native, wasm main-thread, and wasm worker mode; on native it blocks until the event loop exits.
 pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
     HostProfile::host().require(config.required)?;
     #[cfg(target_arch = "wasm32")]
@@ -252,8 +252,7 @@ pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
     run_with_config::<A>(config)
 }
 
-/// On native this blocks until the event loop exits.
-pub fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
+fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
