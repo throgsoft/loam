@@ -5,7 +5,7 @@ use crate::entity::Entity;
 use crate::store::StoreError;
 use crate::view::{ImageRay, ImageSpaceId, Placement, Vec3, ViewId};
 
-/// Linked from its anchor to the source view's eye; when either stops resolving, the next `dispatch` unlinks it and unplaces `image`.
+/// Linked from its anchor to the source view's eye; releasing either entity unlinks it and unplaces `image` inside that despawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bridge {
     pub source: DomainId,
