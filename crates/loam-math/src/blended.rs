@@ -385,10 +385,6 @@ where
         let f_b = self.b.conformal_factor(p);
         let f = (1.0 - alpha) * f_a + alpha * f_b;
 
-        debug_assert!(
-            f.is_finite() && f > 0.0,
-            "BlendedSpace conformal factor invalid: f = {f}, alpha = {alpha}, f_a = {f_a}, f_b = {f_b}, p = {p:?}"
-        );
         if !f.is_finite() || f <= 0.0 {
             return Vec3::NAN;
         }

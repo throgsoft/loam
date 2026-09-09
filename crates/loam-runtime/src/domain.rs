@@ -8,10 +8,14 @@ pub use loam_shape::field::FieldKind;
 
 use loam_shape::field::DistanceField;
 
+use loam_math::blended::{
+    gauss_newton_log_checked, BlendedSpace, BlendingField, ConformallyFlat, GEODESIC_DEFAULT_STEPS,
+    LOG_MAX_ITERS, LOG_RESIDUAL_TOL,
+};
 use loam_math::hyperbolic::{in_poincare_ball, poincare_to_hyperboloid};
 use loam_math::{
-    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Rotor4, Space,
-    WPlane, WgslSpace,
+    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Mat3, Rotor4,
+    Space, WPlane, WgslSpace,
 };
 use loam_shape::polytope::{polytope_section_faces_append, polytope_section_perimeter_append};
 
@@ -763,6 +767,152 @@ impl From<Iso3> for Pose<EuclideanR3> {
     fn from(iso: Iso3) -> Self {
         EuclideanR3.pose_of(iso)
     }
+}
+
+const LOCAL_ERROR_BUDGET: f32 = 1.0e-3;
+
+impl<A, B, F> DomainSpace for BlendedSpace<A, B, F>
+where
+    A: Space<Point = Vec3, Vector = Vec3> + ConformallyFlat + Send + Sync + 'static,
+    B: Space<Point = Vec3, Vector = Vec3> + ConformallyFlat + Send + Sync + 'static,
+    F: BlendingField,
+{
+    type Placement = Pose<Self>;
+
+    fn origin(&self) -> Self::Point {
+        Vec3::ZERO
+    }
+
+    fn check(&self, point: Self::Point) -> Result<(), DomainError> {
+        finite(point.extend(0.0).to_array())?;
+        self.valid_point(point)
+            .then_some(())
+            .ok_or(DomainError::ChartBoundary)
+    }
+
+    fn chart_dimension(&self) -> u32 {
+        3
+    }
+
+    fn chart_point(&self, point: Self::Point) -> ChartPoint {
+        ChartPoint {
+            chart: ChartId(0),
+            coordinates: point.extend(0.0).to_array(),
+        }
+    }
+
+    fn local_point(&self, coordinates: [f32; 4]) -> Self::Point {
+        Vec3::from_slice(&coordinates[..3])
+    }
+
+    fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose {
+        let relative = transported_frame(self, pose.point).inverse() * pose.frame;
+        ChartPose {
+            chart: ChartId(0),
+            coordinates: pose.point.extend(0.0).to_array(),
+            frame: frame_of([relative.x_axis, relative.y_axis, relative.z_axis]),
+        }
+    }
+
+    fn pose_from_chart(&self, pose: &ChartPose) -> Result<Pose<Self>, DomainError> {
+        finite(pose.coordinates)?;
+        let point = Vec3::from_slice(&pose.coordinates[..3]);
+        self.check(point)?;
+        let [x, y, z] = frame_columns(&pose.frame)?;
+        let frame = transported_frame(self, point) * Mat3::from_cols(x, y, z);
+        Ok(Pose { point, frame })
+    }
+
+    fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError> {
+        finite(tangent.vector)?;
+        Ok(Vec3::from_slice(&tangent.vector[..3]))
+    }
+
+    fn chart_reach(&self, at: Self::Point, radius: f32) -> f32 {
+        self.conformal_factor(at).sqrt() * radius
+    }
+
+    fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32> {
+        let unit = ray.direction.try_normalize()?;
+        let chart_radius = radius / self.conformal_factor(center).sqrt();
+        let offset = ray.origin - center;
+        let entry = view::ball_entry(
+            offset.dot(unit),
+            offset.length_squared() - chart_radius * chart_radius,
+        )?;
+        Some(entry / ray.direction.length())
+    }
+
+    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
+        *pose
+    }
+
+    fn place(&self, placement: &Self::Placement, local: Self::Point) -> Self::Point {
+        self.exp(placement.point, placement.frame * local)
+    }
+
+    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
+        self.check(point)?;
+        if self.conformal_factor(point).sqrt() * LOG_RESIDUAL_TOL > LOCAL_ERROR_BUDGET {
+            return Err(DomainError::ErrorBudget);
+        }
+        let (chart, failure) = gauss_newton_log_checked(
+            self,
+            pose.point,
+            point,
+            GEODESIC_DEFAULT_STEPS,
+            LOG_MAX_ITERS,
+        );
+        if failure.is_some() {
+            return Err(DomainError::NoConvergence);
+        }
+        let inverse = pose.frame.inverse();
+        if !inverse.is_finite() {
+            return Err(DomainError::InvalidFrame);
+        }
+        Ok(inverse * chart)
+    }
+
+    fn carry(
+        &self,
+        pose: &Pose<Self>,
+        local: Self::Point,
+        tangent: Self::Vector,
+    ) -> Result<Self::Vector, DomainError> {
+        let to = self.place(&self.prepare(pose), local);
+        self.check(to)?;
+        let carried = self.parallel_transport(pose.point, to, pose.frame * tangent);
+        carried
+            .is_finite()
+            .then_some(carried)
+            .ok_or(DomainError::NoConvergence)
+    }
+
+    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
+        self.check(to)?;
+        let frame = Mat3::from_cols(
+            self.parallel_transport(pose.point, to, pose.frame.x_axis),
+            self.parallel_transport(pose.point, to, pose.frame.y_axis),
+            self.parallel_transport(pose.point, to, pose.frame.z_axis),
+        );
+        if !frame.is_finite() {
+            return Err(DomainError::NoConvergence);
+        }
+        Ok(Pose { point: to, frame })
+    }
+}
+
+fn transported_frame<S>(space: &S, to: S::Point) -> Mat3
+where
+    S: DomainSpace<Point = Vec3, Vector = Vec3, Frame = Mat3>,
+{
+    let origin = space.origin();
+    let base = space.frame_at(origin);
+    Mat3::from_cols(
+        space.parallel_transport(origin, to, base.x_axis),
+        space.parallel_transport(origin, to, base.y_axis),
+        space.parallel_transport(origin, to, base.z_axis),
+    )
 }
 
 fn image_of<S: DomainSpace>(

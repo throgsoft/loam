@@ -1,5 +1,6 @@
 use std::f32::consts::FRAC_PI_2;
 
+use loam_math::blended::{BlendedSpace, LinearBlendX};
 use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3H, IsometryGroup, Space};
 use loam_runtime::{
     ChartId, ChartPose, DomainBuilder, DomainError, DomainHandle, DomainSpace, Entity, Eye,
@@ -38,6 +39,36 @@ fn h3_walker() -> (Session<Probe>, DomainHandle<HyperbolicH3>, Entity) {
         .dispatch(|d| d.spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO))))
         .unwrap();
     (session, h3, walker)
+}
+
+fn blend() -> BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX> {
+    BlendedSpace::new(
+        EuclideanR3,
+        HyperbolicH3,
+        LinearBlendX::new(-0.5, 0.5).expect("a blend zone with width"),
+    )
+}
+
+#[test]
+fn a_blended_local_answers_past_its_metric_error_budget() {
+    let space = blend();
+    let pose = Pose::new(&space, Vec3::ZERO);
+    assert!(space.local(&pose, Vec3::X * 0.98).is_ok());
+    assert_eq!(
+        space.local(&pose, Vec3::X * 0.995),
+        Err(DomainError::ErrorBudget)
+    );
+}
+
+#[test]
+fn a_blended_local_answers_from_a_log_that_did_not_converge() {
+    let space = blend();
+    let pose = Pose::new(&space, Vec3::X * 0.8);
+    assert_eq!(
+        space.local(&pose, Vec3::new(-0.8, 0.1, 0.0)),
+        Err(DomainError::NoConvergence)
+    );
+    assert!(space.local(&pose, Vec3::new(0.7, 0.05, 0.0)).is_ok());
 }
 
 #[test]

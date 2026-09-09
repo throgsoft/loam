@@ -4,16 +4,18 @@ use std::time::{Duration, Instant};
 
 use glam::{Vec3, Vec4};
 use loam_app::session::run;
-use loam_math::{EuclideanR4, HyperbolicH3, Iso3};
+use loam_math::blended::{BlendedSpace, LinearBlendX};
+use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Mat3};
 use loam_physics::euclidean_r4::{
     halfspace4_body_r4, register_default_narrowphase, sphere_body_r4,
 };
 use loam_runtime::host::{self, HostConfig, HostError};
 use loam_runtime::{
-    Access, ActionEvent, ActionId, Bindings, BridgeSpec, Ctx, DomainBuilder, DomainHandle, Domains,
-    Entity, Input, Instance, Key, Klein, LogCapacity, Material, Phase, PhysicsConfig, Pick,
-    Placement, Pose, PreparedGeometry, Projection4, Publication, Rejection, Rigid, Section4,
-    Session, SimConfig, SpawnBundle, Step, ViewId, ViewSpec,
+    Access, ActionEvent, ActionId, Bindings, BridgeSpec, Ctx, DepthEnvelope, DomainBuilder,
+    DomainError, DomainHandle, DomainRay, DomainSpace, Domains, Entity, ImageRay, Input, Instance,
+    Key, Klein, LogCapacity, Material, Phase, PhysicsConfig, Pick, Placement, Pose,
+    PreparedGeometry, Projection4, Publication, Rejection, Rigid, Section4, Session, SimConfig,
+    SpawnBundle, Step, ViewId, ViewMapping, ViewSpec,
 };
 use loam_shape::polytope::Polytope4;
 
@@ -40,6 +42,14 @@ const BALL_MASS: f32 = 1.0;
 const BALL_SPAWN: Vec4 = Vec4::new(0.0, 0.8, 0.0, 0.0);
 const GRAVITY: f32 = 1.0;
 const FLOOR_HEIGHT: f32 = 0.0;
+const BLEND_START: f32 = -0.5;
+const BLEND_END: f32 = 0.5;
+const BLEND_EYE: Vec3 = Vec3::new(-0.7, 0.0, 0.0);
+const BLEND_TURN: f32 = 0.3;
+const BLEND_IMAGE: Vec3 = Vec3::new(0.0, -0.0866, -0.25);
+const BLEND_SPAN: f32 = 0.05;
+const BLEND_STEP: f32 = 0.5;
+const PUBLISH_SAMPLES: usize = 64;
 
 #[derive(Clone, Copy)]
 struct Player {
@@ -64,10 +74,54 @@ loam_runtime::stores! {
 struct Scene {
     r4: DomainHandle<EuclideanR4>,
     h3: DomainHandle<HyperbolicH3>,
+    blend: DomainHandle<Blend>,
     landmark4: Entity,
     landmark3: Entity,
     walker4: Entity,
+    blend_eye: Entity,
+    blend_mark: Entity,
+    blend_view: ViewId,
     ball: Option<Entity>,
+}
+
+type Blend = BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>;
+
+fn blend_space() -> Option<Blend> {
+    Some(BlendedSpace::new(
+        EuclideanR3,
+        HyperbolicH3,
+        LinearBlendX::new(BLEND_START, BLEND_END)?,
+    ))
+}
+
+struct ChartRelative;
+
+impl<S: DomainSpace<Point = Vec3, Frame = Mat3>> ViewMapping<S> for ChartRelative {
+    fn name(&self) -> &'static str {
+        "chart-relative"
+    }
+
+    fn image_point(&self, eye: &Pose<S>, point: Vec3) -> Option<[f32; 3]> {
+        let inverse = eye.frame.inverse();
+        inverse
+            .is_finite()
+            .then(|| (inverse * (point - eye.point)).to_array())
+    }
+
+    fn lift(&self, _eye: &Pose<S>, _ray: &ImageRay) -> Option<DomainRay<S>> {
+        None
+    }
+
+    fn ray_lift(&self) -> bool {
+        false
+    }
+
+    fn depth_envelope(&self) -> DepthEnvelope {
+        DepthEnvelope {
+            near: 0.0,
+            far: f32::INFINITY,
+        }
+    }
 }
 
 fn heading(input: &Input) -> [f32; 2] {
@@ -115,15 +169,34 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
     });
     let h3 = session
         .register_domain(DomainBuilder::new("h3", HyperbolicH3).tracked(LogCapacity::default()));
+    let missing = || HostError::Host("the blend zone has no width".into());
+    let blend = session.register_domain(
+        DomainBuilder::new("blend", blend_space().ok_or_else(missing)?)
+            .tracked(LogCapacity::default())
+            .fields()
+            .marched(),
+    );
+    let space = blend_space().ok_or_else(missing)?;
     let topology = Polytope4::Tesseract.topology();
     let edges4 = session.prepare(PreparedGeometry::edges_of(topology, 1.0));
     let edges3 = session.prepare(tetrahedron_edges());
+    let mark_edges = session.prepare(PreparedGeometry::Lines3 {
+        segments: vec![[[BLEND_SPAN, 0.0, 0.0], [-BLEND_SPAN, 0.0, 0.0]]],
+    });
     let white = session.add_material(Material::lines([1.0, 1.0, 1.0, 0.95], 1.6));
     let root = session.views().root();
 
-    type Built = (Entity, Entity, Entity, Option<Entity>);
-    let (landmark4, landmark3, walker4, ball) =
-        session.dispatch(|d| -> Result<Built, Rejection> {
+    type Built = (
+        Entity,
+        Entity,
+        Entity,
+        Entity,
+        Entity,
+        ViewId,
+        Option<Entity>,
+    );
+    let (landmark4, landmark3, walker4, blend_eye, blend_mark, blend_view, ball) = session
+        .dispatch(|d| -> Result<Built, Rejection> {
             let landmark4 = d.spawn(
                 SpawnBundle::new()
                     .at(r4, Pose::at(LANDMARK_R4))
@@ -146,6 +219,23 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
             d.domains
                 .typed(h3)?
                 .add_view(ViewSpec::new(root, walker3, Klein));
+            let turn = Mat3::from_rotation_y(BLEND_TURN);
+            let blend_eye = d.spawn(SpawnBundle::new().at(
+                blend,
+                Pose {
+                    point: BLEND_EYE,
+                    frame: turn,
+                },
+            ))?;
+            let blend_mark = d.spawn(
+                SpawnBundle::new()
+                    .at(blend, Pose::new(&space, BLEND_EYE + turn * BLEND_IMAGE))
+                    .instance(Instance::new(mark_edges, white)),
+            )?;
+            let blend_view =
+                d.domains
+                    .typed(blend)?
+                    .add_view(ViewSpec::new(root, blend_eye, ChartRelative));
             let ball = match physics {
                 false => None,
                 true => {
@@ -164,7 +254,9 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
                     Some(ball)
                 }
             };
-            Ok((landmark4, landmark3, walker4, ball))
+            Ok((
+                landmark4, landmark3, walker4, blend_eye, blend_mark, blend_view, ball,
+            ))
         })?;
 
     session.system(
@@ -237,9 +329,13 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
     let scene = Scene {
         r4,
         h3,
+        blend,
         landmark4,
         landmark3,
         walker4,
+        blend_eye,
+        blend_mark,
+        blend_view,
         ball,
     };
     Ok((session, scene))
@@ -249,6 +345,90 @@ fn ball_height(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Option<f
     let ball = scene.ball?;
     let domain = session.domains_mut().typed(scene.r4).ok()?;
     Some(domain.poses.get(ball)?.point.y)
+}
+
+fn blended(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool, HostError> {
+    let lost = |what: &'static str| HostError::Host(what.into());
+    let mut publication = Publication::default();
+    session.publish(&mut publication)?;
+    let record = published_point(&publication, scene.blend_mark, Some(scene.blend_view))
+        .ok_or_else(|| lost("the blended mark published no record"))?;
+    let ndc = session
+        .views()
+        .ndc(record)
+        .ok_or_else(|| lost("the blended record left the root frustum"))?;
+    let pick = session
+        .pick(ndc)
+        .ok_or_else(|| lost("the blended mark took no pick"))?;
+    let placed = Vec3::from(record) - BLEND_IMAGE;
+    let apart = (Vec3::from(pick.image_point) - Vec3::from(record)).length();
+    println!(
+        "blend mark at ({:.3}, {:.3}): record ({:.4}, {:.4}, {:.4}) off the eye frame by {:.6}, pick {} entry {:.4} ahead of it",
+        ndc[0],
+        ndc[1],
+        record[0],
+        record[1],
+        record[2],
+        placed.length(),
+        u32::from(pick.entity == scene.blend_mark),
+        apart
+    );
+
+    let compiled = session
+        .domains_mut()
+        .facade(scene.blend.id())
+        .ok_or_else(|| lost("the blended domain went missing"))?
+        .compile_fields();
+    println!("blend compile_fields: {compiled:?}");
+
+    let walked = session.domains_mut().typed(scene.blend)?.walk(
+        scene.blend_eye,
+        Vec3::NEG_X * BLEND_STEP,
+        1.0,
+    );
+    println!("blend walk past the ball: {walked:?}");
+
+    let mut moved_blend = Vec::with_capacity(PUBLISH_SAMPLES);
+    let mut moved_r4 = Vec::with_capacity(PUBLISH_SAMPLES);
+    let mut still = Vec::with_capacity(PUBLISH_SAMPLES);
+    let (mark, landmark4) = (scene.blend_mark, scene.landmark4);
+    for _ in 0..PUBLISH_SAMPLES {
+        let _ = session
+            .domains_mut()
+            .typed(scene.blend)?
+            .poses
+            .get_mut(mark);
+        let start = Instant::now();
+        session.publish(&mut publication)?;
+        moved_blend.push(start.elapsed());
+        let _ = session
+            .domains_mut()
+            .typed(scene.r4)?
+            .poses
+            .get_mut(landmark4);
+        let start = Instant::now();
+        session.publish(&mut publication)?;
+        moved_r4.push(start.elapsed());
+        let start = Instant::now();
+        session.publish(&mut publication)?;
+        still.push(start.elapsed());
+    }
+    println!(
+        "blend publish over {PUBLISH_SAMPLES} samples: median {:.1} us blend moved, {:.1} us r4 moved, {:.1} us unchanged",
+        median(moved_blend).as_secs_f64() * 1e6,
+        median(moved_r4).as_secs_f64() * 1e6,
+        median(still).as_secs_f64() * 1e6
+    );
+
+    Ok(pick.entity == scene.blend_mark
+        && pick.domain == scene.blend.id()
+        && placed.length() <= 1e-5
+        && (apart - BLEND_SPAN).abs() <= 1e-4
+        && matches!(
+            compiled,
+            Err(DomainError::Unsupported("curved field chart"))
+        )
+        && walked == Err(DomainError::ChartBoundary))
 }
 
 fn published_point(
@@ -369,7 +549,7 @@ fn headless(
             }
         }
     }
-    let matched = all_matched && bridged(session, scene)?;
+    let matched = all_matched && bridged(session, scene)? && blended(session, scene)?;
     if scene.ball.is_some() {
         let y = ball_height(session, scene)
             .ok_or_else(|| HostError::Host("the r4 ball lost its pose".into()))?;
@@ -562,6 +742,7 @@ mod tests {
             [
                 (session.scene(), scene.landmark4.key()),
                 (session.scene(), scene.landmark3.key()),
+                (session.scene(), scene.blend_mark.key()),
             ]
         );
     }
