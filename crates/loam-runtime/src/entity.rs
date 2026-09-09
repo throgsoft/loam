@@ -74,6 +74,7 @@ impl Entity {
     }
 }
 
+#[derive(Clone)]
 struct Slot {
     generation: u32,
     live: bool,
@@ -154,8 +155,62 @@ impl Entities {
     }
 
     pub fn snapshot(&self) -> EntitiesSnapshot {
-        todo!()
+        EntitiesSnapshot {
+            slots: self.slots.clone(),
+            free: self.free.clone(),
+            live: self.live,
+        }
+    }
+
+    /// Advances the epoch; every handle from before the restore fails.
+    pub fn restore(&mut self, from: &EntitiesSnapshot) {
+        self.scene.epoch = self.scene.epoch.advance();
+        self.slots.clone_from(&from.slots);
+        self.free.clone_from(&from.free);
+        self.live = from.live;
     }
 }
 
-pub struct EntitiesSnapshot;
+pub struct EntitiesSnapshot {
+    slots: Vec<Slot>,
+    free: Vec<u32>,
+    live: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scene(runtime: u32) -> SceneId {
+        SceneId {
+            runtime: RuntimeId(runtime),
+            epoch: Epoch::default(),
+        }
+    }
+
+    #[test]
+    fn stale_reset_or_foreign_handle_never_reaches_a_recycled_object() {
+        let mut entities = Entities::new(scene(1));
+        let doomed = entities.spawn();
+        assert!(entities.despawn(doomed).is_ok());
+        let recycled = entities.spawn();
+        assert_eq!(recycled.key().slot(), doomed.key().slot());
+        assert_eq!(entities.resolve(doomed), None);
+        assert_eq!(entities.resolve(recycled), Some(recycled.key()));
+        assert!(matches!(
+            entities.despawn(doomed),
+            Err(Rejection::Stale(stale)) if stale == doomed
+        ));
+        assert_eq!(entities.len(), 1);
+
+        let foreign = Entity::new(scene(2), recycled.key());
+        assert_eq!(entities.resolve(foreign), None);
+
+        let snapshot = entities.snapshot();
+        entities.restore(&snapshot);
+        assert_eq!(entities.resolve(recycled), None);
+        let rebased = Entity::new(entities.scene(), recycled.key());
+        assert_eq!(entities.resolve(rebased), Some(recycled.key()));
+        assert_eq!(entities.scene().epoch, Epoch::default().advance());
+    }
+}
