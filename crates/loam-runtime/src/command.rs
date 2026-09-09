@@ -96,6 +96,15 @@ impl<A: Stores> Commands<A> {
         self.submit(Command::App(Box::new(command)))
     }
 
+    /// A command with no data of its own; one that carries data implements `AppCommand`.
+    pub fn app_fn(
+        &mut self,
+        name: &'static str,
+        apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
+    ) -> RequestId {
+        self.app(FnCommand { name, apply })
+    }
+
     pub fn spawn(&mut self, _bundle: SpawnBundle<A>) -> Result<Reservation, Rejection> {
         todo!()
     }
@@ -110,6 +119,25 @@ impl<A: Stores> Commands<A> {
 
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+}
+
+struct FnCommand<F> {
+    name: &'static str,
+    apply: F,
+}
+
+impl<A, F> AppCommand<A> for FnCommand<F>
+where
+    F: FnMut(&mut Dispatch<'_, A>) + Send + 'static,
+{
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, A>) -> Result<Outcome, Rejection> {
+        (self.apply)(dispatch);
+        Ok(Outcome::Done)
     }
 }
 

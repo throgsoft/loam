@@ -26,23 +26,23 @@ pub use entity::{Entities, EntitiesSnapshot, Entity, EntityKey, Epoch, RuntimeId
 pub use host::{HostConfig, HostError};
 pub use input::{ActionEvent, ActionId, Bindings, Input, Key, Pointer, PointerPhase};
 pub use phase::{
-    Access, Ctx, Entry, EntryId, Phase, Readback, Schedule, Step, StoreId, System, SystemEntry,
-    Tick, WorkItem,
+    Access, Ctx, Entry, EntryId, Order, Phase, Readback, Schedule, Step, StoreId, System,
+    SystemEntry, Tick, WorkItem,
 };
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
     Material, MaterialId, PreparedGeometry, PreparedId, Publication, PublishedView, RestoreError,
-    Session, SessionSnapshot, SimConfig, Stamp,
+    Session, SessionSnapshot, SimConfig, Stamp, DOMAIN_STEP,
 };
 pub use store::{
     Change, Changes, Cursor, ErasedStore, LogCapacity, Part, Partition, PartitionError, Parts,
-    Publish, RecordBuffer, Removal, SchemaId, Store, StoreError, StoreField, StoreSnapshot,
-    Version, DEFAULT_LOG_CAPACITY,
+    Publish, Published, RecordBuffer, Removal, SchemaId, Store, StoreError, StoreField,
+    StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,
 };
 pub use stores::{HasRelation, HasStore, Stores};
 pub use value::Value;
 pub use view::{
     DepthEnvelope, DomainRay, Eye, Identity3, ImageRay, ImageSpace, ImageSpaceId, InstanceRecord,
-    Klein, Pick, Projection4, Section4, ViewId, ViewMapping, ViewRecords, ViewSpec, ViewTarget,
-    Views,
+    Klein, Orbit, Pick, Projection4, Section4, ViewId, ViewMapping, ViewRecords, ViewSpec,
+    ViewTarget, Views,
 };

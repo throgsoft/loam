@@ -1485,6 +1485,7 @@ name = "loam-runtime"
 version = "0.1.0"
 dependencies = [
  "loam-math",
+ "loam-shape",
 ]
 
 [[package]]

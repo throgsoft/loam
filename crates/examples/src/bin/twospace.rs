@@ -4,7 +4,7 @@ use loam_runtime::host::{self, HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, Bindings, Ctx, DomainBuilder, Domains, Input, Instance, Key, Klein,
     LogCapacity, Material, Phase, Pick, Pose, PreparedGeometry, Projection4, Rejection, Session,
-    SimConfig, SpawnBundle, Step, Store, Value, ViewSpec,
+    SimConfig, SpawnBundle, Step, ViewSpec,
 };
 use loam_shape::polytope::Polytope4;
 
@@ -22,12 +22,11 @@ struct Player {
 }
 
 loam_runtime::stores! {
+    #[derive(Default)]
     pub struct TwoSpaceStores {
         players: Store<Player>,
         last_pick: Value<Option<Pick>>,
     }
-    pub struct TwoSpaceRecords {}
-    pub struct TwoSpaceSnapshot;
 }
 
 fn heading(input: &Input) -> [f32; 2] {
@@ -35,21 +34,6 @@ fn heading(input: &Input) -> [f32; 2] {
         f32::from(input.is_held(positive)) - f32::from(input.is_held(negative))
     };
     [axis(LEFT, RIGHT), axis(BACK, FORWARD)]
-}
-
-fn tesseract_edges() -> PreparedGeometry {
-    let topology = Polytope4::Tesseract.topology();
-    let segments = topology
-        .edges
-        .iter()
-        .map(|&[i, j]| {
-            [
-                topology.vertices[i as usize].to_array(),
-                topology.vertices[j as usize].to_array(),
-            ]
-        })
-        .collect();
-    PreparedGeometry::Lines4 { segments }
 }
 
 fn tetrahedron_edges() -> PreparedGeometry {
@@ -70,65 +54,46 @@ fn tetrahedron_edges() -> PreparedGeometry {
 }
 
 fn main() -> Result<(), HostError> {
-    let stores = TwoSpaceStores {
-        players: Store::untracked(),
-        last_pick: Value::new(None),
-    };
-    let mut session = Session::new(stores, SimConfig::default());
+    let mut session = Session::new(TwoSpaceStores::default(), SimConfig::default());
     let r4 = session
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
     let h3 = session
         .register_domain(DomainBuilder::new("h3", HyperbolicH3).tracked(LogCapacity::default()));
-    let edges4 = session.prepare(tesseract_edges());
+    let topology = Polytope4::Tesseract.topology();
+    let edges4 = session.prepare(PreparedGeometry::edges_of(topology, 1.0));
     let edges3 = session.prepare(tetrahedron_edges());
-    let white = session.add_material(Material::Lines {
-        color: [1.0, 1.0, 1.0, 0.95],
-        width_px: 1.6,
-    });
+    let white = session.add_material(Material::lines([1.0, 1.0, 1.0, 0.95], 1.6));
     let root = session.views().root();
 
     session.dispatch(|d| -> Result<(), Rejection> {
+        let far4 = Pose(Iso4Flat::from_translation(Vec4::new(0.0, 0.0, -4.0, 0.0)));
         d.spawn(
             SpawnBundle::new()
-                .at(
-                    r4,
-                    Pose(Iso4Flat::from_translation(Vec4::new(0.0, 0.0, -4.0, 0.0))),
-                )
-                .instance(Instance {
-                    geometry: edges4,
-                    material: white,
-                }),
+                .at(r4, far4)
+                .instance(Instance::new(edges4, white)),
         )?;
+        let far3 = Pose(Iso3H::from_translation(Vec3::new(0.0, 0.0, -0.4)));
         d.spawn(
             SpawnBundle::new()
-                .at(h3, Pose(Iso3H::from_translation(Vec3::new(0.0, 0.0, -0.4))))
-                .instance(Instance {
-                    geometry: edges3,
-                    material: white,
-                }),
+                .at(h3, far3)
+                .instance(Instance::new(edges3, white)),
         )?;
+        let player = Player { speed: WALK_SPEED };
         let walker4 = d.spawn(
             SpawnBundle::new()
                 .at(r4, Pose(Iso4Flat::IDENTITY))
-                .row(Player { speed: WALK_SPEED }),
+                .row(player),
         )?;
-        let walker3 = d.spawn(
-            SpawnBundle::new()
-                .at(h3, Pose(Iso3H::IDENTITY))
-                .row(Player { speed: WALK_SPEED }),
-        )?;
-        d.domains.typed(r4)?.add_view(ViewSpec {
-            image: root,
-            eye: walker4,
-            mapping: Box::new(Projection4 {
-                focal: FOCAL_DISTANCE,
-            }),
-        });
-        d.domains.typed(h3)?.add_view(ViewSpec {
-            image: root,
-            eye: walker3,
-            mapping: Box::new(Klein),
-        });
+        let walker3 = d.spawn(SpawnBundle::new().at(h3, Pose(Iso3H::IDENTITY)).row(player))?;
+        let projection = Projection4 {
+            focal: FOCAL_DISTANCE,
+        };
+        d.domains
+            .typed(r4)?
+            .add_view(ViewSpec::new(root, walker4, projection));
+        d.domains
+            .typed(h3)?
+            .add_view(ViewSpec::new(root, walker3, Klein));
         Ok(())
     })?;
 
@@ -178,11 +143,5 @@ fn main() -> Result<(), HostError> {
         .key(Key::Letter('s'), BACK)
         .key(Key::Letter('a'), LEFT)
         .key(Key::Letter('d'), RIGHT);
-    host::run(
-        session,
-        HostConfig {
-            title: "twospace",
-            bindings,
-        },
-    )
+    host::run(session, HostConfig::new("twospace", bindings))
 }

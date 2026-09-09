@@ -3,7 +3,7 @@ use crate::relation::Relation;
 use crate::session::Stamp;
 use crate::store::{ErasedStore, Store};
 
-/// The application's store struct; `stores!` writes the impl.
+/// The application's store struct; `stores!` writes the impl and its two companion types.
 pub trait Stores: Send + 'static {
     type Records: Default + Send + 'static;
 
@@ -46,6 +46,9 @@ macro_rules! __stores_field {
             }
         }
     };
+    (Published, $name:ident, $field:ident, $row:ty) => {
+        $crate::__stores_field!(Store, $name, $field, $row);
+    };
     (Relation, $name:ident, $field:ident, $row:ty) => {
         impl $crate::HasRelation<$row> for $name {
             fn relation(&self) -> &$crate::Relation<$row> {
@@ -60,62 +63,91 @@ macro_rules! __stores_field {
     (Value, $name:ident, $field:ident, $row:ty) => {};
 }
 
-/// Declares a store struct, its records struct, and its snapshot struct, and implements `Stores`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __stores_records {
+    (@emit [$($acc:tt)*]) => {
+        #[derive(Default)]
+        pub struct Records {
+            $($acc)*
+        }
+    };
+    (@acc [$($acc:tt)*] Published $field:ident : $row:ty ; $($rest:tt)*) => {
+        $crate::__stores_records!(
+            @acc [$($acc)* pub $field : $crate::RecordBuffer<<$row as $crate::Publish>::Record>,]
+            $($rest)*
+        )
+    };
+    (@acc [$($acc:tt)*] $kind:ident $field:ident : $row:ty ; $($rest:tt)*) => {
+        $crate::__stores_records!(@acc [$($acc)*] $($rest)*)
+    };
+    (@acc [$($acc:tt)*]) => {
+        $crate::__stores_records!(@emit [$($acc)*])
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __stores_publish {
+    (Published, $store:expr, $buffer:expr, $stamp:expr) => {
+        $crate::Store::publish($store, $buffer, $stamp);
+    };
+    ($kind:ident, $store:expr, $buffer:expr, $stamp:expr) => {};
+}
+
+/// Declares the store struct and implements `Stores`; its records and snapshot types are `<A as Stores>::Records` and `::Snapshot`.
 #[macro_export]
 macro_rules! stores {
     (
+        $(#[$attr:meta])*
         $vis:vis struct $name:ident {
             $( $field:ident : $kind:ident < $row:ty > ),* $(,)?
         }
-        $rvis:vis struct $records:ident {
-            $( $published:ident : $record:ty ),* $(,)?
-        }
-        $svis:vis struct $snapshot:ident ;
     ) => {
+        $(#[$attr])*
         $vis struct $name {
             $( pub $field : $crate::$kind<$row>, )*
         }
 
-        #[derive(Default)]
-        $rvis struct $records {
-            $( pub $published : $crate::RecordBuffer<$record>, )*
-        }
+        const _: () = {
+            $crate::__stores_records!(@acc [] $( $kind $field : $row ; )*);
 
-        $svis struct $snapshot {
-            $( pub $field : <$crate::$kind<$row> as $crate::StoreField>::Snapshot, )*
-        }
-
-        impl $crate::Stores for $name {
-            type Records = $records;
-
-            type Snapshot = $snapshot;
-
-            fn bind(&mut self, _scene: $crate::SceneId) {
-                $( $crate::StoreField::bind(&mut self.$field, _scene); )*
+            pub struct Snapshot {
+                $( pub $field : <$crate::$kind<$row> as $crate::StoreField>::Snapshot, )*
             }
 
-            fn publish(&self, _into: &mut $records, _stamp: $crate::Stamp) {
-                $( self.$published.publish(&mut _into.$published, _stamp); )*
-            }
+            impl $crate::Stores for $name {
+                type Records = Records;
 
-            fn snapshot(&self) -> $snapshot {
-                $snapshot {
-                    $( $field : $crate::StoreField::snapshot(&self.$field), )*
+                type Snapshot = Snapshot;
+
+                fn bind(&mut self, _scene: $crate::SceneId) {
+                    $( $crate::StoreField::bind(&mut self.$field, _scene); )*
+                }
+
+                fn publish(&self, _into: &mut Records, _stamp: $crate::Stamp) {
+                    $( $crate::__stores_publish!($kind, &self.$field, &mut _into.$field, _stamp); )*
+                }
+
+                fn snapshot(&self) -> Snapshot {
+                    Snapshot {
+                        $( $field : $crate::StoreField::snapshot(&self.$field), )*
+                    }
+                }
+
+                fn restore(&mut self, _from: &Snapshot, _scene: $crate::SceneId) {
+                    $( $crate::StoreField::restore(&mut self.$field, &_from.$field, _scene); )*
+                }
+
+                fn erased(
+                    &mut self,
+                    _visit: &mut dyn FnMut(&'static str, &mut dyn $crate::ErasedStore),
+                ) {
+                    $( _visit(stringify!($field), $crate::StoreField::erased(&mut self.$field)); )*
                 }
             }
 
-            fn restore(&mut self, _from: &$snapshot, _scene: $crate::SceneId) {
-                $( $crate::StoreField::restore(&mut self.$field, &_from.$field, _scene); )*
-            }
-
-            fn erased(
-                &mut self,
-                _visit: &mut dyn FnMut(&'static str, &mut dyn $crate::ErasedStore),
-            ) {
-                $( _visit(stringify!($field), $crate::StoreField::erased(&mut self.$field)); )*
-            }
-        }
-
-        $( $crate::__stores_field!($kind, $name, $field, $row); )*
+            $( $crate::__stores_field!($kind, $name, $field, $row); )*
+        };
     };
 }

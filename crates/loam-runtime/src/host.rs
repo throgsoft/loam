@@ -9,6 +9,12 @@ pub struct HostConfig {
     pub bindings: Bindings,
 }
 
+impl HostConfig {
+    pub fn new(title: &'static str, bindings: Bindings) -> Self {
+        Self { title, bindings }
+    }
+}
+
 #[derive(Debug)]
 pub enum HostError {
     MissingCapability(&'static str),

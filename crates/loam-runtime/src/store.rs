@@ -244,6 +244,9 @@ impl Tracking {
     }
 }
 
+/// A `Store<T>` that `stores!` publishes; `T: Publish` is checked at the generated call.
+pub type Published<T> = Store<T>;
+
 /// Dense rows with a sparse index; a tracked store also keeps versions and bounded logs.
 pub struct Store<T> {
     scene: SceneId,

@@ -1,7 +1,7 @@
 use std::any::TypeId;
 
 use crate::command::{CommandResult, Commands};
-use crate::domain::{DomainId, Domains};
+use crate::domain::{DomainError, DomainId, Domains};
 use crate::input::Input;
 use crate::view::{Pick, Views};
 
@@ -25,6 +25,13 @@ impl Phase {
     fn index(self) -> usize {
         self as usize
     }
+}
+
+/// Where a new entry goes relative to a named entry of the same phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    Before(&'static str),
+    After(&'static str),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -55,6 +62,7 @@ pub struct Access {
     reads: Vec<StoreId>,
     writes: Vec<StoreId>,
     domains: Vec<DomainId>,
+    every_domain: bool,
     views: bool,
     commands: bool,
 }
@@ -79,6 +87,11 @@ impl Access {
         self
     }
 
+    pub fn every_domain(mut self) -> Self {
+        self.every_domain = true;
+        self
+    }
+
     pub fn views(mut self) -> Self {
         self.views = true;
         self
@@ -99,6 +112,10 @@ impl Access {
 
     pub fn domain_set(&self) -> &[DomainId] {
         &self.domains
+    }
+
+    pub fn touches_every_domain(&self) -> bool {
+        self.every_domain
     }
 
     pub fn touches_views(&self) -> bool {
@@ -174,9 +191,13 @@ pub mod signature {
         &Input => input,
         Step => step
     );
+    adapt!(InputCommands, &Input => input, &mut Commands<A> => commands);
+    adapt!(InputViews, &Input => input, &mut Views => views);
+    adapt!(DomainsStep, &mut Domains => domains, Step => step);
+    adapt!(DomainsInputStep, &mut Domains => domains, &Input => input, Step => step);
 }
 
-type Runner<A> = Box<dyn FnMut(Ctx<'_, A>) + Send>;
+type Runner<A> = Box<dyn FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send>;
 
 pub struct SystemEntry<A> {
     name: &'static str,
@@ -187,10 +208,21 @@ pub struct SystemEntry<A> {
 impl<A: 'static> SystemEntry<A> {
     pub(crate) fn new<M>(name: &'static str, access: Access, system: impl System<A, M>) -> Self {
         let mut system = system;
+        Self::fallible(name, access, move |ctx: Ctx<'_, A>| {
+            system.run(ctx);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn fallible(
+        name: &'static str,
+        access: Access,
+        run: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+    ) -> Self {
         Self {
             name,
             access,
-            run: Box::new(move |ctx: Ctx<'_, A>| system.run(ctx)),
+            run: Box::new(run),
         }
     }
 
@@ -202,7 +234,7 @@ impl<A: 'static> SystemEntry<A> {
         &self.access
     }
 
-    pub(crate) fn run(&mut self, ctx: Ctx<'_, A>) {
+    pub(crate) fn run(&mut self, ctx: Ctx<'_, A>) -> Result<(), DomainError> {
         (self.run)(ctx)
     }
 }
@@ -233,6 +265,15 @@ pub enum Entry<A> {
     Work(WorkItem),
 }
 
+impl<A> Entry<A> {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Entry::System(system) => system.name,
+            Entry::Work(item) => item.name,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntryId {
     pub phase: Phase,
@@ -257,6 +298,24 @@ impl<A> Phases<A> {
             phase,
             index: (list.len() - 1) as u32,
         }
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        phase: Phase,
+        order: Order,
+        entry: Entry<A>,
+    ) -> Option<EntryId> {
+        let list = &mut self.entries[phase.index()];
+        let index = match order {
+            Order::Before(name) => list.iter().position(|entry| entry.name() == name)?,
+            Order::After(name) => list.iter().position(|entry| entry.name() == name)? + 1,
+        };
+        list.insert(index, entry);
+        Some(EntryId {
+            phase,
+            index: index as u32,
+        })
     }
 
     pub(crate) fn entries(&self, phase: Phase) -> &[Entry<A>] {

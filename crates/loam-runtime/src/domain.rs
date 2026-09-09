@@ -103,6 +103,12 @@ pub struct Instance {
     pub material: MaterialId,
 }
 
+impl Instance {
+    pub fn new(geometry: PreparedId, material: MaterialId) -> Self {
+        Self { geometry, material }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DomainError {
     ForeignRuntime,
@@ -177,7 +183,7 @@ impl<S: IsometryGroup> Clone for Pose<S> {
 
 impl<S: IsometryGroup> Copy for Pose<S> {}
 
-/// Engine-owned work inside one domain, stepped after the app's simulation entries.
+/// Engine-owned work inside one domain, run by the simulation phase's domain-step entry.
 pub trait Facility<S: DomainSpace>: Send + 'static {
     fn name(&self) -> &'static str;
 

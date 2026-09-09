@@ -6,8 +6,8 @@ use loam_runtime::host::{self, HostConfig, HostError};
 use loam_runtime::{
     Access, ActionId, AppCommand, Bindings, Command, Commands, Ctx, Dispatch, DomainBuilder,
     DomainHandle, Domains, Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId,
-    Outcome, Phase, Pose, PreparedGeometry, Projection4, Rejection, Relation, Session, SimConfig,
-    SpawnBundle, Store, TypedDomain, Value, ViewSpec,
+    Outcome, Phase, Pose, PreparedGeometry, Projection4, Rejection, Session, SimConfig,
+    SpawnBundle, TypedDomain, Value, ViewSpec,
 };
 
 const TWIST: ActionId = ActionId(0);
@@ -142,6 +142,7 @@ struct Turning {
 }
 
 loam_runtime::stores! {
+    #[derive(Default)]
     pub struct CubeStores {
         pieces: Store<Piece>,
         stickers: Store<Sticker>,
@@ -151,8 +152,6 @@ loam_runtime::stores! {
         selected: Value<Option<Entity>>,
         rng: Value<u64>,
     }
-    pub struct CubeRecords {}
-    pub struct CubeSnapshot;
 }
 
 #[derive(Clone, Copy)]
@@ -326,20 +325,15 @@ fn selected_twist(app: &CubeStores) -> Option<Twist> {
 fn main() -> Result<(), HostError> {
     let config = SimConfig::default();
     let stores = CubeStores {
-        pieces: Store::untracked(),
-        stickers: Store::untracked(),
-        slots: Relation::new(),
-        history: Value::new(Vec::new()),
-        turning: Value::new(None),
-        selected: Value::new(None),
         rng: Value::new(config.seed),
+        ..CubeStores::default()
     };
     let mut session = Session::new(stores, config);
     let r4 = session
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
     let sticker_geometry = session.prepare(sticker_cube());
-    let cell_materials = CELL_COLORS.map(|color| session.add_material(Material::Flat { color }));
-    let highlight = session.add_material(Material::Flat { color: [1.0; 4] });
+    let cell_materials = CELL_COLORS.map(|color| session.add_material(Material::flat(color)));
+    let highlight = session.add_material(Material::flat([1.0; 4]));
     let root = session.views().root();
     let puzzle = Puzzle {
         domain: r4,
@@ -363,26 +357,23 @@ fn main() -> Result<(), HostError> {
                 let sticker = d.spawn(
                     SpawnBundle::new()
                         .at(r4, Pose(EuclideanR4.iso_compose(piece.iso(), slot.iso())))
-                        .instance(Instance {
-                            geometry: sticker_geometry,
-                            material: cell_materials[cell.color()],
-                        })
+                        .instance(Instance::new(
+                            sticker_geometry,
+                            cell_materials[cell.color()],
+                        ))
                         .row(Sticker { cell }),
                 )?;
                 d.app.slots.link(piece_entity, sticker, slot)?;
             }
         }
-        let eye = d.spawn(SpawnBundle::new().at(
-            r4,
-            Pose(Iso4Flat::from_translation(Vec4::W * FOCAL_DISTANCE)),
-        ))?;
-        d.domains.typed(r4)?.add_view(ViewSpec {
-            image: root,
-            eye,
-            mapping: Box::new(Projection4 {
-                focal: FOCAL_DISTANCE,
-            }),
-        });
+        let eye = Pose(Iso4Flat::from_translation(Vec4::W * FOCAL_DISTANCE));
+        let eye = d.spawn(SpawnBundle::new().at(r4, eye))?;
+        let projection = Projection4 {
+            focal: FOCAL_DISTANCE,
+        };
+        d.domains
+            .typed(r4)?
+            .add_view(ViewSpec::new(root, eye, projection));
         Ok(())
     })?;
     session.views_mut().root_mut().eye =
@@ -471,11 +462,5 @@ fn main() -> Result<(), HostError> {
         .key(Key::Letter('s'), SCRAMBLE)
         .key(Key::Letter('u'), UNDO)
         .key(Key::Letter('r'), RESET);
-    host::run(
-        session,
-        HostConfig {
-            title: "rubiks4d",
-            bindings,
-        },
-    )
+    host::run(session, HostConfig::new("rubiks4d", bindings))
 }

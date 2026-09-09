@@ -1,3 +1,5 @@
+use loam_shape::polytope::Polytope4Topology;
+
 use crate::command::{CommandResult, Commands, Dispatch};
 use crate::domain::{
     DomainBuilder, DomainError, DomainHandle, DomainId, DomainSnapshot, DomainSpace, Domains,
@@ -5,13 +7,13 @@ use crate::domain::{
 use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
 use crate::input::Input;
 use crate::phase::{
-    Access, Ctx, Entry, EntryId, Phase, Phases, Step, System, SystemEntry, Tick, WorkItem,
+    Access, Ctx, Entry, EntryId, Order, Phase, Phases, Step, System, SystemEntry, Tick, WorkItem,
 };
 use crate::store::SchemaId;
 use crate::stores::Stores;
 use crate::view::{Pick, ViewRecords, ViewTarget, Views};
 
-/// Fixed steps on both hosts; overlap stays off until measured.
+/// Fixed steps on both hosts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SimConfig {
     pub fixed_hz: u32,
@@ -76,10 +78,36 @@ pub enum PreparedGeometry {
     },
 }
 
+impl PreparedGeometry {
+    pub fn edges_of(topology: &Polytope4Topology, scale: f32) -> Self {
+        let segments = topology
+            .edges
+            .iter()
+            .map(|&[i, j]| {
+                [
+                    (topology.vertices[i as usize] * scale).to_array(),
+                    (topology.vertices[j as usize] * scale).to_array(),
+                ]
+            })
+            .collect();
+        Self::Lines4 { segments }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Material {
     Lines { color: [f32; 4], width_px: f32 },
     Flat { color: [f32; 4] },
+}
+
+impl Material {
+    pub fn lines(color: [f32; 4], width_px: f32) -> Self {
+        Self::Lines { color, width_px }
+    }
+
+    pub fn flat(color: [f32; 4]) -> Self {
+        Self::Flat { color }
+    }
 }
 
 pub struct PublishedView {
@@ -120,6 +148,9 @@ pub enum RestoreError {
     Domain(DomainId),
 }
 
+/// The simulation entry `Session::new` registers; `system_at` places app entries around it.
+pub const DOMAIN_STEP: &str = "domain step";
+
 /// A CPU value with no GPU or window object; `Send`, and it builds for wasm32.
 pub struct Session<A: Stores> {
     pub app: A,
@@ -144,12 +175,26 @@ impl<A: Stores> Session<A> {
             epoch: Epoch::default(),
         };
         app.bind(scene);
+        let mut phases = Phases::new();
+        phases.push(
+            Phase::Simulation,
+            Entry::System(SystemEntry::fallible(
+                DOMAIN_STEP,
+                Access::new().every_domain(),
+                |ctx: Ctx<'_, A>| {
+                    for domain in ctx.domains.iter_mut() {
+                        domain.step(ctx.step)?;
+                    }
+                    Ok(())
+                },
+            )),
+        );
         Self {
             app,
             entities: Entities::new(scene),
             domains: Domains::new(scene.runtime),
             views: Views::new(),
-            phases: Phases::new(),
+            phases,
             commands: Commands::new(),
             results: Vec::new(),
             input: Input::default(),
@@ -232,6 +277,22 @@ impl<A: Stores> Session<A> {
             .push(phase, Entry::System(SystemEntry::new(name, access, system)))
     }
 
+    /// `None` when no entry of that phase has the named anchor.
+    pub fn system_at<M>(
+        &mut self,
+        phase: Phase,
+        order: Order,
+        name: &'static str,
+        access: Access,
+        system: impl System<A, M>,
+    ) -> Option<EntryId> {
+        self.phases.insert(
+            phase,
+            order,
+            Entry::System(SystemEntry::new(name, access, system)),
+        )
+    }
+
     pub fn work(&mut self, phase: Phase, item: WorkItem) -> EntryId {
         self.phases.push(phase, Entry::Work(item))
     }
@@ -262,7 +323,7 @@ impl<A: Stores> Session<A> {
         todo!()
     }
 
-    /// One fixed step: simulation entries in registration order, then every domain.
+    /// One fixed step: the simulation phase's entries in their order, the domain step among them.
     pub fn tick(&mut self) -> Result<(), DomainError> {
         let Some(dt) = self.config.dt() else {
             return Ok(());
@@ -271,10 +332,7 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             dt,
         };
-        self.run_phase(Phase::Simulation, step);
-        for domain in self.domains.iter_mut() {
-            domain.step(step)?;
-        }
+        self.run_phase(Phase::Simulation, step)?;
         self.tick = Tick(self.tick.0 + 1);
         Ok(())
     }
@@ -314,7 +372,7 @@ impl<A: Stores> Session<A> {
         result
     }
 
-    fn run_phase(&mut self, phase: Phase, step: Step) {
+    fn run_phase(&mut self, phase: Phase, step: Step) -> Result<(), DomainError> {
         let Session {
             app,
             domains,
@@ -335,8 +393,9 @@ impl<A: Stores> Session<A> {
                     results: results.as_slice(),
                     input: &*input,
                     step,
-                });
+                })?;
             }
         }
+        Ok(())
     }
 }

@@ -65,6 +65,33 @@ impl Default for Eye {
     }
 }
 
+/// Yaw and pitch around a target at a distance; pointer drag in NDC turns it.
+pub struct Orbit {
+    pub target: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub distance: f32,
+}
+
+impl Orbit {
+    pub fn around(target: [f32; 3], distance: f32) -> Self {
+        Self {
+            target,
+            yaw: 0.0,
+            pitch: 0.0,
+            distance,
+        }
+    }
+
+    pub fn drag(&mut self, _delta: [f32; 2]) {
+        todo!()
+    }
+
+    pub fn eye(&self) -> Eye {
+        todo!()
+    }
+}
+
 pub struct ImageSpace {
     pub eye: Eye,
 }
@@ -142,6 +169,16 @@ pub struct ViewSpec<S: DomainSpace> {
     pub image: ImageSpaceId,
     pub eye: Entity,
     pub mapping: Box<dyn ViewMapping<S>>,
+}
+
+impl<S: DomainSpace> ViewSpec<S> {
+    pub fn new(image: ImageSpaceId, eye: Entity, mapping: impl ViewMapping<S>) -> Self {
+        Self {
+            image,
+            eye,
+            mapping: Box::new(mapping),
+        }
+    }
 }
 
 /// R⁴ to R³ by w-depth from the eye.

@@ -1,7 +1,7 @@
 use loam_math::{EuclideanR4, Iso4Flat, Rotor4};
 use loam_runtime::{
     Access, DomainBuilder, DomainError, Domains, Entity, Entry, Phase, Pose, Publish, Session,
-    SimConfig, SpawnBundle, Step, Store, StoreId, Value,
+    SimConfig, SpawnBundle, Step, StoreId, DOMAIN_STEP,
 };
 
 #[derive(Clone, Copy)]
@@ -18,31 +18,20 @@ impl Publish for Tally {
 }
 
 loam_runtime::stores! {
+    #[derive(Default)]
     pub struct Probe {
-        tallies: Store<Tally>,
+        tallies: Published<Tally>,
         elapsed: Value<f32>,
         seen: Value<Option<f32>>,
-    }
-    pub struct ProbeRecords {
-        tallies: u32,
-    }
-    pub struct ProbeSnapshot;
-}
-
-fn probe() -> Probe {
-    Probe {
-        tallies: Store::untracked(),
-        elapsed: Value::new(0.0),
-        seen: Value::new(None),
     }
 }
 
 #[test]
 fn typed_borrow_never_reaches_another_domain_or_session() {
-    let mut session = Session::new(probe(), SimConfig::default());
+    let mut session = Session::new(Probe::default(), SimConfig::default());
     let near = session.register_domain(DomainBuilder::new("near", EuclideanR4));
     let far = session.register_domain(DomainBuilder::new("far", EuclideanR4));
-    let mut other = Session::new(probe(), SimConfig::default());
+    let mut other = Session::new(Probe::default(), SimConfig::default());
     let foreign = other.register_domain(DomainBuilder::new("foreign", EuclideanR4));
 
     let quarter = Rotor4 {
@@ -93,7 +82,8 @@ fn typed_borrow_never_reaches_another_domain_or_session() {
     assert_eq!(*session.app.elapsed.get(), 1.0 / 60.0);
     assert_eq!(*session.app.seen.get(), Some(1.0));
     match session.entries(Phase::Simulation) {
-        [Entry::System(count), Entry::System(_)] => {
+        [step, Entry::System(count), Entry::System(_)] => {
+            assert_eq!(step.name(), DOMAIN_STEP);
             assert_eq!(count.access().write_set(), [StoreId::of::<Tally>()]);
         }
         entries => panic!("{} entries registered", entries.len()),
