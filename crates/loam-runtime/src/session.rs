@@ -270,6 +270,7 @@ pub struct Session<A: Stores> {
     tick: Tick,
     sequence: u64,
     initial: Option<SessionSnapshot<A>>,
+    resume: Option<EntryId>,
     bulk: Bulk,
     checkpoints: Vec<Option<BulkCheckpoint>>,
     restore_plan: Vec<(BulkId, BulkAction)>,
@@ -318,6 +319,7 @@ impl<A: Stores> Session<A> {
             tick: Tick::default(),
             sequence: 0,
             initial: None,
+            resume: None,
             bulk: Bulk::default(),
             checkpoints: Vec::new(),
             restore_plan: Vec::new(),
@@ -483,7 +485,11 @@ impl<A: Stores> Session<A> {
         issued
     }
 
-    pub fn land_readback(&mut self, request: RequestId, rows: &[u8]) -> Landing {
+    pub fn submitted(&mut self, request: RequestId) -> bool {
+        self.flight.submitted(request)
+    }
+
+    pub fn land_readback(&mut self, request: RequestId, rows: Option<&[u8]>) -> Landing {
         self.flight.land(request, rows)
     }
 
@@ -507,7 +513,7 @@ impl<A: Stores> Session<A> {
         self.work.clear();
         self.work_head = 0;
         self.ahead_for.clear();
-        self.wait = None;
+        self.resume = self.wait.take().map(|wait| wait.entry);
     }
 
     pub fn checkpoint(&mut self, id: BulkId, tick: Tick, rows: &[u8]) -> Result<(), BulkError> {
@@ -579,10 +585,14 @@ impl<A: Stores> Session<A> {
     /// Commits deferred commands, runs each dispatch entry and then its commands, and counts what grew; runs while paused, and a call that resumes a suspended entry keeps the input it started with.
     pub fn boundary(&mut self, input: Input) -> Result<Growth, DomainError> {
         let mut growth = Growth::default();
-        let mut index = match self.wait.take() {
-            Some(wait) if wait.entry.phase == Phase::Dispatch => wait.entry.index as usize,
-            Some(wait) => {
-                self.wait = Some(wait);
+        let suspended = self.wait.map(|wait| wait.entry).or(self.resume);
+        let mut index = match suspended {
+            Some(entry) if entry.phase == Phase::Dispatch => {
+                self.wait = None;
+                self.resume = None;
+                entry.index as usize
+            }
+            Some(_) => {
                 return Ok(growth);
             }
             None => {
@@ -621,10 +631,14 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             dt,
         };
-        let mut index = match self.wait.take() {
-            Some(wait) if wait.entry.phase == Phase::Simulation => wait.entry.index as usize,
-            Some(wait) => {
-                self.wait = Some(wait);
+        let suspended = self.wait.map(|wait| wait.entry).or(self.resume);
+        let mut index = match suspended {
+            Some(entry) if entry.phase == Phase::Simulation => {
+                self.wait = None;
+                self.resume = None;
+                entry.index as usize
+            }
+            Some(_) => {
                 return Ok(());
             }
             None => {
@@ -845,6 +859,7 @@ impl<A: Stores> Session<A> {
             self.restore_plan.push((BulkId::new(index), action));
         }
         self.wait = None;
+        self.resume = None;
         self.work.clear();
         self.work_head = 0;
         self.ahead_for.clear();
@@ -1004,7 +1019,7 @@ mod tests {
                 requests.clear();
                 session.issue_work(|order| requests.push(order.request));
                 for request in requests.iter() {
-                    session.land_readback(*request, &rows);
+                    session.land_readback(*request, Some(&rows));
                     session.release_readback(*request);
                 }
             };

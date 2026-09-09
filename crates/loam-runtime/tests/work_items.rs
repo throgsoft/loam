@@ -65,7 +65,7 @@ fn an_ahead_item_issues_ahead_although_a_pending_write_holds_its_input() {
     assert_eq!(session.work_stats().fallbacks, 2);
 
     for (_, _, _, request) in first.iter().chain(second.iter()) {
-        session.land_readback(*request, &[]);
+        assert!(session.submitted(*request));
     }
     session.publish(&mut publication).unwrap();
     let ahead = session.work_list().to_vec();
@@ -99,7 +99,7 @@ fn a_full_queue_overwrites_an_unread_result_instead_of_refusing_the_next_submiss
     let [(_, _, _, first)] = issue(&mut session)[..] else {
         panic!("the first tick issued no work");
     };
-    session.land_readback(first, &[7, 0, 0, 0]);
+    session.land_readback(first, Some(&[7, 0, 0, 0]));
 
     session.tick().unwrap();
     assert_eq!(issue(&mut session).len(), 0);
@@ -148,7 +148,7 @@ fn a_dependent_entry_runs_although_its_required_readback_has_not_landed() {
     assert_eq!(*session.app.cpu.get(), 1);
     assert_eq!(session.current_tick(), Tick(1));
 
-    session.land_readback(request, &[1, 0, 0, 0]);
+    session.land_readback(request, Some(&[1, 0, 0, 0]));
     session.tick().unwrap();
     assert_eq!(session.waiting(), None);
     assert_eq!(*session.app.cpu.get(), 2);
@@ -178,8 +178,8 @@ fn an_optional_result_arrives_without_the_tick_that_produced_it() {
     let [(_, _, _, newer)] = issue(&mut session)[..] else {
         panic!("the second tick issued no work");
     };
-    session.land_readback(newer, &[1]);
-    session.land_readback(older, &[0]);
+    session.land_readback(newer, Some(&[1]));
+    session.land_readback(older, Some(&[0]));
 
     assert_eq!(session.current_tick(), Tick(2));
     let mut landed: Vec<_> = session
@@ -212,7 +212,10 @@ fn a_completion_that_lands_after_a_reset_is_applied_instead_of_discarded() {
     };
     session.reset().unwrap();
 
-    assert_eq!(session.land_readback(request, &[9]), Landing::Discarded);
+    assert_eq!(
+        session.land_readback(request, Some(&[9])),
+        Landing::Discarded
+    );
     assert_eq!(session.work_stats().discarded, 1);
     assert_eq!(session.readbacks().count(), 0);
 }
@@ -233,9 +236,67 @@ fn a_completion_for_a_removed_store_is_applied_instead_of_discarded() {
     };
     assert!(session.remove_bulk(grid));
 
-    assert_eq!(session.land_readback(request, &[9]), Landing::Discarded);
+    assert_eq!(
+        session.land_readback(request, Some(&[9])),
+        Landing::Discarded
+    );
     assert_eq!(session.work_stats().discarded, 1);
     assert_eq!(session.readbacks().count(), 0);
+}
+
+#[test]
+fn a_readback_none_order_holds_its_queue_slot_after_its_submission_completes() {
+    let mut session = Session::new(Paired::default(), SimConfig::default());
+    let grid = session.register_bulk(field("grid", Readback::None, SnapshotPolicy::Derived));
+    session.work(
+        Phase::Simulation,
+        WorkItem::new("step", Schedule::InStep, Readback::None).writes(grid),
+    );
+
+    for tick in 0..5 {
+        session.boundary(Input::default()).unwrap();
+        session.tick().unwrap();
+        let [(_, _, _, request)] = issue(&mut session)[..] else {
+            panic!("tick {tick} issued no work");
+        };
+        assert!(session.submitted(request));
+    }
+
+    assert_eq!(session.work_stats().issued, 5);
+    assert_eq!(session.work_stats().delayed, 0);
+}
+
+#[test]
+fn cancelling_a_wait_reruns_the_entries_that_already_ran_this_boundary() {
+    let mut session = Session::new(Paired::default(), SimConfig::default());
+    let grid = session.register_bulk(field("grid", Readback::Required, SnapshotPolicy::Derived));
+    session.work(
+        Phase::Simulation,
+        WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
+    );
+    session.system(
+        Phase::Dispatch,
+        "count",
+        Access::new().writes::<u32>(),
+        |app: &mut Paired| app.cpu.set(*app.cpu.get() + 1),
+    );
+    session.system(
+        Phase::Dispatch,
+        "consume",
+        Access::new().awaits("reduce"),
+        |_app: &mut Paired| {},
+    );
+
+    session.tick().unwrap();
+    assert_eq!(issue(&mut session).len(), 1);
+    session.boundary(Input::default()).unwrap();
+    assert!(session.waiting().is_some());
+    assert_eq!(*session.app.cpu.get(), 1);
+
+    session.cancel_work();
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(session.waiting(), None);
+    assert_eq!(*session.app.cpu.get(), 1);
 }
 
 #[test]

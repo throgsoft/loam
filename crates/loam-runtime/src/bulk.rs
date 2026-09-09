@@ -141,6 +141,7 @@ pub enum Landing {
     Applied,
     /// Landed after a reset, a restore, a cancellation, or the store's removal; nothing was applied.
     Discarded,
+    Failed,
 }
 
 pub struct Landed<'a> {
@@ -212,7 +213,24 @@ impl InFlight {
         true
     }
 
-    pub(crate) fn land(&mut self, request: RequestId, rows: &[u8]) -> Landing {
+    pub(crate) fn submitted(&mut self, request: RequestId) -> bool {
+        let Some(slot) = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.order.is_some_and(|order| order.request == request))
+        else {
+            return false;
+        };
+        if slot
+            .order
+            .is_some_and(|order| order.readback == Readback::None)
+        {
+            slot.clear();
+        }
+        true
+    }
+
+    pub(crate) fn land(&mut self, request: RequestId, rows: Option<&[u8]>) -> Landing {
         let Some(slot) = self
             .slots
             .iter_mut()
@@ -221,13 +239,10 @@ impl InFlight {
             self.discarded += 1;
             return Landing::Discarded;
         };
-        if slot
-            .order
-            .is_some_and(|order| order.readback == Readback::None)
-        {
+        let Some(rows) = rows else {
             slot.clear();
-            return Landing::Applied;
-        }
+            return Landing::Failed;
+        };
         slot.landed = true;
         slot.rows.clear();
         slot.rows.extend_from_slice(rows);

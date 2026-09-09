@@ -118,7 +118,7 @@ impl ComputeWork {
     }
 }
 
-type Completion = Arc<Mutex<bool>>;
+type Completion = Arc<Mutex<Option<bool>>>;
 
 struct Pending {
     request: RequestId,
@@ -163,7 +163,7 @@ impl Readbacks {
             staging,
             size,
             mapped: false,
-            done: Arc::new(Mutex::new(false)),
+            done: Arc::new(Mutex::new(None)),
         });
     }
 
@@ -175,34 +175,45 @@ impl Readbacks {
                 .staging
                 .slice(..pending.size)
                 .map_async(MapMode::Read, move |result| {
-                    *signal.lock().unwrap_or_else(|error| error.into_inner()) = result.is_ok();
+                    *signal.lock().unwrap_or_else(|error| error.into_inner()) =
+                        Some(result.is_ok());
                 });
         }
     }
 
     /// Never blocks; delivers the copies whose maps have completed by this poll.
-    pub fn poll(&mut self, device: &Device, mut deliver: impl FnMut(RequestId, &[u8])) -> usize {
+    pub fn poll(
+        &mut self,
+        device: &Device,
+        mut deliver: impl FnMut(RequestId, Option<&[u8]>),
+    ) -> usize {
         let _ = device.poll(PollType::Poll);
         let mut delivered = 0;
         let mut index = 0;
         while index < self.pending.len() {
-            let ready = self.pending[index].mapped
-                && *self.pending[index]
+            let done = match self.pending[index].mapped {
+                true => *self.pending[index]
                     .done
                     .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-            if !ready {
+                    .unwrap_or_else(|error| error.into_inner()),
+                false => None,
+            };
+            let Some(mapped) = done else {
                 index += 1;
                 continue;
-            }
+            };
             let pending = self.pending.swap_remove(index);
+            delivered += 1;
+            if !mapped {
+                deliver(pending.request, None);
+                continue;
+            }
             self.rows.clear();
             self.rows
                 .extend_from_slice(&pending.staging.slice(..pending.size).get_mapped_range());
             pending.staging.unmap();
-            deliver(pending.request, &self.rows);
+            deliver(pending.request, Some(&self.rows));
             self.idle.push(pending.staging);
-            delivered += 1;
         }
         delivered
     }
@@ -210,5 +221,69 @@ impl Readbacks {
     pub fn cancel(&mut self) {
         self.pending.clear();
         self.idle.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loam_runtime::{
+        BulkSpec, Input, Landing, Phase, Readback, Schedule, Session, SimConfig, SnapshotPolicy,
+        WorkItem,
+    };
+
+    use super::*;
+
+    loam_runtime::stores! {
+        #[derive(Default)]
+        pub struct Bare {}
+    }
+
+    #[test]
+    fn a_failed_map_stays_pending_and_never_retires_its_readback() {
+        let gpu = crate::device::noop_context();
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        let grid = session.register_bulk(BulkSpec {
+            name: "grid",
+            element_size: 4,
+            count: 4,
+            readback: Readback::Required,
+            snapshot: SnapshotPolicy::Derived,
+            schedule: Schedule::InStep,
+        });
+        session.work(
+            Phase::Simulation,
+            WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
+        );
+        session.boundary(Input::default()).expect("boundary");
+        session.tick().expect("tick");
+        let mut request = None;
+        session.issue_work(|order| request = Some(order.request));
+        let request = request.expect("the tick ordered its work item");
+
+        let mut readbacks = Readbacks::default();
+        readbacks.pending.push(Pending {
+            request,
+            staging: gpu.device.create_buffer(&BufferDescriptor {
+                label: None,
+                size: 16,
+                usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            size: 16,
+            mapped: true,
+            done: Arc::new(Mutex::new(Some(false))),
+        });
+
+        let mut landings = Vec::new();
+        let retired = readbacks.poll(&gpu.device, |request, rows| {
+            landings.push(session.land_readback(request, rows));
+        });
+
+        assert_eq!(retired, 1);
+        assert!(readbacks.pending.is_empty());
+        assert!(readbacks.idle.is_empty());
+        assert_eq!(landings, [Landing::Failed]);
+        assert_eq!(session.readbacks().count(), 0);
+        assert_eq!(session.waiting(), None);
     }
 }

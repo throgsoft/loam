@@ -14,8 +14,8 @@ use loam_render::present::Presenter;
 use loam_render::work::{BulkBuffers, Readbacks};
 use loam_runtime::host::{HostConfig, HostError};
 use loam_runtime::{
-    ActionEvent, Input, Key, Pointer, PointerPhase, Records, Session, SnapshotPolicy, Stores,
-    WorkOrder,
+    ActionEvent, Input, Key, Landing, Pointer, PointerPhase, Records, RequestId, Session,
+    SnapshotPolicy, Stores, WorkOrder,
 };
 use loam_time::{frame_trace, FixedTimestep};
 
@@ -72,11 +72,13 @@ struct Host<A: Stores> {
     device: Option<RenderDevice>,
     presenter: Option<Presenter>,
     input: Input,
+    spare: Input,
     cursor: [f32; 2],
     dragging: bool,
     failure: Option<HostError>,
     buffers: BulkBuffers,
     readbacks: Readbacks,
+    issued: Vec<RequestId>,
     record_work: Recorder,
 }
 
@@ -94,11 +96,13 @@ impl<A: Stores> Host<A> {
             device: None,
             presenter: None,
             input: Input::default(),
+            spare: Input::default(),
             cursor: [0.0; 2],
             dragging: false,
             failure: None,
             buffers: BulkBuffers::default(),
             readbacks: Readbacks::default(),
+            issued: Vec::new(),
             record_work,
         }
     }
@@ -107,6 +111,7 @@ impl<A: Stores> Host<A> {
         session: &mut Session<A>,
         buffers: &mut BulkBuffers,
         readbacks: &mut Readbacks,
+        issued: &mut Vec<RequestId>,
         record_work: &mut Recorder,
         device: &RenderDevice,
         encoder: &mut wgpu::CommandEncoder,
@@ -114,7 +119,9 @@ impl<A: Stores> Host<A> {
         for (id, spec) in session.bulk().iter() {
             buffers.ensure(&device.device, id, spec);
         }
+        issued.clear();
         session.issue_work(|order| {
+            issued.push(order.request);
             record_work(WorkContext {
                 gpu: device,
                 encoder,
@@ -208,10 +215,18 @@ impl<A: Stores> Host<A> {
         });
     }
 
+    fn swap_input(&mut self) -> Input {
+        std::mem::replace(&mut self.input, std::mem::take(&mut self.spare))
+    }
+
     fn reclaim_input(&mut self) {
-        self.input = self.session.take_input();
-        self.input.pointers.clear();
-        self.input.actions.clear();
+        let mut reclaimed = self.session.take_input();
+        reclaimed.pointers.clear();
+        reclaimed.actions.clear();
+        self.input.held.clear();
+        self.input.held.extend_from_slice(&reclaimed.held);
+        reclaimed.held.clear();
+        self.spare = reclaimed;
     }
 
     fn frame(&mut self, elwt: &ActiveEventLoop) {
@@ -231,6 +246,7 @@ impl<A: Stores> Host<A> {
         if size.width == 0 || size.height == 0 {
             return;
         }
+        let mut broken = None;
         {
             let Host {
                 session,
@@ -240,15 +256,22 @@ impl<A: Stores> Host<A> {
             } = self;
             if let Some(device) = device.as_ref() {
                 readbacks.poll(&device.device, |request, rows| {
-                    session.land_readback(request, rows);
+                    if session.land_readback(request, rows) == Landing::Failed {
+                        broken = Some(request);
+                    }
                 });
             }
         }
-        let waiting = self.session.waiting().is_some();
-        let input = if waiting {
+        if let Some(request) = broken {
+            return self.stop(
+                elwt,
+                HostError::Host(format!("a GPU readback failed for {request:?}")),
+            );
+        }
+        let input = if self.session.waiting().is_some() {
             Input::default()
         } else {
-            std::mem::take(&mut self.input)
+            self.swap_input()
         };
         {
             let _dispatch = frame_trace::scope("dispatch");
@@ -264,7 +287,7 @@ impl<A: Stores> Host<A> {
                 }
             }
         }
-        if !waiting {
+        if self.session.waiting().is_none() {
             self.reclaim_input();
         }
         let (Some(device), Some(presenter)) = (self.device.as_mut(), self.presenter.as_mut())
@@ -335,6 +358,7 @@ impl<A: Stores> Host<A> {
             &mut self.session,
             &mut self.buffers,
             &mut self.readbacks,
+            &mut self.issued,
             &mut self.record_work,
             device,
             &mut encoder,
@@ -355,6 +379,9 @@ impl<A: Stores> Host<A> {
         device.queue.submit(Some(encoder.finish()));
         presenter.after_submit();
         self.readbacks.after_submit();
+        while let Some(request) = self.issued.pop() {
+            self.session.submitted(request);
+        }
         frame.present();
     }
 }
@@ -497,7 +524,7 @@ mod tests {
             host.on_pointer([0.1, 0.2], [0.01, 0.0], PointerPhase::Began);
             host.on_pointer([0.2, 0.2], [0.1, 0.0], PointerPhase::Moved);
             host.on_action(Key::Letter('w'), false);
-            let input = std::mem::take(&mut host.input);
+            let input = host.swap_input();
             host.session.boundary(input).unwrap();
             host.session.tick().unwrap();
             host.reclaim_input();
