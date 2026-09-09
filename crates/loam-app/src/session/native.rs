@@ -16,10 +16,12 @@ use super::input::winit_key;
 use super::pacing::Pace;
 use super::WorkContext;
 
+/// Owns the window, device, and loop; the session stays a CPU value.
 pub fn run<A: Stores>(session: Session<A>, config: HostConfig) -> Result<(), HostError> {
     launch(session, SessionApp::new(config))
 }
 
+/// `record` runs once per issued order inside the frame's encoder before the presenter draws.
 pub fn run_with_work<A: Stores>(
     session: Session<A>,
     config: HostConfig,
@@ -28,6 +30,7 @@ pub fn run_with_work<A: Stores>(
     launch(session, SessionApp::new(config).work(record))
 }
 
+/// `run` with the application's own [`SessionApp`]; returns when the window closes or a frame fails.
 pub fn launch<A: Stores>(session: Session<A>, app: SessionApp<A>) -> Result<(), HostError> {
     crate::par_native::install();
     let event_loop = EventLoop::new().map_err(failed)?;

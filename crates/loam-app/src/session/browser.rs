@@ -21,10 +21,12 @@ use crate::wasm::input_queue::{self, InputMessage};
 use crate::wasm::messages;
 use crate::wasm::worker::{install_logging_idempotent, post_failure, worker_scope};
 
+/// [`launch`] with a default [`SessionApp`]; on the page it returns at once and the worker owns the loop.
 pub fn run<A: Stores>(session: Session<A>, config: HostConfig) -> Result<(), HostError> {
     launch(session, SessionApp::new(config))
 }
 
+/// `record` runs once per issued order inside the frame's encoder before the presenter draws.
 pub fn run_with_work<A: Stores>(
     session: Session<A>,
     config: HostConfig,
@@ -33,6 +35,7 @@ pub fn run_with_work<A: Stores>(
     launch(session, SessionApp::new(config).work(record))
 }
 
+/// In the worker, listens for `init` and drives frames from the offscreen canvas; on the page, starts the worker and returns at once.
 pub fn launch<A: Stores>(session: Session<A>, app: SessionApp<A>) -> Result<(), HostError> {
     install_logging_idempotent();
     if crate::wasm::is_worker_context() {

@@ -9,6 +9,7 @@ use super::WorkContext;
 use crate::args::Args;
 use crate::capture::CaptureRequest;
 
+/// Runs each frame between publication and presentation; `sections` are the previous frame's, since the presenter clears them at upload.
 pub struct FrameHook<'a, A: Stores> {
     pub session: &'a mut Session<A>,
     pub sections: &'a [Section],
@@ -19,6 +20,7 @@ pub struct FrameHook<'a, A: Stores> {
 pub(crate) type FrameFn<A> = Box<dyn FnMut(&mut FrameHook<'_, A>)>;
 pub(crate) type WorkFn = Box<dyn FnMut(WorkContext<'_>)>;
 
+/// What the host runs on the application's behalf: pacing, vsync, passes, the frame hook, the console, the work recorder, captures, and the browser element ids.
 pub struct SessionApp<A: Stores> {
     pub config: HostConfig,
     pub args: Args,
@@ -56,6 +58,7 @@ impl<A: Stores> SessionApp<A> {
         host
     }
 
+    /// Reads `--fps` and `--vsync` from `args`.
     pub fn apply_args(&mut self) {
         if let Some(fps) = self.args.parse::<f32>("fps") {
             self.pacer.set_target_fps(fps);

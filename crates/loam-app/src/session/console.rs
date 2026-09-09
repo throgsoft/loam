@@ -49,6 +49,7 @@ fn lock<A>(shared: &Shared<A>) -> std::sync::MutexGuard<'_, Inbox<A>> {
     shared.lock().unwrap_or_else(|error| error.into_inner())
 }
 
+/// What a console verb may ask of the session: an app command, a reset, a frame cap, or vsync.
 pub struct Submit<A: Stores> {
     inbox: Shared<A>,
 }
@@ -103,6 +104,7 @@ where
     }
 }
 
+/// The egui console bound to a session: verbs queue through a Dispatch entry, and a command's result reaches the history at the next boundary.
 pub struct SessionConsole<A: Stores> {
     console: Console<Submit<A>>,
     submit: Submit<A>,
@@ -209,6 +211,7 @@ impl<A: Stores> SessionConsole<A> {
         self.submit.app(command);
     }
 
+    /// Registers the Dispatch entry that submits queued commands; once per session.
     pub fn install(&self, session: &mut Session<A>) {
         let inbox = self.inbox.clone();
         let mut scratch: Vec<Queued<A>> = Vec::new();
@@ -236,6 +239,7 @@ impl<A: Stores> SessionConsole<A> {
         );
     }
 
+    /// Matches this boundary's results to the requests the console submitted and writes them to the history.
     pub fn collect(&mut self, session: &Session<A>) {
         let mut inbox = lock(&self.inbox);
         if inbox.submitted.is_empty() {

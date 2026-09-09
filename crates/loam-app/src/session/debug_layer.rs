@@ -149,6 +149,7 @@ impl Layer {
     }
 }
 
+/// An egui pass after the scene that writes color and no depth; it lives here because loam-egui does not depend on loam-render.
 #[derive(Clone)]
 pub struct DebugLayer {
     shared: Rc<RefCell<Layer>>,

@@ -1,6 +1,7 @@
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+/// egui's winit state behind loam-egui, so a host feeds window events without depending on egui_winit.
 pub struct WinitInput {
     state: egui_winit::State,
 }

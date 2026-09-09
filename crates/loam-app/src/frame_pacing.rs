@@ -59,6 +59,7 @@ pub fn precise_sleep_until(deadline: Instant) {
 #[cfg(target_arch = "wasm32")]
 pub fn precise_sleep_until(_deadline: Instant) {}
 
+/// `enabled` asks for Fifo; otherwise the first of Mailbox and Immediate the surface supports, else the current mode.
 pub fn apply_present_mode(rd: &mut loam_render::device::RenderDevice, enabled: bool) {
     let target = if enabled {
         wgpu::PresentMode::Fifo
