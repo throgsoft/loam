@@ -1,5 +1,9 @@
+mod capability;
 mod runtime;
+mod sim_config;
+pub use capability::{Capability, HostProfile, MissingCapability};
 pub use runtime::Runtime;
+pub use sim_config::{CatchUp, SimConfig, DEFAULT_MAX_TICKS_PER_FRAME};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -35,7 +39,7 @@ mod watcher;
 
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, WindowEvent},
+    event::{ElementState, TouchPhase, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
     window::{Window, WindowAttributes},
@@ -51,6 +55,7 @@ pub use loam_camera::{
 };
 pub use loam_egui::{egui, world_to_screen, UiCapture};
 pub use loam_input::FrameInput as Input;
+pub use loam_input::{Pointer, PointerPhase};
 pub use loam_render::shader::{ShaderDb, ShaderOwner};
 pub use watcher::FileWatcher;
 
@@ -161,6 +166,8 @@ pub struct FrameCtx<'a> {
     pub runtime: &'a Runtime,
     pub rd: &'a RenderDevice,
     pub input: FrameInput,
+    /// This frame's mouse and touch samples in arrival order; empty in event callbacks.
+    pub pointers: &'a [Pointer],
     pub time: f32,
     pub fps: f32,
     pub n_ticks: usize,
@@ -171,14 +178,11 @@ pub struct FrameCtx<'a> {
     _non_exhaustive: PhantomData<()>,
 }
 
-pub const DEFAULT_MAX_TICKS_PER_FRAME: u32 = 4;
-
 pub struct RunConfig {
     pub window: WindowAttributes,
-    /// Native only; the wasm worker simulates at 60 Hz.
-    pub fixed_hz: u32,
-    /// Ticks beyond this are dropped; `0` stops the sim. Native only.
-    pub max_ticks_per_frame: u32,
+    pub sim: SimConfig,
+    /// Launch fails on the first of these the host does not provide.
+    pub required: &'static [Capability],
     /// `None` keeps the installed subscriber or `RUST_LOG`.
     pub log_filter: Option<String>,
     pub esc_exits: bool,
@@ -216,8 +220,8 @@ impl Default for RunConfig {
             window: WindowAttributes::default()
                 .with_title("loam app")
                 .with_visible(false),
-            fixed_hz: 60,
-            max_ticks_per_frame: DEFAULT_MAX_TICKS_PER_FRAME,
+            sim: SimConfig::default(),
+            required: &[],
             log_filter: None,
             esc_exits: true,
             render_error_budget: 8,
@@ -228,8 +232,9 @@ impl Default for RunConfig {
     }
 }
 
-/// Dispatches native, wasm main-thread, and wasm worker mode.
+/// Dispatches native, wasm main-thread, and wasm worker mode; on native it blocks until the event loop exits.
 pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
+    HostProfile::host().require(config.required)?;
     #[cfg(target_arch = "wasm32")]
     {
         if wasm::is_worker_context() {
@@ -240,14 +245,14 @@ pub fn run<A: App + 'static>(config: RunConfig) -> anyhow::Result<()> {
                 &config.wasm.host_id,
                 &config.wasm.button_id,
                 &config.wasm.canvas_id,
+                config.sim,
             );
         }
     }
     run_with_config::<A>(config)
 }
 
-/// On native this blocks until the event loop exits.
-pub fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
+fn run_with_config<A: App>(config: RunConfig) -> anyhow::Result<()> {
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
@@ -381,6 +386,8 @@ fn attach_canvas_to_dom(win: &winit::window::Window) -> anyhow::Result<()> {
     Ok(())
 }
 
+const MOUSE_POINTER_ID: u64 = 0;
+
 struct Runner<A: App> {
     runtime: Runtime,
     config: RunConfig,
@@ -419,8 +426,7 @@ struct Runner<A: App> {
 
 impl<A: App> Runner<A> {
     fn new(config: RunConfig) -> Self {
-        let timestep =
-            FixedTimestep::new(config.fixed_hz).with_max_catch_up(config.max_ticks_per_frame);
+        let timestep = config.sim.timestep();
         Self {
             config,
             runtime: Runtime::default(),
@@ -460,6 +466,17 @@ impl<A: App> Runner<A> {
 
     fn time(&self) -> f32 {
         self.start.elapsed().as_secs_f32()
+    }
+
+    fn mouse_pointer(&mut self, phase: PointerPhase) {
+        if let Some(position) = self.input.cursor_pos() {
+            self.input.pointer(Pointer {
+                id: MOUSE_POINTER_ID,
+                position,
+                phase,
+                time: self.start.elapsed(),
+            });
+        }
     }
 
     fn install_init(&mut self, win: Arc<Window>, artifacts: InitArtifacts<A>) {
@@ -657,6 +674,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.input.cursor_moved(position.x, position.y);
+                self.mouse_pointer(PointerPhase::Move);
             }
             WindowEvent::CursorLeft { .. } => self.input.cursor_invalidated(),
             WindowEvent::Focused(false) => {
@@ -665,10 +683,31 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 self.input.release_buttons();
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                let was_down = self.input.buttons().any_down();
                 self.input.mouse_input(*button, *state);
+                match (was_down, self.input.buttons().any_down()) {
+                    (false, true) => self.mouse_pointer(PointerPhase::Down),
+                    (true, false) => self.mouse_pointer(PointerPhase::Up),
+                    _ => {}
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.input.mouse_wheel(*delta);
+            }
+            WindowEvent::Touch(touch) => {
+                let phase = match touch.phase {
+                    TouchPhase::Started => PointerPhase::Down,
+                    TouchPhase::Moved => PointerPhase::Move,
+                    TouchPhase::Ended => PointerPhase::Up,
+                    TouchPhase::Cancelled => PointerPhase::Cancel,
+                };
+                self.input.pointer(Pointer {
+                    // Android numbers fingers from 0, the mouse pointer's id.
+                    id: touch.id.saturating_add(1),
+                    position: glam::Vec2::new(touch.location.x as f32, touch.location.y as f32),
+                    phase,
+                    time: self.start.elapsed(),
+                });
             }
             WindowEvent::Resized(size) => {
                 let was_minimized = self.minimized;
@@ -715,6 +754,7 @@ impl<A: App> ApplicationHandler for Runner<A> {
                 shader_db,
                 rd,
                 input: FrameInput::default(),
+                pointers: &[],
                 time: now,
                 fps,
                 n_ticks: 0,
@@ -879,7 +919,7 @@ impl<A: App> Runner<A> {
         let now_inst = Instant::now();
         let dt = match self.last_update_at {
             Some(prev) => now_inst.saturating_duration_since(prev).as_secs_f32(),
-            None => 1.0 / self.config.fixed_hz as f32,
+            None => self.timestep.dt_seconds(),
         };
         self.last_update_at = Some(now_inst);
 
@@ -889,6 +929,7 @@ impl<A: App> Runner<A> {
                 runtime: &self.runtime,
                 rd,
                 input,
+                pointers: self.input.pointers(),
                 time: self.start.elapsed().as_secs_f32(),
                 fps: self.fps,
                 n_ticks,
@@ -1215,7 +1256,10 @@ mod tests {
     #[test]
     fn the_runner_caps_catch_up_in_the_accumulator_not_the_tick_loop() {
         let config = RunConfig {
-            max_ticks_per_frame: 2,
+            sim: SimConfig {
+                catch_up: CatchUp::Cap(2),
+                ..SimConfig::default()
+            },
             ..RunConfig::default()
         };
         let mut runner = Runner::<TickRecorder>::new(config);
@@ -1225,7 +1269,7 @@ mod tests {
         assert_eq!(
             ticks.end - ticks.start,
             2,
-            "RunConfig::max_ticks_per_frame must reach the accumulator, \
+            "SimConfig::catch_up must reach the accumulator, \
              which is the only place the cap may be applied"
         );
     }

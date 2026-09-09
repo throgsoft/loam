@@ -5,12 +5,19 @@ use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlCanvasElement, MessageEvent, Worker, WorkerOptions, WorkerType};
 
+use crate::SimConfig;
+
 /// `host_id` is the `data-mode="manual"` container, `button_id` the overlay,
 /// `canvas_id` the `<canvas>` transferred via `transferControlToOffscreen`.
-pub fn launch_on_click(host_id: &str, button_id: &str, canvas_id: &str) -> Result<()> {
+pub fn launch_on_click(
+    host_id: &str,
+    button_id: &str,
+    canvas_id: &str,
+    sim: SimConfig,
+) -> Result<()> {
     super::worker::install_logging_idempotent();
 
-    spawn_worker_for_preview(canvas_id, host_id, button_id)?;
+    spawn_worker_for_preview(canvas_id, host_id, button_id, sim)?;
     Ok(())
 }
 
@@ -23,7 +30,12 @@ fn read_wasm_bundle_url() -> Result<String> {
         .ok_or_else(|| anyhow!("__loam_wasm_url is not a string; demo's index.html must set it"))
 }
 
-fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> Result<()> {
+fn spawn_worker_for_preview(
+    canvas_id: &str,
+    host_id: &str,
+    button_id: &str,
+    sim: SimConfig,
+) -> Result<()> {
     let document = web_sys::window()
         .and_then(|w| w.document())
         .ok_or_else(|| anyhow!("no document on global window"))?;
@@ -122,6 +134,7 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
             &JsValue::from_str(&search),
         );
         let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("hash"), &JsValue::from_str(&hash));
+        sim.encode(|key, value| set_msg_f64(&msg, key, value));
 
         let transfer = js_sys::Array::new();
         transfer.push(&offscreen_for_ready);
@@ -438,6 +451,28 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         cb.forget();
     }
 
+    let _ = canvas.style().set_property("touch-action", "none");
+    for event_name in ["pointerdown", "pointermove", "pointerup", "pointercancel"] {
+        let worker = worker.clone();
+        let canvas_for_capture = canvas.clone();
+        let cb = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
+            if event_name == "pointerdown" {
+                let _ = canvas_for_capture.set_pointer_capture(ev.pointer_id());
+            }
+            let msg = build_msg("pointer");
+            set_msg_f64(&msg, "id", f64::from(ev.pointer_id()));
+            set_msg_f32(&msg, "x", ev.offset_x() as f32);
+            set_msg_f32(&msg, "y", ev.offset_y() as f32);
+            set_msg_string(&msg, "phase", event_name);
+            set_msg_f64(&msg, "time", ev.time_stamp());
+            let _ = worker.post_message(&msg);
+        }) as Box<dyn FnMut(web_sys::PointerEvent)>);
+        canvas
+            .add_event_listener_with_callback(event_name, cb.as_ref().unchecked_ref())
+            .map_err(|e| anyhow!("{event_name} listener: {e:?}"))?;
+        cb.forget();
+    }
+
     {
         let cb = Closure::wrap(Box::new(move |ev: web_sys::Event| {
             ev.prevent_default();
@@ -549,7 +584,11 @@ fn set_msg_u32(obj: &js_sys::Object, key: &str, v: u32) {
 }
 
 fn set_msg_f32(obj: &js_sys::Object, key: &str, v: f32) {
-    let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_f64(v as f64));
+    set_msg_f64(obj, key, f64::from(v));
+}
+
+fn set_msg_f64(obj: &js_sys::Object, key: &str, v: f64) {
+    let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_f64(v));
 }
 
 fn set_msg_bool(obj: &js_sys::Object, key: &str, v: bool) {

@@ -3,7 +3,9 @@
 mod input_queue;
 
 use input_queue::{drain_messages_into, enqueue, InputMessage, MESSAGE_QUEUE_CAPACITY};
+use loam_input::PointerPhase;
 use std::collections::VecDeque;
+use std::time::Duration;
 
 #[test]
 fn overflow_releases_held_input_before_new_events() {
@@ -55,4 +57,71 @@ fn overflow_releases_held_input_before_new_events() {
     ));
     drain_messages_into(&mut batch);
     assert!(batch.is_empty());
+}
+
+#[test]
+fn overflow_keeps_pointer_transitions_so_a_drag_does_not_stick() {
+    enqueue(pointer(7, PointerPhase::Down, 1.0, 1));
+    enqueue(pointer(7, PointerPhase::Move, 2.0, 2));
+    enqueue(pointer(7, PointerPhase::Up, 3.0, 3));
+    for _ in 0..MESSAGE_QUEUE_CAPACITY {
+        enqueue(InputMessage::MouseWheel { dx: 0.0, dy: 1.0 });
+    }
+    let mut batch = VecDeque::new();
+    drain_messages_into(&mut batch);
+    let transitions: Vec<(PointerPhase, f32)> = batch
+        .iter()
+        .filter_map(|msg| match msg {
+            InputMessage::Pointer {
+                id: 7, phase, x, ..
+            } if *phase != PointerPhase::Move => Some((*phase, *x)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        transitions,
+        [(PointerPhase::Down, 1.0), (PointerPhase::Up, 3.0)]
+    );
+}
+
+fn pointer(id: u64, phase: PointerPhase, x: f32, millis: u64) -> InputMessage {
+    InputMessage::Pointer {
+        id,
+        x,
+        y: 0.0,
+        phase,
+        time: Duration::from_millis(millis),
+    }
+}
+
+#[test]
+fn coalesced_pointer_motion_keeps_the_latest_sample_and_never_crosses_a_release() {
+    enqueue(pointer(1, PointerPhase::Down, 0.0, 0));
+    enqueue(pointer(1, PointerPhase::Move, 10.0, 10));
+    enqueue(pointer(2, PointerPhase::Move, 5.0, 12));
+    enqueue(pointer(1, PointerPhase::Move, 20.0, 20));
+    enqueue(pointer(1, PointerPhase::Up, 20.0, 25));
+    enqueue(pointer(1, PointerPhase::Move, 30.0, 30));
+    enqueue(pointer(1, PointerPhase::Move, 40.0, 40));
+    let mut batch = VecDeque::new();
+    drain_messages_into(&mut batch);
+    let got: Vec<(u64, PointerPhase, f32, u128)> = batch
+        .iter()
+        .map(|msg| match msg {
+            InputMessage::Pointer {
+                id, x, phase, time, ..
+            } => (*id, *phase, *x, time.as_millis()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (1, PointerPhase::Down, 0.0, 0),
+            (2, PointerPhase::Move, 5.0, 12),
+            (1, PointerPhase::Move, 20.0, 20),
+            (1, PointerPhase::Up, 20.0, 25),
+            (1, PointerPhase::Move, 40.0, 40),
+        ]
+    );
 }

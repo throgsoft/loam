@@ -12,8 +12,8 @@ use super::input_queue::{self, InputMessage};
 use super::messages;
 use super::modifier_sync::{ModifierFlags, ModifierSync};
 use super::worker_ui::WorkerUi;
-use crate::{App, FrameCtx, RenderCtx, SetupCtx, UiCapture};
-use loam_input::InputState;
+use crate::{App, FrameCtx, RenderCtx, SetupCtx, SimConfig, UiCapture};
+use loam_input::{InputState, Pointer};
 use loam_render::device::RenderDevice;
 use loam_render::shader::ShaderDb;
 use loam_time::FixedTimestep;
@@ -96,7 +96,7 @@ fn handle_message<A: App + 'static>(
     if PAUSED.with(|p| p.get())
         && matches!(
             kind.as_deref(),
-            Some("mouse_move" | "mouse_button" | "mouse_wheel" | "key")
+            Some("mouse_move" | "mouse_button" | "mouse_wheel" | "key" | "pointer")
         )
     {
         return Ok(());
@@ -124,14 +124,19 @@ fn handle_message<A: App + 'static>(
                 .unwrap_or_default()
         };
         crate::args::set_query_override(read_str("search"), read_str("hash"));
+        let sim = SimConfig::decode(|key| messages::read_f64_field(&data, key))
+            .context("init message sim config")?;
 
         tracing::info!(
-            "loam_app::wasm::worker: received init ({width}x{height} @ DPR {dpr}); \
-             spawning wgpu setup"
+            "loam_app::wasm::worker: received init ({width}x{height} @ DPR {dpr}, {} Hz); \
+             spawning wgpu setup",
+            sim.fixed_hz
         );
         let scope_for_render = scope.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = init_renderer::<A>(scope_for_render, canvas, width, height, dpr).await {
+            if let Err(e) =
+                init_renderer::<A>(scope_for_render, canvas, width, height, dpr, sim).await
+            {
                 tracing::error!("loam_app::wasm::worker: init_renderer failed: {e:#}");
             }
         });
@@ -155,6 +160,7 @@ async fn init_renderer<A: App + 'static>(
     width: u32,
     height: u32,
     device_pixel_ratio: f32,
+    sim: SimConfig,
 ) -> Result<()> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::BROWSER_WEBGPU,
@@ -177,8 +183,15 @@ async fn init_renderer<A: App + 'static>(
         rd.sample_count()
     );
 
-    let runner = WorkerRunner::<A>::setup(rd, canvas_for_runner, width, height, device_pixel_ratio)
-        .context("WorkerRunner::setup")?;
+    let runner = WorkerRunner::<A>::setup(
+        rd,
+        canvas_for_runner,
+        width,
+        height,
+        device_pixel_ratio,
+        sim,
+    )
+    .context("WorkerRunner::setup")?;
 
     // Main promotes the launch overlay to `.ready` on this message.
     {
@@ -326,6 +339,7 @@ impl<A: App + 'static> WorkerRunner<A> {
         width_px: u32,
         height_px: u32,
         device_pixel_ratio: f32,
+        sim: SimConfig,
     ) -> Result<Self> {
         let runtime = crate::Runtime::default();
         let mut shader_db = ShaderDb::new(rd.device.clone());
@@ -364,7 +378,7 @@ impl<A: App + 'static> WorkerRunner<A> {
             start: web_time::Instant::now(),
             last_update_at: None,
             last_redraw_anchor: None,
-            timestep: FixedTimestep::new(60).with_max_catch_up(crate::DEFAULT_MAX_TICKS_PER_FRAME),
+            timestep: sim.timestep(),
             commands: crate::command::CommandQueue::new(),
         })
     }
@@ -455,6 +469,7 @@ impl<A: App + 'static> WorkerRunner<A> {
                         runtime: &self.runtime,
                         rd: &self.rd,
                         input: loam_input::FrameInput::default(),
+                        pointers: &[],
                         time: self.start.elapsed().as_secs_f32(),
                         fps: 0.0,
                         n_ticks: 0,
@@ -483,6 +498,21 @@ impl<A: App + 'static> WorkerRunner<A> {
                 };
                 // On wasm, visibility tracks lock state.
                 self.runtime.mark_cursor_applied(grab, !locked);
+            }
+            InputMessage::Pointer {
+                id,
+                x,
+                y,
+                phase,
+                time,
+            } => {
+                let (x, y) = input_queue::physical_cursor(x, y, self.device_pixel_ratio);
+                self.input.pointer(Pointer {
+                    id,
+                    position: glam::Vec2::new(x as f32, y as f32),
+                    phase,
+                    time,
+                });
             }
         }
     }
@@ -519,7 +549,7 @@ impl<A: App + 'static> WorkerRunner<A> {
         let now = web_time::Instant::now();
         let dt = match self.last_update_at {
             Some(prev) => now.duration_since(prev).as_secs_f32(),
-            None => 1.0 / 60.0,
+            None => self.timestep.dt_seconds(),
         };
         self.last_update_at = Some(now);
 
@@ -548,6 +578,7 @@ impl<A: App + 'static> WorkerRunner<A> {
                 runtime: &self.runtime,
                 rd: &self.rd,
                 input,
+                pointers: self.input.pointers(),
                 time: self.start.elapsed().as_secs_f32(),
                 fps: 0.0,
                 n_ticks,
