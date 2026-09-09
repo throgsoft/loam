@@ -25,6 +25,7 @@ impl ViewId {
     }
 }
 
+/// A slot and a generation; a later `place` that reuses the slot makes the earlier id stale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageSpaceId {
     slot: u32,
@@ -326,7 +327,7 @@ impl Views {
         (placed.generation == id.generation).then_some(placed)
     }
 
-    /// The composed placement from `image` into the root, `None` for a space that was never placed or has been unplaced.
+    /// The composed placement from `image` into the root, `None` for a space never placed, unplaced, or whose slot a later `place` reused.
     pub fn to_root(&self, image: ImageSpaceId) -> Option<Placement> {
         let mut composed = Placement::Rigid(Rigid::IDENTITY);
         let mut current = image;
