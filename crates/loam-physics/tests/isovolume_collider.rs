@@ -2,7 +2,7 @@ use glam::Vec3;
 
 use loam_math::EuclideanR3;
 use loam_physics::euclidean_r3::{register_default_narrowphase, sphere_body_r3};
-use loam_physics::{BodyId, RigidBody, World};
+use loam_physics::{BodyDef, BodyId, World};
 use loam_shape::Isovolume;
 
 const MAJOR: f32 = 1.0;
@@ -31,7 +31,7 @@ fn torus_world(volume: &Isovolume<3>, x: f32) -> (World<EuclideanR3>, BodyId) {
     world.gravity = Some(Vec3::new(0.0, -9.8, 0.0));
 
     for (centre, shape) in volume.colliders() {
-        world.push_body(RigidBody::fixed(centre, shape, 1.0, &EuclideanR3).unwrap());
+        world.push_body(BodyDef::fixed(centre, shape, 1.0, &EuclideanR3).unwrap());
     }
     let sphere = world.push_body(
         sphere_body_r3(

@@ -182,7 +182,9 @@ pub const RESTITUTION_THRESHOLD: f32 = 1.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body::BodyDef;
     use crate::collider::Collider;
+    use crate::geometry::GeometryStore;
     use glam::Vec2;
     use loam_math::{Bivector, Bivector2, EuclideanR2};
 
@@ -198,7 +200,7 @@ mod tests {
     }
 
     fn body(position: Vec2) -> RigidBody<EuclideanR2> {
-        RigidBody::new(
+        BodyDef::new(
             position,
             Vec2::ZERO,
             Collider::sphere_at_origin(1.0),
@@ -207,6 +209,7 @@ mod tests {
             &SPACE,
         )
         .unwrap()
+        .into_row(&mut GeometryStore::default(), &SPACE)
     }
 
     fn resting_pair() -> (RigidBody<EuclideanR2>, RigidBody<EuclideanR2>) {

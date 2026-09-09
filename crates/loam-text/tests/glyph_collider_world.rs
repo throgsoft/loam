@@ -7,7 +7,7 @@ use glam::{Vec2, Vec4};
 
 use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
-use loam_physics::{BodyId, RigidBody, World};
+use loam_physics::{BodyDef, BodyId, World};
 use loam_shape::Visualizable;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 
@@ -29,7 +29,7 @@ fn word_world(letters: &[GlyphSolid]) -> World<EuclideanR4> {
     world.gravity = Some(Vec4::new(0.0, 0.0, -9.8, 0.0));
     for letter in letters {
         for (centre, hull) in letter.colliders_4d() {
-            world.push_body(RigidBody::fixed(centre, hull, 1.0, &EuclideanR4).unwrap());
+            world.push_body(BodyDef::fixed(centre, hull, 1.0, &EuclideanR4).unwrap());
         }
     }
     world

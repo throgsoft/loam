@@ -2,11 +2,17 @@ use std::collections::HashMap;
 
 use crate::body::RigidBody;
 use crate::collider::ColliderKind;
+use crate::geometry::GeometryStore;
 use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
 
 /// Always called with `a.kind()` matching the key's first component.
-pub type NarrowphaseFn<S> = fn(a: &RigidBody<S>, b: &RigidBody<S>, space: &S) -> Option<Contact<S>>;
+pub type NarrowphaseFn<S> = fn(
+    a: &RigidBody<S>,
+    b: &RigidBody<S>,
+    geometry: &GeometryStore,
+    space: &S,
+) -> Option<Contact<S>>;
 
 pub struct Narrowphase<S: PhysicsSpace> {
     dispatch: HashMap<(ColliderKind, ColliderKind), NarrowphaseFn<S>>,
@@ -37,17 +43,23 @@ impl<S: PhysicsSpace> Narrowphase<S> {
         &self.order
     }
 
-    pub fn test(&self, a: &RigidBody<S>, b: &RigidBody<S>, space: &S) -> Option<Contact<S>>
+    pub fn test(
+        &self,
+        a: &RigidBody<S>,
+        b: &RigidBody<S>,
+        geometry: &GeometryStore,
+        space: &S,
+    ) -> Option<Contact<S>>
     where
         S::Vector: std::ops::Mul<f32, Output = S::Vector>,
     {
         let key = (a.collider().kind(), b.collider().kind());
         if let Some(&f) = self.dispatch.get(&key) {
-            return f(a, b, space);
+            return f(a, b, geometry, space);
         }
         let reversed = (b.collider().kind(), a.collider().kind());
         if let Some(&f) = self.dispatch.get(&reversed) {
-            return f(b, a, space).map(|c| Contact {
+            return f(b, a, geometry, space).map(|c| Contact {
                 normal: c.normal * -1.0,
                 point: c.point,
                 penetration: c.penetration,

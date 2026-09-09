@@ -4,10 +4,12 @@ use std::ops::{Add, Mul};
 use loam_math::{EuclideanR2, EuclideanR3, EuclideanR4};
 use loam_time::StateHash;
 
-use crate::body::{BodyArena, BodyId, RigidBody};
+use crate::body::{BodyArena, BodyDef, BodyId, RigidBody};
 use crate::collider::Collider;
 use crate::collision::VectorOps;
 use crate::dirty::{DirtyBodies, DirtyDrain};
+use crate::edit::EditError;
+use crate::geometry::GeometryStore;
 use crate::integrator::{integrate_body, PhysicsSpace};
 use crate::manifold::{
     ContactPoint, Manifold, BAUMGARTE_BETA, DEFAULT_PGS_ITERS, MAX_LINEAR_CORRECTION,
@@ -58,7 +60,10 @@ struct RadialInterval {
     mask: u32,
 }
 
-fn bounding_radius(collider: &Collider) -> f32 {
+fn bounding_radius(collider: Option<&Collider>) -> f32 {
+    let Some(collider) = collider else {
+        return 0.0;
+    };
     match collider {
         Collider::Sphere { radius, .. } | Collider::HyperSphere4D { radius, .. } => *radius,
         Collider::Box3 { half_extents } => half_extents.length(),
@@ -90,6 +95,7 @@ pub struct World<S: PhysicsSpace> {
     pub bodies: BodyArena<S>,
     pub gravity: Option<S::Vector>,
     pub narrowphase: Narrowphase<S>,
+    geometry: GeometryStore,
     /// PGS convergence depends on constraint order.
     pub manifolds: BTreeMap<PairKey, Manifold<S>>,
     pub pgs_iters: usize,
@@ -106,9 +112,13 @@ pub struct World<S: PhysicsSpace> {
 
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
+    const fn assert_no_allocation<T: Copy>() {}
     assert_send_sync::<World<EuclideanR2>>();
     assert_send_sync::<World<EuclideanR3>>();
     assert_send_sync::<World<EuclideanR4>>();
+    assert_no_allocation::<RigidBody<EuclideanR2>>();
+    assert_no_allocation::<RigidBody<EuclideanR3>>();
+    assert_no_allocation::<RigidBody<EuclideanR4>>();
 };
 
 impl<S: PhysicsSpace> World<S> {
@@ -118,6 +128,7 @@ impl<S: PhysicsSpace> World<S> {
             bodies: BodyArena::new(),
             gravity: None,
             narrowphase: Narrowphase::new(),
+            geometry: GeometryStore::default(),
             manifolds: BTreeMap::new(),
             pgs_iters: DEFAULT_PGS_ITERS,
             time: 0.0,
@@ -132,31 +143,47 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    pub fn push_body(&mut self, body: RigidBody<S>) -> BodyId {
-        let id = self.bodies.spawn(body);
+    pub fn push_body(&mut self, body: BodyDef<S>) -> BodyId {
+        let row = body.into_row(&mut self.geometry, &self.space);
+        let id = self.bodies.spawn(row);
         self.dirty.mark(id);
         id
     }
 
-    /// Also removes every manifold the body takes part in.
-    pub fn despawn_body(&mut self, id: BodyId) -> bool {
-        if self.bodies.despawn(id).is_none() {
-            return false;
-        }
-        self.drop_contacts_of(id);
-        self.dirty.forget(id);
-        true
+    pub fn geometry(&self) -> &GeometryStore {
+        &self.geometry
     }
 
-    pub fn set_pose(&mut self, id: BodyId, position: S::Point, orientation: S::Iso) -> bool {
-        let Some(body) = self.bodies.get(id) else {
-            return false;
+    pub fn reclaim_geometry(&mut self) -> Option<Collider> {
+        self.geometry.take_released()
+    }
+
+    pub fn collider(&self, body: &RigidBody<S>) -> Option<&Collider> {
+        self.geometry.get(body.collider())
+    }
+
+    /// Also removes every manifold the body takes part in.
+    pub fn despawn_body(&mut self, id: BodyId) -> Result<(), EditError> {
+        let Some(removed) = self.bodies.despawn(id) else {
+            return Err(EditError::StaleHandle);
         };
-        if !self
-            .space
-            .valid_initial_state(position, body.velocity, body.inertia)
-        {
-            return false;
+        self.geometry.release(removed.collider());
+        self.drop_contacts_of(id);
+        self.dirty.forget(id);
+        Ok(())
+    }
+
+    pub fn set_pose(
+        &mut self,
+        id: BodyId,
+        position: S::Point,
+        orientation: S::Iso,
+    ) -> Result<(), EditError> {
+        if self.bodies.get(id).is_none() {
+            return Err(EditError::StaleHandle);
+        }
+        if !self.space.valid_point(position) {
+            return Err(EditError::NotFinite);
         }
         let body = &mut self.bodies[id];
         body.position = position;
@@ -164,7 +191,7 @@ impl<S: PhysicsSpace> World<S> {
         body.wake();
         self.drop_contacts_of(id);
         self.dirty.mark(id);
-        true
+        Ok(())
     }
 
     pub fn set_velocity(
@@ -172,78 +199,76 @@ impl<S: PhysicsSpace> World<S> {
         id: BodyId,
         velocity: S::Vector,
         angular_velocity: S::AngVel,
-    ) -> bool {
-        let Some(body) = self.bodies.get(id) else {
-            return false;
-        };
-        if !self
-            .space
-            .valid_initial_state(body.position, velocity, body.inertia)
-        {
-            return false;
+    ) -> Result<(), EditError> {
+        if self.bodies.get(id).is_none() {
+            return Err(EditError::StaleHandle);
+        }
+        if !self.space.valid_vector(velocity) {
+            return Err(EditError::NotFinite);
         }
         let body = &mut self.bodies[id];
         body.velocity = velocity;
         body.angular_velocity = angular_velocity;
         body.wake();
         self.dirty.mark(id);
-        true
+        Ok(())
     }
 
-    pub fn set_mass_properties(&mut self, id: BodyId, mass: f32, inertia: S::Inertia) -> bool {
-        let Some(body) = self.bodies.get(id) else {
-            return false;
-        };
-        if !self
-            .space
-            .valid_initial_state(body.position, body.velocity, inertia)
-        {
-            return false;
+    pub fn set_mass_properties(
+        &mut self,
+        id: BodyId,
+        mass: f32,
+        inertia: S::Inertia,
+    ) -> Result<(), EditError> {
+        if self.bodies.get(id).is_none() {
+            return Err(EditError::StaleHandle);
         }
-        if !self.bodies[id].set_mass_properties(mass, inertia) {
-            return false;
+        if !self.space.valid_inertia(inertia) {
+            return Err(EditError::InvalidInertia);
         }
+        self.bodies[id].set_mass_properties(mass, inertia)?;
         self.drop_contacts_of(id);
         self.dirty.mark(id);
-        true
+        Ok(())
     }
 
-    pub fn set_collider(&mut self, id: BodyId, collider: Collider, inertia: S::Inertia) -> bool {
-        let Some(body) = self.bodies.get(id) else {
-            return false;
-        };
-        if !self
-            .space
-            .valid_initial_state(body.position, body.velocity, inertia)
-        {
-            return false;
+    pub fn set_collider(
+        &mut self,
+        id: BodyId,
+        collider: Collider,
+        inertia: S::Inertia,
+    ) -> Result<(), EditError> {
+        if self.bodies.get(id).is_none() {
+            return Err(EditError::StaleHandle);
         }
-        let space = &self.space;
-        let body = &mut self.bodies[id];
-        if !body.replace_collider(space, collider, inertia) {
-            return false;
+        if !self.space.valid_inertia(inertia) {
+            return Err(EditError::InvalidInertia);
         }
+        let Self {
+            space,
+            bodies,
+            geometry,
+            ..
+        } = self;
+        bodies[id].replace_collider(geometry, space, collider, inertia)?;
         self.drop_contacts_of(id);
         self.dirty.mark(id);
-        true
+        Ok(())
     }
 
-    pub fn apply_impulse(&mut self, id: BodyId, impulse: S::Vector) -> bool
+    pub fn apply_impulse(&mut self, id: BodyId, impulse: S::Vector) -> Result<(), EditError>
     where
         S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
     {
-        let Some(body) = self.bodies.get(id) else {
-            return false;
-        };
-        if !self
-            .space
-            .valid_initial_state(body.position, impulse, body.inertia)
-        {
-            return false;
+        if self.bodies.get(id).is_none() {
+            return Err(EditError::StaleHandle);
+        }
+        if !self.space.valid_vector(impulse) {
+            return Err(EditError::NotFinite);
         }
         self.bodies[id].apply_impulse(impulse);
         self.dirty.mark(id);
-        true
+        Ok(())
     }
 
     pub fn apply_impulse_at_point(
@@ -251,45 +276,41 @@ impl<S: PhysicsSpace> World<S> {
         id: BodyId,
         impulse: S::Vector,
         point: S::Point,
-    ) -> bool
+    ) -> Result<(), EditError>
     where
         S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
     {
-        let Some(body) = self.bodies.get(id) else {
-            return false;
-        };
-        if !self
-            .space
-            .valid_initial_state(body.position, impulse, body.inertia)
-            || !self.space.valid_initial_state(point, impulse, body.inertia)
-        {
-            return false;
+        if self.bodies.get(id).is_none() {
+            return Err(EditError::StaleHandle);
+        }
+        if !self.space.valid_vector(impulse) || !self.space.valid_point(point) {
+            return Err(EditError::NotFinite);
         }
         let space = &self.space;
         self.bodies[id].apply_impulse_at_point(space, impulse, point);
         self.dirty.mark(id);
-        true
+        Ok(())
     }
 
-    pub fn sleep_body(&mut self, id: BodyId) -> bool
+    pub fn sleep_body(&mut self, id: BodyId) -> Result<(), EditError>
     where
         S::Vector: Default,
     {
         let Some(body) = self.bodies.get_mut(id) else {
-            return false;
+            return Err(EditError::StaleHandle);
         };
         body.sleep();
         self.dirty.mark(id);
-        true
+        Ok(())
     }
 
-    pub fn wake_body(&mut self, id: BodyId) -> bool {
+    pub fn wake_body(&mut self, id: BodyId) -> Result<(), EditError> {
         let Some(body) = self.bodies.get_mut(id) else {
-            return false;
+            return Err(EditError::StaleHandle);
         };
         body.wake();
         self.dirty.mark(id);
-        true
+        Ok(())
     }
 
     fn drop_contacts_of(&mut self, id: BodyId) {
@@ -304,6 +325,7 @@ impl<S: PhysicsSpace> World<S> {
     pub fn snapshot(&self) -> WorldState<S> {
         WorldState {
             bodies: self.bodies.clone(),
+            geometry: self.geometry.clone(),
             manifolds: self.manifolds.clone(),
             dirty: self.dirty.recorded().to_vec(),
             time: self.time,
@@ -311,11 +333,12 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    pub fn restore(&mut self, state: &WorldState<S>) -> bool {
+    pub fn restore(&mut self, state: &WorldState<S>) -> Result<(), EditError> {
         if self.narrowphase.registrations() != state.registrations {
-            return false;
+            return Err(EditError::RegistrationMismatch);
         }
         self.bodies = state.bodies.clone();
+        self.geometry = state.geometry.clone();
         self.manifolds = state.manifolds.clone();
         self.time = state.time;
         self.dirty.reset(&state.dirty);
@@ -326,7 +349,7 @@ impl<S: PhysicsSpace> World<S> {
         self.broadphase_active.clear();
         self.island_parent.clear();
         self.island_labels.clear();
-        true
+        Ok(())
     }
 
     /// `dt` is in seconds.
@@ -382,6 +405,7 @@ impl<S: PhysicsSpace> World<S> {
         let mut pairs = std::mem::take(&mut self.pair_order);
         Self::fill_broadphase(
             &self.bodies,
+            &self.geometry,
             &self.space,
             &mut self.broadphase_intervals,
             &mut self.broadphase_active,
@@ -397,7 +421,7 @@ impl<S: PhysicsSpace> World<S> {
             if let Some(manifold) = self.manifolds.get_mut(&key) {
                 manifold.refresh(&self.space, a, b);
             }
-            let Some(contact) = self.narrowphase.test(a, b, &self.space) else {
+            let Some(contact) = self.narrowphase.test(a, b, &self.geometry, &self.space) else {
                 continue;
             };
             touched.push(key);
@@ -532,6 +556,7 @@ impl<S: PhysicsSpace> World<S> {
         let mut pairs = Vec::new();
         Self::fill_broadphase(
             &self.bodies,
+            &self.geometry,
             &self.space,
             &mut Vec::new(),
             &mut Vec::new(),
@@ -544,6 +569,7 @@ impl<S: PhysicsSpace> World<S> {
     pub fn broadphase_into(&mut self, pairs: &mut Vec<PairKey>) {
         Self::fill_broadphase(
             &self.bodies,
+            &self.geometry,
             &self.space,
             &mut self.broadphase_intervals,
             &mut self.broadphase_active,
@@ -554,6 +580,7 @@ impl<S: PhysicsSpace> World<S> {
     // Cohen, Lin, Manocha, Ponamgi, I-COLLIDE, 1995, sec. 3; sweep radial distances.
     fn fill_broadphase(
         bodies: &BodyArena<S>,
+        geometry: &GeometryStore,
         space: &S,
         intervals: &mut Vec<RadialInterval>,
         active: &mut Vec<u32>,
@@ -578,7 +605,7 @@ impl<S: PhysicsSpace> World<S> {
 
         for dense in 0..n {
             let body = &bodies[dense];
-            let radius = bounding_radius(body.collider());
+            let radius = bounding_radius(geometry.get(body.collider()));
             let d = space.distance(origin, body.position);
             let slack = d * BROADPHASE_TRIANGLE_SLACK;
             intervals.push(RadialInterval {
@@ -1006,7 +1033,7 @@ mod tests {
         let doomed = compacted.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 9.0, 4.0).unwrap());
         compacted.push_body(body(1));
         compacted.push_body(body(2));
-        assert!(compacted.despawn_body(doomed));
+        assert!(compacted.despawn_body(doomed).is_ok());
 
         let dense_order = |world: &World<EuclideanR3>| {
             world
@@ -1091,7 +1118,7 @@ mod tests {
 
         const FLOOR_HALF: Vec2 = Vec2::new(50.0, 1.0);
 
-        fn floor_r2() -> RigidBody<EuclideanR2> {
+        fn floor_r2() -> BodyDef<EuclideanR2> {
             static_wall(Vec2::new(0.0, -FLOOR_HALF.y), FLOOR_HALF).unwrap()
         }
 
@@ -1485,8 +1512,13 @@ mod tests {
         use loam_math::EuclideanR2;
 
         for slip in [0.0, 1.0] {
-            let mut a = sphere_body(Vec2::ZERO, Vec2::ZERO, 1.0, 0.0).unwrap();
-            let mut b = sphere_body(Vec2::ZERO, Vec2::new(slip, 2.0), 1.0, 1.0).unwrap();
+            let mut geometry = crate::geometry::GeometryStore::default();
+            let mut a = sphere_body(Vec2::ZERO, Vec2::ZERO, 1.0, 0.0)
+                .unwrap()
+                .into_row(&mut geometry, &EuclideanR2);
+            let mut b = sphere_body(Vec2::ZERO, Vec2::new(slip, 2.0), 1.0, 1.0)
+                .unwrap()
+                .into_row(&mut geometry, &EuclideanR2);
             let previous_friction = 2.0 * FRICTION_COEFF;
             let mut contact = ContactPoint {
                 world_point: Vec2::ZERO,
@@ -1528,7 +1560,7 @@ mod tests {
         (world, floor, spheres)
     }
 
-    fn island_sphere(x: f32) -> RigidBody<EuclideanR3> {
+    fn island_sphere(x: f32) -> BodyDef<EuclideanR3> {
         sphere_body_r3(
             Vec3::new(x, SPHERE_RADIUS, 0.0),
             Vec3::ZERO,
@@ -1584,7 +1616,7 @@ mod tests {
         );
         let keeper_position_before = world.bodies.dense_index(keeper).unwrap();
 
-        assert!(world.despawn_body(doomed));
+        assert!(world.despawn_body(doomed).is_ok());
 
         assert_ne!(
             world.bodies.dense_index(keeper).unwrap(),
@@ -1666,9 +1698,10 @@ mod tests {
         let doomed = spheres[1];
         assert!(world.manifolds.contains_key(&(floor, doomed)));
 
-        assert!(world.despawn_body(doomed));
-        assert!(
-            !world.despawn_body(doomed),
+        assert!(world.despawn_body(doomed).is_ok());
+        assert_eq!(
+            world.despawn_body(doomed),
+            Err(EditError::StaleHandle),
             "a stale handle despawned a second body"
         );
         assert!(world.bodies.get(doomed).is_none());
@@ -1709,23 +1742,43 @@ mod tests {
         let inv_mass = world.bodies[id].inv_mass();
         let inertia = world.bodies[id].inertia;
         let orientation = world.bodies[id].orientation;
+        let stale = BodyId::forge(u32::MAX, 0);
         let impulses = normal_impulses(&world, key);
         assert!(
             impulses.iter().any(|&jn| jn > 0.0),
             "the fixture carries no warm start, so a preserved contact proves nothing"
         );
 
-        assert!(!world.set_mass_properties(id, f32::NAN, 1.0));
-        assert!(!world.set_mass_properties(id, 3.0, f32::NAN));
-        assert!(!world.set_collider(
-            id,
-            Collider::Box3 {
-                half_extents: Vec3::ONE
-            },
-            2.0
-        ));
-        assert!(!world.set_collider(id, Collider::sphere_at_origin(0.5), f32::INFINITY));
-        assert!(!world.set_pose(id, Vec3::splat(f32::NAN), orientation));
+        assert_eq!(
+            world.set_mass_properties(id, f32::NAN, 1.0),
+            Err(EditError::InvalidMass)
+        );
+        assert_eq!(
+            world.set_mass_properties(id, 3.0, f32::NAN),
+            Err(EditError::InvalidInertia)
+        );
+        assert_eq!(
+            world.set_collider(
+                id,
+                Collider::Box3 {
+                    half_extents: Vec3::ONE
+                },
+                2.0
+            ),
+            Err(EditError::UnsupportedCollider)
+        );
+        assert_eq!(
+            world.set_collider(id, Collider::sphere_at_origin(0.5), f32::INFINITY),
+            Err(EditError::InvalidInertia)
+        );
+        assert_eq!(
+            world.set_pose(id, Vec3::splat(f32::NAN), orientation),
+            Err(EditError::NotFinite)
+        );
+        assert_eq!(
+            world.set_velocity(stale, Vec3::ZERO, Bivector3::ZERO),
+            Err(EditError::StaleHandle)
+        );
 
         assert_eq!(body_state(&world, id), before);
         assert_eq!(world.bodies[id].mass(), mass);
@@ -1757,7 +1810,9 @@ mod tests {
             );
         }
 
-        assert!(world.apply_impulse(spheres[0], Vec3::new(0.0, 20.0, 0.0)));
+        assert!(world
+            .apply_impulse(spheres[0], Vec3::new(0.0, 20.0, 0.0))
+            .is_ok());
         for _ in 0..30 {
             world.step(EDIT_DT);
         }
@@ -1766,7 +1821,7 @@ mod tests {
             "the launched sphere kept its contact, so the restore has nothing to undo"
         );
 
-        assert!(world.restore(&state));
+        assert!(world.restore(&state).is_ok());
         assert_eq!(normal_impulses(&world, key), settled);
         assert_eq!(world.time, state.time);
     }
@@ -1775,7 +1830,7 @@ mod tests {
     fn a_teleported_sleeping_body_publishes_its_pose_change() {
         let (mut world, _, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
         let id = spheres[0];
-        assert!(world.sleep_body(id));
+        assert!(world.sleep_body(id).is_ok());
         assert!(world.drain_dirty().count() > 0);
 
         world.step(EDIT_DT);
@@ -1786,7 +1841,7 @@ mod tests {
 
         let orientation = world.bodies[id].orientation;
         let elsewhere = Vec3::new(40.0, 9.0, 0.0);
-        assert!(world.set_pose(id, elsewhere, orientation));
+        assert!(world.set_pose(id, elsewhere, orientation).is_ok());
         assert!(
             world.drain_dirty().any(|dirty| dirty == id),
             "the teleport never reached the dirty set"
@@ -1801,8 +1856,9 @@ mod tests {
         let state = world.snapshot();
 
         let mut unregistered = World::new(EuclideanR3);
-        assert!(
-            !unregistered.restore(&state),
+        assert_eq!(
+            unregistered.restore(&state),
+            Err(EditError::RegistrationMismatch),
             "restore accepted a world whose dispatch table cannot serve the snapshot"
         );
         assert_eq!(unregistered.bodies.len(), 0);
@@ -1810,7 +1866,7 @@ mod tests {
         let mut rebuilt = World::new(EuclideanR3);
         register_default_narrowphase(&mut rebuilt.narrowphase);
         rebuilt.gravity = world.gravity;
-        assert!(rebuilt.restore(&state));
+        assert!(rebuilt.restore(&state).is_ok());
 
         assert_eq!(
             rebuilt.state_hash(sample_body_r3),
@@ -1841,16 +1897,16 @@ mod tests {
             "the two shapes share an inertia, so the swap cannot be seen"
         );
 
-        assert!(world.set_collider(id, Collider::sphere_at_origin(0.25), replacement));
+        assert!(world
+            .set_collider(id, Collider::sphere_at_origin(0.25), replacement)
+            .is_ok());
         assert!(matches!(
-            world.bodies[id].collider(),
-            Collider::Sphere { .. }
+            world.collider(&world.bodies[id]),
+            Some(Collider::Sphere { .. })
         ));
-        assert!(world.apply_impulse_at_point(
-            id,
-            Vec3::new(3.0, 0.0, 0.0),
-            Vec3::new(0.0, 2.0, 0.0)
-        ));
+        assert!(world
+            .apply_impulse_at_point(id, Vec3::new(3.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0))
+            .is_ok());
 
         assert_eq!(world.bodies[id].velocity, Vec3::new(1.5, 0.0, 0.0));
         assert_eq!(
@@ -1864,9 +1920,11 @@ mod tests {
         let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
         let doomed = spheres[1];
         assert!(world.manifolds.contains_key(&(floor, doomed)));
-        assert!(world.set_velocity(doomed, Vec3::new(0.0, 3.0, 0.0), Bivector3::ZERO));
+        assert!(world
+            .set_velocity(doomed, Vec3::new(0.0, 3.0, 0.0), Bivector3::ZERO)
+            .is_ok());
 
-        assert!(world.despawn_body(doomed));
+        assert!(world.despawn_body(doomed).is_ok());
 
         assert!(
             !world
@@ -1899,6 +1957,45 @@ mod tests {
     }
 
     #[test]
+    fn bodies_that_share_a_hull_hold_one_copy_of_its_vertices() {
+        use crate::euclidean_r4::{polytope_body_r4, tesseract_vertices};
+        use glam::Vec4;
+        use loam_math::EuclideanR4;
+
+        let hull = tesseract_vertices(1.0);
+        let mut world = World::new(EuclideanR4);
+        let a =
+            world.push_body(polytope_body_r4(Vec4::ZERO, Vec4::ZERO, hull.clone(), 1.0).unwrap());
+        let b = world.push_body(polytope_body_r4(Vec4::X * 8.0, Vec4::ZERO, hull, 1.0).unwrap());
+
+        assert_eq!(world.bodies[a].collider(), world.bodies[b].collider());
+        assert_eq!(world.geometry().prepared(), 1);
+
+        let vertices = |id: BodyId| match world.collider(&world.bodies[id]) {
+            Some(Collider::ConvexPolytope4D { vertices }) => vertices.as_ptr(),
+            other => panic!("the hull is not prepared: {other:?}"),
+        };
+        assert_eq!(
+            vertices(a),
+            vertices(b),
+            "each body kept its own copy of the hull"
+        );
+
+        assert!(world.despawn_body(a).is_ok());
+        assert_eq!(
+            world.geometry().prepared(),
+            1,
+            "a shared hull was released while another body still used it"
+        );
+        assert!(world.despawn_body(b).is_ok());
+        assert_eq!(
+            world.geometry().prepared(),
+            0,
+            "the last body's hull outlived it"
+        );
+    }
+
+    #[test]
     fn dirty_publication_allocates_nothing_on_a_warmed_world() {
         let (mut world, _, spheres) = settled_islands(EDIT_DT, 4);
         for _ in 0..2 {
@@ -1909,7 +2006,7 @@ mod tests {
         let bytes = alloc_probe::bytes_allocated_by(|| {
             for _ in 0..16 {
                 for &id in &spheres {
-                    assert!(world.wake_body(id));
+                    assert!(world.wake_body(id).is_ok());
                 }
                 assert_eq!(world.drain_dirty().count(), spheres.len());
             }
@@ -1984,7 +2081,7 @@ mod tests {
             world.manifolds.contains_key(&key),
             "the two dynamic bodies never settled into contact"
         );
-        assert!(world.despawn_body(doomed));
+        assert!(world.despawn_body(doomed).is_ok());
 
         let (i, j) = world.dense_pair(key);
         assert_eq!(
@@ -2101,7 +2198,7 @@ mod tests {
             spawned.push(id);
         }
         for doomed in spawned.iter().step_by(5) {
-            assert!(world.despawn_body(*doomed));
+            assert!(world.despawn_body(*doomed).is_ok());
         }
         world
     }
@@ -2115,7 +2212,7 @@ mod tests {
                 if a.inv_mass() == 0.0 && b.inv_mass() == 0.0 {
                     continue;
                 }
-                let reach = bounding_radius(a.collider()) + bounding_radius(b.collider());
+                let reach = bounding_radius(world.collider(a)) + bounding_radius(world.collider(b));
                 if world.space.distance(a.position, b.position) <= reach {
                     pairs.push(canonical_pair(world.bodies.id_at(i), world.bodies.id_at(j)));
                 }
@@ -2176,6 +2273,7 @@ mod tests {
                         let contact = world.narrowphase.test(
                             &world.bodies[i],
                             &world.bodies[j],
+                            world.geometry(),
                             &world.space,
                         );
                         assert!(
@@ -2242,6 +2340,7 @@ mod tests {
         for _ in 0..2 {
             World::fill_broadphase(
                 &world.bodies,
+                world.geometry(),
                 &world.space,
                 &mut intervals,
                 &mut active,
@@ -2254,6 +2353,7 @@ mod tests {
             for _ in 0..16 {
                 World::fill_broadphase(
                     &world.bodies,
+                    world.geometry(),
                     &world.space,
                     &mut intervals,
                     &mut active,
@@ -2312,9 +2412,9 @@ mod tests {
     fn bounding_radius_contains_every_posed_vertex_of_its_collider() {
         let half_extents = Vec3::new(0.5, 1.25, 0.25);
         let vertices = crate::euclidean_r3::box_vertices(half_extents);
-        let radius = bounding_radius(&Collider::ConvexPolytope3D {
+        let radius = bounding_radius(Some(&Collider::ConvexPolytope3D {
             vertices: vertices.clone(),
-        });
+        }));
         assert_eq!(radius, half_extents.length());
 
         let rotation = glam::Quat::from_axis_angle(Vec3::new(1.0, 2.0, 3.0).normalize(), 0.7);
@@ -2326,12 +2426,15 @@ mod tests {
             );
         }
 
-        assert_eq!(bounding_radius(&Collider::sphere_at_origin(0.75)), 0.75);
         assert_eq!(
-            bounding_radius(&Collider::HalfSpace {
+            bounding_radius(Some(&Collider::sphere_at_origin(0.75))),
+            0.75
+        );
+        assert_eq!(
+            bounding_radius(Some(&Collider::HalfSpace {
                 normal: Vec3::Y,
                 offset: 0.0
-            }),
+            })),
             f32::INFINITY,
             "a half-space is unbounded and must never be culled"
         );
@@ -2378,7 +2481,7 @@ mod tests {
         }
 
         for column in columns.iter().take(2) {
-            assert!(world.despawn_body(column[0]));
+            assert!(world.despawn_body(column[0]).is_ok());
         }
         for _ in 0..ISLAND_SETTLE_STEPS {
             world.step(1.0 / 240.0);
@@ -2432,7 +2535,8 @@ mod tests {
                 .bodies
                 .iter()
                 .position(|body| {
-                    body.inv_mass() == 0.0 && matches!(body.collider(), Collider::Sphere { .. })
+                    body.inv_mass() == 0.0
+                        && matches!(world.collider(body), Some(Collider::Sphere { .. }))
                 })
                 .map(|dense| world.bodies.id_at(dense))
                 .expect("the fixture lost its static sphere");
@@ -2652,7 +2756,7 @@ mod tests {
             let mut world = World::new(EuclideanR4);
             crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
             world.push_body(
-                RigidBody::fixed(
+                BodyDef::fixed(
                     Vec4::ZERO,
                     Collider::ConvexPolytope4D {
                         vertices: tesseract_vertices(2.0)
