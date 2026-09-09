@@ -26,11 +26,11 @@ pub struct SkyGroundPass {
 }
 
 impl SkyGroundPass {
-    pub fn new(format: TextureFormat, sample_count: u32, ground: Ground) -> Self {
+    pub fn new(ground: Ground) -> Self {
         Self {
             shared: Rc::new(RefCell::new(State {
-                format,
-                sample_count,
+                format: TextureFormat::Rgba8UnormSrgb,
+                sample_count: 1,
                 eye: Eye::default(),
                 ground,
                 node: None,
@@ -57,6 +57,12 @@ impl FramePass for SkyGroundPass {
 
     fn depth_convention(&self) -> Option<DepthConvention> {
         Some(DepthConvention::ReversedZ)
+    }
+
+    fn target(&mut self, format: TextureFormat, sample_count: u32) {
+        let mut state = self.shared.borrow_mut();
+        state.format = format;
+        state.sample_count = sample_count;
     }
 
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {

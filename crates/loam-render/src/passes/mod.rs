@@ -100,10 +100,10 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     fn wrappers() -> Vec<Box<dyn FramePass>> {
-        let sky = SkyGroundPass::new(FORMAT, 1, ground());
-        let hyperslice = HyperslicePass::new(kernel(), FORMAT, 1);
-        let line = LinePass::new("edges", FORMAT, 1);
-        let point = PointPass::new("vertices", FORMAT, 1);
+        let sky = SkyGroundPass::new(ground());
+        let hyperslice = HyperslicePass::new(kernel());
+        let line = LinePass::new("edges");
+        let point = PointPass::new("vertices");
         sky.publish(&Eye::default(), ground());
         hyperslice.publish(
             Hyperslice4DUniforms::default(),
@@ -111,12 +111,16 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         );
         line.publish(&Eye::default(), &[SegmentRecord::default()]);
         point.publish(&Eye::default(), &[PointRecord::default()]);
-        vec![
+        let mut passes: Vec<Box<dyn FramePass>> = vec![
             Box::new(sky),
             Box::new(hyperslice),
             Box::new(line),
             Box::new(point),
-        ]
+        ];
+        for pass in passes.iter_mut() {
+            pass.target(FORMAT, 1);
+        }
+        passes
     }
 
     fn record_once(gpu: &GpuContext, schedule: &mut PassSchedule) {

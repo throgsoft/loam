@@ -24,12 +24,18 @@ pub struct FieldPass {
     shared: Rc<RefCell<State>>,
 }
 
+impl Default for FieldPass {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FieldPass {
-    pub fn new(format: TextureFormat, sample_count: u32) -> Self {
+    pub fn new() -> Self {
         Self {
             shared: Rc::new(RefCell::new(State {
-                format,
-                sample_count,
+                format: TextureFormat::Rgba8UnormSrgb,
+                sample_count: 1,
                 uniforms: FieldMarchUniforms::default(),
                 program: FieldProgram::default(),
                 node: None,
@@ -76,6 +82,12 @@ impl FramePass for FieldPass {
 
     fn order(&self) -> PassOrder {
         PassOrder::BeforeScene
+    }
+
+    fn target(&mut self, format: TextureFormat, sample_count: u32) {
+        let mut state = self.shared.borrow_mut();
+        state.format = format;
+        state.sample_count = sample_count;
     }
 
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {

@@ -42,7 +42,8 @@ impl Presenter {
         self.schedule.rebuild(gpu)
     }
 
-    pub fn register_pass(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {
+    pub fn register_pass(&mut self, mut pass: Box<dyn FramePass>) -> Result<(), PassError> {
+        pass.target(self.format, self.sample_count);
         self.schedule.register(pass)
     }
 

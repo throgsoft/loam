@@ -32,12 +32,12 @@ pub struct LinePass {
 }
 
 impl LinePass {
-    pub fn new(name: &'static str, format: TextureFormat, sample_count: u32) -> Self {
+    pub fn new(name: &'static str) -> Self {
         Self {
             name,
             shared: Rc::new(RefCell::new(State {
-                format,
-                sample_count,
+                format: TextureFormat::Rgba8UnormSrgb,
+                sample_count: 1,
                 eye: Eye::default(),
                 segments: Vec::new(),
                 uploaded: false,
@@ -76,6 +76,12 @@ impl FramePass for LinePass {
 
     fn order(&self) -> PassOrder {
         PassOrder::AfterScene
+    }
+
+    fn target(&mut self, format: TextureFormat, sample_count: u32) {
+        let mut state = self.shared.borrow_mut();
+        state.format = format;
+        state.sample_count = sample_count;
     }
 
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {

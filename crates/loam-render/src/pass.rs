@@ -2,7 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use web_time::Instant;
-use wgpu::{CommandEncoder, TextureView};
+use wgpu::{CommandEncoder, TextureFormat, TextureView};
 
 use crate::device::{GpuContext, MissingGpuCapability};
 use crate::gpu_timer::SectionTimer;
@@ -44,6 +44,9 @@ pub trait FramePass {
     fn depth_convention(&self) -> Option<DepthConvention> {
         None
     }
+
+    /// Called at registration with the frame's colour attachment format and sample count, before the first [`Self::rebuild`].
+    fn target(&mut self, _format: TextureFormat, _sample_count: u32) {}
 
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>);
 

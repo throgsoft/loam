@@ -28,12 +28,12 @@ pub struct HyperslicePass {
 }
 
 impl HyperslicePass {
-    pub fn new(source: String, format: TextureFormat, sample_count: u32) -> Self {
+    pub fn new(source: String) -> Self {
         Self {
             shared: Rc::new(RefCell::new(State {
                 source,
-                format,
-                sample_count,
+                format: TextureFormat::Rgba8UnormSrgb,
+                sample_count: 1,
                 uniforms: Hyperslice4DUniforms::default(),
                 bodies: Vec::new(),
                 node: None,
@@ -70,6 +70,12 @@ impl FramePass for HyperslicePass {
 
     fn depth_convention(&self) -> Option<DepthConvention> {
         Some(DepthConvention::ReversedZ)
+    }
+
+    fn target(&mut self, format: TextureFormat, sample_count: u32) {
+        let mut state = self.shared.borrow_mut();
+        state.format = format;
+        state.sample_count = sample_count;
     }
 
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
