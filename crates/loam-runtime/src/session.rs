@@ -1,6 +1,6 @@
 use loam_shape::polytope::Polytope4Topology;
 
-use crate::command::{CommandResult, Commands, Dispatch};
+use crate::command::{Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request};
 use crate::domain::{
     DomainBuilder, DomainError, DomainHandle, DomainId, DomainSnapshot, DomainSpace, Domains,
 };
@@ -44,6 +44,14 @@ impl Default for SimConfig {
 pub struct Stamp {
     pub tick: Tick,
     pub sequence: u64,
+}
+
+/// What one boundary applied; the session grows its tables here and nowhere else.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Growth {
+    pub commands: usize,
+    pub spawned: usize,
+    pub despawned: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -154,11 +162,11 @@ pub const DOMAIN_STEP: &str = "domain step";
 /// A CPU value with no GPU or window object; `Send`, and it builds for wasm32.
 pub struct Session<A: Stores> {
     pub app: A,
-    entities: Entities,
     domains: Domains,
     views: Views,
     phases: Phases<A>,
     commands: Commands<A>,
+    batch: Vec<Request<A>>,
     results: Vec<CommandResult>,
     input: Input,
     prepared: Vec<PreparedGeometry>,
@@ -191,11 +199,11 @@ impl<A: Stores> Session<A> {
         );
         Self {
             app,
-            entities: Entities::new(scene),
             domains: Domains::new(scene.runtime),
             views: Views::new(),
             phases,
-            commands: Commands::new(),
+            commands: Commands::new(scene),
+            batch: Vec::new(),
             results: Vec::new(),
             input: Input::default(),
             prepared: Vec::new(),
@@ -211,7 +219,7 @@ impl<A: Stores> Session<A> {
     }
 
     pub fn scene(&self) -> SceneId {
-        self.entities.scene()
+        self.commands.entities().scene()
     }
 
     pub fn current_tick(&self) -> Tick {
@@ -245,7 +253,7 @@ impl<A: Stores> Session<A> {
     }
 
     pub fn entities(&self) -> &Entities {
-        &self.entities
+        self.commands.entities()
     }
 
     pub fn prepare(&mut self, geometry: PreparedGeometry) -> PreparedId {
@@ -313,14 +321,30 @@ impl<A: Stores> Session<A> {
             &mut self.app,
             &mut self.domains,
             &mut self.views,
-            &mut self.entities,
+            self.commands.entities_mut(),
         );
         f(&mut dispatch)
     }
 
-    /// Runs dispatch entries, commits deferred commands, and grows capacity; runs while paused.
-    pub fn boundary(&mut self, _input: Input) {
-        todo!()
+    /// Commits deferred commands, runs each dispatch entry and then its commands, and counts what grew; runs while paused.
+    pub fn boundary(&mut self, input: Input) -> Result<Growth, DomainError> {
+        self.input = input;
+        self.results.clear();
+        let mut growth = Growth::default();
+        self.commit(&mut growth);
+        let step = Step {
+            tick: self.tick,
+            dt: self.config.dt().unwrap_or(0.0),
+        };
+        for index in 0..self.phases.entries(Phase::Dispatch).len() {
+            self.run_entry(Phase::Dispatch, index, step)?;
+            self.commit(&mut growth);
+        }
+        self.app.boundary();
+        for domain in self.domains.iter_mut() {
+            domain.boundary();
+        }
+        Ok(growth)
     }
 
     /// One fixed step: the simulation phase's entries in their order, the domain step among them.
@@ -332,7 +356,9 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             dt,
         };
-        self.run_phase(Phase::Simulation, step)?;
+        for index in 0..self.phases.entries(Phase::Simulation).len() {
+            self.run_entry(Phase::Simulation, index, step)?;
+        }
         self.tick = Tick(self.tick.0 + 1);
         Ok(())
     }
@@ -372,7 +398,33 @@ impl<A: Stores> Session<A> {
         result
     }
 
-    fn run_phase(&mut self, phase: Phase, step: Step) -> Result<(), DomainError> {
+    fn commit(&mut self, growth: &mut Growth) {
+        let mut batch = std::mem::take(&mut self.batch);
+        self.commands.drain_into(&mut batch);
+        for request in batch.drain(..) {
+            let despawn = matches!(request.command, Command::Despawn(_));
+            let outcome = match request.command {
+                Command::Reset => self
+                    .reset()
+                    .map(|()| Outcome::Done)
+                    .map_err(Rejection::Restore),
+                command => self.dispatch(|dispatch| dispatch.apply(command)),
+            };
+            growth.commands += 1;
+            match outcome {
+                Ok(Outcome::Spawned(_)) => growth.spawned += 1,
+                Ok(Outcome::Done) if despawn => growth.despawned += 1,
+                _ => {}
+            }
+            self.results.push(CommandResult {
+                request: request.id,
+                outcome,
+            });
+        }
+        self.batch = batch;
+    }
+
+    fn run_entry(&mut self, phase: Phase, index: usize, step: Step) -> Result<(), DomainError> {
         let Session {
             app,
             domains,
@@ -383,19 +435,100 @@ impl<A: Stores> Session<A> {
             input,
             ..
         } = self;
-        for entry in phases.entries_mut(phase) {
-            if let Entry::System(system) = entry {
-                system.run(Ctx {
-                    app: &mut *app,
-                    domains: &mut *domains,
-                    views: &mut *views,
-                    commands: &mut *commands,
-                    results: results.as_slice(),
-                    input: &*input,
-                    step,
-                })?;
-            }
+        let Some(Entry::System(system)) = phases.entries_mut(phase).get_mut(index) else {
+            return Ok(());
+        };
+        system.run(Ctx {
+            app,
+            domains,
+            views,
+            commands,
+            results: results.as_slice(),
+            input,
+            step,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loam_math::{EuclideanR4, Iso4Flat};
+
+    use super::*;
+    use crate::command::SpawnBundle;
+    use crate::domain::Pose;
+    use crate::entity::Entity;
+    use crate::store::tests::alloc_probe::bytes_allocated_by;
+    use crate::store::LogCapacity;
+
+    crate::stores! {
+        #[derive(Default)]
+        pub struct Churn {
+            counters: Store<u32>,
+            pool: Value<Vec<Entity>>,
         }
-        Ok(())
+    }
+
+    #[test]
+    fn warmed_tick_and_boundary_allocate_nothing_outside_reported_growth() {
+        let mut session = Session::new(Churn::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let pool = session.dispatch(|d| {
+            (0..8)
+                .map(|value| {
+                    d.spawn(
+                        SpawnBundle::new()
+                            .at(r4, Pose(Iso4Flat::IDENTITY))
+                            .row(value),
+                    )
+                    .unwrap()
+                })
+                .collect()
+        });
+        session.app.pool.set(pool);
+        session.system(
+            Phase::Simulation,
+            "churn",
+            Access::new().writes::<u32>().commands(),
+            |ctx: Ctx<'_, Churn>| {
+                for (_, counter) in ctx.app.counters.iter_mut() {
+                    *counter += 1;
+                }
+                let pool = ctx.app.pool.get_mut();
+                let retired = pool.swap_remove(0);
+                ctx.commands.submit(Command::Despawn(retired));
+                let fresh = ctx.commands.spawn(SpawnBundle::new()).unwrap();
+                pool.push(fresh.entity);
+            },
+        );
+        let cycle = |session: &mut Session<Churn>| {
+            session.tick().unwrap();
+            session.boundary(Input::default()).unwrap()
+        };
+        for _ in 0..16 {
+            cycle(&mut session);
+        }
+
+        let bytes = bytes_allocated_by(|| {
+            for _ in 0..16 {
+                let growth = cycle(&mut session);
+                assert_eq!(
+                    growth,
+                    Growth {
+                        commands: 2,
+                        spawned: 1,
+                        despawned: 1,
+                    }
+                );
+            }
+            let quiet = session.boundary(Input::default()).unwrap();
+            assert_eq!(quiet, Growth::default());
+        });
+        assert_eq!(
+            bytes, 0,
+            "16 warmed cycles asked the allocator for {bytes} bytes"
+        );
+        assert_eq!(session.entities().len(), 8);
     }
 }

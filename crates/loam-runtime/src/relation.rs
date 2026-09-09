@@ -269,6 +269,18 @@ impl<T: Clone + Send + 'static> StoreField for Relation<T> {
     fn erased(&mut self) -> &mut dyn ErasedStore {
         self
     }
+
+    fn release(&mut self, entity: Entity) {
+        while let Some(id) = self
+            .outgoing(entity)
+            .next()
+            .or_else(|| self.incoming(entity).next())
+        {
+            if self.unlink(id).is_err() {
+                break;
+            }
+        }
+    }
 }
 
 impl<T: Send + 'static> ErasedStore for Relation<T> {

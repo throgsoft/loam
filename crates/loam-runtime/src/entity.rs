@@ -78,6 +78,7 @@ impl Entity {
 struct Slot {
     generation: u32,
     live: bool,
+    reserved: bool,
 }
 
 pub struct Entities {
@@ -110,19 +111,25 @@ impl Entities {
     }
 
     pub fn spawn(&mut self) -> Entity {
+        let entity = self.reserve();
+        self.commit(entity);
+        entity
+    }
+
+    pub(crate) fn reserve(&mut self) -> Entity {
         let slot = match self.free.pop() {
             Some(slot) => slot,
             None => {
                 self.slots.push(Slot {
                     generation: 0,
                     live: false,
+                    reserved: false,
                 });
                 (self.slots.len() - 1) as u32
             }
         };
         let entry = &mut self.slots[slot as usize];
-        entry.live = true;
-        self.live += 1;
+        entry.reserved = true;
         Entity::new(
             self.scene,
             EntityKey {
@@ -132,17 +139,49 @@ impl Entities {
         )
     }
 
+    pub(crate) fn commit(&mut self, entity: Entity) {
+        if let Some(slot) = self.reserved_index(entity) {
+            self.slots[slot].reserved = false;
+            self.slots[slot].live = true;
+            self.live += 1;
+        }
+    }
+
+    pub(crate) fn release(&mut self, entity: Entity) {
+        if let Some(slot) = self.reserved_index(entity) {
+            self.slots[slot].reserved = false;
+            self.retire(slot);
+        }
+    }
+
+    pub fn is_reserved(&self, entity: Entity) -> bool {
+        self.reserved_index(entity).is_some()
+    }
+
+    fn reserved_index(&self, entity: Entity) -> Option<usize> {
+        if entity.scene != self.scene {
+            return None;
+        }
+        let key = entity.key;
+        let slot = self.slots.get(key.slot as usize)?;
+        (slot.reserved && slot.generation == key.generation).then_some(key.slot as usize)
+    }
+
     /// A slot whose generation would wrap is retired instead of recycled.
     pub fn despawn(&mut self, entity: Entity) -> Result<EntityKey, Rejection> {
         let key = self.resolve(entity).ok_or(Rejection::Stale(entity))?;
-        let slot = &mut self.slots[key.slot as usize];
-        slot.live = false;
+        self.slots[key.slot as usize].live = false;
         self.live -= 1;
-        if let Some(next) = slot.generation.checked_add(1) {
-            slot.generation = next;
-            self.free.push(key.slot);
-        }
+        self.retire(key.slot as usize);
         Ok(key)
+    }
+
+    fn retire(&mut self, slot: usize) {
+        let entry = &mut self.slots[slot];
+        if let Some(next) = entry.generation.checked_add(1) {
+            entry.generation = next;
+            self.free.push(slot as u32);
+        }
     }
 
     pub fn resolve(&self, entity: Entity) -> Option<EntityKey> {
