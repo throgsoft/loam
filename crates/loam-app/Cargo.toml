@@ -26,7 +26,6 @@ gif = { version = "0.13", optional = true }
 color_quant = { version = "1.1", optional = true }
 png = { version = "0.17", optional = true }
 
-loam-camera = { path = "../loam-camera", version = "0.1.0" }
 loam-console = { path = "../loam-console", version = "0.1.0" }
 loam-input  = { path = "../loam-input",  version = "0.1.0" }
 loam-math   = { path = "../loam-math",   version = "0.1.0" }

@@ -12,13 +12,11 @@ categories = ["game-development", "gui"]
 
 [dependencies]
 anyhow.workspace = true
-glam.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 egui = "0.33"
 egui-wgpu = { version = "0.33", default-features = false, features = ["winit"] }
 
-loam-camera  = { path = "../loam-camera",  version = "0.1.0" }
 loam-console = { path = "../loam-console", version = "0.1.0" }
 loam-math    = { path = "../loam-math",    version = "0.1.0" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

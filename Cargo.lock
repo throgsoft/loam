@@ -1321,7 +1321,6 @@ name = "loam"
 version = "0.1.0"
 dependencies = [
  "loam-app",
- "loam-camera",
  "loam-input",
  "loam-math",
  "loam-physics",
@@ -1344,7 +1343,6 @@ dependencies = [
  "glam",
  "image",
  "js-sys",
- "loam-camera",
  "loam-console",
  "loam-egui",
  "loam-input",
@@ -1367,15 +1365,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "loam-camera"
-version = "0.1.0"
-dependencies = [
- "glam",
- "loam-input",
- "loam-math",
-]
-
-[[package]]
 name = "loam-console"
 version = "0.1.0"
 dependencies = [
@@ -1392,7 +1381,6 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "glam",
- "loam-camera",
  "loam-console",
  "loam-math",
  "wgpu",
