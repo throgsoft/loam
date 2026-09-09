@@ -1,0 +1,20 @@
+[package]
+name = "examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Loam example bins: tesseract, rubiks4d, twospace."
+publish = false
+
+[dependencies]
+glam.workspace = true
+
+loam-math    = { path = "../loam-math",    version = "0.1.0" }
+loam-runtime = { path = "../loam-runtime", version = "0.1.0" }
+loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
+
+[lints]
+workspace = true
