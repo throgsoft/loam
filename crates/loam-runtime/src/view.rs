@@ -26,11 +26,14 @@ impl ViewId {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ImageSpaceId(u32);
+pub struct ImageSpaceId {
+    slot: u32,
+    generation: u32,
+}
 
 impl ImageSpaceId {
     pub fn index(self) -> usize {
-        self.0 as usize
+        self.slot as usize
     }
 }
 
@@ -224,6 +227,7 @@ impl Placement {
 struct Placed {
     parent: ImageSpaceId,
     placement: Placement,
+    generation: u32,
     live: bool,
 }
 
@@ -249,7 +253,10 @@ impl Views {
     }
 
     pub fn root(&self) -> ImageSpaceId {
-        ImageSpaceId(0)
+        ImageSpaceId {
+            slot: 0,
+            generation: 0,
+        }
     }
 
     pub fn root_mut(&mut self) -> &mut ImageSpace {
@@ -257,11 +264,11 @@ impl Views {
     }
 
     pub fn get(&self, id: ImageSpaceId) -> Option<&ImageSpace> {
-        (id.0 == 0).then_some(&self.root)
+        (id.slot == 0).then_some(&self.root)
     }
 
     pub fn get_mut(&mut self, id: ImageSpaceId) -> Option<&mut ImageSpace> {
-        (id.0 == 0).then_some(&mut self.root)
+        (id.slot == 0).then_some(&mut self.root)
     }
 
     pub(crate) fn place(
@@ -270,35 +277,61 @@ impl Views {
         placement: Placement,
     ) -> Option<ImageSpaceId> {
         self.to_root(parent)?;
-        self.placed.push(Placed {
-            parent,
-            placement,
-            live: true,
-        });
-        Some(ImageSpaceId(self.placed.len() as u32))
+        let free = self
+            .placed
+            .iter()
+            .position(|placed| !placed.live && placed.generation != u32::MAX);
+        let (slot, generation) = match free {
+            Some(slot) => {
+                let placed = self.placed.get_mut(slot)?;
+                placed.generation += 1;
+                placed.parent = parent;
+                placed.placement = placement;
+                placed.live = true;
+                (slot, placed.generation)
+            }
+            None => {
+                self.placed.push(Placed {
+                    parent,
+                    placement,
+                    generation: 0,
+                    live: true,
+                });
+                (self.placed.len() - 1, 0)
+            }
+        };
+        Some(ImageSpaceId {
+            slot: (slot + 1) as u32,
+            generation,
+        })
     }
 
     pub(crate) fn unplace(&mut self, id: ImageSpaceId) {
-        if let Some(placed) = self.placed.get_mut(id.index().wrapping_sub(1)) {
+        if let Some(placed) = self.slot_mut(id) {
             placed.live = false;
         }
     }
 
     pub fn placed(&self, id: ImageSpaceId) -> bool {
-        self.placed
-            .get(id.index().wrapping_sub(1))
-            .is_some_and(|placed| placed.live)
+        self.slot_of(id).is_some()
+    }
+
+    fn slot_of(&self, id: ImageSpaceId) -> Option<&Placed> {
+        let placed = self.placed.get(id.index().checked_sub(1)?)?;
+        (placed.live && placed.generation == id.generation).then_some(placed)
+    }
+
+    fn slot_mut(&mut self, id: ImageSpaceId) -> Option<&mut Placed> {
+        let placed = self.placed.get_mut(id.index().checked_sub(1)?)?;
+        (placed.generation == id.generation).then_some(placed)
     }
 
     /// The composed placement from `image` into the root, `None` for a space that was never placed or has been unplaced.
     pub fn to_root(&self, image: ImageSpaceId) -> Option<Placement> {
         let mut composed = Placement::Rigid(Rigid::IDENTITY);
         let mut current = image;
-        while current.0 != 0 {
-            let placed = self
-                .placed
-                .get(current.index() - 1)
-                .filter(|placed| placed.live)?;
+        while current.slot != 0 {
+            let placed = self.slot_of(current)?;
             composed = placed.placement.compose(&composed);
             current = placed.parent;
         }

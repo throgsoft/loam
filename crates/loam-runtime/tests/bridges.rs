@@ -1,9 +1,9 @@
 use loam_math::{EuclideanR3, EuclideanR4, Iso3, Iso4Flat, Space};
 use loam_runtime::{
-    BridgeError, BridgeSpec, ChartId, ChartPose, DomainBuilder, DomainHandle, DomainSpace,
-    DragError, Entity, Eye, Field, FieldKind, FieldOp, ImageSpaceId, Input, Instance, LogCapacity,
-    Material, Placement, Pose, PreparedGeometry, Projection4, Rigid, Section4, Session, SimConfig,
-    SpawnBundle, ViewId, ViewMapping, ViewSpec,
+    Access, BridgeError, BridgeSpec, ChartId, ChartPose, Command, Ctx, DomainBuilder, DomainHandle,
+    DomainSpace, DragError, Entity, Eye, Field, FieldKind, FieldOp, ImageSpaceId, Input, Instance,
+    LogCapacity, Material, Phase, Placement, Pose, PreparedGeometry, Projection4, Rigid, Section4,
+    Session, SimConfig, SpawnBundle, ViewId, ViewMapping, ViewSpec,
 };
 
 type Vec3 = <EuclideanR3 as Space>::Point;
@@ -373,14 +373,41 @@ fn targets(stage: &Stage, view: ViewId) -> (ImageSpaceId, ImageSpaceId) {
 }
 
 #[test]
-fn dropping_the_anchor_keeps_the_bridged_image_space() {
+fn a_bridge_survives_its_anchor_despawned_by_a_deferred_command() {
     let mut stage = stage(false);
     let section = stage.view(Section4 { w: 0.0 });
     let root = stage.root;
     let image = stage.bridge(root, section, shrunk()).unwrap();
     let anchor = stage.anchor;
-    stage.session.dispatch(|d| d.despawn(anchor)).unwrap();
+    stage.session.system(
+        Phase::Dispatch,
+        "retire",
+        Access::new().commands(),
+        move |ctx: Ctx<'_, Probe>| {
+            ctx.commands.submit(Command::Despawn(anchor));
+        },
+    );
+    stage.session.boundary(Input::default()).unwrap();
     assert!(stage.session.bridges().is_empty());
     assert!(!stage.session.views().placed(image));
     assert_eq!(stage.session.pick([GRAB_NDC, 0.0]), None);
+}
+
+#[test]
+fn a_dropped_bridge_leaks_its_image_space_slot() {
+    let mut stage = stage(false);
+    let section = stage.view(Section4 { w: 0.0 });
+    let root = stage.root;
+    let first = stage.bridge(root, section, shrunk()).unwrap();
+    let retired = stage.anchor;
+    stage.anchor = stage.session.dispatch(|d| {
+        d.despawn(retired).unwrap();
+        d.spawn(SpawnBundle::new()).unwrap()
+    });
+    let second = stage.bridge(root, section, shrunk()).unwrap();
+    assert_eq!(second.index(), first.index());
+    assert_ne!(second, first);
+    assert!(!stage.session.views().placed(first));
+    assert!(stage.session.views().placed(second));
+    assert_eq!(stage.session.views().to_root(first), None);
 }

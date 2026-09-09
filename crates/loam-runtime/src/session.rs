@@ -591,30 +591,9 @@ impl<A: Stores> Session<A> {
             &mut self.domains,
             &mut self.views,
             self.commands.entities_mut(),
+            &mut self.bridges,
         );
-        let result = f(&mut dispatch);
-        self.reconcile_bridges();
-        result
-    }
-
-    fn reconcile_bridges(&mut self) {
-        loop {
-            let entities = self.commands.entities();
-            let stale = self
-                .bridges
-                .ids()
-                .iter()
-                .zip(self.bridges.links())
-                .find(|(_, link)| {
-                    entities.resolve(link.from).is_none() || entities.resolve(link.to).is_none()
-                })
-                .map(|(id, link)| (*id, link.data));
-            let Some((id, bridge)) = stale else {
-                return;
-            };
-            self.views.unplace(bridge.image);
-            let _ = self.bridges.unlink(id);
-        }
+        f(&mut dispatch)
     }
 
     pub fn bridges(&self) -> &Relation<Bridge> {
