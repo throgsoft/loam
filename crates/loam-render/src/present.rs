@@ -7,7 +7,9 @@ use wgpu::{
 
 use crate::depth::DepthBuffer;
 use crate::device::{GpuContext, MissingGpuCapability};
-use crate::pass::{FramePass, FrameTarget, PassError, PassOrder, PassSchedule, Section};
+use crate::pass::{
+    FrameFormat, FramePass, FrameTarget, PassError, PassOrder, PassSchedule, Section,
+};
 use crate::view::{DEPTH_CLEAR, DEPTH_FORMAT};
 use crate::{DepthConvention, DepthMode, LineRasterNode};
 
@@ -39,7 +41,14 @@ impl Presenter {
     pub fn attach(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
         self.depth = None;
         self.views.clear();
-        self.schedule.rebuild(gpu)
+        self.schedule.rebuild(
+            gpu,
+            FrameFormat {
+                color: self.format,
+                depth: DEPTH_FORMAT,
+                sample_count: self.sample_count,
+            },
+        )
     }
 
     pub fn register_pass(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {

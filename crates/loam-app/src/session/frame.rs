@@ -14,7 +14,7 @@ use loam_runtime::host::HostError;
 use loam_runtime::{Landing, Records, RequestId, Session, SnapshotPolicy, Stores};
 use loam_time::{frame_trace, FixedTimestep};
 
-use super::app::{FrameHook, SessionApp};
+use super::app::{CaptureControl, FrameHook, SessionApp};
 use super::debug_layer::DebugLayer;
 use super::input::InputMap;
 use super::WorkContext;
@@ -306,13 +306,18 @@ impl<A: Stores> Inner<A> {
         };
 
         let context = layer.map(DebugLayer::begin);
-        if let Some(hook) = self.app.frame.as_mut() {
-            hook(&mut FrameHook {
-                session: &mut self.session,
-                sections: presenter.sections(),
-                ui: context.as_ref(),
-                size: target.size,
-            });
+        {
+            let session = &mut self.session;
+            let (hook, captures) = (self.app.frame.as_mut(), &mut self.app.captures);
+            if let Some(hook) = hook {
+                hook(&mut FrameHook {
+                    session,
+                    sections: presenter.sections(),
+                    ui: context.as_ref(),
+                    size: target.size,
+                    capture: CaptureControl::new(captures),
+                });
+            }
         }
         if let Some(context) = context.as_ref() {
             loam_egui::ConsoleUi::ui(self.app.console.ui_mut(), context);
@@ -469,6 +474,7 @@ mod tests {
     }
 
     const WALK: ActionId = ActionId(0);
+    const CAPTURE_FPS: u16 = 60;
 
     struct Probe {
         recorded: Arc<AtomicU32>,
@@ -760,5 +766,64 @@ mod tests {
             SIZE,
             "the capture read a different rectangle than the presenter's target"
         );
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn a_hook_that_stops_its_capture_finishes_the_file_gpu_probe() {
+        let instance = Instance::default();
+        let gpu = pollster::block_on(GpuContext::new(instance, FeatureRequest::default(), None))
+            .expect("a wgpu adapter");
+        let texture = offscreen(&gpu);
+        let directory = tempfile::tempdir().expect("temp dir");
+        let into = directory.path().to_path_buf();
+        let mut frames = 0_u32;
+        let app = host::<Bare>("capture").on_frame(move |hook| {
+            frames += 1;
+            if frames == 1 {
+                hook.capture
+                    .start(crate::capture::CaptureRequest::StartSequence {
+                        format: crate::capture::CaptureFormat::Apng,
+                        stage: crate::capture::CaptureStage::Post,
+                        dir: Some(into.clone()),
+                        name: Some("session".into()),
+                        fps: Some(CAPTURE_FPS),
+                        scale: None,
+                        palette: crate::capture::PaletteMode::default(),
+                    });
+            }
+            if frames == 3 {
+                hook.capture.stop();
+            }
+        });
+        let mut frame = bare(app);
+        frame
+            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .expect("attached");
+        for _ in 0..4 {
+            run_one(&mut frame, &gpu, &texture);
+            std::thread::sleep(Duration::from_millis(1000 / u64::from(CAPTURE_FPS) + 4));
+        }
+        drop(frame);
+
+        let written = directory.path().join("session.apng");
+        let bytes = std::fs::read(&written).expect("the stopped capture finished its file");
+        assert_eq!(
+            animation_frames(&bytes),
+            Some(2),
+            "the file holds the frames drawn between the start and the stop"
+        );
+    }
+
+    fn animation_frames(png: &[u8]) -> Option<u32> {
+        let mut at = 8;
+        while at + 12 <= png.len() {
+            let length = u32::from_be_bytes(png[at..at + 4].try_into().ok()?) as usize;
+            if &png[at + 4..at + 8] == b"acTL" {
+                return Some(u32::from_be_bytes(png[at + 8..at + 12].try_into().ok()?));
+            }
+            at += 12 + length;
+        }
+        None
     }
 }

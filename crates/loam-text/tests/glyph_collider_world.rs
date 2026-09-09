@@ -18,7 +18,7 @@ const DROP_Z: f32 = 0.25;
 const IMPACT_STEPS: usize = 30;
 
 fn word() -> Vec<GlyphSolid> {
-    let bytes = include_bytes!("../../hero/fonts/lmroman10-bold.otf");
+    let bytes = include_bytes!("../../examples/fonts/lmroman10-bold.otf");
     let font = FontRef::try_from_slice(bytes).expect("parse font");
     layout_word(&font, WORD, &GlyphParams::default()).expect("layout")
 }

@@ -2,7 +2,7 @@ use std::fmt;
 use std::time::Duration;
 
 use web_time::Instant;
-use wgpu::{CommandEncoder, TextureView};
+use wgpu::{CommandEncoder, TextureFormat, TextureView};
 
 use crate::device::{GpuContext, MissingGpuCapability};
 use crate::gpu_timer::SectionTimer;
@@ -19,6 +19,13 @@ const SCENE_OUTPUTS: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
 pub enum PassOrder {
     BeforeScene,
     AfterScene,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FrameFormat {
+    pub color: TextureFormat,
+    pub depth: TextureFormat,
+    pub sample_count: u32,
 }
 
 pub struct FrameTarget<'a> {
@@ -46,6 +53,11 @@ pub trait FramePass {
     }
 
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>);
+
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
+        let _ = frame;
+        self.rebuild(gpu)
+    }
 
     fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability>;
 }
@@ -190,10 +202,14 @@ impl PassSchedule {
         Ok(())
     }
 
-    pub fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    pub fn rebuild(
+        &mut self,
+        gpu: &GpuContext,
+        frame: FrameFormat,
+    ) -> Result<(), MissingGpuCapability> {
         self.timer = SectionTimer::new(&gpu.device, &gpu.queue);
         for pass in self.passes.iter_mut() {
-            pass.rebuild(gpu)?;
+            pass.attach(gpu, frame)?;
         }
         Ok(())
     }
