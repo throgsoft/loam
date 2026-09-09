@@ -670,6 +670,15 @@ pub struct SegmentRecord {
     pub _pad2: [f32; 3],
 }
 
+/// One point of a view in its image space with a radius in pixels; `loam-render`'s `PointPass` builds its mesh from these.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct PointRecord {
+    pub position: [f32; 3],
+    pub radius_px: f32,
+    pub color: [f32; 4],
+}
+
 /// Records of one view map, in its image space.
 #[derive(Default)]
 pub struct ViewRecords {

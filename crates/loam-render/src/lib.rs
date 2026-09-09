@@ -9,6 +9,7 @@ pub mod line_raster;
 pub mod line_raster_static_r4;
 pub mod material;
 pub mod pass;
+pub mod passes;
 pub mod point_raster;
 pub mod present;
 pub mod raymarch;
@@ -25,8 +26,10 @@ pub use line_raster::{LineRasterNode, LineRasterUniforms};
 pub use line_raster_static_r4::{LineRasterStaticR4Node, LineRasterStaticR4Uniforms};
 pub use material::{MaterialPipeline, MaterialSpec};
 pub use pass::{
-    FramePass, FrameTarget, GpuTime, PassError, PassOrder, PassSchedule, ResourceId, Section,
+    FrameFormat, FramePass, FrameTarget, GpuTime, PassError, PassOrder, PassSchedule, ResourceId,
+    Section,
 };
+pub use passes::{FieldPass, HyperslicePass, LinePass, PointPass, RaymarchPass, SkyGroundPass};
 pub use point_raster::{PointInstance, PointRasterNode, PointRasterUniforms};
 pub use present::Presenter;
 pub use raymarch::{FieldMarchNode, FieldMarchUniforms, MarchMode, RayMarchNode, RayMarchUniforms};

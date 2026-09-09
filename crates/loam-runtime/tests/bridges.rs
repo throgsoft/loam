@@ -251,7 +251,7 @@ fn a_drag_through_a_projection_moves_the_entity_instead_of_naming_the_view() {
     stage.bridge(root, projection, shrunk()).unwrap();
     assert_eq!(
         stage.session.grab([GRAB_NDC, 0.0], 0.0),
-        Err(DragError::NoLift("projection4"))
+        Err(DragError::NoPick)
     );
     assert_eq!(
         stage.session.drag([GRAB_NDC, 0.0], 0.1),

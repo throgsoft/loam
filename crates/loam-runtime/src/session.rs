@@ -667,19 +667,16 @@ impl<A: Stores> Session<A> {
         self.drag
     }
 
-    /// Picks, refuses a view without a ray lift by name, and records a drag plane through the hit facing the root eye.
+    /// Picks among the views with a ray lift and records a drag plane through the hit facing the root eye.
     pub fn grab(&mut self, ndc: [f32; 2], time: f64) -> Result<Pick, DragError> {
-        let pick = self.pick(ndc).ok_or(DragError::NoPick)?;
+        let pick = self
+            .domains
+            .pick_lifted(&self.views, &self.prepared, ndc)
+            .ok_or(DragError::NoPick)?;
         let domain = self
             .domains
             .get(pick.domain)
             .ok_or(DomainError::UnknownDomain(pick.domain))?;
-        let summary = domain
-            .view(pick.view)
-            .ok_or(DomainError::Unsupported("unknown view"))?;
-        if !summary.ray_lift {
-            return Err(DragError::NoLift(summary.name));
-        }
         let into = self
             .views
             .to_root(pick.image)
@@ -904,11 +901,39 @@ impl<A: Stores> Session<A> {
         }
     }
 
-    /// Stamps every record buffer with the tick and a sequence that advances while paused.
+    /// Runs the Publication systems, stamps every record buffer with the tick and a sequence that advances while paused, then runs the Presentation systems; an entry awaiting a readback suspends the call, and the next call resumes at that entry.
     pub fn publish(&mut self, into: &mut Publication<A>) -> Result<(), DomainError> {
-        self.plan_ahead(self.tick);
-        self.plan(Phase::Publication, self.tick);
-        self.plan(Phase::Presentation, self.tick);
+        let step = Step {
+            tick: self.tick,
+            dt: self.config.dt().unwrap_or(0.0),
+        };
+        let suspended = self.wait.map(|wait| wait.entry).or(self.resume);
+        if suspended.is_some_and(|entry| entry.phase == Phase::Presentation) {
+            let index = suspended.map_or(0, |entry| entry.index as usize);
+            self.wait = None;
+            self.resume = None;
+            self.run_phase(Phase::Presentation, index, step)?;
+            return Ok(());
+        }
+        let late = match suspended {
+            Some(entry) if entry.phase == Phase::Publication => {
+                self.wait = None;
+                self.resume = None;
+                Some(entry.index as usize)
+            }
+            Some(_) => None,
+            None => {
+                self.plan_ahead(self.tick);
+                self.plan(Phase::Publication, self.tick);
+                self.plan(Phase::Presentation, self.tick);
+                Some(0)
+            }
+        };
+        if let Some(from) = late {
+            if !self.run_phase(Phase::Publication, from, step)? {
+                return Ok(());
+            }
+        }
         self.sequence += 1;
         let stamp = Stamp {
             tick: self.tick,
@@ -946,7 +971,21 @@ impl<A: Stores> Session<A> {
         }
         into.views.truncate(count);
         into.stamp = stamp;
+        if late.is_some() {
+            self.run_phase(Phase::Presentation, 0, step)?;
+        }
         Ok(())
+    }
+
+    fn run_phase(&mut self, phase: Phase, from: usize, step: Step) -> Result<bool, DomainError> {
+        let mut index = from;
+        while index < self.phases.entries(phase).len() {
+            if !self.run_entry(phase, index, step)? {
+                return Ok(false);
+            }
+            index += 1;
+        }
+        Ok(true)
     }
 
     /// Call after the frame's last tick; systems see an empty input until the next boundary.
@@ -1164,6 +1203,148 @@ mod tests {
     crate::stores! {
         #[derive(Default)]
         pub struct Quiet {}
+    }
+
+    #[test]
+    fn a_grab_takes_the_view_it_can_lift_while_a_plain_pick_keeps_the_nearer_one() {
+        use crate::view::{Eye, Projection4, Section4, Vec4, ViewId};
+        use loam_math::{EuclideanR4, Iso4Flat};
+
+        const DEPTH: f32 = 4.0;
+        const FOCAL: f32 = 2.5;
+        const AT_W: f32 = -2.5;
+
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let edges = session.prepare(PreparedGeometry::Lines4 {
+            segments: vec![[[0.5, 0.0, 0.0, 0.0], [-0.5, 0.0, 0.0, 0.0]]],
+        });
+        let white = session.add_material(Material::lines([1.0; 4], 1.0));
+        let root = session.views().root();
+        let (section, projection) = session
+            .dispatch(|d| -> Result<(ViewId, ViewId), Rejection> {
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose(Iso4Flat::IDENTITY)))?;
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(
+                            r4,
+                            Pose(Iso4Flat::from_translation(Vec4::new(
+                                0.0, 0.0, -DEPTH, AT_W,
+                            ))),
+                        )
+                        .instance(Instance::new(edges, white)),
+                )?;
+                let domain = d.domains.typed(r4)?;
+                let section = domain.add_view(ViewSpec::new(root, eye, Section4 { w: AT_W }));
+                let projection =
+                    domain.add_view(ViewSpec::new(root, eye, Projection4 { focal: FOCAL }));
+                Ok((section, projection))
+            })
+            .expect("the two views registered");
+        session.views_mut().root_mut().eye = Eye::default();
+
+        let picked = session
+            .pick([0.0, 0.0])
+            .expect("both views cover the origin");
+        assert_eq!(
+            picked.view, projection,
+            "the plain pick lost the nearer projection layer"
+        );
+        let grabbed = session.grab([0.0, 0.0], 0.0).expect("the section lifts");
+        assert_eq!(
+            grabbed.view, section,
+            "the grab resolved to a view it cannot lift, so a drag is a coin flip"
+        );
+    }
+
+    crate::stores! {
+        #[derive(Default)]
+        pub struct Late {
+            published: Value<u32>,
+            presented: Value<u32>,
+        }
+    }
+
+    #[test]
+    fn a_system_in_each_late_phase_runs_once_per_publish() {
+        let mut session = Session::new(Late::default(), SimConfig::default());
+        session.system(
+            Phase::Publication,
+            "count published",
+            Access::new().writes::<u32>(),
+            |app: &mut Late| {
+                *app.published.get_mut() += 1;
+            },
+        );
+        session.system(
+            Phase::Presentation,
+            "count presented",
+            Access::new().writes::<u32>(),
+            |app: &mut Late| {
+                *app.presented.get_mut() += 1;
+            },
+        );
+        let mut publication = Publication::default();
+        for _ in 0..3 {
+            session.publish(&mut publication).expect("published");
+        }
+        assert_eq!(
+            (*session.app.published.get(), *session.app.presented.get()),
+            (3, 3),
+            "a system registered in a late phase never ran"
+        );
+    }
+
+    #[test]
+    fn a_publication_entry_awaiting_a_readback_suspends_publish_until_it_lands() {
+        let mut session = Session::new(Late::default(), SimConfig::default());
+        let grid = session.register_bulk(BulkSpec {
+            name: "grid",
+            element_size: 4,
+            count: 4,
+            readback: Readback::Required,
+            snapshot: SnapshotPolicy::Derived,
+            schedule: Schedule::InStep,
+        });
+        session.work(
+            Phase::Simulation,
+            WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
+        );
+        session.system(
+            Phase::Publication,
+            "consume",
+            Access::new().writes::<u32>().awaits("reduce"),
+            |app: &mut Late| {
+                *app.published.get_mut() += 1;
+            },
+        );
+        session.boundary(Input::default()).expect("boundary");
+        session.tick().expect("tick");
+        let mut issued: Option<RequestId> = None;
+        session.issue_work(|order| issued = Some(order.request));
+        let request = issued.expect("the tick ordered the work item");
+        session.submitted(request);
+
+        let mut publication = Publication::default();
+        session.publish(&mut publication).expect("published");
+        assert_eq!(
+            *session.app.published.get(),
+            0,
+            "the entry ran before the readback it awaits landed"
+        );
+        assert!(
+            session.waiting().is_some(),
+            "publish never suspended at the awaiting entry"
+        );
+
+        session.land_readback(request, Some(&[0u8; 16]));
+        session.publish(&mut publication).expect("published");
+        assert_eq!(
+            *session.app.published.get(),
+            1,
+            "the landed readback never resumed the suspended publication entry"
+        );
     }
 
     #[test]
