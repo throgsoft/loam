@@ -164,7 +164,7 @@ pub enum EdgeShading {
     Material,
     /// Two colours per prepared segment, its start then its end, in the prepared geometry's own order.
     Palette(PaletteId),
-    /// Reads `back` at `-extent` and `front` at `+extent` of the endpoint's last chart coordinate in the entity's own frame.
+    /// Reads `back` at `-extent` and `front` at `+extent` of an endpoint's last chart coordinate relative to the entity's origin, clamped between.
     Depth {
         back: [f32; 4],
         front: [f32; 4],
@@ -580,7 +580,6 @@ fn push_segments<S: DomainSpace>(
     }
 }
 
-/// Cuts the entity's cells on the map's own hyperplane and appends the perimeter and the fill in image space.
 fn push_section<S: DomainSpace>(
     space: &S,
     mapping: &dyn ViewMapping<S>,

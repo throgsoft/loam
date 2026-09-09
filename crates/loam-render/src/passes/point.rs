@@ -53,7 +53,7 @@ impl PointPass {
         }
     }
 
-    /// Stores the eye and rebuilds the point mesh; the record uploads it again only when a position differs from the last publish or the device was rebuilt.
+    /// Stores the eye and rebuilds the point mesh; the record uploads it again only when a position, colour, or radius differs from the last publish or the device was rebuilt.
     pub fn publish(&self, eye: &Eye, points: &[PointRecord]) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;

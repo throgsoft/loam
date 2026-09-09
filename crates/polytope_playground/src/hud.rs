@@ -46,7 +46,6 @@ pub(crate) fn write_readout(out: &mut String, readout: &Readout) {
     }
 }
 
-/// The origin and text size in physical pixels; loam-text has no scale-factor notion.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Seat {
     pub(crate) origin_px: [f32; 2],
@@ -95,7 +94,6 @@ impl Seat {
     }
 }
 
-/// The playground's readout, drawn with a shadow under it.
 pub(crate) fn pass() -> TextPass {
     TextPass::new("hud", font_bytes().unwrap_or_default(), BAKE_PX)
 }

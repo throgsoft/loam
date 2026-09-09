@@ -73,7 +73,6 @@ pub(crate) fn schlegel_params(polytope: Polytope4, cell: u32) -> Option<Schlegel
     SchlegelParams::new(polytope, selected, SCHLEGEL_EYE_MARGIN)
 }
 
-/// Projects a point of an entity's own frame and places the entity's eye-relative position after the projection.
 pub(crate) struct Projected {
     name: &'static str,
     projection: Projection<4>,

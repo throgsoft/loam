@@ -41,7 +41,6 @@ impl Gimbal {
         self.drag.is_some()
     }
 
-    /// The rotor that carries the row from where the last turn left it to where the drag now points.
     pub(crate) fn turn(&mut self, ray: &ImageRay) -> Option<Rotor4> {
         let drag = self.drag?;
         let total = drag

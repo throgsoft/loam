@@ -428,7 +428,7 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
 
     fn image_point(&self, eye: &Pose<S>, point: S::Point) -> Option<[f32; 3]>;
 
-    /// Image of `local`, a point in the frame of an entity at `pose`; a map that would otherwise carry the pose through its own nonlinearity adds the pose's image offset after its map.
+    /// Image of `local`, a point in the frame of an entity at `pose`; the default maps the posed point, and a nonlinear map overrides it to map the rotated point and add the entity's image position after.
     fn image_local(
         &self,
         space: &S,
@@ -480,7 +480,7 @@ impl<S: DomainSpace> ViewSpec<S> {
 /// Where a slicing map cuts an entity and how it places the cut in the image.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SectionCut {
-    /// The last chart coordinate, in the entity's own frame, the cut lies on.
+    /// The cut's last chart coordinate in the eye frame, relative to the entity's origin.
     pub offset: f32,
     /// Multiplies a cut point's leading chart coordinates before the entity's own image position is added.
     pub scale: f32,
@@ -721,7 +721,6 @@ pub struct TriangleRecord {
     pub color: [f32; 4],
 }
 
-/// Reusable buffers the section publication cuts into.
 #[derive(Default)]
 pub(crate) struct SectionScratchpad {
     pub(crate) rotated: Vec<Vec4>,

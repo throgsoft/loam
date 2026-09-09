@@ -25,7 +25,7 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A `Hyperslice4DNode` after the scene that writes scene colour and depth under reversed Z; clones share one state.
+/// A `Hyperslice4DNode` after the scene that writes scene colour and depth under reversed Z, or colour only per cell while a strip is published; clones share one state.
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,

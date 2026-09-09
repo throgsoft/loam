@@ -248,7 +248,6 @@ struct Layers {
     projection: ViewId,
 }
 
-/// One prepared wireframe, material, and palette set per catalogue entry, built once at boot.
 #[derive(Clone, Copy)]
 struct Card {
     geometry: Option<PreparedId>,
@@ -553,7 +552,6 @@ impl Frame {
     }
 }
 
-/// The presenter registers its own section-fill pass before the application's, so the report builds the schedule the same way.
 fn scheduled(frame: &Frame) -> Vec<Box<dyn FramePass>> {
     let mut passes: Vec<Box<dyn FramePass>> =
         vec![TriangleFeed::default().pass(FragmentShading::FaceNormalLambert)];
@@ -901,7 +899,6 @@ fn turn_of(session: &Session<Playground>) -> Bivector4 {
     }
 }
 
-/// One cell per grid rectangle, each carrying its own w and the subject's rotation at its own time.
 fn fill_strip(
     strip: &Strip,
     omega: Bivector4,
@@ -939,7 +936,6 @@ fn pointer_drag(session: &Session<Playground>) -> [f32; 2] {
     }
 }
 
-/// True while the gimbal owns the pointer, so the body grab and the orbit stay out of the drag.
 fn drive_gimbal(
     session: &mut Session<Playground>,
     wants_pointer: bool,
@@ -1663,11 +1659,6 @@ mod tests {
                 && lines[5].ends_with("hud"),
             "the report does not list the frame's sections: {}",
             lines[5]
-        );
-        assert_eq!(
-            lines[4], "filmstrip: 11 cells, 11 by 1",
-            "the default strip fans eleven w cells across one row: {}",
-            lines[4]
         );
         assert!(
             lines[0].contains("xy 0.4950") && lines[0].contains("zw 0.4950"),

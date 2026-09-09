@@ -11,7 +11,7 @@ use crate::{catalog, push, Intent, Intents, Playground};
 
 const PLANE_LABELS: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
 
-/// Largest magnitude `Rotor4::log` returns, in degrees: pi times the square root of two.
+// `Rotor4::log` returns at most pi times the square root of two in magnitude.
 const SCRUB_LIMIT_DEG: f32 = 254.558_44;
 
 #[derive(Default)]
@@ -238,7 +238,6 @@ fn composer(ui: &mut egui::Ui, composer: &Composer, panel: &mut Panel, intents: 
 
 const CALLOUT_INSET_PT: f32 = 10.0;
 
-/// Anchors one label per slot at the body's own image point, through the root view's NDC.
 pub(crate) fn callouts(
     context: &egui::Context,
     session: &Session<Playground>,
@@ -273,7 +272,6 @@ pub(crate) fn callouts(
     }
 }
 
-/// Play, pause, and the rotation rate the row and the strip's t fan share.
 fn playback(ui: &mut egui::Ui, running: bool, rate: f32, intents: &Intents) {
     ui.horizontal(|ui| {
         if ui.button(if running { "pause" } else { "play" }).clicked() {
@@ -350,7 +348,6 @@ fn filmstrip(ui: &mut egui::Ui, strip: Strip, intents: &Intents) {
     }
 }
 
-/// One w and t readout over each cell of the grid, in the cell's own rectangle.
 pub(crate) fn strip_labels(context: &egui::Context, session: &Session<Playground>, cells: &[Cell]) {
     let strip = *session.app.strip.get();
     if !strip.on {

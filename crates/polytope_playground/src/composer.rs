@@ -6,7 +6,6 @@ use crate::consts::BASE_ROTATION_RATE;
 
 pub(crate) const MAX_TERMS: usize = 8;
 
-/// Plane multiplicities and an optional angle in radians; `None` means the unit coefficient.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Term {
     pub(crate) planes: [u8; 6],
@@ -100,7 +99,6 @@ impl Composer {
         pushed
     }
 
-    /// The summed bivector the sequence names, in `Plane4::ALL` order and without the animation rate.
     pub(crate) fn omega(&self) -> Bivector4 {
         self.terms()
             .iter()
@@ -111,7 +109,6 @@ impl Composer {
         self.omega() * BASE_ROTATION_RATE
     }
 
-    /// The unit bivector the scrub moves along, `None` for an empty or degenerate sequence.
     pub(crate) fn axis(&self) -> Option<Bivector4> {
         let omega = self.omega();
         let magnitude_squared = omega.magnitude_squared();

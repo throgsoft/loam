@@ -69,7 +69,7 @@ impl Presenter {
         self.schedule.after_submit();
     }
 
-    /// Skips a view whose records were built by a publication it already uploaded.
+    /// Skips a view whose records were built by a publication it already uploaded; when any view rebuilt, refills the section fills of every view, each mapped by its placement.
     pub fn upload(
         &mut self,
         device: &Device,
@@ -131,7 +131,7 @@ impl Presenter {
         }
     }
 
-    /// Clears colour and depth in `present-clear`, records the passes before the scene, draws the views in `present-draw`, then records the passes after the scene.
+    /// Clears colour and depth in `present-clear`, records the passes before the scene, draws the views in `present-draw`, then records the passes after the scene, its own section-fill pass among them.
     pub fn record(
         &mut self,
         device: &Device,

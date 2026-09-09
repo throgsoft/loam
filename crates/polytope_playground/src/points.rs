@@ -10,7 +10,6 @@ pub(crate) const VERTEX_SIZE_PX: f32 = 4.0;
 
 const CELL_CENTER_INSET: f32 = 0.5;
 
-/// Cell centres per polytope; `Polytope4::cell_centers` allocates, so the row's are built once.
 #[derive(Default)]
 pub(crate) struct Cloud {
     centers: Vec<(Polytope4, Vec<Vec4>)>,

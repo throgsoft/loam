@@ -431,7 +431,7 @@ impl<A: Stores> Session<A> {
         self.prepared.get(id.index())
     }
 
-    /// One colour per prepared segment, read in the prepared geometry's own order.
+    /// Two colours per prepared segment, start then end, read in the prepared geometry's own order; a segment past the palette's end keeps the material colour.
     pub fn add_palette(&mut self, colors: Vec<[f32; 4]>) -> PaletteId {
         self.palettes.push(colors);
         PaletteId((self.palettes.len() - 1) as u32)

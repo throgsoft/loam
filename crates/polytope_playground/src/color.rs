@@ -35,7 +35,6 @@ impl ColorMode {
     }
 }
 
-/// The palettes and the depth extent one polytope's edges are coloured from.
 #[derive(Clone, Copy)]
 pub(crate) struct Shades {
     pub(crate) gradient: PaletteId,
@@ -82,7 +81,6 @@ fn palette_color(index: usize) -> [f32; 4] {
     [r, g, b, 1.0]
 }
 
-// Greedy first-fit colouring of the edge line-graph.
 pub(crate) fn unique_edge_colors(edges: &[[u32; 2]]) -> Vec<[f32; 4]> {
     let mut chosen = Vec::with_capacity(edges.len());
     let mut used = vec![usize::MAX; edges.len()];
@@ -117,7 +115,6 @@ pub(crate) fn vertex_gradient_colors(topology: &Polytope4Topology) -> Vec<[f32; 
         .collect()
 }
 
-/// Half the polytope's own w extent at `scale`, the distance the depth ramp spans on each side.
 pub(crate) fn w_extent(topology: &Polytope4Topology, scale: f32) -> f32 {
     topology
         .vertices

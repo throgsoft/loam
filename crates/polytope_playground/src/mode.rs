@@ -281,7 +281,6 @@ impl AppCommand<Playground> for ClearComposer {
     }
 }
 
-/// Moves each slot's rotor along the sequence's unit bivector and leaves the components across it alone.
 pub(crate) struct SetScrub {
     pub(crate) scrub: f32,
     pub(crate) domain: DomainHandle<EuclideanR4>,
@@ -381,7 +380,6 @@ impl AppCommand<Playground> for TogglePoints {
     }
 }
 
-/// Despawns the row's slot and spawns its replacement in place, with the toybox body when that mode is live.
 pub(crate) struct SetShape {
     pub(crate) slot: usize,
     pub(crate) entry: ShapeEntry,

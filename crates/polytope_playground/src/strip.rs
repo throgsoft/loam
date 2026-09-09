@@ -41,7 +41,6 @@ impl Default for Strip {
     }
 }
 
-/// One cell of the grid: where it draws, the w it cuts at, and how far its rotation is carried forward.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Cell {
     pub(crate) viewport: Viewport,
@@ -54,7 +53,6 @@ impl Strip {
         self.subject.min(SHAPE_CATALOG.len() - 1)
     }
 
-    /// Columns, rows, and whether w runs along the columns.
     pub(crate) fn grid(&self) -> (usize, usize, bool) {
         match (self.w, self.t) {
             (true, true) if self.swap_axes => (self.count_t, self.count_w, false),
