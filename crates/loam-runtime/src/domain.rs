@@ -198,6 +198,8 @@ pub trait DomainSpace:
 {
     type Placement: Copy + Send + Sync + 'static;
 
+    type Relative: Copy + Send + Sync + 'static;
+
     fn origin(&self) -> Self::Point;
 
     /// Names the first non-finite coordinate or reports the chart boundary; nothing is clamped.
@@ -228,6 +230,14 @@ pub trait DomainSpace:
     fn place(&self, placement: &Self::Placement, local: Self::Point) -> Self::Point;
 
     fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError>;
+
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError>;
+
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError>;
 
     fn carry(
         &self,
@@ -306,6 +316,24 @@ pub fn homogeneous_carry<S: Homogeneous>(
     #[cfg(test)]
     applied::bump();
     Ok(space.iso_transport(space.iso_of(pose), local, tangent))
+}
+
+pub fn homogeneous_relative<S: Homogeneous>(
+    space: &S,
+    eye: &Pose<S>,
+    pose: &Pose<S>,
+) -> Result<S::Iso, DomainError> {
+    Ok(space.iso_compose(space.iso_inverse(space.iso_of(eye)), space.iso_of(pose)))
+}
+
+pub fn homogeneous_place_relative<S: Homogeneous>(
+    space: &S,
+    relative: &S::Iso,
+    local: S::Point,
+) -> Result<S::Point, DomainError> {
+    #[cfg(test)]
+    applied::bump();
+    Ok(space.iso_apply(*relative, local))
 }
 
 pub fn homogeneous_moved<S: Homogeneous>(
@@ -405,6 +433,8 @@ fn lorentz(a: Vec4, b: Vec4) -> f32 {
 impl DomainSpace for EuclideanR4 {
     type Placement = Iso4Flat;
 
+    type Relative = Iso4Flat;
+
     fn origin(&self) -> Self::Point {
         Vec4::ZERO
     }
@@ -474,6 +504,18 @@ impl DomainSpace for EuclideanR4 {
         homogeneous_local(self, pose, point)
     }
 
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
+        homogeneous_relative(self, eye, pose)
+    }
+
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError> {
+        homogeneous_place_relative(self, relative, local)
+    }
+
     fn carry(
         &self,
         pose: &Pose<Self>,
@@ -525,6 +567,8 @@ impl From<Iso4Flat> for Pose<EuclideanR4> {
 
 impl DomainSpace for HyperbolicH3 {
     type Placement = Iso3H;
+
+    type Relative = Iso3H;
 
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
@@ -625,6 +669,18 @@ impl DomainSpace for HyperbolicH3 {
         homogeneous_local(self, pose, point)
     }
 
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
+        homogeneous_relative(self, eye, pose)
+    }
+
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError> {
+        homogeneous_place_relative(self, relative, local)
+    }
+
     fn carry(
         &self,
         pose: &Pose<Self>,
@@ -673,6 +729,8 @@ impl From<Iso3H> for Pose<HyperbolicH3> {
 
 impl DomainSpace for EuclideanR3 {
     type Placement = Iso3;
+
+    type Relative = Iso3;
 
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
@@ -743,6 +801,18 @@ impl DomainSpace for EuclideanR3 {
         homogeneous_local(self, pose, point)
     }
 
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
+        homogeneous_relative(self, eye, pose)
+    }
+
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError> {
+        homogeneous_place_relative(self, relative, local)
+    }
+
     fn carry(
         &self,
         pose: &Pose<Self>,
@@ -801,6 +871,8 @@ where
     F: BlendingField,
 {
     type Placement = Pose<Self>;
+
+    type Relative = (Pose<Self>, Pose<Self>);
 
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
@@ -894,6 +966,19 @@ where
             return Err(DomainError::InvalidFrame);
         }
         Ok(inverse * chart)
+    }
+
+    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
+        Ok((*eye, *pose))
+    }
+
+    fn place_relative(
+        &self,
+        relative: &Self::Relative,
+        local: Self::Point,
+    ) -> Result<Self::Point, DomainError> {
+        let (eye, pose) = relative;
+        self.local(eye, self.place(pose, local))
     }
 
     fn carry(
@@ -1063,8 +1148,10 @@ fn push_section<S: DomainSpace>(
     let Some(place) = mapping.image_local(space, eye, pose, space.origin()) else {
         return;
     };
-    let placement = space.prepare(pose);
-    let Ok(origin) = space.local(eye, space.place(&placement, space.origin())) else {
+    let Ok(relative) = space.relative(eye, pose) else {
+        return;
+    };
+    let Ok(origin) = space.place_relative(&relative, space.origin()) else {
         return;
     };
     let base = Vec4::from(space.chart_point(origin).coordinates);
@@ -1072,14 +1159,14 @@ fn push_section<S: DomainSpace>(
     let scratch = &mut into.scratch;
     scratch.rotated.clear();
     for vertex in topology.vertices.iter() {
-        let placed = space.place(&placement, space.local_point((*vertex * *scale).to_array()));
-        let Ok(relative) = space.local(eye, placed) else {
+        let local = space.local_point((*vertex * *scale).to_array());
+        let Ok(placed) = space.place_relative(&relative, local) else {
             scratch.rotated.clear();
             return;
         };
         scratch
             .rotated
-            .push(Vec4::from(space.chart_point(relative).coordinates) - base);
+            .push(Vec4::from(space.chart_point(placed).coordinates) - base);
     }
     let plane = WPlane::new(cut.offset);
     let placed = |point: [f32; 3]| {
@@ -1920,11 +2007,13 @@ impl Domains {
 
 #[cfg(test)]
 mod tests {
+    use loam_shape::polytope::Polytope4;
+
     use super::*;
     use crate::command::SpawnBundle;
     use crate::session::{Material, Publication, Session, SimConfig};
     use crate::store::LogCapacity;
-    use crate::view::Section4;
+    use crate::view::{DepthEnvelope, Projection4, Section4};
 
     crate::stores! {
         #[derive(Default)]
@@ -1934,47 +2023,120 @@ mod tests {
     }
 
     const SEGMENTS: usize = 3;
+    const EYE_AT: Vec4 = Vec4::new(0.0, 0.0, 0.0, 2.0);
+    const OBJECT_AT: Vec4 = Vec4::new(0.0, 0.0, -4.0, 0.0);
 
-    #[test]
-    fn a_published_vertex_costs_more_isometry_applications_than_a_posed_vertex_did() {
+    struct Nonlinear(Projection4);
+
+    impl ViewMapping<EuclideanR4> for Nonlinear {
+        fn name(&self) -> &'static str {
+            "nonlinear"
+        }
+
+        fn image_point(&self, eye: &Pose<EuclideanR4>, point: Vec4) -> Option<[f32; 3]> {
+            self.0.image_point(eye, point)
+        }
+
+        fn image_local(
+            &self,
+            space: &EuclideanR4,
+            eye: &Pose<EuclideanR4>,
+            pose: &Pose<EuclideanR4>,
+            local: Vec4,
+        ) -> Option<[f32; 3]> {
+            let relative = space.relative(eye, pose).ok()?;
+            let origin = space.place_relative(&relative, Vec4::ZERO).ok()?;
+            let point = space.place_relative(&relative, local).ok()?;
+            let placed = (point - origin).truncate() + origin.truncate();
+            Some(placed.to_array())
+        }
+
+        fn lift(
+            &self,
+            _eye: &Pose<EuclideanR4>,
+            _ray: &ImageRay,
+        ) -> Option<DomainRay<EuclideanR4>> {
+            None
+        }
+
+        fn ray_lift(&self) -> bool {
+            false
+        }
+
+        fn depth_envelope(&self) -> DepthEnvelope {
+            self.0.depth_envelope()
+        }
+    }
+
+    fn stage(
+        geometry: PreparedGeometry,
+        mapping: impl ViewMapping<EuclideanR4>,
+        section: bool,
+    ) -> (Session<Probe>, u64) {
         let mut session = Session::new(Probe::default(), SimConfig::default());
         let r4 = session
             .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
-        let stub = session.prepare(PreparedGeometry::Lines4 {
+        let prepared = session.prepare(geometry);
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        session.dispatch(|d| {
+            let eye = d
+                .spawn(SpawnBundle::new().at(r4, Pose::at(EYE_AT)))
+                .expect("eye");
+            let mut instance = Instance::new(prepared, material);
+            if section {
+                instance = instance.sectioned(material);
+            }
+            d.spawn(
+                SpawnBundle::new()
+                    .at(r4, Pose::at(OBJECT_AT))
+                    .instance(instance),
+            )
+            .expect("object");
+            d.domains
+                .typed(r4)
+                .expect("the r4 domain")
+                .add_view(ViewSpec::new(root, eye, mapping));
+        });
+        let mut publication = Publication::default();
+        let _ = applied::taken();
+        session.publish(&mut publication).expect("publish");
+        (session, applied::taken())
+    }
+
+    fn lines() -> PreparedGeometry {
+        PreparedGeometry::Lines4 {
             segments: (0..SEGMENTS)
                 .map(|i| {
                     let x = 0.1 + i as f32 * 0.1;
                     [[x, 0.0, 0.0, 0.0], [-x, 0.0, 0.0, 0.0]]
                 })
                 .collect(),
-        });
-        let material = session.add_material(Material::flat([1.0; 4]));
-        let root = session.views().root();
-        session.dispatch(|d| {
-            let eye = d
-                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
-                .expect("eye");
-            d.spawn(
-                SpawnBundle::new()
-                    .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, 0.0)))
-                    .instance(Instance::new(stub, material)),
-            )
-            .expect("object");
-            d.domains
-                .typed(r4)
-                .expect("the r4 domain")
-                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
-        });
+        }
+    }
 
-        let mut publication = Publication::default();
-        let _ = applied::taken();
-        session.publish(&mut publication).expect("publish");
-        let applications = applied::taken();
+    #[test]
+    fn a_published_segment_vertex_costs_more_isometry_applications_than_it_did() {
+        let (_, applications) = stage(lines(), Section4 { w: 0.0 }, false);
+        assert_eq!(applications, 3 + 6 * SEGMENTS as u64);
+    }
 
-        let [view] = publication.views.as_slice() else {
-            panic!("one view publishes");
+    #[test]
+    fn a_published_section_vertex_costs_more_isometry_applications_than_it_did() {
+        let polytope = || PreparedGeometry::Polytope4 {
+            polytope: Polytope4::Tesseract,
+            scale: 0.25,
         };
-        assert_eq!(view.records.segments().len(), SEGMENTS);
+        let (_, plain) = stage(polytope(), Section4 { w: 0.0 }, false);
+        let (session, sectioned) = stage(polytope(), Section4 { w: 0.0 }, true);
+        let vertices = Polytope4::Tesseract.topology().vertices.len() as u64;
+        assert_eq!(session.domains().len(), 1);
+        assert_eq!(sectioned - plain, 3 + vertices);
+    }
+
+    #[test]
+    fn a_nonlinear_map_vertex_costs_more_isometry_applications_than_it_did() {
+        let (_, applications) = stage(lines(), Nonlinear(Projection4 { focal: 2.0 }), false);
         assert_eq!(applications, 3 + 6 * SEGMENTS as u64);
     }
 }

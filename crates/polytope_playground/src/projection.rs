@@ -108,10 +108,10 @@ impl ViewMapping<EuclideanR4> for Projected {
         pose: &Pose<EuclideanR4>,
         local: Vec4,
     ) -> Option<[f32; 3]> {
-        let origin = space.local(eye, pose.point).ok()?;
-        let placed = space.place(&space.prepare(pose), local);
-        let relative = space.local(eye, placed).ok()? - origin;
-        let placed = self.project(relative) + origin.truncate();
+        let relative = space.relative(eye, pose).ok()?;
+        let origin = space.place_relative(&relative, Vec4::ZERO).ok()?;
+        let point = space.place_relative(&relative, local).ok()?;
+        let placed = self.project(point - origin) + origin.truncate();
         placed.is_finite().then(|| placed.to_array())
     }
 
