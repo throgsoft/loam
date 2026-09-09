@@ -5,13 +5,13 @@ use loam_runtime::Eye;
 use wgpu::{CommandEncoder, Queue, TextureFormat};
 
 use crate::device::{GpuContext, MissingGpuCapability};
-use crate::pass::{FramePass, FrameTarget, PassOrder};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassOrder};
 use crate::sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
-use crate::view::DEPTH_FORMAT;
 use crate::{DepthConvention, Viewport};
 
 struct State {
     format: TextureFormat,
+    depth: TextureFormat,
     sample_count: u32,
     eye: Eye,
     ground: Ground,
@@ -29,6 +29,7 @@ impl SkyGroundPass {
         Self {
             shared: Rc::new(RefCell::new(State {
                 format: TextureFormat::Rgba8UnormSrgb,
+                depth: crate::view::DEPTH_FORMAT,
                 sample_count: 1,
                 eye: Eye::default(),
                 ground,
@@ -58,12 +59,6 @@ impl FramePass for SkyGroundPass {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn target(&mut self, format: TextureFormat, sample_count: u32) {
-        let mut state = self.shared.borrow_mut();
-        state.format = format;
-        state.sample_count = sample_count;
-    }
-
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
         let Some(depth) = target.depth else {
             return;
@@ -84,12 +79,22 @@ impl FramePass for SkyGroundPass {
         node.record(encoder, target.color, depth, Some(&viewport));
     }
 
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
+        {
+            let mut state = self.shared.borrow_mut();
+            state.format = frame.color;
+            state.depth = frame.depth;
+            state.sample_count = frame.sample_count;
+        }
+        self.rebuild(gpu)
+    }
+
     fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
         let mut state = self.shared.borrow_mut();
         state.node = Some(SkyGroundNode::new(
             &gpu.device,
             state.format,
-            DEPTH_FORMAT,
+            state.depth,
             DepthConvention::ReversedZ,
             state.sample_count,
         ));

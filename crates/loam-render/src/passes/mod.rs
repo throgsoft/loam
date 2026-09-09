@@ -23,7 +23,7 @@ mod tests {
 
     use super::*;
     use crate::device::{FeatureRequest, GpuContext};
-    use crate::pass::{FramePass, FrameTarget, PassSchedule};
+    use crate::pass::{FrameFormat, FramePass, FrameTarget, PassSchedule};
     use crate::raymarch::{
         polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
     };
@@ -33,6 +33,7 @@ mod tests {
 
     const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
     const SIZE: (u32, u32) = (32, 24);
+    const SAMPLES: u32 = 4;
 
     const EMPTY_SCENE: &str = r#"
 const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
@@ -80,7 +81,15 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             .expect("the noop backend always yields a context")
     }
 
-    fn attachment(gpu: &GpuContext, format: TextureFormat) -> TextureView {
+    fn frame(sample_count: u32) -> FrameFormat {
+        FrameFormat {
+            color: FORMAT,
+            depth: DEPTH_FORMAT,
+            sample_count,
+        }
+    }
+
+    fn attachment(gpu: &GpuContext, format: TextureFormat, sample_count: u32) -> TextureView {
         gpu.device
             .create_texture(&TextureDescriptor {
                 label: None,
@@ -90,7 +99,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
-                sample_count: 1,
+                sample_count,
                 dimension: TextureDimension::D2,
                 format,
                 usage: TextureUsages::RENDER_ATTACHMENT,
@@ -111,21 +120,17 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         );
         line.publish(&Eye::default(), &[SegmentRecord::default()]);
         point.publish(&Eye::default(), &[PointRecord::default()]);
-        let mut passes: Vec<Box<dyn FramePass>> = vec![
+        vec![
             Box::new(sky),
             Box::new(hyperslice),
             Box::new(line),
             Box::new(point),
-        ];
-        for pass in passes.iter_mut() {
-            pass.target(FORMAT, 1);
-        }
-        passes
+        ]
     }
 
-    fn record_once(gpu: &GpuContext, schedule: &mut PassSchedule) {
-        let color = attachment(gpu, FORMAT);
-        let depth = attachment(gpu, DEPTH_FORMAT);
+    fn record_once(gpu: &GpuContext, schedule: &mut PassSchedule, sample_count: u32) {
+        let color = attachment(gpu, FORMAT, sample_count);
+        let depth = attachment(gpu, DEPTH_FORMAT, sample_count);
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -165,7 +170,8 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     #[test]
-    fn a_wrapper_rebuilt_on_a_second_device_records_that_devices_resources() {
+    fn a_wrapper_rebuilt_on_a_second_device_records_that_devices_resources_at_the_frames_sample_count(
+    ) {
         let first = noop_gpu();
         let second = noop_gpu();
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
@@ -173,18 +179,20 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             schedule.register(pass).expect("registered");
         }
 
-        schedule.rebuild(&first).expect("first attach");
-        record_once(&first, &mut schedule);
+        schedule
+            .rebuild(&first, frame(SAMPLES))
+            .expect("first attach");
+        record_once(&first, &mut schedule, SAMPLES);
 
-        schedule.rebuild(&second).expect("recovery");
+        schedule.rebuild(&second, frame(SAMPLES)).expect("recovery");
         second
             .device
             .push_error_scope(wgpu::ErrorFilter::Validation);
-        record_once(&second, &mut schedule);
+        record_once(&second, &mut schedule, SAMPLES);
         let error = pollster::block_on(second.device.pop_error_scope());
         assert!(
             error.is_none(),
-            "a wrapper recorded the lost device's resources after recovery: {error:?}"
+            "a wrapper recorded the lost device's resources, or built at a sample count the frame does not use: {error:?}"
         );
     }
 }

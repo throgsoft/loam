@@ -27,6 +27,13 @@ pub struct FrameTarget<'a> {
     pub size: (u32, u32),
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct FrameFormat {
+    pub color: TextureFormat,
+    pub depth: TextureFormat,
+    pub sample_count: u32,
+}
+
 pub trait FramePass {
     fn name(&self) -> &'static str;
 
@@ -45,9 +52,12 @@ pub trait FramePass {
         None
     }
 
-    fn target(&mut self, _format: TextureFormat, _sample_count: u32) {}
-
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>);
+
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
+        let _ = frame;
+        self.rebuild(gpu)
+    }
 
     fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability>;
 }
@@ -192,10 +202,14 @@ impl PassSchedule {
         Ok(())
     }
 
-    pub fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    pub fn rebuild(
+        &mut self,
+        gpu: &GpuContext,
+        frame: FrameFormat,
+    ) -> Result<(), MissingGpuCapability> {
         self.timer = SectionTimer::new(&gpu.device, &gpu.queue);
         for pass in self.passes.iter_mut() {
-            pass.rebuild(gpu)?;
+            pass.attach(gpu, frame)?;
         }
         Ok(())
     }

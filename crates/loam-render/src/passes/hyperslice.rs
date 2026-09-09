@@ -4,9 +4,10 @@ use std::rc::Rc;
 use wgpu::{CommandEncoder, Queue, TextureFormat};
 
 use crate::device::{GpuContext, MissingGpuCapability};
-use crate::pass::{FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR, SCENE_DEPTH};
+use crate::pass::{
+    FrameFormat, FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR, SCENE_DEPTH,
+};
 use crate::raymarch::{BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms};
-use crate::view::DEPTH_FORMAT;
 use crate::{DepthConvention, DepthMode, Viewport};
 
 const WRITES: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
@@ -14,6 +15,7 @@ const WRITES: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
 struct State {
     source: String,
     format: TextureFormat,
+    depth: TextureFormat,
     sample_count: u32,
     uniforms: Hyperslice4DUniforms,
     bodies: Vec<BodyUniform>,
@@ -32,6 +34,7 @@ impl HyperslicePass {
             shared: Rc::new(RefCell::new(State {
                 source,
                 format: TextureFormat::Rgba8UnormSrgb,
+                depth: crate::view::DEPTH_FORMAT,
                 sample_count: 1,
                 uniforms: Hyperslice4DUniforms::default(),
                 bodies: Vec::new(),
@@ -70,12 +73,6 @@ impl FramePass for HyperslicePass {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn target(&mut self, format: TextureFormat, sample_count: u32) {
-        let mut state = self.shared.borrow_mut();
-        state.format = format;
-        state.sample_count = sample_count;
-    }
-
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
         let Some(depth) = target.depth else {
             return;
@@ -104,6 +101,16 @@ impl FramePass for HyperslicePass {
         );
     }
 
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
+        {
+            let mut state = self.shared.borrow_mut();
+            state.format = frame.color;
+            state.depth = frame.depth;
+            state.sample_count = frame.sample_count;
+        }
+        self.rebuild(gpu)
+    }
+
     fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
         let mut state = self.shared.borrow_mut();
         let module = gpu
@@ -117,7 +124,7 @@ impl FramePass for HyperslicePass {
             state.format,
             &module,
             DepthMode::ReadWrite {
-                format: DEPTH_FORMAT,
+                format: state.depth,
             },
             state.sample_count,
         ));

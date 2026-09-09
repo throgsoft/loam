@@ -8,7 +8,7 @@ use loam_shape::PointMesh;
 use wgpu::{CommandEncoder, Device, Queue, TextureFormat};
 
 use crate::device::{GpuContext, MissingGpuCapability};
-use crate::pass::{FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR};
 use crate::{DepthConvention, DepthMode, PointRasterNode};
 
 const READS: [ResourceId; 1] = [SCENE_COLOR];
@@ -16,6 +16,7 @@ const WRITES: [ResourceId; 1] = [SCENE_COLOR];
 
 struct State {
     format: TextureFormat,
+    depth: TextureFormat,
     sample_count: u32,
     eye: Eye,
     mesh: PointMesh<3>,
@@ -37,6 +38,7 @@ impl PointPass {
             name,
             shared: Rc::new(RefCell::new(State {
                 format: TextureFormat::Rgba8UnormSrgb,
+                depth: crate::view::DEPTH_FORMAT,
                 sample_count: 1,
                 eye: Eye::default(),
                 mesh: PointMesh::default(),
@@ -92,12 +94,6 @@ impl FramePass for PointPass {
         PassOrder::AfterScene
     }
 
-    fn target(&mut self, format: TextureFormat, sample_count: u32) {
-        let mut state = self.shared.borrow_mut();
-        state.format = format;
-        state.sample_count = sample_count;
-    }
-
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
         let mut state = self.shared.borrow_mut();
         let State {
@@ -124,6 +120,16 @@ impl FramePass for PointPass {
             *uploaded = true;
         }
         node.record(encoder, target.color, None, None);
+    }
+
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
+        {
+            let mut state = self.shared.borrow_mut();
+            state.format = frame.color;
+            state.depth = frame.depth;
+            state.sample_count = frame.sample_count;
+        }
+        self.rebuild(gpu)
     }
 
     fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {

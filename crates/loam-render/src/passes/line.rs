@@ -6,8 +6,9 @@ use loam_runtime::{Eye, SegmentRecord};
 use wgpu::{CommandEncoder, Device, Queue, TextureFormat};
 
 use crate::device::{GpuContext, MissingGpuCapability};
-use crate::pass::{FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR, SCENE_DEPTH};
-use crate::view::DEPTH_FORMAT;
+use crate::pass::{
+    FrameFormat, FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR, SCENE_DEPTH,
+};
 use crate::{DepthConvention, DepthMode, LineRasterNode};
 
 const READS: [ResourceId; 1] = [SCENE_DEPTH];
@@ -15,6 +16,7 @@ const WRITES: [ResourceId; 1] = [SCENE_COLOR];
 
 struct State {
     format: TextureFormat,
+    depth: TextureFormat,
     sample_count: u32,
     eye: Eye,
     segments: Vec<SegmentRecord>,
@@ -36,6 +38,7 @@ impl LinePass {
             name,
             shared: Rc::new(RefCell::new(State {
                 format: TextureFormat::Rgba8UnormSrgb,
+                depth: crate::view::DEPTH_FORMAT,
                 sample_count: 1,
                 eye: Eye::default(),
                 segments: Vec::new(),
@@ -77,12 +80,6 @@ impl FramePass for LinePass {
         PassOrder::AfterScene
     }
 
-    fn target(&mut self, format: TextureFormat, sample_count: u32) {
-        let mut state = self.shared.borrow_mut();
-        state.format = format;
-        state.sample_count = sample_count;
-    }
-
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
         let Some(depth) = target.depth else {
             return;
@@ -114,13 +111,23 @@ impl FramePass for LinePass {
         node.record(encoder, target.color, Some(depth), None);
     }
 
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
+        {
+            let mut state = self.shared.borrow_mut();
+            state.format = frame.color;
+            state.depth = frame.depth;
+            state.sample_count = frame.sample_count;
+        }
+        self.rebuild(gpu)
+    }
+
     fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
         let mut state = self.shared.borrow_mut();
         state.node = Some(LineRasterNode::new(
             &gpu.device,
             state.format,
             DepthMode::ReadOnly {
-                format: DEPTH_FORMAT,
+                format: state.depth,
             },
             DepthConvention::ReversedZ,
             state.sample_count,
