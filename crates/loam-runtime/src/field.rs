@@ -70,7 +70,7 @@ impl FieldOp {
         }
     }
 
-    /// The weakest operand kind, dropped to `ConservativeBound` by subtraction and smooth union, which are not distances.
+    /// The weakest operand kind, dropped to `ConservativeBound` by intersection, subtraction, and smooth union; a union stays exact outside the solid and under-reports penetration inside it, never inventing separation.
     pub fn result_kind(self, operands: &[FieldKind]) -> FieldKind {
         let weakest = operands
             .iter()

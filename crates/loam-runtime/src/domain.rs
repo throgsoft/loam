@@ -202,6 +202,7 @@ pub trait DomainSpace:
     /// Names the first non-finite coordinate or reports the chart boundary; nothing is clamped.
     fn check(&self, point: Self::Point) -> Result<(), DomainError>;
 
+    /// The coordinates a chart point carries, 4 for R⁴ and 3 for R³ and H³.
     fn chart_dimension(&self) -> u32;
 
     fn chart_point(&self, point: Self::Point) -> ChartPoint;

@@ -671,6 +671,7 @@ impl Rotor4 {
         [c0.to_array(), c1.to_array(), c2.to_array(), c3.to_array()]
     }
 
+    /// The rotor whose frame is `columns`, or `None` for a frame no rotor rebuilds within 1e-3, such as a reflection or a skew.
     pub fn from_mat4(columns: &[[f32; 4]; 4]) -> Option<Self> {
         let target = columns.map(Vec4::from_array);
         let axes = [Vec4::X, Vec4::Y, Vec4::Z];
