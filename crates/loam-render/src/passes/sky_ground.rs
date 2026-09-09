@@ -19,6 +19,7 @@ struct State {
     queue: Option<Queue>,
 }
 
+/// A `SkyGroundNode` before the scene that paints the sky and checker floor over the presenter's clear and writes their depth under reversed Z; clones share one state.
 #[derive(Clone)]
 pub struct SkyGroundPass {
     shared: Rc<RefCell<State>>,
@@ -39,6 +40,7 @@ impl SkyGroundPass {
         }
     }
 
+    /// Stores the eye and the ground; the record builds the uniforms from them.
     pub fn publish(&self, eye: &Eye, ground: Ground) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;

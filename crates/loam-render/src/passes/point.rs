@@ -26,6 +26,7 @@ struct State {
     queue: Option<Queue>,
 }
 
+/// A `PointRasterNode` after the scene that reads and writes scene colour with no depth test; clones share one state.
 #[derive(Clone)]
 pub struct PointPass {
     name: &'static str,
@@ -50,6 +51,7 @@ impl PointPass {
         }
     }
 
+    /// Stores the eye and rebuilds the point mesh; the record uploads it again only when a position differs from the last publish or the device was rebuilt.
     pub fn publish(&self, eye: &Eye, points: &[PointRecord]) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;

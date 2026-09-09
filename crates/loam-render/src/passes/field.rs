@@ -19,6 +19,7 @@ struct State {
     queue: Option<Queue>,
 }
 
+/// A `FieldMarchNode` before the scene with no depth; clones share one state.
 #[derive(Clone)]
 pub struct FieldPass {
     shared: Rc<RefCell<State>>,
@@ -45,6 +46,7 @@ impl FieldPass {
         }
     }
 
+    /// Stores the uniforms and copies the program into held buffers without cloning it; the record hands both to the node.
     pub fn publish(&self, uniforms: FieldMarchUniforms, program: &FieldProgram) {
         let mut state = self.shared.borrow_mut();
         state.uniforms = uniforms;

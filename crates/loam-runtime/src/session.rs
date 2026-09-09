@@ -667,7 +667,7 @@ impl<A: Stores> Session<A> {
         self.drag
     }
 
-    /// Picks, refuses a view without a ray lift by name, and records a drag plane through the hit facing the root eye.
+    /// Picks among the views with a ray lift and records a drag plane through the hit facing the root eye.
     pub fn grab(&mut self, ndc: [f32; 2], time: f64) -> Result<Pick, DragError> {
         let pick = self
             .domains
@@ -901,7 +901,7 @@ impl<A: Stores> Session<A> {
         }
     }
 
-    /// Stamps every record buffer with the tick and a sequence that advances while paused.
+    /// Runs the Publication systems, stamps every record buffer with the tick and a sequence that advances while paused, then runs the Presentation systems; an entry awaiting a readback suspends the call, and the next call resumes at that entry.
     pub fn publish(&mut self, into: &mut Publication<A>) -> Result<(), DomainError> {
         let step = Step {
             tick: self.tick,

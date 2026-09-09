@@ -23,6 +23,7 @@ struct State {
     queue: Option<Queue>,
 }
 
+/// A `Hyperslice4DNode` after the scene that writes scene colour and depth under reversed Z; clones share one state.
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,
@@ -44,6 +45,7 @@ impl HyperslicePass {
         }
     }
 
+    /// Stores the uniforms and copies the bodies; the record fills in the resolution and flushes both.
     pub fn publish(&self, uniforms: Hyperslice4DUniforms, bodies: &[BodyUniform]) {
         let mut state = self.shared.borrow_mut();
         state.uniforms = uniforms;

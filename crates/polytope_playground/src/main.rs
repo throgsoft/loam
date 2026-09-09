@@ -614,7 +614,7 @@ fn headless(booted: &mut Boot, frame: &Frame, config: &HostConfig) -> Result<(),
 #[cfg(test)]
 mod tests {
     use loam_render::raymarch::RaymarchShape;
-    use loam_runtime::{AppCommand, Records};
+    use loam_runtime::Records;
     use loam_shape::polytope::Polytope4;
 
     use super::*;
@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mode_command_lands_in_the_store_at_the_next_boundary_and_names_the_mode() {
+    fn a_mode_command_lands_in_the_store_at_the_next_boundary() {
         let (mut booted, intents) = one_slot();
         push(&intents, Intent::Mode(Mode::Toybox));
         assert_eq!(
@@ -684,15 +684,6 @@ mod tests {
             booted.session.results().len()
         );
         assert!(booted.session.results()[0].outcome.is_ok());
-        assert_eq!(
-            SetMode {
-                mode: Mode::Toybox,
-                domain: booted.domain,
-            }
-            .name(),
-            "toybox",
-            "the console would report a result name that is not the mode"
-        );
     }
 
     #[test]

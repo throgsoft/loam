@@ -21,6 +21,7 @@ pub enum PassOrder {
     AfterScene,
 }
 
+/// The colour and depth formats and sample count the presenter negotiated, handed to every pass at attach.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FrameFormat {
     pub color: TextureFormat,
@@ -54,6 +55,7 @@ pub trait FramePass {
 
     fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>);
 
+    /// The schedule calls this in place of `rebuild` at startup and after a device loss, passing the frame's format; the default forwards to `rebuild`.
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
         let _ = frame;
         self.rebuild(gpu)

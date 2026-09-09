@@ -37,7 +37,7 @@ impl Presenter {
         }
     }
 
-    /// Call at startup and after a device loss; it drops device objects, rebuilds the passes, and installs the timer.
+    /// Call at startup and after a device loss; it drops device objects, installs the timer, and attaches every pass with the frame's colour, depth, and sample count.
     pub fn attach(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
         self.depth = None;
         self.views.clear();
@@ -105,6 +105,7 @@ impl Presenter {
         }
     }
 
+    /// Clears colour and depth in `present-clear`, records the passes before the scene, draws the views in `present-draw`, then records the passes after the scene.
     pub fn record(
         &mut self,
         device: &Device,

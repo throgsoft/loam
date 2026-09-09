@@ -41,7 +41,7 @@ impl<S: PhysicsSpace> PhysicsConfig<S> {
     }
 }
 
-/// A domain's world plus the map between its entities and bodies; each step writes every dirty body's pose into its entity's row, and it claims `Place` with an identity frame and `Walk` for entities that have a body.
+/// A domain's world plus the map between its entities and bodies; each step writes every dirty body's pose into its entity's row, and it claims `Place` with an identity frame, `Move` keeping the body's orientation, and `Walk` for entities that have a body.
 pub struct Physics<S: PhysicsSpace> {
     world: World<S>,
     to_body: Vec<Option<(u32, BodyId)>>,

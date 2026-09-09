@@ -1155,7 +1155,7 @@ impl Domains {
             .ok_or(DomainError::SpaceMismatch(handle.id))
     }
 
-    /// The nearest hit by the root eye's projective depth across every view whose image space reaches the root, each cast with the ray pulled into its space.
+    /// The nearest hit by the root eye's projective depth across every view whose image space reaches the root, lifted or not, each cast with the ray pulled into its space.
     pub fn pick(
         &self,
         views: &Views,
@@ -1165,6 +1165,7 @@ impl Domains {
         self.nearest(views, prepared, ndc, false)
     }
 
+    /// The same search as `pick` over only the views with a ray lift, so a grab lands on a view it can drag.
     pub fn pick_lifted(
         &self,
         views: &Views,
