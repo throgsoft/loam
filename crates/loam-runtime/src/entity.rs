@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::command::Rejection;
+use crate::domain::DomainError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RuntimeId(u32);
@@ -181,7 +182,9 @@ impl Entities {
 
     /// A slot whose generation would wrap is retired instead of recycled.
     pub fn despawn(&mut self, entity: Entity) -> Result<EntityKey, Rejection> {
-        let key = self.resolve(entity).ok_or(Rejection::Stale(entity))?;
+        let key = self
+            .resolve(entity)
+            .ok_or(Rejection::Domain(DomainError::Stale(entity)))?;
         self.slots[key.slot as usize].live = false;
         self.live -= 1;
         self.retire(key.slot as usize);
@@ -250,7 +253,7 @@ mod tests {
         assert_eq!(entities.resolve(recycled), Some(recycled.key()));
         assert!(matches!(
             entities.despawn(doomed),
-            Err(Rejection::Stale(stale)) if stale == doomed
+            Err(Rejection::Domain(DomainError::Stale(stale))) if stale == doomed
         ));
         assert_eq!(entities.len(), 1);
 

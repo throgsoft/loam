@@ -641,7 +641,7 @@ impl<A: Stores> Session<A> {
     /// Checks the anchor, domain, view, and placement kind before it links the view.
     pub fn bridge(&mut self, spec: BridgeSpec) -> Result<LinkId, BridgeError> {
         if self.entities().resolve(spec.anchor).is_none() {
-            return Err(BridgeError::Stale(spec.anchor));
+            return Err(BridgeError::Domain(DomainError::Stale(spec.anchor)));
         }
         let summary = {
             let source = self
@@ -656,7 +656,7 @@ impl<A: Stores> Session<A> {
             return Err(BridgeError::Nonlinear(summary.name));
         }
         if self.entities().resolve(summary.eye).is_none() {
-            return Err(BridgeError::Stale(summary.eye));
+            return Err(BridgeError::Domain(DomainError::Stale(summary.eye)));
         }
         let image = self
             .views

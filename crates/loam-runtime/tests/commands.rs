@@ -220,15 +220,15 @@ fn stale_or_foreign_attachments_do_not_claim_recycled_slots() {
     session.dispatch(|dispatch| {
         assert_eq!(
             dispatch.attach(doomed, Tag(5)),
-            Err(Rejection::Stale(doomed))
+            Err(Rejection::Domain(DomainError::Stale(doomed)))
         );
         assert_eq!(
             dispatch.link(doomed, peer, 1),
-            Err(Rejection::Stale(doomed))
+            Err(Rejection::Domain(DomainError::Stale(doomed)))
         );
         assert_eq!(
             dispatch.attach_instance(r4, doomed, instance),
-            Err(Rejection::Stale(doomed))
+            Err(Rejection::Domain(DomainError::Stale(doomed)))
         );
         assert_eq!(
             dispatch.attach_field(
@@ -240,7 +240,7 @@ fn stale_or_foreign_attachments_do_not_claim_recycled_slots() {
                     operands: Vec::new(),
                 },
             ),
-            Err(Rejection::Stale(doomed))
+            Err(Rejection::Domain(DomainError::Stale(doomed)))
         );
 
         let reused = dispatch.spawn(placed(r4, Tag(6))).unwrap();
@@ -294,7 +294,7 @@ fn rejected_spawn_bundle_leaves_an_attachment_behind() {
     assert!(session.domains().read(r4).unwrap().poses().is_empty());
     assert_eq!(
         session.dispatch(|d| d.despawn(reservation.entity)),
-        Err(Rejection::Stale(reservation.entity))
+        Err(Rejection::Domain(DomainError::Stale(reservation.entity)))
     );
 
     let fresh = session.dispatch(|d| d.spawn(placed(r4, Tag(3)))).unwrap();
@@ -335,7 +335,7 @@ fn later_failed_command_rolls_back_an_earlier_successful_spawn() {
         [
             Ok(Outcome::Spawned(good.entity)),
             Err(Rejection::Store(StoreError::Occupied(bad.entity))),
-            Err(Rejection::Stale(bad.entity)),
+            Err(Rejection::Domain(DomainError::Stale(bad.entity))),
         ]
     );
     assert_eq!(session.entities().len(), 1);

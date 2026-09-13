@@ -223,7 +223,7 @@ fn stale_and_foreign_entities_cannot_reach_a_current_physics_body() {
                     },
                 },
             ))),
-            Err(Rejection::Stale(invalid))
+            Err(Rejection::Domain(DomainError::Stale(invalid)))
         );
     }
 

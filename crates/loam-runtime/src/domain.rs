@@ -207,8 +207,10 @@ pub enum EdgeShading {
 pub enum DomainError {
     ForeignRuntime,
     UnknownDomain(DomainId),
+    UnknownView(ViewId),
     SpaceMismatch(DomainId),
     Stale(Entity),
+    Store(StoreError),
     InvalidCoordinate(&'static str),
     InvalidFrame,
     ChartBoundary,
@@ -225,6 +227,15 @@ pub enum DomainError {
 impl From<loam_physics::EditError> for DomainError {
     fn from(error: loam_physics::EditError) -> Self {
         Self::Physics(error)
+    }
+}
+
+impl From<StoreError> for DomainError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::Stale(entity) => Self::Stale(entity),
+            error => Self::Store(error),
+        }
     }
 }
 
@@ -1750,14 +1761,14 @@ impl<S: DomainSpace> TypedDomain<S> {
         instance: Instance,
     ) -> Result<(), Rejection> {
         if !self.poses.contains(entity) {
-            return Err(Rejection::Stale(entity));
+            return Err(Rejection::Domain(DomainError::Stale(entity)));
         }
         put_row(&mut self.instances, entity, instance)
     }
 
     pub(crate) fn attach_field(&mut self, entity: Entity, field: Field) -> Result<(), Rejection> {
         if !self.poses.contains(entity) {
-            return Err(Rejection::Stale(entity));
+            return Err(Rejection::Domain(DomainError::Stale(entity)));
         }
         let fields = self
             .fields
@@ -1842,7 +1853,7 @@ impl<S: DomainSpace> TypedDomain<S> {
     pub fn set_view_eye(&mut self, id: ViewId, eye: Entity) -> Result<(), DomainError> {
         let index = id.index();
         if self.views.get(index).is_none() {
-            return Err(DomainError::Unsupported("unknown view"));
+            return Err(DomainError::UnknownView(id));
         }
         if !self.poses.contains(eye) {
             return Err(DomainError::Stale(eye));
@@ -1862,7 +1873,7 @@ impl<S: DomainSpace> TypedDomain<S> {
     ) -> Result<(), DomainError> {
         let index = id.index();
         if self.views.get(index).is_none() {
-            return Err(DomainError::Unsupported("unknown view"));
+            return Err(DomainError::UnknownView(id));
         }
         if let Some(subject) = subject {
             if !self.poses.contains(subject) {
@@ -2172,7 +2183,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError> {
         self.views
             .get(view.index())
-            .ok_or(DomainError::Unsupported("unknown view"))?;
+            .ok_or(DomainError::UnknownView(view))?;
         self.targets[view.index()].image = image;
         self.view_revisions[view.index()] = self.view_revisions[view.index()].wrapping_add(1);
         Ok(())
@@ -2188,11 +2199,11 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let spec = self
             .views
             .get(view.index())
-            .ok_or(DomainError::Unsupported("unknown view"))?;
+            .ok_or(DomainError::UnknownView(view))?;
         let revision = *self
             .view_revisions
             .get(view.index())
-            .ok_or(DomainError::Unsupported("unknown view"))?;
+            .ok_or(DomainError::UnknownView(view))?;
         let mut pose_cursor = into.poses;
         let pose_changes = self.poses.changes(&mut pose_cursor);
         let pose_resync = pose_changes.is_resync();
@@ -2327,7 +2338,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let spec = self
             .views
             .get(view.index())
-            .ok_or(DomainError::Unsupported("unknown view"))?;
+            .ok_or(DomainError::UnknownView(view))?;
         let eye = self
             .poses
             .get(spec.eye)

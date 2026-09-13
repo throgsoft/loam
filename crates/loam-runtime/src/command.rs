@@ -21,7 +21,6 @@ pub enum Outcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {
-    Stale(Entity),
     Reserved(Entity),
     Capacity,
     Domain(DomainError),
@@ -350,7 +349,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
     pub fn spawn(&mut self, bundle: SpawnBundle<A>) -> Result<Entity, Rejection> {
         let entity = match bundle.reserved {
             Some(entity) if self.entities.is_reserved(entity) => entity,
-            Some(entity) => return Err(Rejection::Stale(entity)),
+            Some(entity) => return Err(Rejection::Domain(DomainError::Stale(entity))),
             None => self.entities.reserve(),
         };
         match self.attach_bundle(entity, bundle) {
@@ -446,7 +445,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
             return Err(Rejection::Reserved(entity));
         }
         if self.entities.resolve(entity).is_none() {
-            return Err(Rejection::Stale(entity));
+            return Err(Rejection::Domain(DomainError::Stale(entity)));
         }
         self.detach(entity);
         self.entities.despawn(entity)?;
@@ -457,7 +456,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         self.entities
             .resolve(entity)
             .map(|_| ())
-            .ok_or(Rejection::Stale(entity))
+            .ok_or(Rejection::Domain(DomainError::Stale(entity)))
     }
 
     pub fn apply(&mut self, command: Command<A>) -> Result<Outcome, Rejection> {
@@ -467,7 +466,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
             Command::Chart(domain, command) => {
                 let entity = command.entity();
                 if self.entities.resolve(entity).is_none() {
-                    return Err(Rejection::Stale(entity));
+                    return Err(Rejection::Domain(DomainError::Stale(entity)));
                 }
                 self.domains
                     .facade(domain)

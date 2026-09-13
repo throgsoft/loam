@@ -1,9 +1,9 @@
 use loam_math::{EuclideanR3, EuclideanR4, Iso3, Space};
 use loam_runtime::{
-    BridgeError, BridgeSpec, ChartId, ChartPose, Command, Ctx, DomainBuilder, DomainHandle,
-    DomainSpace, DragError, Entity, Eye, ImageSpaceId, Input, Instance, LogCapacity, Material,
-    Phase, Placement, Pose, PreparedGeometry, Projection4, Publication, Rigid, Section4, Session,
-    SimConfig, SpawnBundle, ViewId, ViewMapping, ViewSpec,
+    BridgeError, BridgeSpec, ChartId, ChartPose, Command, Ctx, DomainBuilder, DomainError,
+    DomainHandle, DomainSpace, DragError, Entity, Eye, ImageSpaceId, Input, Instance, LogCapacity,
+    Material, Phase, Placement, Pose, PreparedGeometry, Projection4, Publication, Rigid, Section4,
+    Session, SimConfig, SpawnBundle, ViewId, ViewMapping, ViewSpec,
 };
 
 type Vec3 = <EuclideanR3 as Space>::Point;
@@ -178,7 +178,7 @@ fn a_stale_bridge_eye_changes_no_view_or_link() {
 
     assert_eq!(
         stage.bridge(root, section, shrunk()),
-        Err(BridgeError::Stale(eye))
+        Err(BridgeError::Domain(DomainError::Stale(eye)))
     );
     assert!(stage.session.bridges().is_empty());
     assert_eq!(targets(&stage, section), (stage.root, stage.root));
