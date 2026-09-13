@@ -371,6 +371,7 @@ fn a_bridge_survives_its_anchor_despawned_by_a_deferred_command() {
         .session
         .system(Phase::Dispatch, "retire", move |ctx: Ctx<'_, Probe>| {
             ctx.commands.submit(Command::Despawn(anchor));
+            Ok(())
         });
     stage.session.boundary(Input::default()).unwrap();
     assert!(stage.session.bridges().is_empty());

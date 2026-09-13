@@ -82,16 +82,6 @@ pub enum Command<A> {
 }
 
 impl<A> Command<A> {
-    pub fn app_fn(
-        name: &'static str,
-        mut apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
-    ) -> Self {
-        Self::try_app_fn(name, move |dispatch| {
-            apply(dispatch);
-            Ok(Outcome::Done)
-        })
-    }
-
     pub fn try_app_fn(
         name: &'static str,
         apply: impl FnMut(&mut Dispatch<'_, A>) -> Result<Outcome, Rejection> + Send + 'static,
@@ -167,15 +157,6 @@ impl<A: Stores> Commands<A> {
 
     pub fn app(&mut self, command: impl AppCommand<A>) -> RequestId {
         self.submit(Command::App(Box::new(command)))
-    }
-
-    /// A command with no data of its own; one that carries data implements `AppCommand`.
-    pub fn app_fn(
-        &mut self,
-        name: &'static str,
-        apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
-    ) -> RequestId {
-        self.submit(Command::app_fn(name, apply))
     }
 
     pub fn try_app_fn(

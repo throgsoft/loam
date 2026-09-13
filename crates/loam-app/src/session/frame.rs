@@ -881,6 +881,7 @@ struct Fragment {
                 if ctx.input.pressed(RESET) {
                     ctx.commands.submit(Command::Reset);
                 }
+                Ok(())
             },
         );
         session.set_initial().expect("initial state");

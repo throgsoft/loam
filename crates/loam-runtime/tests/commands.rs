@@ -3,11 +3,10 @@ use std::any::Any;
 use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Space};
 use loam_runtime::{
     ActionEvent, ActionId, AppCommand, ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent,
-    Command, CommandResult, Commands, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle,
-    DomainSpace, Domains, Entity, Facility, Field, FieldKind, FieldOp, HostError, Input, Instance,
-    Material, Order, Outcome, Phase, Pose, PreparedGeometry, Rejection, Relation, RequestId,
-    Reservation, RestoreError, Session, SimConfig, SpawnBundle, Step, Store, StoreError,
-    DOMAIN_STEP,
+    Command, CommandResult, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle, DomainSpace,
+    Entity, Facility, Field, FieldKind, FieldOp, HostError, Input, Instance, Material, Order,
+    Outcome, Phase, Pose, PreparedGeometry, Rejection, Relation, RequestId, Reservation,
+    RestoreError, Session, SimConfig, SpawnBundle, Step, Store, StoreError, DOMAIN_STEP,
 };
 
 type Vec3 = <EuclideanR3 as Space>::Point;
@@ -132,7 +131,7 @@ fn marks(values: &[u32]) -> Input {
 fn named_system_failures_are_distinct_in_runtime_and_host_errors() {
     let fail = |name: &'static str| {
         let (mut session, _) = session();
-        session.fallible_system(Phase::Dispatch, name, |_ctx| {
+        session.system(Phase::Dispatch, name, |_ctx: Ctx<'_, Probe>| {
             Err(DomainError::ChartBoundary)
         });
         let error = session.boundary(Input::default()).unwrap_err();
@@ -280,6 +279,7 @@ fn rejected_spawn_bundle_leaves_an_attachment_behind() {
             let reservation = ctx.commands.spawn(doubled()).unwrap();
             ctx.app.reserved.get_mut().push(reservation);
         }
+        Ok(())
     });
     session.tick().unwrap();
     session.boundary(Input::default()).unwrap();
@@ -311,7 +311,7 @@ fn later_failed_command_rolls_back_an_earlier_successful_spawn() {
         "spawn pair",
         move |ctx: Ctx<'_, Probe>| {
             if !ctx.app.reserved.get().is_empty() {
-                return;
+                return Ok(());
             }
             let good = ctx.commands.spawn(placed(r4, Tag(1))).unwrap();
             let bad = ctx.commands.spawn(placed(r4, Tag(2)).row(Tag(3))).unwrap();
@@ -320,6 +320,7 @@ fn later_failed_command_rolls_back_an_earlier_successful_spawn() {
                 to: bad.entity,
             });
             ctx.app.reserved.set(vec![good, bad]);
+            Ok(())
         },
     );
     session.tick().unwrap();
@@ -355,17 +356,15 @@ fn later_failed_command_rolls_back_an_earlier_successful_spawn() {
 #[test]
 fn commands_reorder_repeat_or_vanish_around_pause_and_catch_up() {
     let (mut session, _) = session();
-    session.system(
-        Phase::Dispatch,
-        "marks",
-        |input: &Input, commands: &mut Commands<Probe>| {
-            for event in &input.actions {
-                commands.app(Mark(event.action.0));
-            }
-        },
-    );
+    session.system(Phase::Dispatch, "marks", |ctx: Ctx<'_, Probe>| {
+        for event in &ctx.input.actions {
+            ctx.commands.app(Mark(event.action.0));
+        }
+        Ok(())
+    });
     session.system(Phase::Simulation, "tick mark", |ctx: Ctx<'_, Probe>| {
         ctx.commands.app(Mark(100 + ctx.step.tick.0 as u32));
+        Ok(())
     });
 
     let schedule: [(&[u32], u32); 6] = [
@@ -412,6 +411,7 @@ fn dispatch_spawn_returns_a_handle_that_is_not_live() {
     session.system(Phase::Dispatch, "spawn", move |ctx: Ctx<'_, Probe>| {
         let reservation = ctx.commands.spawn(placed(r4, Tag(2))).unwrap();
         ctx.app.reserved.get_mut().push(reservation);
+        Ok(())
     });
     session.system(Phase::Dispatch, "observe", |ctx: Ctx<'_, Probe>| {
         let reservation = ctx.app.reserved.get()[0];
@@ -422,6 +422,7 @@ fn dispatch_spawn_returns_a_handle_that_is_not_live() {
         });
         ctx.app.log.get_mut().push(u32::from(live));
         ctx.app.log.get_mut().push(u32::from(reported));
+        Ok(())
     });
     session.boundary(Input::default()).unwrap();
     let reservation = session.app.reserved.get()[0];
@@ -444,6 +445,7 @@ fn reserved_handle_resolves_before_its_spawn_commits() {
         let reservation = ctx.app.reserved.get()[0];
         let seen = ctx.app.tags.contains(reservation.entity);
         ctx.app.log.get_mut().push(u32::from(seen));
+        Ok(())
     });
     session.tick().unwrap();
     let reservation = session.app.reserved.get()[0];
@@ -488,9 +490,10 @@ fn system_after_the_domain_step_does_not_see_the_steps_writes() {
         .dispatch(|d| d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO))))
         .unwrap();
     let sample = move |slot: usize| {
-        move |app: &mut Probe, domains: &mut Domains| {
-            let pose = domains.read(r4).unwrap().poses().get(walker).unwrap();
-            app.sample.get_mut()[slot] = Some(pose.point.x);
+        move |ctx: Ctx<'_, Probe>| {
+            let pose = ctx.domains.read(r4).unwrap().poses().get(walker).unwrap();
+            ctx.app.sample.get_mut()[slot] = Some(pose.point.x);
+            Ok(())
         }
     };
     session

@@ -17,9 +17,9 @@ use loam::physics::BodyId;
 use loam::render::{FragmentShading, TriangleFeed};
 use loam::runtime::host::{self, HostConfig, HostError};
 use loam::runtime::{
-    ActionId, Bindings, Command, Commands, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle,
-    Domains, Entity, Input, Key, LogCapacity, Orbit, Order, Outcome, Phase, Physics, PhysicsConfig,
-    Pose, Rejection, Rigid, Session, SimConfig, SpawnBundle, DOMAIN_STEP,
+    ActionId, Bindings, Command, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle, Domains,
+    Entity, Key, LogCapacity, Orbit, Order, Outcome, Phase, Physics, PhysicsConfig, Pose,
+    Rejection, Rigid, Session, SimConfig, SpawnBundle, DOMAIN_STEP,
 };
 use loam::shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
 use loam::shape::{Shape, TriangleMesh};
@@ -567,29 +567,29 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
     orbit.pitch = BOOT_ORBIT_PITCH;
     session.orbit(orbit);
 
-    session.system(
-        Phase::Dispatch,
-        "keys",
-        move |app: &mut HeroStores, input: &Input, commands: &mut Commands<HeroStores>| {
-            if input.pressed(PAUSE) {
-                let paused = !app.stage.get().paused;
-                commands.try_app_fn("pause", move |d: &mut Dispatch<'_, HeroStores>| {
+    session.system(Phase::Dispatch, "keys", move |ctx: Ctx<'_, HeroStores>| {
+        if ctx.input.pressed(PAUSE) {
+            let paused = !ctx.app.stage.get().paused;
+            ctx.commands
+                .try_app_fn("pause", move |d: &mut Dispatch<'_, HeroStores>| {
                     hold(d, r4, paused)?;
                     d.app.stage.get_mut().paused = paused;
                     Ok(Outcome::Done)
                 });
-            }
-            if input.pressed(RESEED) {
-                let seed = app.stage.get().seed.wrapping_add(1);
-                commands.submit(Command::Reset);
-                commands.app_fn("reseed", move |d: &mut Dispatch<'_, HeroStores>| {
+        }
+        if ctx.input.pressed(RESEED) {
+            let seed = ctx.app.stage.get().seed.wrapping_add(1);
+            ctx.commands.submit(Command::Reset);
+            ctx.commands
+                .try_app_fn("reseed", move |d: &mut Dispatch<'_, HeroStores>| {
                     d.app.stage.set(Stage::seeded(seed));
+                    Ok(Outcome::Done)
                 });
-            }
-        },
-    );
+        }
+        Ok(())
+    });
 
-    session.fallible_system_at(
+    session.system_at(
         Phase::Simulation,
         Order::Before(DOMAIN_STEP),
         "assemble",
@@ -635,7 +635,7 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
         },
     );
 
-    session.fallible_system_at(
+    session.system_at(
         Phase::Simulation,
         Order::After(DOMAIN_STEP),
         "settle",
@@ -752,22 +752,23 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
     session.system(
         Phase::Publication,
         "compose",
-        move |app: &mut HeroStores, domains: &mut Domains| {
-            let tick = app.stage.get().tick;
-            let key = (tick, app.mesh.version());
+        move |ctx: Ctx<'_, HeroStores>| {
+            let tick = ctx.app.stage.get().tick;
+            let key = (tick, ctx.app.mesh.version());
             if composed == Some(key) {
-                return;
+                return Ok(());
             }
             compose(
-                app,
-                domains,
+                ctx.app,
+                ctx.domains,
                 r4,
                 &mut morph,
                 &mut local,
                 &mut scratch,
                 half_depth,
             );
-            composed = Some((tick, app.mesh.version()));
+            composed = Some((tick, ctx.app.mesh.version()));
+            Ok(())
         },
     );
 
@@ -905,7 +906,7 @@ fn main() -> ExitCode {
 mod tests {
     use loam::math::Rotor4;
     use loam::physics::manifold::PENETRATION_SLOP;
-    use loam::runtime::Publication;
+    use loam::runtime::{Input, Publication};
     use loam::shape::Visualizable;
 
     use super::*;

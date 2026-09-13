@@ -1,7 +1,6 @@
 use loam_math::{EuclideanR4, Iso4Flat, Rotor4};
 use loam_runtime::{
-    DomainBuilder, DomainError, Domains, Phase, Pose, Session, SimConfig, SpawnBundle, Step,
-    DOMAIN_STEP,
+    Ctx, DomainBuilder, DomainError, Phase, Pose, Session, SimConfig, SpawnBundle, DOMAIN_STEP,
 };
 
 #[derive(Clone, Copy)]
@@ -40,28 +39,26 @@ fn typed_borrow_never_reaches_another_domain_or_session() {
         .unwrap();
     });
 
-    session.system(Phase::Simulation, "count", |app: &mut Probe, step: Step| {
-        for (_, tally) in app.tallies.iter_mut() {
+    session.system(Phase::Simulation, "count", |ctx: Ctx<'_, Probe>| {
+        for (_, tally) in ctx.app.tallies.iter_mut() {
             tally.ticks += 1;
         }
-        *app.elapsed.get_mut() += step.dt;
+        *ctx.app.elapsed.get_mut() += ctx.step.dt;
+        Ok(())
     });
-    session.system(
-        Phase::Simulation,
-        "read far",
-        move |app: &mut Probe, domains: &mut Domains| {
-            assert!(matches!(
-                domains.read(foreign),
-                Err(DomainError::ForeignRuntime)
-            ));
-            assert!(domains.read(near).unwrap().poses().is_empty());
-            let far = domains.read(far).unwrap();
-            for (entity, tally) in app.tallies.iter() {
-                let pose = far.poses().get(entity).unwrap();
-                app.seen.set(Some(pose.frame.xy * tally.ticks as f32));
-            }
-        },
-    );
+    session.system(Phase::Simulation, "read far", move |ctx: Ctx<'_, Probe>| {
+        assert!(matches!(
+            ctx.domains.read(foreign),
+            Err(DomainError::ForeignRuntime)
+        ));
+        assert!(ctx.domains.read(near).unwrap().poses().is_empty());
+        let far = ctx.domains.read(far).unwrap();
+        for (entity, tally) in ctx.app.tallies.iter() {
+            let pose = far.poses().get(entity).unwrap();
+            ctx.app.seen.set(Some(pose.frame.xy * tally.ticks as f32));
+        }
+        Ok(())
+    });
 
     session.tick().unwrap();
 

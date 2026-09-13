@@ -157,6 +157,7 @@ fn pending_commands_or_reservations_survive_cancellation_into_the_restored_state
             ctx.app.reserved.get_mut().push(reservation);
             ctx.commands.app(Mark(1));
         }
+        Ok(())
     });
     session.tick().unwrap();
     let reservation = session.app.reserved.get()[0];
@@ -438,6 +439,7 @@ fn snapshot_is_taken_while_commands_are_pending_instead_of_being_refused() {
         if ctx.step.tick.0 == 0 {
             ctx.commands.app(Mark(1));
         }
+        Ok(())
     });
     session.tick().unwrap();
     assert_eq!(session.snapshot().err(), Some(RestoreError::Pending));
@@ -597,6 +599,7 @@ fn request_queued_after_a_reset_in_the_same_batch_applies_to_the_restored_state(
             ctx.commands.submit(Command::Reset);
             ctx.commands.app(Mark(2));
         }
+        Ok(())
     });
     session.tick().unwrap();
     session.boundary(Input::default()).unwrap();
@@ -690,9 +693,11 @@ fn cancelled_request_and_a_fresh_request_after_a_reset_share_an_id() {
         if ctx.step.tick.0 == 0 {
             ctx.commands.app(Mark(1));
         }
+        Ok(())
     });
     session.system(Phase::Dispatch, "fresh", |ctx: Ctx<'_, Probe>| {
         ctx.commands.app(Mark(2));
+        Ok(())
     });
     session.tick().unwrap();
     session.reset().unwrap();

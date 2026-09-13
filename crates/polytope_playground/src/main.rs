@@ -393,11 +393,12 @@ fn install_systems(
                     ctx.commands.app(Action::Plane(index));
                 }
             }
+            Ok(())
         },
     );
 
     let mut applied = None;
-    session.fallible_system(
+    session.system(
         Phase::Publication,
         "slice view",
         move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
@@ -418,7 +419,7 @@ fn install_systems(
 
     let mut styled = None;
     let mut styled_slots = loam::runtime::Cursor::default();
-    session.fallible_system(
+    session.system(
         Phase::Publication,
         "shading",
         move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
@@ -479,7 +480,7 @@ fn install_systems(
     );
 
     let mut shown = None;
-    session.fallible_system(
+    session.system(
         Phase::Publication,
         "projection view",
         move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
@@ -504,12 +505,12 @@ fn install_systems(
         "slice scrub",
         |ctx: Ctx<'_, Playground>| {
             if ctx.app.camera.get().mode != camera::CameraMode::Orbit {
-                return;
+                return Ok(());
             }
             let scrub =
                 f32::from(ctx.input.is_held(SLICE_UP)) - f32::from(ctx.input.is_held(SLICE_DOWN));
             if scrub == 0.0 {
-                return;
+                return Ok(());
             }
             let next = *ctx.app.slice.get() + scrub * W_SCRUB_RATE * ctx.step.dt;
             let next = match *ctx.app.mode.get() {
@@ -517,9 +518,10 @@ fn install_systems(
                 Mode::Toybox => next,
             };
             ctx.app.slice.set(next);
+            Ok(())
         },
     );
-    session.fallible_system(
+    session.system(
         Phase::Simulation,
         "spin",
         move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
@@ -552,9 +554,10 @@ fn install_systems(
                     ..camera.free.eye
                 };
             }
+            Ok(())
         },
     );
-    session.fallible_system(
+    session.system(
         Phase::Simulation,
         "toy settle",
         move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {

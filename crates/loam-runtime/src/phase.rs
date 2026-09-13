@@ -131,57 +131,17 @@ impl<A: Stores> Ctx<'_, A> {
     }
 }
 
-pub trait System<A, Marker>: Send + 'static {
-    fn run(&mut self, ctx: Ctx<'_, A>);
+pub trait System<A>: Send + 'static {
+    fn run(&mut self, ctx: Ctx<'_, A>) -> Result<(), DomainError>;
 }
 
-/// Marker types, one per adapted signature.
-pub mod signature {
-    use super::{Commands, Ctx, Domains, Input, Step, System, Views};
-
-    macro_rules! adapt {
-        ($marker:ident, $( $param:ty => $pick:ident ),+) => {
-            pub struct $marker;
-
-            impl<A: 'static, F> System<A, $marker> for F
-            where
-                F: FnMut($($param),+) + Send + 'static,
-            {
-                fn run(&mut self, ctx: Ctx<'_, A>) {
-                    self($(ctx.$pick),+)
-                }
-            }
-        };
+impl<A: 'static, F> System<A> for F
+where
+    F: FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+{
+    fn run(&mut self, ctx: Ctx<'_, A>) -> Result<(), DomainError> {
+        self(ctx)
     }
-
-    pub struct Full;
-
-    impl<A: 'static, F> System<A, Full> for F
-    where
-        F: FnMut(Ctx<'_, A>) + Send + 'static,
-    {
-        fn run(&mut self, ctx: Ctx<'_, A>) {
-            self(ctx)
-        }
-    }
-
-    adapt!(App, &mut A => app);
-    adapt!(AppStep, &mut A => app, Step => step);
-    adapt!(AppDomains, &mut A => app, &mut Domains => domains);
-    adapt!(AppDomainsStep, &mut A => app, &mut Domains => domains, Step => step);
-    adapt!(AppInputCommands, &mut A => app, &Input => input, &mut Commands<A> => commands);
-    adapt!(AppInputViews, &mut A => app, &Input => input, &mut Views => views);
-    adapt!(
-        AppDomainsInputStep,
-        &mut A => app,
-        &mut Domains => domains,
-        &Input => input,
-        Step => step
-    );
-    adapt!(InputCommands, &Input => input, &mut Commands<A> => commands);
-    adapt!(InputViews, &Input => input, &mut Views => views);
-    adapt!(DomainsStep, &mut Domains => domains, Step => step);
-    adapt!(DomainsInputStep, &mut Domains => domains, &Input => input, Step => step);
 }
 
 type Runner<A> = Box<dyn FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send>;
@@ -192,21 +152,11 @@ pub struct SystemEntry<A> {
 }
 
 impl<A: 'static> SystemEntry<A> {
-    pub(crate) fn new<M>(name: &'static str, system: impl System<A, M>) -> Self {
+    pub(crate) fn new(name: &'static str, system: impl System<A>) -> Self {
         let mut system = system;
-        Self::fallible(name, move |ctx: Ctx<'_, A>| {
-            system.run(ctx);
-            Ok(())
-        })
-    }
-
-    pub(crate) fn fallible(
-        name: &'static str,
-        run: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
-    ) -> Self {
         Self {
             name,
-            run: Box::new(run),
+            run: Box::new(move |ctx| system.run(ctx)),
         }
     }
 }
@@ -221,12 +171,6 @@ impl<A> SystemEntry<A> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EntryId {
-    pub phase: Phase,
-    pub index: u32,
-}
-
 pub(crate) struct Phases<A> {
     entries: [Vec<SystemEntry<A>>; 3],
 }
@@ -238,13 +182,8 @@ impl<A> Phases<A> {
         }
     }
 
-    pub(crate) fn push(&mut self, phase: Phase, entry: SystemEntry<A>) -> EntryId {
-        let list = &mut self.entries[phase.index()];
-        list.push(entry);
-        EntryId {
-            phase,
-            index: (list.len() - 1) as u32,
-        }
+    pub(crate) fn push(&mut self, phase: Phase, entry: SystemEntry<A>) {
+        self.entries[phase.index()].push(entry);
     }
 
     pub(crate) fn insert(
@@ -252,17 +191,14 @@ impl<A> Phases<A> {
         phase: Phase,
         order: Order,
         entry: SystemEntry<A>,
-    ) -> Option<EntryId> {
+    ) -> Option<()> {
         let list = &mut self.entries[phase.index()];
         let index = match order {
             Order::Before(name) => list.iter().position(|entry| entry.name() == name)?,
             Order::After(name) => list.iter().position(|entry| entry.name() == name)? + 1,
         };
         list.insert(index, entry);
-        Some(EntryId {
-            phase,
-            index: index as u32,
-        })
+        Some(())
     }
 
     pub(crate) fn entries(&self, phase: Phase) -> &[SystemEntry<A>] {

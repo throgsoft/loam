@@ -262,7 +262,7 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
             ))
         })?;
 
-    session.fallible_system(
+    session.system(
         Phase::Simulation,
         "walk",
         move |ctx: Ctx<'_, TwoSpaceStores>| -> Result<(), DomainError> {
@@ -285,7 +285,7 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
         },
     );
 
-    session.fallible_system(
+    session.system(
         Phase::Dispatch,
         "edit",
         move |ctx: Ctx<'_, TwoSpaceStores>| -> Result<(), DomainError> {

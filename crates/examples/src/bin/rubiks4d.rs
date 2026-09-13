@@ -5,10 +5,10 @@ use loam::app::session::{launch, SessionApp};
 use loam::math::{Bivector, EuclideanR4, Iso4Flat, IsometryGroup, Plane4, Rotor, Rotor4};
 use loam::runtime::host::{HostConfig, HostError};
 use loam::runtime::{
-    ActionId, AppCommand, Bindings, Command, Commands, Ctx, Dispatch, DomainBuilder, DomainError,
-    DomainHandle, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId, Outcome, Phase,
-    Pose, PreparedGeometry, Projection4, Rejection, Session, SimConfig, SpawnBundle, TypedDomain,
-    Value, ViewSpec,
+    ActionId, AppCommand, Bindings, Command, Ctx, Dispatch, DomainBuilder, DomainError,
+    DomainHandle, Eye, Instance, Key, LogCapacity, Material, MaterialId, Outcome, Phase, Pose,
+    PreparedGeometry, Projection4, Rejection, Session, SimConfig, SpawnBundle, TypedDomain, Value,
+    ViewSpec,
 };
 
 const TWIST: ActionId = ActionId(0);
@@ -404,7 +404,7 @@ fn build(
     session.views_mut().root_mut().eye =
         Eye::looking_at([0.0, 2.0, 6.0], [0.0; 3], [0.0, 1.0, 0.0]);
 
-    session.fallible_system(
+    session.system(
         Phase::Dispatch,
         "select",
         move |ctx: Ctx<'_, CubeStores>| -> Result<(), DomainError> {
@@ -456,25 +456,26 @@ fn build(
     session.system(
         Phase::Dispatch,
         "actions",
-        move |app: &mut CubeStores, input: &Input, commands: &mut Commands<CubeStores>| {
-            if input.pressed(TWIST) {
-                if let Some(twist) = selected_twist(app) {
-                    commands.app(TwistCommand { twist });
+        move |ctx: Ctx<'_, CubeStores>| {
+            if ctx.input.pressed(TWIST) {
+                if let Some(twist) = selected_twist(ctx.app) {
+                    ctx.commands.app(TwistCommand { twist });
                 }
             }
-            if input.pressed(SCRAMBLE) {
-                commands.app(Scramble { puzzle });
+            if ctx.input.pressed(SCRAMBLE) {
+                ctx.commands.app(Scramble { puzzle });
             }
-            if input.pressed(UNDO) {
-                commands.app(Undo { puzzle });
+            if ctx.input.pressed(UNDO) {
+                ctx.commands.app(Undo { puzzle });
             }
-            if input.pressed(RESET) {
-                commands.submit(Command::Reset);
+            if ctx.input.pressed(RESET) {
+                ctx.commands.submit(Command::Reset);
             }
+            Ok(())
         },
     );
 
-    session.fallible_system(
+    session.system(
         Phase::Simulation,
         "turn",
         move |ctx: Ctx<'_, CubeStores>| -> Result<(), DomainError> {
@@ -518,7 +519,7 @@ fn main() -> Result<(), HostError> {
 #[cfg(test)]
 mod tests {
     use loam::app::args::Args;
-    use loam::runtime::{ActionEvent, Pointer, PointerButton, PointerPhase, Publication};
+    use loam::runtime::{ActionEvent, Input, Pointer, PointerButton, PointerPhase, Publication};
 
     use super::*;
 
