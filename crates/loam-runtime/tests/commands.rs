@@ -5,8 +5,8 @@ use loam_runtime::{
     ActionEvent, ActionId, AppCommand, ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent,
     Command, CommandResult, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle, DomainSpace,
     Entity, Facility, Field, FieldKind, FieldOp, HostError, Input, Instance, Material, Order,
-    Outcome, Phase, Pose, PreparedGeometry, Rejection, Relation, RequestId, Reservation,
-    RestoreError, Session, SimConfig, SpawnBundle, Step, Store, StoreError, DOMAIN_STEP,
+    Outcome, Owner, Phase, Pose, PreparedGeometry, Rejection, Relation, RequestId, Reservation,
+    RestoreError, SchemaId, Session, SimConfig, SpawnBundle, Step, Store, StoreError, DOMAIN_STEP,
 };
 
 type Vec3 = <EuclideanR3 as Space>::Point;
@@ -98,6 +98,7 @@ impl Facility<EuclideanR4> for Drift {
         &mut self,
         poses: &mut Store<Pose<EuclideanR4>>,
         step: Step,
+        _owner: Owner,
     ) -> Result<(), DomainError> {
         for (_, pose) in poses.iter_mut() {
             pose.point.x += step.dt;
@@ -105,12 +106,18 @@ impl Facility<EuclideanR4> for Drift {
         Ok(())
     }
 
-    fn snapshot(&self) -> Box<dyn Any + Send> {
+    fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
         Box::new(())
     }
 
-    fn restore(&mut self, _from: &(dyn Any + Send)) -> Result<(), RestoreError> {
-        Ok(())
+    fn check_restore(&self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        from.downcast_ref::<()>()
+            .map(|_| ())
+            .ok_or(RestoreError::Schema(SchemaId::of::<()>()))
+    }
+
+    fn restore(&mut self, from: &(dyn Any + Send), owner: Owner) -> Result<(), RestoreError> {
+        self.check_restore(from, owner)
     }
 }
 

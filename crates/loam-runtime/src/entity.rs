@@ -34,8 +34,8 @@ impl Epoch {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SceneId {
-    pub runtime: RuntimeId,
-    pub epoch: Epoch,
+    pub(crate) runtime: RuntimeId,
+    pub(crate) epoch: Epoch,
 }
 
 impl SceneId {
@@ -43,6 +43,14 @@ impl SceneId {
         runtime: RuntimeId(0),
         epoch: Epoch(0),
     };
+
+    pub fn runtime(self) -> RuntimeId {
+        self.runtime
+    }
+
+    pub fn epoch(self) -> Epoch {
+        self.epoch
+    }
 }
 
 /// Slot and generation; survives a restore and never leaves the session.
@@ -265,6 +273,6 @@ mod tests {
         assert_eq!(entities.resolve(recycled), None);
         let rebased = Entity::new(entities.scene(), recycled.key());
         assert_eq!(entities.resolve(rebased), Some(recycled.key()));
-        assert_eq!(entities.scene().epoch, Epoch::default().advance());
+        assert_eq!(entities.scene().epoch(), Epoch::default().advance());
     }
 }

@@ -1,5 +1,5 @@
 use crate::entity::SceneId;
-use crate::store::{StoreField, Version};
+use crate::store::{Owner, StoreField, Version};
 
 /// One row with no entity; app state that snapshots like a store.
 pub struct Value<T> {
@@ -42,13 +42,13 @@ impl<T: Default> Default for Value<T> {
 impl<T: Clone + Send + 'static> StoreField for Value<T> {
     type Snapshot = T;
 
-    fn bind(&mut self, _scene: SceneId) {}
+    fn bind(&mut self, _scene: SceneId, _owner: Owner) {}
 
     fn snapshot(&self) -> T {
         self.value.clone()
     }
 
-    fn restore(&mut self, from: &T, _scene: SceneId) {
+    fn restore(&mut self, from: &T, _scene: SceneId, _owner: Owner) {
         self.set(from.clone());
     }
 }

@@ -14,7 +14,7 @@ use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
 use crate::input::Input;
 use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, System, SystemEntry, Tick};
 use crate::relation::{LinkId, Relation, RelationSnapshot};
-use crate::store::{SchemaId, StoreField};
+use crate::store::{Owner, SchemaId, StoreField};
 use crate::stores::Stores;
 use crate::view::{ImageRay, Orbit, Pick, Rigid, ViewRecords, ViewTarget, Views, ViewsSnapshot};
 use crate::PointerButton;
@@ -458,7 +458,7 @@ impl<A: Stores> Session<A> {
             runtime: RuntimeId::allocate(),
             epoch: Epoch::default(),
         };
-        app.bind(scene);
+        app.bind(scene, Owner::new());
         let mut phases = Phases::new();
         phases.push(
             Phase::Simulation,
@@ -470,7 +470,7 @@ impl<A: Stores> Session<A> {
             }),
         );
         let mut bridges = Relation::new();
-        StoreField::bind(&mut bridges, scene);
+        StoreField::bind(&mut bridges, scene, Owner::new());
         Self {
             app,
             domains: Domains::new(scene.runtime),
@@ -739,7 +739,7 @@ impl<A: Stores> Session<A> {
             self.run_entry(Phase::Dispatch, index, step)?;
             self.commit(&mut growth);
         }
-        self.app.boundary();
+        self.app.boundary(Owner::new());
         for domain in self.domains.iter_mut() {
             domain.boundary();
         }
@@ -794,7 +794,7 @@ impl<A: Stores> Session<A> {
                 palettes: &self.palettes,
             };
             let mut count = 0;
-            for domain in self.domains.iter() {
+            for domain in self.domains.owned() {
                 for &target in domain.views() {
                     let Some(placement) =
                         self.views.to_root(target.image).and_then(|to| to.rigid())
@@ -869,7 +869,7 @@ impl<A: Stores> Session<A> {
             entities: self.entities().snapshot(),
             domains: self
                 .domains
-                .iter()
+                .owned()
                 .map(|domain| domain.snapshot())
                 .collect(),
             views: self.views.snapshot(),
@@ -880,7 +880,7 @@ impl<A: Stores> Session<A> {
         })
     }
 
-    /// Validates ownership and every domain before it cancels pending commands and advances the epoch.
+    /// Validates ownership and every domain before it cancels pending commands and advances the epoch; a failure after that faults the session until a later restore succeeds.
     pub fn restore(&mut self, from: &SessionSnapshot<A>) -> Result<(), RestoreError> {
         if from.runtime != self.scene().runtime {
             return Err(RestoreError::ForeignRuntime);
@@ -889,18 +889,26 @@ impl<A: Stores> Session<A> {
             let first = from.domains.len().min(self.domains.len());
             return Err(RestoreError::Domain(DomainId::new(first)));
         }
-        for (domain, snapshot) in self.domains.iter().zip(&from.domains) {
+        for (domain, snapshot) in self.domains.owned().zip(&from.domains) {
             domain.check_restore(snapshot)?;
         }
         self.commands.cancel_into(&mut self.results);
         self.commands.restore(&from.entities, from.next_request);
         let scene = self.scene();
         for (domain, snapshot) in self.domains.iter_mut().zip(&from.domains) {
-            domain.restore(snapshot, scene)?;
+            if let Err(error) = domain.restore(snapshot, scene) {
+                self.unfinished = Some(Phase::Dispatch);
+                self.phase_error = Some(PhaseError::system(
+                    Phase::Dispatch,
+                    "restore",
+                    DomainError::Restore(error),
+                ));
+                return Err(error);
+            }
         }
-        self.app.restore(&from.app, scene);
+        self.app.restore(&from.app, scene, Owner::new());
         self.views.restore(&from.views);
-        StoreField::restore(&mut self.bridges, &from.bridges, scene);
+        StoreField::restore(&mut self.bridges, &from.bridges, scene, Owner::new());
         self.manipulation.clear();
         self.tick = from.tick;
         self.config = from.config;
@@ -927,27 +935,23 @@ impl<A: Stores> Session<A> {
     fn commit(&mut self, growth: &mut Growth) {
         let mut batch = std::mem::take(&mut self.batch);
         self.commands.drain_into(&mut batch);
-        let mut cancelled = false;
         for request in batch.drain(..) {
             let despawn = matches!(request.command, Command::Despawn(_));
-            let outcome = if cancelled {
-                Err(Rejection::Cancelled)
-            } else {
-                match request.command {
-                    Command::Reset => {
-                        let unfinished = self.unfinished;
-                        let phase_error = self.phase_error;
-                        let outcome = self
-                            .reset()
-                            .map(|()| Outcome::Done)
-                            .map_err(Rejection::Restore);
+            let outcome = match request.command {
+                Command::Reset => {
+                    let unfinished = self.unfinished;
+                    let phase_error = self.phase_error;
+                    let outcome = self
+                        .reset()
+                        .map(|()| Outcome::Done)
+                        .map_err(Rejection::Restore);
+                    if outcome.is_ok() {
                         self.unfinished = unfinished;
                         self.phase_error = phase_error;
-                        cancelled = outcome.is_ok();
-                        outcome
                     }
-                    command => self.dispatch(|dispatch| dispatch.apply(command)),
+                    outcome
                 }
+                command => self.dispatch(|dispatch| dispatch.apply(command)),
             };
             growth.commands += 1;
             match outcome {
@@ -1005,12 +1009,12 @@ impl<A: Stores> Session<A> {
 mod tests {
     use crate::view::Vec4;
     use loam_math::{EuclideanR4, Space};
+    use loam_time::alloc::bytes_allocated_by;
 
     use super::*;
     use crate::command::SpawnBundle;
     use crate::domain::{Instance, Pose};
     use crate::entity::Entity;
-    use crate::store::tests::alloc_probe::bytes_allocated_by;
     use crate::store::{LogCapacity, Store};
     use crate::view::{DepthEnvelope, DomainRay, ImageRay, ViewMapping, ViewSpec};
 
@@ -1467,7 +1471,7 @@ mod tests {
         let bytes = bytes_allocated_by(|| {
             session.restore(&snapshot).unwrap();
         });
-        let copied = size_of::<Entity>() * 2;
+        let copied = (size_of::<Entity>() * 2) as u64;
         assert_eq!(
             bytes, copied,
             "a warmed restore of three rows asked the allocator for {bytes} bytes, not the {copied} its operand list copies"

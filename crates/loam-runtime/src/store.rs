@@ -282,19 +282,30 @@ impl SchemaId {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Owner {
+    _private: (),
+}
+
+impl Owner {
+    pub(crate) fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
 /// A storage-field contract; only `Stores` implementations call its lifetime hooks.
 pub trait StoreField: Send + 'static {
     type Snapshot: Send + 'static;
 
-    fn bind(&mut self, scene: SceneId);
+    fn bind(&mut self, scene: SceneId, owner: Owner);
 
     fn snapshot(&self) -> Self::Snapshot;
 
-    fn restore(&mut self, from: &Self::Snapshot, scene: SceneId);
+    fn restore(&mut self, from: &Self::Snapshot, scene: SceneId, owner: Owner);
 
-    fn boundary(&mut self) {}
+    fn boundary(&mut self, _owner: Owner) {}
 
-    fn release(&mut self, _entity: Entity) {}
+    fn release(&mut self, _entity: Entity, _owner: Owner) {}
 }
 
 pub struct StoreSnapshot<T> {
@@ -742,7 +753,7 @@ impl<T> Store<T> {
 impl<T: Clone + Send + 'static> StoreField for Store<T> {
     type Snapshot = StoreSnapshot<T>;
 
-    fn bind(&mut self, scene: SceneId) {
+    fn bind(&mut self, scene: SceneId, _owner: Owner) {
         Store::bind(self, scene);
     }
 
@@ -753,7 +764,7 @@ impl<T: Clone + Send + 'static> StoreField for Store<T> {
         }
     }
 
-    fn restore(&mut self, from: &StoreSnapshot<T>, scene: SceneId) {
+    fn restore(&mut self, from: &StoreSnapshot<T>, scene: SceneId, _owner: Owner) {
         self.scene = scene;
         self.dense.clone_from(&from.rows);
         self.keys.clone_from(&from.keys);
@@ -776,62 +787,28 @@ impl<T: Clone + Send + 'static> StoreField for Store<T> {
         }
     }
 
-    fn boundary(&mut self) {
+    fn boundary(&mut self, _owner: Owner) {
         Store::boundary(self);
     }
 
-    fn release(&mut self, entity: Entity) {
+    fn release(&mut self, entity: Entity, _owner: Owner) {
         let _ = Store::remove(self, entity);
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::alloc::System;
     use std::collections::BTreeMap;
+
+    use loam_time::alloc::{bytes_allocated_by, CountingAllocator};
 
     use super::*;
     use crate::entity::{Entities, Epoch, RuntimeId};
     use crate::relation::Relation;
 
-    pub(crate) mod alloc_probe {
-        use std::alloc::{GlobalAlloc, Layout, System};
-        use std::cell::Cell;
-
-        thread_local! {
-            static BYTES: Cell<usize> = const { Cell::new(0) };
-        }
-
-        pub struct Counting;
-
-        // SAFETY: Methods preserve System contracts; const TLS and wrapping Cell updates cannot unwind.
-        unsafe impl GlobalAlloc for Counting {
-            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(layout.size())));
-                // SAFETY: The caller supplies a valid nonzero allocation layout.
-                unsafe { System.alloc(layout) }
-            }
-
-            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-                // SAFETY: The caller supplies a live System allocation and its original layout.
-                unsafe { System.dealloc(ptr, layout) }
-            }
-
-            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(new_size)));
-                // SAFETY: The caller supplies a live System allocation, its layout, and a valid new size.
-                unsafe { System.realloc(ptr, layout, new_size) }
-            }
-        }
-
-        pub fn bytes_allocated_by(body: impl FnOnce()) -> usize {
-            let before = BYTES.with(Cell::get);
-            body();
-            BYTES.with(Cell::get).wrapping_sub(before)
-        }
-    }
-
     #[global_allocator]
-    static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
+    static COUNTING_ALLOCATOR: CountingAllocator<System> = CountingAllocator::new(System);
 
     const SMALL: LogCapacity = LogCapacity {
         dirty: 4,
@@ -848,7 +825,7 @@ pub(crate) mod tests {
     fn filled(count: u32, capacity: Option<LogCapacity>) -> (Entities, Store<u32>, Vec<Entity>) {
         let entities = entities();
         let mut store = capacity.map_or_else(Store::untracked, Store::tracked);
-        store.bind(entities.scene());
+        StoreField::bind(&mut store, entities.scene(), Owner::new());
         let mut entities = entities;
         let spawned: Vec<Entity> = (0..count)
             .map(|value| {
@@ -1048,7 +1025,7 @@ pub(crate) mod tests {
         warm(&mut store);
         assert_eq!(warm(&mut store), 64);
 
-        let bytes = alloc_probe::bytes_allocated_by(|| {
+        let bytes = bytes_allocated_by(|| {
             for _ in 0..16 {
                 let mut sum = 0u32;
                 for &entity in &e {
@@ -1087,7 +1064,7 @@ pub(crate) mod tests {
 
         entities.restore(&snapshot);
         let scene = entities.scene();
-        store.restore(&rows, scene);
+        StoreField::restore(&mut store, &rows, scene, Owner::new());
         let rebased: Vec<Entity> = e
             .iter()
             .map(|entity| Entity::new(scene, entity.key()))
@@ -1107,7 +1084,7 @@ pub(crate) mod tests {
     fn restore_advances_the_epoch_so_old_handles_fail_and_relations_survive() {
         let (mut entities, mut store, e) = filled(2, Some(SMALL));
         let mut relation = Relation::<u8>::new();
-        relation.bind(entities.scene());
+        StoreField::bind(&mut relation, entities.scene(), Owner::new());
         let link = relation.link(&entities, e[0], e[1], 5).unwrap();
         let mut mirror = Mirror::default();
         mirror.sync(&store);
@@ -1120,9 +1097,9 @@ pub(crate) mod tests {
 
         entities.restore(&snapshot);
         let scene = entities.scene();
-        assert_eq!(scene.epoch, Epoch::default().advance());
-        store.restore(&rows, scene);
-        relation.restore(&links, scene);
+        assert_eq!(scene.epoch(), Epoch::default().advance());
+        StoreField::restore(&mut store, &rows, scene, Owner::new());
+        StoreField::restore(&mut relation, &links, scene, Owner::new());
 
         assert_eq!(store.scene(), scene);
         assert_eq!(store.get(e[0]), None);

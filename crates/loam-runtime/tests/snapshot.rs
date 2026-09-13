@@ -4,10 +4,10 @@ use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
     AppCommand, Command, Ctx, DepthEnvelope, Dispatch, Domain, DomainBuilder, DomainError,
     DomainHandle, DomainRay, Entity, Eye, Facility, Field, FieldKind, FieldOp, Growth, ImageRay,
-    Input, Instance, LogCapacity, Material, Outcome, Phase, PhaseError, Pose, PreparedGeometry,
-    Projection4, Publication, PublishError, Records, Rejection, Reservation, RestoreError,
-    Section4, Session, SimConfig, SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec,
-    DOMAIN_STEP,
+    Input, Instance, LogCapacity, Material, Outcome, Owner, Phase, PhaseError, Pose,
+    PreparedGeometry, Projection4, Publication, PublishError, Records, Rejection, Reservation,
+    RestoreError, SchemaId, Section4, Session, SimConfig, SpawnBundle, Step, Store, Tick,
+    ViewMapping, ViewSpec, DOMAIN_STEP,
 };
 
 type Vec4 = <EuclideanR4 as Space>::Point;
@@ -65,6 +65,7 @@ impl Facility<EuclideanR4> for Drift {
         &mut self,
         poses: &mut Store<Pose<EuclideanR4>>,
         step: Step,
+        _owner: Owner,
     ) -> Result<(), DomainError> {
         self.steps += 1;
         for (_, pose) in poses.iter_mut() {
@@ -74,11 +75,18 @@ impl Facility<EuclideanR4> for Drift {
         Ok(())
     }
 
-    fn snapshot(&self) -> Box<dyn Any + Send> {
+    fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
         Box::new(self.steps)
     }
 
-    fn restore(&mut self, from: &(dyn Any + Send)) -> Result<(), RestoreError> {
+    fn check_restore(&self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        from.downcast_ref::<u32>()
+            .map(|_| ())
+            .ok_or(RestoreError::Schema(SchemaId::of::<u32>()))
+    }
+
+    fn restore(&mut self, from: &(dyn Any + Send), owner: Owner) -> Result<(), RestoreError> {
+        self.check_restore(from, owner)?;
         self.steps = *from.downcast_ref::<u32>().unwrap();
         Ok(())
     }
@@ -119,10 +127,10 @@ fn reset_rewinds_external_identity_or_resolves_an_old_handle() {
     session.set_initial().unwrap();
     let later = session.dispatch(|d| d.spawn(placed(r4, Tag(2)))).unwrap();
     session.dispatch(|d| d.despawn(kept)).unwrap();
-    let epoch = session.scene().epoch;
+    let epoch = session.scene().epoch();
 
     session.reset().unwrap();
-    assert_eq!(session.scene().epoch, epoch.advance());
+    assert_eq!(session.scene().epoch(), epoch.advance());
     assert_eq!(session.entities().resolve(kept), None);
     assert_eq!(session.entities().resolve(later), None);
     assert_eq!(session.app.tags.get(kept), None);
@@ -143,7 +151,7 @@ fn reset_rewinds_external_identity_or_resolves_an_old_handle() {
     assert!(session.domains().read(r4).unwrap().poses().contains(live));
 
     session.reset().unwrap();
-    assert_eq!(session.scene().epoch, epoch.advance().advance());
+    assert_eq!(session.scene().epoch(), epoch.advance().advance());
     assert_eq!(session.entities().resolve(live), None);
 }
 
@@ -290,16 +298,23 @@ impl Facility<EuclideanR4> for RejectStep {
         &mut self,
         _poses: &mut Store<Pose<EuclideanR4>>,
         _step: Step,
+        _owner: Owner,
     ) -> Result<(), DomainError> {
         Err(DomainError::ChartBoundary)
     }
 
-    fn snapshot(&self) -> Box<dyn Any + Send> {
+    fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
         Box::new(())
     }
 
-    fn restore(&mut self, _from: &(dyn Any + Send)) -> Result<(), RestoreError> {
-        Ok(())
+    fn check_restore(&self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        from.downcast_ref::<()>()
+            .map(|_| ())
+            .ok_or(RestoreError::Schema(SchemaId::of::<()>()))
+    }
+
+    fn restore(&mut self, from: &(dyn Any + Send), owner: Owner) -> Result<(), RestoreError> {
+        self.check_restore(from, owner)
     }
 }
 
@@ -493,8 +508,8 @@ fn a_foreign_snapshot_cannot_cancel_pending_work_or_alias_library_ids() {
     owner.boundary(Input::default()).unwrap();
     assert_eq!(*owner.app.log.get(), [1, 2]);
     owner.restore(&owned).unwrap();
-    assert_eq!(owner.scene().runtime, scene.runtime);
-    assert_eq!(owner.scene().epoch, scene.epoch.advance());
+    assert_eq!(owner.scene().runtime(), scene.runtime());
+    assert_eq!(owner.scene().epoch(), scene.epoch().advance());
     assert_eq!(*owner.app.log.get(), [1]);
     assert_eq!(owner.material(material), Some(&material_value));
 }
@@ -610,13 +625,9 @@ fn request_queued_after_a_reset_in_the_same_batch_applies_to_the_restored_state(
         .collect();
     assert_eq!(
         outcomes,
-        [
-            Ok(Outcome::Done),
-            Ok(Outcome::Done),
-            Err(Rejection::Cancelled)
-        ]
+        [Ok(Outcome::Done), Ok(Outcome::Done), Ok(Outcome::Done)]
     );
-    assert!(session.app.log.get().is_empty());
+    assert_eq!(*session.app.log.get(), [2]);
     assert_eq!(session.current_tick(), Tick(0));
 }
 
@@ -901,4 +912,65 @@ fn an_idle_view_rebuilds_when_its_cursor_expires_at_a_boundary() {
             "boundary {step} rebuilt an idle view"
         );
     }
+}
+
+struct FailsRestoreOnce {
+    failed: bool,
+}
+
+impl Facility<EuclideanR4> for FailsRestoreOnce {
+    fn name(&self) -> &'static str {
+        "fails restore once"
+    }
+
+    fn step(
+        &mut self,
+        _poses: &mut Store<Pose<EuclideanR4>>,
+        _step: Step,
+        _owner: Owner,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
+        Box::new(())
+    }
+
+    fn check_restore(&self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        from.downcast_ref::<()>()
+            .map(|_| ())
+            .ok_or(RestoreError::Schema(SchemaId::of::<()>()))
+    }
+
+    fn restore(&mut self, _from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        if self.failed {
+            return Ok(());
+        }
+        self.failed = true;
+        Err(RestoreError::Schema(SchemaId::of::<FailsRestoreOnce>()))
+    }
+}
+
+#[test]
+fn a_restore_that_fails_after_validation_blocks_the_session_until_one_succeeds() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    session.register_domain(
+        DomainBuilder::new("r4", EuclideanR4).facility(FailsRestoreOnce { failed: false }),
+    );
+    session.set_initial().unwrap();
+    session.tick().unwrap();
+
+    assert!(session.reset().is_err());
+    let fault = session
+        .phase_error()
+        .expect("a failed restore records a fault");
+    assert_eq!(fault.phase, Phase::Dispatch);
+    assert_eq!(fault.system, Some("restore"));
+    assert!(session.tick().is_err());
+    let mut publication = Publication::default();
+    assert!(session.publish(&mut publication).is_err());
+
+    session.reset().unwrap();
+    assert!(session.phase_error().is_none());
+    session.tick().unwrap();
 }

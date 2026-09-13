@@ -507,7 +507,7 @@ mod tests {
                 Ok(eye)
             })
             .expect("the invalidated view is installed");
-        let epoch = booted.session.scene().epoch;
+        let epoch = booted.session.scene().epoch();
         let mut app = install(SessionApp::with_args(
             HostConfig::new("console recovery test", bindings()),
             Args::default(),
@@ -531,6 +531,6 @@ mod tests {
             .expect("the host recovers");
 
         assert_eq!(booted.session.faulted_phase(), None);
-        assert_eq!(booted.session.scene().epoch, epoch.advance());
+        assert_eq!(booted.session.scene().epoch(), epoch.advance());
     }
 }

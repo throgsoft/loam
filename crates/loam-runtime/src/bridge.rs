@@ -121,12 +121,12 @@ impl Drag {
 #[cfg(test)]
 mod tests {
     use loam_math::{EuclideanR4, Iso3};
+    use loam_time::alloc::bytes_allocated_by;
 
     use super::*;
     use crate::command::SpawnBundle;
     use crate::domain::{DomainBuilder, Instance, Pose};
     use crate::session::{Material, PreparedGeometry, Session, SimConfig};
-    use crate::store::tests::alloc_probe::bytes_allocated_by;
     use crate::store::LogCapacity;
     use crate::view::{Rigid, Section4, Vec4, ViewSpec};
 

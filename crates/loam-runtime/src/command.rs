@@ -6,7 +6,7 @@ use crate::domain::{
 use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
 use crate::relation::Relation;
 use crate::session::RestoreError;
-use crate::store::StoreError;
+use crate::store::{Owner, StoreError};
 use crate::stores::{HasRelation, HasStore, Stores};
 use crate::view::Views;
 
@@ -423,7 +423,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
     }
 
     fn detach(&mut self, entity: Entity) {
-        self.app.release(entity);
+        self.app.release(entity, Owner::new());
         for domain in self.domains.iter_mut() {
             domain.release(entity);
         }

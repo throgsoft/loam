@@ -48,8 +48,9 @@ pub use session::{
     DOMAIN_STEP,
 };
 pub use store::{
-    Change, Changes, Cursor, LogCapacity, Part, Partition, PartitionError, Parts, RecordBuffer,
-    Removal, SchemaId, Store, StoreError, StoreField, StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,
+    Change, Changes, Cursor, LogCapacity, Owner, Part, Partition, PartitionError, Parts,
+    RecordBuffer, Removal, SchemaId, Store, StoreError, StoreField, StoreSnapshot, Version,
+    DEFAULT_LOG_CAPACITY,
 };
 pub use stores::{HasRelation, HasStore, Stores};
 pub use value::Value;

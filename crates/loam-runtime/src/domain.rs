@@ -28,7 +28,7 @@ use crate::phase::Step;
 use crate::session::{
     Library, MaterialId, PaletteId, PreparedGeometry, PreparedId, RestoreError, Stamp,
 };
-use crate::store::{Change, LogCapacity, Store, StoreError, StoreField, StoreSnapshot};
+use crate::store::{Change, LogCapacity, Owner, Store, StoreError, StoreField, StoreSnapshot};
 use crate::view::{
     self, DomainRay, EntityOutput, ImageRay, ImageSpaceId, InstanceRecord, Pick, RefusalSource,
     Rigid, SegmentRecord, TriangleRecord, Vec3, Vec4, ViewId, ViewMapping, ViewRecords,
@@ -221,6 +221,7 @@ pub enum DomainError {
     Unsupported(&'static str),
     FieldCycle(Entity),
     FieldArity(Entity),
+    Restore(RestoreError),
 }
 
 #[cfg(feature = "physics")]
@@ -1398,15 +1399,21 @@ impl<S: Space> Copy for Pose<S> {}
 pub trait Facility<S: DomainSpace>: Any + Send + 'static {
     fn name(&self) -> &'static str;
 
-    fn bind(&mut self, _scene: SceneId) {}
+    fn bind(&mut self, _scene: SceneId, _owner: Owner) {}
 
-    fn step(&mut self, poses: &mut Store<Pose<S>>, step: Step) -> Result<(), DomainError>;
+    fn step(
+        &mut self,
+        poses: &mut Store<Pose<S>>,
+        step: Step,
+        owner: Owner,
+    ) -> Result<(), DomainError>;
 
     fn set_pose(
         &mut self,
         _entity: Entity,
         _pose: Pose<S>,
         _poses: &mut Store<Pose<S>>,
+        _owner: Owner,
     ) -> Option<Result<(), DomainError>> {
         None
     }
@@ -1416,28 +1423,28 @@ pub trait Facility<S: DomainSpace>: Any + Send + 'static {
         _entity: Entity,
         _point: S::Point,
         _poses: &mut Store<Pose<S>>,
+        _owner: Owner,
     ) -> Option<Result<(), DomainError>> {
         None
     }
 
-    fn synchronize(&mut self, _poses: &mut Store<Pose<S>>) {}
+    fn synchronize(&mut self, _poses: &mut Store<Pose<S>>, _owner: Owner) {}
 
-    fn snapshot(&self) -> Box<dyn Any + Send>;
+    fn snapshot(&self, owner: Owner) -> Box<dyn Any + Send>;
 
-    /// Refuses whatever `restore` would refuse, changing nothing; the default accepts, and the session calls it on every facility before the first one restores.
-    fn check_restore(&self, _from: &(dyn Any + Send)) -> Result<(), RestoreError> {
-        Ok(())
-    }
+    /// Refuses whatever `restore` would refuse, changing nothing; the session calls it on every facility before the first one restores.
+    fn check_restore(&self, from: &(dyn Any + Send), owner: Owner) -> Result<(), RestoreError>;
 
-    fn restore(&mut self, from: &(dyn Any + Send)) -> Result<(), RestoreError>;
+    fn restore(&mut self, from: &(dyn Any + Send), owner: Owner) -> Result<(), RestoreError>;
 
-    fn release(&mut self, _entity: Entity) {}
+    fn release(&mut self, _entity: Entity, _owner: Owner) {}
 
     /// `Some` claims the command with its outcome; `None` leaves it to the domain.
     fn apply(
         &mut self,
         _command: &ChartCommand,
         _poses: &mut Store<Pose<S>>,
+        _owner: Owner,
     ) -> Option<Result<Outcome, Rejection>> {
         None
     }
@@ -1509,7 +1516,7 @@ impl DistanceField for FieldProgram {
     }
 }
 
-pub struct DomainSnapshot(pub Box<dyn Any + Send>);
+pub struct DomainSnapshot(pub(crate) Box<dyn Any + Send>);
 
 struct TypedSnapshot<S: DomainSpace> {
     scene: SceneId,
@@ -1521,7 +1528,7 @@ struct TypedSnapshot<S: DomainSpace> {
     targets: Vec<ViewTarget>,
 }
 
-/// The session's domain contract; only `Session` calls its lifetime hooks.
+/// A domain read through the session; the lifetime hooks live on the crate-private owner trait.
 pub trait Domain: Send + 'static {
     fn id(&self) -> DomainId;
 
@@ -1530,16 +1537,6 @@ pub trait Domain: Send + 'static {
     fn views(&self) -> &[ViewTarget];
 
     fn view(&self, id: ViewId) -> Option<ViewSummary>;
-
-    fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError>;
-
-    fn publish(
-        &self,
-        view: ViewId,
-        library: Library<'_>,
-        into: &mut ViewRecords,
-        stamp: Stamp,
-    ) -> Result<(), DomainError>;
 
     fn pick(
         &self,
@@ -1553,6 +1550,26 @@ pub trait Domain: Send + 'static {
     fn image_of(&self, view: ViewId, entity: Entity) -> Option<[f32; 3]>;
 
     fn lift_origin(&self, view: ViewId, ray: &ImageRay) -> Result<ChartPoint, DomainError>;
+
+    fn compile_fields(&mut self) -> Result<FieldCost, DomainError>;
+
+    fn field_program(&self) -> &FieldProgram;
+
+    fn as_any(&self) -> &dyn Any;
+
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+pub(crate) trait DomainOwner: Domain {
+    fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError>;
+
+    fn publish(
+        &self,
+        view: ViewId,
+        library: Library<'_>,
+        into: &mut ViewRecords,
+        stamp: Stamp,
+    ) -> Result<(), DomainError>;
 
     fn step(&mut self, step: Step) -> Result<(), DomainError>;
 
@@ -1570,14 +1587,6 @@ pub trait Domain: Send + 'static {
     fn restore(&mut self, from: &DomainSnapshot, scene: SceneId) -> Result<(), RestoreError>;
 
     fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection>;
-
-    fn compile_fields(&mut self) -> Result<FieldCost, DomainError>;
-
-    fn field_program(&self) -> &FieldProgram;
-
-    fn as_any(&self) -> &dyn Any;
-
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 pub struct TypedDomain<S: DomainSpace> {
@@ -1662,7 +1671,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             return Err(DomainError::Stale(entity));
         }
         for facility in &mut self.facilities {
-            if let Some(result) = facility.set_pose(entity, pose, &mut self.poses) {
+            if let Some(result) = facility.set_pose(entity, pose, &mut self.poses, Owner::new()) {
                 return result;
             }
         }
@@ -1986,7 +1995,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             return Err(DomainError::Stale(entity));
         }
         for facility in &mut self.facilities {
-            if let Some(result) = facility.move_to(entity, target, &mut self.poses) {
+            if let Some(result) = facility.move_to(entity, target, &mut self.poses, Owner::new()) {
                 return result;
             }
         }
@@ -2053,72 +2062,6 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             image: target.image,
             ray_lift: spec.style.mapping.ray_lift(),
         })
-    }
-
-    fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError> {
-        self.views
-            .get(view.index())
-            .ok_or(DomainError::UnknownView(view))?;
-        self.targets[view.index()].image = image;
-        self.view_revisions[view.index()] = self.view_revisions[view.index()].wrapping_add(1);
-        Ok(())
-    }
-
-    fn publish(
-        &self,
-        view: ViewId,
-        library: Library<'_>,
-        into: &mut ViewRecords,
-        stamp: Stamp,
-    ) -> Result<(), DomainError> {
-        let spec = self
-            .views
-            .get(view.index())
-            .ok_or(DomainError::UnknownView(view))?;
-        let revision = *self
-            .view_revisions
-            .get(view.index())
-            .ok_or(DomainError::UnknownView(view))?;
-        let mut pose_cursor = into.poses;
-        let pose_changes = self.poses.changes(&mut pose_cursor);
-        let pose_resync = pose_changes.is_resync();
-        into.changed.clear();
-        let mut pose_removed = false;
-        for change in pose_changes {
-            match change {
-                Change::Row(entity, _) => into.changed.push(entity),
-                Change::Removed(_) => pose_removed = true,
-            }
-        }
-        let mut attachment_cursor = into.attachments;
-        let mut attachment_changes = self.instances.changes(&mut attachment_cursor);
-        let attachment_resync = attachment_changes.is_resync();
-        let attached = attachment_changes.next().is_some();
-        if !pose_resync
-            && !pose_removed
-            && !attachment_resync
-            && !attached
-            && into.revision == revision
-            && !into.changed.contains(&spec.eye)
-        {
-            let patched = if into.changed.is_empty() {
-                into.instances.restamp(stamp);
-                true
-            } else if spec.style.enabled && into.refusals.count == 0 {
-                self.patch_view(spec, library, into, stamp)?
-            } else {
-                false
-            };
-            if patched {
-                into.poses = pose_cursor;
-                into.attachments = attachment_cursor;
-                return Ok(());
-            }
-        }
-        self.poses.catch_up(&mut into.poses);
-        self.instances.catch_up(&mut into.attachments);
-        into.revision = revision;
-        self.rebuild_view(spec, library, into, stamp)
     }
 
     fn pick(
@@ -2227,9 +2170,97 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         Ok(self.space.chart_point(lifted.origin))
     }
 
+    fn compile_fields(&mut self) -> Result<FieldCost, DomainError> {
+        let fields = self
+            .fields
+            .as_ref()
+            .ok_or(DomainError::Unsupported("fields"))?;
+        self.compiler.compile(&self.space, fields, &self.poses)
+    }
+
+    fn field_program(&self) -> &FieldProgram {
+        self.compiler.program()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
+    fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError> {
+        self.views
+            .get(view.index())
+            .ok_or(DomainError::UnknownView(view))?;
+        self.targets[view.index()].image = image;
+        self.view_revisions[view.index()] = self.view_revisions[view.index()].wrapping_add(1);
+        Ok(())
+    }
+
+    fn publish(
+        &self,
+        view: ViewId,
+        library: Library<'_>,
+        into: &mut ViewRecords,
+        stamp: Stamp,
+    ) -> Result<(), DomainError> {
+        let spec = self
+            .views
+            .get(view.index())
+            .ok_or(DomainError::UnknownView(view))?;
+        let revision = *self
+            .view_revisions
+            .get(view.index())
+            .ok_or(DomainError::UnknownView(view))?;
+        let mut pose_cursor = into.poses;
+        let pose_changes = self.poses.changes(&mut pose_cursor);
+        let pose_resync = pose_changes.is_resync();
+        into.changed.clear();
+        let mut pose_removed = false;
+        for change in pose_changes {
+            match change {
+                Change::Row(entity, _) => into.changed.push(entity),
+                Change::Removed(_) => pose_removed = true,
+            }
+        }
+        let mut attachment_cursor = into.attachments;
+        let mut attachment_changes = self.instances.changes(&mut attachment_cursor);
+        let attachment_resync = attachment_changes.is_resync();
+        let attached = attachment_changes.next().is_some();
+        if !pose_resync
+            && !pose_removed
+            && !attachment_resync
+            && !attached
+            && into.revision == revision
+            && !into.changed.contains(&spec.eye)
+        {
+            let patched = if into.changed.is_empty() {
+                into.instances.restamp(stamp);
+                true
+            } else if spec.style.enabled && into.refusals.count == 0 {
+                self.patch_view(spec, library, into, stamp)?
+            } else {
+                false
+            };
+            if patched {
+                into.poses = pose_cursor;
+                into.attachments = attachment_cursor;
+                return Ok(());
+            }
+        }
+        self.poses.catch_up(&mut into.poses);
+        self.instances.catch_up(&mut into.attachments);
+        into.revision = revision;
+        self.rebuild_view(spec, library, into, stamp)
+    }
+
     fn step(&mut self, step: Step) -> Result<(), DomainError> {
         for facility in &mut self.facilities {
-            facility.step(&mut self.poses, step)?;
+            facility.step(&mut self.poses, step, Owner::new())?;
         }
         Ok(())
     }
@@ -2245,18 +2276,18 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
 
     fn synchronize(&mut self) {
         for facility in &mut self.facilities {
-            facility.synchronize(&mut self.poses);
+            facility.synchronize(&mut self.poses, Owner::new());
         }
     }
 
     fn release(&mut self, entity: Entity) {
         for facility in &mut self.facilities {
-            facility.release(entity);
+            facility.release(entity, Owner::new());
         }
-        self.poses.release(entity);
-        self.instances.release(entity);
+        StoreField::release(&mut self.poses, entity, Owner::new());
+        StoreField::release(&mut self.instances, entity, Owner::new());
         if let Some(fields) = &mut self.fields {
-            fields.release(entity);
+            StoreField::release(fields, entity, Owner::new());
         }
     }
 
@@ -2269,7 +2300,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             facilities: self
                 .facilities
                 .iter()
-                .map(|facility| facility.snapshot())
+                .map(|facility| facility.snapshot(Owner::new()))
                 .collect(),
             views: self.views.clone(),
             targets: self.targets.clone(),
@@ -2287,7 +2318,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             return Err(RestoreError::Domain(self.id));
         }
         for (facility, snapshot) in self.facilities.iter().zip(&from.facilities) {
-            facility.check_restore(snapshot.as_ref())?;
+            facility.check_restore(snapshot.as_ref(), Owner::new())?;
         }
         Ok(())
     }
@@ -2299,14 +2330,14 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             .downcast_ref::<TypedSnapshot<S>>()
             .ok_or(RestoreError::Domain(self.id))?;
         for (facility, snapshot) in self.facilities.iter_mut().zip(&from.facilities) {
-            facility.restore(snapshot.as_ref())?;
-            facility.bind(scene);
+            facility.restore(snapshot.as_ref(), Owner::new())?;
+            facility.bind(scene, Owner::new());
         }
         self.scene = scene;
-        StoreField::restore(&mut self.poses, &from.poses, scene);
-        StoreField::restore(&mut self.instances, &from.instances, scene);
+        StoreField::restore(&mut self.poses, &from.poses, scene, Owner::new());
+        StoreField::restore(&mut self.instances, &from.instances, scene, Owner::new());
         if let (Some(fields), Some(snapshot)) = (&mut self.fields, &from.fields) {
-            StoreField::restore(fields, snapshot, scene);
+            StoreField::restore(fields, snapshot, scene, Owner::new());
             for field in fields.rows_mut_untracked() {
                 for operand in &mut field.operands {
                     if operand.scene() == from.scene {
@@ -2362,7 +2393,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         }
         if owned {
             for facility in &mut self.facilities {
-                if let Some(outcome) = facility.apply(command, &mut self.poses) {
+                if let Some(outcome) = facility.apply(command, &mut self.poses, Owner::new()) {
                     return outcome;
                 }
             }
@@ -2392,26 +2423,6 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             }
             ChartCommand::Grab { .. } | ChartCommand::Release { .. } => Ok(Outcome::Done),
         }
-    }
-
-    fn compile_fields(&mut self) -> Result<FieldCost, DomainError> {
-        let fields = self
-            .fields
-            .as_ref()
-            .ok_or(DomainError::Unsupported("fields"))?;
-        self.compiler.compile(&self.space, fields, &self.poses)
-    }
-
-    fn field_program(&self) -> &FieldProgram {
-        self.compiler.program()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
 
@@ -2460,7 +2471,7 @@ impl<S: DomainSpace> DomainBuilder<S> {
         }
         let mut facilities = self.facilities;
         for facility in &mut facilities {
-            facility.bind(scene);
+            facility.bind(scene, Owner::new());
         }
         TypedDomain {
             id,
@@ -2481,7 +2492,7 @@ impl<S: DomainSpace> DomainBuilder<S> {
 
 pub struct Domains {
     runtime: RuntimeId,
-    list: Vec<Box<dyn Domain>>,
+    list: Vec<Box<dyn DomainOwner>>,
 }
 
 impl Domains {
@@ -2496,7 +2507,7 @@ impl Domains {
         DomainId::new(self.list.len())
     }
 
-    pub(crate) fn push(&mut self, domain: Box<dyn Domain>) {
+    pub(crate) fn push(&mut self, domain: Box<dyn DomainOwner>) {
         self.list.push(domain);
     }
 
@@ -2513,18 +2524,22 @@ impl Domains {
     }
 
     pub fn get(&self, id: DomainId) -> Option<&dyn Domain> {
-        self.list.get(id.index()).map(|domain| domain.as_ref())
+        self.list.get(id.index()).map(|domain| domain.as_ref() as _)
     }
 
-    pub(crate) fn facade(&mut self, id: DomainId) -> Option<&mut dyn Domain> {
+    pub(crate) fn facade(&mut self, id: DomainId) -> Option<&mut dyn DomainOwner> {
         self.list.get_mut(id.index()).map(|domain| domain.as_mut())
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &dyn Domain> {
+        self.list.iter().map(|domain| domain.as_ref() as _)
+    }
+
+    pub(crate) fn owned(&self) -> impl Iterator<Item = &dyn DomainOwner> {
         self.list.iter().map(|domain| domain.as_ref())
     }
 
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut dyn Domain> {
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut dyn DomainOwner> {
         self.list.iter_mut().map(|domain| domain.as_mut())
     }
 

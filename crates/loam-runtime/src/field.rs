@@ -1805,11 +1805,11 @@ fn shift_along(record: &mut FieldPrimitive, normal: [f32; 4], offset: f32) {
 #[cfg(test)]
 mod tests {
     use loam_math::EuclideanR3;
+    use loam_time::alloc::bytes_allocated_by;
 
     use super::*;
     use crate::domain::{Domain, DomainBuilder, DomainId, TypedDomain};
     use crate::entity::{Entities, Entity, Epoch, RuntimeId, SceneId};
-    use crate::store::tests::alloc_probe;
     use crate::store::DEFAULT_LOG_CAPACITY;
     use crate::view::Vec3;
 
@@ -2227,7 +2227,7 @@ mod tests {
             fixture.move_to(leaves[0], Vec3::new(0.5, 0.0, 0.0));
             fixture.compile().expect("warm up");
         }
-        let bytes = alloc_probe::bytes_allocated_by(|| {
+        let bytes = bytes_allocated_by(|| {
             for step in 0..32 {
                 fixture.move_to(
                     leaves[step % leaves.len()],

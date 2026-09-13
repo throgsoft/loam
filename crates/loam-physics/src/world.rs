@@ -1572,6 +1572,7 @@ where
 
 #[cfg(all(test, feature = "r2", feature = "r3", feature = "r4"))]
 mod tests {
+    use std::alloc::System;
     use std::collections::BTreeSet;
 
     use super::*;
@@ -1584,6 +1585,7 @@ mod tests {
     };
     use glam::{Quat, Vec3};
     use loam_math::{Bivector3, EuclideanR3, Space};
+    use loam_time::alloc::{bytes_allocated_by, CountingAllocator};
     use loam_time::Tape;
 
     const PERMUTATION_SEEDS: [u64; 4] = [1, 0x9e37_79b9_7f4a_7c15, 0xdead_beef_cafe_f00d, 424_242];
@@ -1592,46 +1594,8 @@ mod tests {
         world.constraints.iter().map(|unit| unit.key).collect()
     }
 
-    mod alloc_probe {
-        use std::alloc::{GlobalAlloc, Layout, System};
-        use std::cell::Cell;
-
-        // try_with skips destroyed TLS; the const Cell initializer and callbacks cannot panic.
-        thread_local! {
-            static BYTES: Cell<usize> = const { Cell::new(0) };
-        }
-
-        pub struct Counting;
-
-        // SAFETY: Methods preserve System contracts; const TLS and wrapping Cell updates cannot unwind.
-        unsafe impl GlobalAlloc for Counting {
-            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(layout.size())));
-                // SAFETY: The caller supplies a valid nonzero allocation layout.
-                unsafe { System.alloc(layout) }
-            }
-
-            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-                // SAFETY: The caller supplies a live System allocation and its original layout.
-                unsafe { System.dealloc(ptr, layout) }
-            }
-
-            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(new_size)));
-                // SAFETY: The caller supplies a live System allocation, its layout, and a valid new size.
-                unsafe { System.realloc(ptr, layout, new_size) }
-            }
-        }
-
-        pub fn bytes_allocated_by(body: impl FnOnce()) -> usize {
-            let before = BYTES.with(Cell::get);
-            body();
-            BYTES.with(Cell::get).wrapping_sub(before)
-        }
-    }
-
     #[global_allocator]
-    static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
+    static COUNTING_ALLOCATOR: CountingAllocator<System> = CountingAllocator::new(System);
 
     #[test]
     fn a_group_outside_the_others_mask_never_reaches_the_narrowphase() {
@@ -2958,7 +2922,7 @@ mod tests {
             assert!(world.drain_dirty().count() > 0);
         }
 
-        let bytes = alloc_probe::bytes_allocated_by(|| {
+        let bytes = bytes_allocated_by(|| {
             for _ in 0..16 {
                 for &id in &spheres {
                     assert!(world.wake_body(id).is_ok());
@@ -3335,7 +3299,7 @@ mod tests {
         }
         assert!(!pairs.is_empty(), "the fixture produced no pairs to emit");
 
-        let bytes = alloc_probe::bytes_allocated_by(|| {
+        let bytes = bytes_allocated_by(|| {
             for _ in 0..16 {
                 World::fill_broadphase(
                     &world.bodies,
@@ -3724,7 +3688,7 @@ mod tests {
         assert!(!world.constraints.is_empty(), "the fixture solves nothing");
         world.solve();
 
-        let bytes = alloc_probe::bytes_allocated_by(|| {
+        let bytes = bytes_allocated_by(|| {
             for _ in 0..16 {
                 world.solve();
             }
@@ -3743,7 +3707,7 @@ mod tests {
         }
         assert!(world.constraints.len() > 1);
 
-        let bytes = alloc_probe::bytes_allocated_by(|| {
+        let bytes = bytes_allocated_by(|| {
             for _ in 0..16 {
                 world.collect_constraints();
             }
@@ -3805,7 +3769,7 @@ mod tests {
             world
                 .set_pose(next, Vec3::Y * 0.49, next_orientation)
                 .unwrap();
-            bytes += alloc_probe::bytes_allocated_by(|| world.update_manifolds());
+            bytes += bytes_allocated_by(|| world.update_manifolds());
             inactive = active;
             active = next;
         }
