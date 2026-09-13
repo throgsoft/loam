@@ -161,8 +161,11 @@ fn render(publication: &Publication<Landmarks>) -> Vec<u8> {
         label: Some("present"),
     });
     presenter
-        .record(&device, &mut encoder, &view, (SIZE, SIZE), BACKGROUND)
-        .expect("recorded");
+        .record_scene(&device, &mut encoder, &view, (SIZE, SIZE), BACKGROUND)
+        .expect("recorded the scene");
+    presenter
+        .record_overlays(&mut encoder, &view, (SIZE, SIZE))
+        .expect("recorded the overlays");
     let readback = device.create_buffer(&BufferDescriptor {
         label: Some("present readback"),
         size: (SIZE * SIZE * 4) as u64,

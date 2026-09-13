@@ -290,18 +290,6 @@ impl Presenter {
         self.schedule.end_frame(encoder);
         Ok(())
     }
-
-    pub fn record(
-        &mut self,
-        device: &Device,
-        encoder: &mut CommandEncoder,
-        target: &TextureView,
-        size: (u32, u32),
-        background: Color,
-    ) -> Result<(), PassExecutionError> {
-        self.record_scene(device, encoder, target, size, background)?;
-        self.record_overlays(encoder, target, size)
-    }
 }
 
 fn segment_is_opaque(segment: &SegmentRecord) -> bool {
@@ -455,8 +443,11 @@ mod tests {
             presenter.upload(&device, &queue, &eye, Vec2::splat(64.0), &published.views);
             records.release(published);
             presenter
-                .record(&device, encoder, &target, (64, 64), Color::BLACK)
-                .expect("recorded");
+                .record_scene(&device, encoder, &target, (64, 64), Color::BLACK)
+                .expect("recorded the scene");
+            presenter
+                .record_overlays(encoder, &target, (64, 64))
+                .expect("recorded the overlays");
         };
 
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -759,14 +750,17 @@ mod tests {
         presenter.attach(&gpu).expect("attached");
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         presenter
-            .record(
+            .record_scene(
                 &gpu.device,
                 &mut encoder,
                 &view,
                 (PROBE_SIZE, PROBE_SIZE),
                 Color::BLACK,
             )
-            .expect("recorded");
+            .expect("recorded the scene");
+        presenter
+            .record_overlays(&mut encoder, &view, (PROBE_SIZE, PROBE_SIZE))
+            .expect("recorded the overlays");
         gpu.queue.submit(Some(encoder.finish()));
 
         assert_eq!(
@@ -844,14 +838,17 @@ mod tests {
 
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         presenter
-            .record(
+            .record_scene(
                 &gpu.device,
                 &mut encoder,
                 &target,
                 (PROBE_SIZE, PROBE_SIZE),
                 Color::BLACK,
             )
-            .expect("recorded");
+            .expect("recorded the scene");
+        presenter
+            .record_overlays(&mut encoder, &target, (PROBE_SIZE, PROBE_SIZE))
+            .expect("recorded the overlays");
         gpu.queue.submit(Some(encoder.finish()));
 
         let surface = pixel_at(&gpu, &texture, [42, 32]);

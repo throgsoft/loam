@@ -6,8 +6,6 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use wgpu::*;
 
-use crate::gpu_timer::GpuTimer;
-
 pub const GPU_TIMER_FEATURES: Features =
     Features::TIMESTAMP_QUERY.union(Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
 
@@ -178,7 +176,6 @@ pub struct GpuContext {
     pub adapter: Adapter,
     pub device: Device,
     pub queue: Queue,
-    pub gpu_timer: Option<GpuTimer>,
     request: FeatureRequest,
     loss: Arc<LossSignal>,
 }
@@ -198,13 +195,11 @@ impl GpuContext {
             })
             .await?;
         let (device, queue, loss) = request_device(&adapter, &request).await?;
-        let gpu_timer = GpuTimer::new(&device, &queue);
         Ok(Self {
             instance,
             adapter,
             device,
             queue,
-            gpu_timer,
             request,
             loss,
         })
@@ -227,7 +222,6 @@ impl GpuContext {
     pub async fn recover(&mut self) -> Result<()> {
         let (device, queue, loss) = request_device(&self.adapter, &self.request).await?;
         self.device.destroy();
-        self.gpu_timer = GpuTimer::new(&device, &queue);
         self.device = device;
         self.queue = queue;
         self.loss = loss;
@@ -404,41 +398,6 @@ impl RenderDevice {
             composite.run(encoder, swap_view);
         }
     }
-
-    /// Compiles the composite PSO at setup rather than on the first frame.
-    pub fn warm_composite(&self) {
-        if self.presentation.composite.is_none() {
-            return;
-        }
-        let format = self.presentation.spec.format;
-        let dummy = self
-            .context
-            .device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("loam-render::composite::warm dummy"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-        let dummy_view = dummy.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder =
-            self.context
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("loam-render::composite::warm encoder"),
-                });
-        self.composite_to_swap(&mut encoder, &dummy_view);
-        self.context.queue.submit(Some(encoder.finish()));
-    }
 }
 
 fn create_scene_target(
@@ -562,9 +521,6 @@ mod tests {
         device.push_error_scope(ErrorFilter::Validation);
         let target = render_target(device, spec.format);
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
-        if let Some(timer) = context.gpu_timer.as_ref() {
-            timer.write_start(&mut encoder);
-        }
         if let Some(composite) = presentation.composite.as_ref() {
             composite.run(&mut encoder, &target);
         }

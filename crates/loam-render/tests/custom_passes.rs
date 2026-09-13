@@ -161,8 +161,11 @@ fn frame(gpu: &GpuContext, presenter: &mut Presenter, view: &TextureView) {
         .device
         .create_command_encoder(&CommandEncoderDescriptor { label: None });
     presenter
-        .record(&gpu.device, &mut encoder, view, SIZE, Color::BLACK)
-        .expect("recorded");
+        .record_scene(&gpu.device, &mut encoder, view, SIZE, Color::BLACK)
+        .expect("recorded the scene");
+    presenter
+        .record_overlays(&mut encoder, view, SIZE)
+        .expect("recorded the overlays");
     gpu.queue.submit(Some(encoder.finish()));
     presenter.after_submit();
 }
