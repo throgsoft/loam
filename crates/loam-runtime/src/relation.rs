@@ -1,5 +1,5 @@
 use crate::entity::{Entities, Entity, SceneId};
-use crate::store::{ErasedStore, SchemaId, StoreError, StoreField};
+use crate::store::{StoreError, StoreField};
 
 /// Resolves to its original link or fails: after unlink, after a restore, in another session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -306,10 +306,6 @@ impl<T: Clone + Send + 'static> StoreField for Relation<T> {
         }
     }
 
-    fn erased(&mut self) -> &mut dyn ErasedStore {
-        self
-    }
-
     fn release(&mut self, entity: Entity) {
         while let Some(id) = self
             .outgoing(entity)
@@ -320,20 +316,6 @@ impl<T: Clone + Send + 'static> StoreField for Relation<T> {
                 break;
             }
         }
-    }
-}
-
-impl<T: Send + 'static> ErasedStore for Relation<T> {
-    fn schema(&self) -> SchemaId {
-        SchemaId::of::<T>()
-    }
-
-    fn len(&self) -> usize {
-        self.links.len()
-    }
-
-    fn is_tracked(&self) -> bool {
-        false
     }
 }
 

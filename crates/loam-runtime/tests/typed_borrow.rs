@@ -1,7 +1,7 @@
 use loam_math::{EuclideanR4, Iso4Flat, Rotor4};
 use loam_runtime::{
-    DomainBuilder, DomainError, Domains, Entity, Phase, Pose, Publish, Session, SimConfig,
-    SpawnBundle, Step, DOMAIN_STEP,
+    DomainBuilder, DomainError, Domains, Phase, Pose, Session, SimConfig, SpawnBundle, Step,
+    DOMAIN_STEP,
 };
 
 #[derive(Clone, Copy)]
@@ -9,18 +9,10 @@ struct Tally {
     ticks: u32,
 }
 
-impl Publish for Tally {
-    type Record = u32;
-
-    fn record(&self, _entity: Entity) -> u32 {
-        self.ticks
-    }
-}
-
 loam_runtime::stores! {
     #[derive(Default)]
     pub struct Probe {
-        tallies: Published<Tally>,
+        tallies: Store<Tally>,
         elapsed: Value<f32>,
         seen: Value<Option<f32>>,
     }

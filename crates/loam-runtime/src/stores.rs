@@ -1,12 +1,9 @@
 use crate::entity::{Entity, SceneId};
 use crate::relation::Relation;
-use crate::session::Stamp;
-use crate::store::{ErasedStore, Store};
+use crate::store::Store;
 
 /// The application's storage contract; only `Session` calls its lifetime hooks.
 pub trait Stores: Send + 'static {
-    type Records: Default + Send + 'static;
-
     type Snapshot: Send + 'static;
 
     fn bind(&mut self, scene: SceneId);
@@ -15,13 +12,9 @@ pub trait Stores: Send + 'static {
 
     fn release(&mut self, entity: Entity);
 
-    fn publish(&self, into: &mut Self::Records, stamp: Stamp);
-
     fn snapshot(&self) -> Self::Snapshot;
 
     fn restore(&mut self, from: &Self::Snapshot, scene: SceneId);
-
-    fn erased(&mut self, visit: &mut dyn FnMut(&'static str, &mut dyn ErasedStore));
 }
 
 pub trait HasStore<T>: Stores {
@@ -50,9 +43,6 @@ macro_rules! __stores_field {
             }
         }
     };
-    (Published, $name:ident, $field:ident, $row:ty) => {
-        $crate::__stores_field!(Store, $name, $field, $row);
-    };
     (Relation, $name:ident, $field:ident, $row:ty) => {
         impl $crate::HasRelation<$row> for $name {
             fn relation(&self) -> &$crate::Relation<$row> {
@@ -65,38 +55,6 @@ macro_rules! __stores_field {
         }
     };
     (Value, $name:ident, $field:ident, $row:ty) => {};
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __stores_records {
-    (@emit [$($acc:tt)*]) => {
-        #[derive(Default)]
-        pub struct Records {
-            $($acc)*
-        }
-    };
-    (@acc [$($acc:tt)*] Published $field:ident : $row:ty ; $($rest:tt)*) => {
-        $crate::__stores_records!(
-            @acc [$($acc)* pub $field : $crate::RecordBuffer<<$row as $crate::Publish>::Record>,]
-            $($rest)*
-        )
-    };
-    (@acc [$($acc:tt)*] $kind:ident $field:ident : $row:ty ; $($rest:tt)*) => {
-        $crate::__stores_records!(@acc [$($acc)*] $($rest)*)
-    };
-    (@acc [$($acc:tt)*]) => {
-        $crate::__stores_records!(@emit [$($acc)*])
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __stores_publish {
-    (Published, $store:expr, $buffer:expr, $stamp:expr) => {
-        $crate::Store::publish($store, $buffer, $stamp);
-    };
-    ($kind:ident, $store:expr, $buffer:expr, $stamp:expr) => {};
 }
 
 /// Declares the store struct and implements `Stores`; its records and snapshot types are `<A as Stores>::Records` and `::Snapshot`.
@@ -114,15 +72,11 @@ macro_rules! stores {
         }
 
         const _: () = {
-            $crate::__stores_records!(@acc [] $( $kind $field : $row ; )*);
-
             pub struct Snapshot {
                 $( pub $field : <$crate::$kind<$row> as $crate::StoreField>::Snapshot, )*
             }
 
             impl $crate::Stores for $name {
-                type Records = Records;
-
                 type Snapshot = Snapshot;
 
                 fn bind(&mut self, _scene: $crate::SceneId) {
@@ -137,10 +91,6 @@ macro_rules! stores {
                     $( $crate::StoreField::release(&mut self.$field, _entity); )*
                 }
 
-                fn publish(&self, _into: &mut Records, _stamp: $crate::Stamp) {
-                    $( $crate::__stores_publish!($kind, &self.$field, &mut _into.$field, _stamp); )*
-                }
-
                 fn snapshot(&self) -> Snapshot {
                     Snapshot {
                         $( $field : $crate::StoreField::snapshot(&self.$field), )*
@@ -149,13 +99,6 @@ macro_rules! stores {
 
                 fn restore(&mut self, _from: &Snapshot, _scene: $crate::SceneId) {
                     $( $crate::StoreField::restore(&mut self.$field, &_from.$field, _scene); )*
-                }
-
-                fn erased(
-                    &mut self,
-                    _visit: &mut dyn FnMut(&'static str, &mut dyn $crate::ErasedStore),
-                ) {
-                    $( _visit(stringify!($field), $crate::StoreField::erased(&mut self.$field)); )*
                 }
             }
 

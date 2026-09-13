@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use loam_shape::polytope::Polytope4Topology;
 
 use crate::bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
@@ -192,19 +194,19 @@ pub struct PublishedView {
 
 /// What a frame presents; publication writes it and the host reads it.
 pub struct Publication<A: Stores> {
-    pub app: A::Records,
     pub views: Vec<PublishedView>,
     pub stamp: Stamp,
     source: Option<SceneId>,
+    app: PhantomData<fn() -> A>,
 }
 
 impl<A: Stores> Default for Publication<A> {
     fn default() -> Self {
         Self {
-            app: A::Records::default(),
             views: Vec::new(),
             stamp: Stamp::default(),
             source: None,
+            app: PhantomData,
         }
     }
 }
@@ -819,7 +821,6 @@ impl<A: Stores> Session<A> {
             sequence,
         };
         let extracted = (|| {
-            self.app.publish(&mut into.app, stamp);
             let library = Library {
                 geometry: &self.prepared,
                 materials: &self.materials,
@@ -1513,7 +1514,7 @@ mod tests {
 
     crate::stores! {
         pub struct Shown {
-            scores: Published<u32>,
+            scores: Store<u32>,
         }
     }
 
@@ -1589,10 +1590,8 @@ mod tests {
         let mut publication = Publication::default();
 
         first.publish(&mut publication).unwrap();
-        assert_eq!(publication.app.scores.rows(), &[11]);
         assert_eq!(publication.views[0].records.segments()[0].start[0], 0.0);
         second.publish(&mut publication).unwrap();
-        assert_eq!(publication.app.scores.rows(), &[22]);
         assert_eq!(publication.views[0].records.segments()[0].start[0], 4.0);
     }
 
@@ -1659,7 +1658,6 @@ mod tests {
             bytes, 0,
             "16 warmed publishes asked the allocator for {bytes} bytes"
         );
-        assert_eq!(publication.app.scores.rows().len(), 8);
         assert_eq!(publication.views[0].records.instances.rows().len(), 8);
     }
 }

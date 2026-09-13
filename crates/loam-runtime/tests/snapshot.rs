@@ -1,14 +1,13 @@
 use std::any::Any;
-use std::collections::BTreeMap;
 
 use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
     AppCommand, Command, Ctx, DepthEnvelope, Dispatch, Domain, DomainBuilder, DomainError,
     DomainHandle, DomainRay, Entity, Eye, Facility, Field, FieldKind, FieldOp, Growth, ImageRay,
     Input, Instance, LogCapacity, Material, Outcome, Phase, PhaseError, Pose, PreparedGeometry,
-    Projection4, Publication, Publish, PublishError, RecordBuffer, Records, Rejection, Reservation,
-    RestoreError, Section4, Session, SimConfig, SpawnBundle, Step, Store, Tick, ViewMapping,
-    ViewSpec, DOMAIN_STEP,
+    Projection4, Publication, PublishError, Records, Rejection, Reservation, RestoreError,
+    Section4, Session, SimConfig, SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec,
+    DOMAIN_STEP,
 };
 
 type Vec4 = <EuclideanR4 as Space>::Point;
@@ -16,41 +15,15 @@ type Vec4 = <EuclideanR4 as Space>::Point;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Tag(u32);
 
-#[derive(Clone, Copy)]
-struct Score(u32);
-
-#[derive(Clone, Copy)]
-struct Scored {
-    entity: Entity,
-    value: u32,
-}
-
-impl Publish for Score {
-    type Record = Scored;
-
-    fn record(&self, entity: Entity) -> Scored {
-        Scored {
-            entity,
-            value: self.0,
-        }
-    }
-}
-
 loam_runtime::stores! {
     #[derive(Default)]
     pub struct Probe {
         tags: Store<Tag>,
         pairs: Relation<u8>,
-        scores: Published<Score>,
         log: Value<Vec<u32>>,
         reserved: Value<Vec<Reservation>>,
     }
 }
-
-const SMALL: LogCapacity = LogCapacity {
-    dirty: 4,
-    removals: 2,
-};
 
 fn session() -> (Session<Probe>, DomainHandle<EuclideanR4>) {
     let mut session = Session::new(Probe::default(), SimConfig::default());
@@ -64,23 +37,6 @@ fn placed(r4: DomainHandle<EuclideanR4>, tag: Tag) -> SpawnBundle<Probe> {
 
 fn at(xyzw: [f32; 4]) -> Pose<EuclideanR4> {
     Pose::at(xyzw.into())
-}
-
-fn live(session: &Session<Probe>) -> BTreeMap<Entity, u32> {
-    session
-        .app
-        .scores
-        .iter()
-        .map(|(entity, score)| (entity, score.0))
-        .collect()
-}
-
-fn published(records: &RecordBuffer<Scored>) -> BTreeMap<Entity, u32> {
-    records
-        .rows()
-        .iter()
-        .map(|record| (record.entity, record.value))
-        .collect()
 }
 
 struct Mark(u32);
@@ -659,38 +615,6 @@ fn request_queued_after_a_reset_in_the_same_batch_applies_to_the_restored_state(
     );
     assert!(session.app.log.get().is_empty());
     assert_eq!(session.current_tick(), Tick(0));
-}
-
-#[test]
-fn publication_misses_a_dirty_row_or_a_removal_or_resumes_a_stale_buffer_without_a_resync() {
-    let probe = Probe {
-        scores: Store::tracked(SMALL),
-        ..Probe::default()
-    };
-    let mut session = Session::new(probe, SimConfig::default());
-    let spawn = |session: &mut Session<Probe>, value: u32| {
-        session
-            .dispatch(|d| d.spawn(SpawnBundle::new().row(Score(value))))
-            .unwrap()
-    };
-    let e: Vec<Entity> = (0..3).map(|value| spawn(&mut session, value)).collect();
-    let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
-    assert_eq!(published(&publication.app.scores), live(&session));
-
-    session.app.scores.get_mut(e[1]).unwrap().0 = 11;
-    session.dispatch(|d| d.despawn(e[2])).unwrap();
-    session.publish(&mut publication).unwrap();
-    assert_eq!(published(&publication.app.scores), live(&session));
-    assert_eq!(publication.app.scores.rows().len(), 2);
-
-    session.app.scores.get_mut(e[0]).unwrap().0 = 10;
-    for value in 20..25 {
-        spawn(&mut session, value);
-    }
-    session.publish(&mut publication).unwrap();
-    assert_eq!(published(&publication.app.scores), live(&session));
-    assert_eq!(publication.app.scores.rows().len(), 7);
 }
 
 #[test]

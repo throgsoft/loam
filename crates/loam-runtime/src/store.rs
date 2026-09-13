@@ -192,12 +192,6 @@ pub enum PartitionError {
     OutOfRange { cut: usize, len: usize },
 }
 
-pub trait Publish: Sized + Send + 'static {
-    type Record: Copy + Send + 'static;
-
-    fn record(&self, entity: Entity) -> Self::Record;
-}
-
 const NO_RECORD: u32 = u32::MAX;
 
 /// One consumer's copy of a store's records, caught up through its own cursor.
@@ -205,17 +199,12 @@ pub struct RecordBuffer<R> {
     rows: Vec<R>,
     entities: Vec<Entity>,
     positions: Vec<u32>,
-    cursor: Cursor,
     stamp: Stamp,
 }
 
 impl<R> RecordBuffer<R> {
     pub fn rows(&self) -> &[R] {
         &self.rows
-    }
-
-    pub fn cursor(&self) -> Cursor {
-        self.cursor
     }
 
     pub fn stamp(&self) -> Stamp {
@@ -240,18 +229,6 @@ impl<R> RecordBuffer<R> {
         self.positions[slot] = self.rows.len() as u32;
         self.rows.push(record);
         self.entities.push(entity);
-    }
-
-    fn remove(&mut self, entity: Entity) {
-        let Some(position) = self.position(entity) else {
-            return;
-        };
-        self.rows.swap_remove(position);
-        self.entities.swap_remove(position);
-        self.positions[entity.key().slot() as usize] = NO_RECORD;
-        if let Some(moved) = self.entities.get(position) {
-            self.positions[moved.key().slot() as usize] = position as u32;
-        }
     }
 
     fn clear(&mut self) {
@@ -287,7 +264,6 @@ impl<R> Default for RecordBuffer<R> {
             rows: Vec::new(),
             entities: Vec::new(),
             positions: Vec::new(),
-            cursor: Cursor::default(),
             stamp: Stamp::default(),
         }
     }
@@ -306,19 +282,6 @@ impl SchemaId {
     }
 }
 
-/// Off the frame path: serialization and tooling see a store without its row type.
-pub trait ErasedStore: Send {
-    fn schema(&self) -> SchemaId;
-
-    fn len(&self) -> usize;
-
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    fn is_tracked(&self) -> bool;
-}
-
 /// A storage-field contract; only `Stores` implementations call its lifetime hooks.
 pub trait StoreField: Send + 'static {
     type Snapshot: Send + 'static;
@@ -328,8 +291,6 @@ pub trait StoreField: Send + 'static {
     fn snapshot(&self) -> Self::Snapshot;
 
     fn restore(&mut self, from: &Self::Snapshot, scene: SceneId);
-
-    fn erased(&mut self) -> &mut dyn ErasedStore;
 
     fn boundary(&mut self) {}
 
@@ -470,9 +431,6 @@ impl Tracking {
         self.removals.reset();
     }
 }
-
-/// A `Store<T>` that `stores!` publishes; `T: Publish` is checked at the generated call.
-pub type Published<T> = Store<T>;
 
 /// Dense rows with a sparse index; a tracked store also keeps versions and bounded logs.
 pub struct Store<T> {
@@ -781,24 +739,6 @@ impl<T> Store<T> {
     }
 }
 
-impl<T: Publish> Store<T> {
-    pub fn publish(&self, into: &mut RecordBuffer<T::Record>, stamp: Stamp) {
-        let mut cursor = into.cursor;
-        let changes = self.changes(&mut cursor);
-        if changes.is_resync() {
-            into.clear();
-        }
-        for change in changes {
-            match change {
-                Change::Row(entity, row) => into.upsert(entity, row.record(entity)),
-                Change::Removed(removal) => into.remove(removal.entity),
-            }
-        }
-        into.cursor = cursor;
-        into.stamp = stamp;
-    }
-}
-
 impl<T: Clone + Send + 'static> StoreField for Store<T> {
     type Snapshot = StoreSnapshot<T>;
 
@@ -836,30 +776,12 @@ impl<T: Clone + Send + 'static> StoreField for Store<T> {
         }
     }
 
-    fn erased(&mut self) -> &mut dyn ErasedStore {
-        self
-    }
-
     fn boundary(&mut self) {
         Store::boundary(self);
     }
 
     fn release(&mut self, entity: Entity) {
         let _ = Store::remove(self, entity);
-    }
-}
-
-impl<T: Send + 'static> ErasedStore for Store<T> {
-    fn schema(&self) -> SchemaId {
-        SchemaId::of::<T>()
-    }
-
-    fn len(&self) -> usize {
-        self.dense.len()
-    }
-
-    fn is_tracked(&self) -> bool {
-        self.tracking.is_some()
     }
 }
 
@@ -915,14 +837,6 @@ pub(crate) mod tests {
         dirty: 4,
         removals: 2,
     };
-
-    impl Publish for u32 {
-        type Record = u32;
-
-        fn record(&self, _entity: Entity) -> u32 {
-            *self
-        }
-    }
 
     fn entities() -> Entities {
         Entities::new(SceneId {
@@ -1125,14 +1039,11 @@ pub(crate) mod tests {
     fn warm_read_iterate_pair_and_partition_paths_allocate_nothing() {
         let (_, mut store, e) = filled(64, Some(LogCapacity::default()));
         let mut cursor = Cursor::default();
-        let mut buffer = RecordBuffer::default();
         let mut warm = |store: &mut Store<u32>| {
             for (_, row) in store.iter_mut() {
                 *row += 1;
             }
-            let read = store.changes(&mut cursor).count();
-            store.publish(&mut buffer, Stamp::default());
-            read
+            store.changes(&mut cursor).count()
         };
         warm(&mut store);
         assert_eq!(warm(&mut store), 64);
@@ -1161,7 +1072,6 @@ pub(crate) mod tests {
             bytes, 0,
             "16 warmed passes asked the allocator for {bytes} bytes"
         );
-        assert_eq!(buffer.rows().len(), 64);
     }
 
     #[test]
