@@ -579,7 +579,7 @@ mod tests {
         }
 
         fn record(
-            &self,
+            &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
         ) -> anyhow::Result<()> {
@@ -617,7 +617,7 @@ mod tests {
         }
 
         fn record(
-            &self,
+            &mut self,
             encoder: &mut CommandEncoder,
             target: &FrameTarget<'_>,
         ) -> anyhow::Result<()> {

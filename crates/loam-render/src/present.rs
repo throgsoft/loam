@@ -99,7 +99,11 @@ impl FramePass for PublishedLines {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let Some(depth) = target.depth else {
             return Ok(());
         };
@@ -633,7 +637,7 @@ mod tests {
         }
 
         fn record(
-            &self,
+            &mut self,
             encoder: &mut CommandEncoder,
             target: &FrameTarget<'_>,
         ) -> anyhow::Result<()> {

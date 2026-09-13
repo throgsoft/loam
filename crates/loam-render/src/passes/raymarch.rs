@@ -58,7 +58,11 @@ impl FramePass for RaymarchPass {
         PassStage::Scene
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         let State {
             uniforms,

@@ -84,7 +84,11 @@ pub trait FramePass {
         None
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()>;
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()>;
 
     /// Builds device resources for startup or device replacement.
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()>;
@@ -235,7 +239,7 @@ impl PassSchedule {
         let timer = &mut self.timer;
         let sections = &mut self.sections;
         let signal = self.signal.as_deref();
-        for pass in self.passes.iter().filter(|pass| pass.stage() == stage) {
+        for pass in self.passes.iter_mut().filter(|pass| pass.stage() == stage) {
             let name = pass.name();
             run_pass(signal, name, PassPhase::Record, || {
                 time_section(timer, sections, name, encoder, |encoder| {
@@ -377,7 +381,7 @@ mod tests {
         }
 
         fn record(
-            &self,
+            &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
         ) -> anyhow::Result<()> {
@@ -477,7 +481,7 @@ fn fragment() -> @location(0) vec4<f32> {
         }
 
         fn record(
-            &self,
+            &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
         ) -> anyhow::Result<()> {

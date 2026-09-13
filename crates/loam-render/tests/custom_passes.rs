@@ -42,7 +42,11 @@ impl FramePass for Recorder {
         self.convention
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         self.log.store(
             self.log.load(Ordering::Relaxed) * 10 + self.tag,
             Ordering::Relaxed,
@@ -87,7 +91,7 @@ impl FramePass for Blit {
     }
 
     fn record(
-        &self,
+        &mut self,
         encoder: &mut CommandEncoder,
         _target: &FrameTarget<'_>,
     ) -> anyhow::Result<()> {

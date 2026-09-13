@@ -555,7 +555,11 @@ impl FramePass for LayerPass {
         PassStage::Overlay
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         self.shared.borrow_mut().paint(encoder, target.color)
     }
 

@@ -84,7 +84,11 @@ impl FramePass for TextPass {
         PassStage::Overlay
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         if state.text.is_empty() || state.draws.is_empty() {
             return Ok(());
