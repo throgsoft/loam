@@ -1190,21 +1190,6 @@ impl<S: PhysicsSpace> World<S> {
         };
     }
 
-    /// Sorted candidate pairs: bounding-ball overlaps under a certified bound, every masked non-static pair otherwise.
-    pub fn broadphase(&self) -> Vec<PairKey> {
-        let mut pairs = Vec::new();
-        Self::fill_broadphase(
-            &self.bodies,
-            &self.geometry,
-            &self.space,
-            &mut Vec::new(),
-            &mut Vec::new(),
-            &mut pairs,
-            &mut StepCounters::default(),
-        );
-        pairs
-    }
-
     /// Reuses the world's sweep storage and replaces `pairs` with the current candidates.
     pub fn broadphase_into(&mut self, pairs: &mut Vec<PairKey>) {
         self.counters = StepCounters::default();
@@ -1655,33 +1640,30 @@ mod tests {
         let a = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 1.0, 1.0).unwrap());
         let b = world
             .push_body(sphere_body_r3(Vec3::new(0.5, 0.0, 0.0), Vec3::ZERO, 1.0, 1.0).unwrap());
-        assert_eq!(
-            world.broadphase().len(),
-            1,
-            "the pair does not overlap to begin with"
-        );
+        let mut pairs = Vec::new();
+        world.broadphase_into(&mut pairs);
+        assert_eq!(pairs.len(), 1, "the pair does not overlap to begin with");
 
         world.bodies[a].collision_group = 0b01;
         world.bodies[a].collision_mask = 0b01;
         world.bodies[b].collision_group = 0b10;
         world.bodies[b].collision_mask = 0b10;
+        world.broadphase_into(&mut pairs);
         assert!(
-            world.broadphase().is_empty(),
+            pairs.is_empty(),
             "a filtered pair still reached the narrowphase"
         );
 
         world.bodies[b].collision_mask = 0b11;
+        world.broadphase_into(&mut pairs);
         assert!(
-            world.broadphase().is_empty(),
+            pairs.is_empty(),
             "a one-sided mask edit produced a pair that collides in one direction"
         );
 
         world.bodies[a].collision_mask = 0b11;
-        assert_eq!(
-            world.broadphase().len(),
-            1,
-            "agreement did not restore the pair"
-        );
+        world.broadphase_into(&mut pairs);
+        assert_eq!(pairs.len(), 1, "agreement did not restore the pair");
     }
 
     #[test]
@@ -3232,11 +3214,12 @@ mod tests {
         for seed in PERMUTATION_SEEDS {
             for (count, spread) in RANDOM_SCENE_SHAPES {
                 let mut world = random_scene(seed, count, spread);
+                let mut emitted = Vec::new();
                 for step in 0..8 {
                     let expected = all_pairs_reference(&world);
+                    world.broadphase_into(&mut emitted);
                     assert_eq!(
-                        world.broadphase(),
-                        expected,
+                        emitted, expected,
                         "seed {seed}, {count} bodies, spread {spread}, step {step}"
                     );
                     ever_beyond_the_floor |= expected.len() > dynamic_body_count(&world);
@@ -3254,8 +3237,9 @@ mod tests {
     fn broadphase_culls_only_pairs_the_narrowphase_would_reject() {
         for seed in PERMUTATION_SEEDS {
             let mut world = random_scene(seed, 40, 3.0);
+            let mut emitted = Vec::new();
             for step in 0..8 {
-                let emitted = world.broadphase();
+                world.broadphase_into(&mut emitted);
                 let n = world.bodies.len();
                 let mut culled = 0usize;
                 for i in 0..n {
@@ -3293,7 +3277,7 @@ mod tests {
     #[test]
     fn broadphase_emits_strictly_ascending_keys_under_disagreeing_storage_order() {
         for seed in PERMUTATION_SEEDS {
-            let world = random_scene(seed, 40, 3.0);
+            let mut world = random_scene(seed, 40, 3.0);
             let disagrees = (1..world.bodies.len())
                 .any(|dense| world.bodies.id_at(dense) < world.bodies.id_at(dense - 1));
             assert!(
@@ -3302,7 +3286,8 @@ mod tests {
                  scene cannot tell the two apart"
             );
 
-            let pairs = world.broadphase();
+            let mut pairs = Vec::new();
+            world.broadphase_into(&mut pairs);
             assert!(pairs.len() > 1, "seed {seed}: too few pairs to be ordered");
             assert!(
                 pairs.windows(2).all(|w| w[0] < w[1]),
@@ -3313,14 +3298,16 @@ mod tests {
 
     #[test]
     fn broadphase_prunes_the_quadratic_pair_set_at_scale() {
-        let world = random_scene(PERMUTATION_SEEDS[1], 200, 20.0);
+        let mut world = random_scene(PERMUTATION_SEEDS[1], 200, 20.0);
         let n = world.bodies.len();
         assert!(
             n >= 100,
             "the scale case needs at least 100 bodies, got {n}"
         );
         let all_pairs = n * (n - 1) / 2;
-        let emitted = world.broadphase().len();
+        let mut pairs = Vec::new();
+        world.broadphase_into(&mut pairs);
+        let emitted = pairs.len();
         assert!(
             emitted * 10 < all_pairs,
             "the sweep emitted {emitted} of {all_pairs} pairs, which is no better than \
@@ -3416,7 +3403,9 @@ mod tests {
             "the separated sphere is not past the boundary"
         );
 
-        assert_eq!(world.broadphase(), vec![canonical_pair(anchor, tangent)]);
+        let mut pairs = Vec::new();
+        world.broadphase_into(&mut pairs);
+        assert_eq!(pairs, vec![canonical_pair(anchor, tangent)]);
     }
 
     #[test]
@@ -3424,7 +3413,9 @@ mod tests {
         let mut world = World::new(EuclideanR3);
         let a = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 0.0, 1.0).unwrap());
         let b = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 0.0, 1.0).unwrap());
-        assert_eq!(world.broadphase(), vec![canonical_pair(a, b)]);
+        let mut pairs = Vec::new();
+        world.broadphase_into(&mut pairs);
+        assert_eq!(pairs, vec![canonical_pair(a, b)]);
     }
 
     #[test]
