@@ -3,6 +3,7 @@
 
 mod hyperslice4d;
 mod polytope_data;
+pub mod scene;
 pub use hyperslice4d::{
     BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
     SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE, SHAPE_600CELL, SHAPE_CLIFFORD_TORUS,
@@ -131,19 +132,8 @@ pub struct RayMarchNode {
 }
 
 impl RayMarchNode {
-    pub fn new(
-        device: &Device,
-        surface_format: TextureFormat,
-        shader: &ShaderModule,
-        sample_count: u32,
-    ) -> Self {
-        Self::with_depth(
-            device,
-            surface_format,
-            shader,
-            crate::DepthMode::Off,
-            sample_count,
-        )
+    pub fn new(device: &Device, surface_format: TextureFormat, shader: &ShaderModule) -> Self {
+        Self::with_depth(device, surface_format, shader, crate::DepthMode::Off)
     }
 
     /// The user's `fs_main` writes [`crate::view`]'s projective depth as `frag_depth`.
@@ -152,7 +142,6 @@ impl RayMarchNode {
         surface_format: TextureFormat,
         shader: &ShaderModule,
         depth: crate::DepthMode,
-        sample_count: u32,
     ) -> Self {
         let uniform_buf = device.create_buffer(&BufferDescriptor {
             label: Some("raymarch uniforms"),
@@ -221,7 +210,7 @@ impl RayMarchNode {
                 bias: DepthBiasState::default(),
             }),
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,

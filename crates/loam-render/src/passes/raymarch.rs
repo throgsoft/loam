@@ -58,7 +58,11 @@ impl FramePass for RaymarchPass {
         PassStage::Scene
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         let State {
             uniforms,
@@ -90,12 +94,7 @@ impl FramePass for RaymarchPass {
                 label: Some("loam-render::passes::raymarch"),
                 source: wgpu::ShaderSource::Wgsl(state.source.clone().into()),
             });
-        state.node = Some(RayMarchNode::new(
-            &gpu.device,
-            frame.color,
-            &module,
-            frame.sample_count,
-        ));
+        state.node = Some(RayMarchNode::new(&gpu.device, frame.color, &module));
         state.queue = Some(gpu.queue.clone());
         Ok(())
     }

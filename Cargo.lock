@@ -1318,7 +1318,6 @@ dependencies = [
  "loam-physics",
  "loam-render",
  "loam-runtime",
- "loam-scene",
  "loam-shape",
  "loam-text",
  "loam-time",
@@ -1408,7 +1407,6 @@ dependencies = [
  "glam",
  "loam-math",
  "loam-runtime",
- "loam-scene",
  "loam-shape",
  "loam-time",
  "naga",
@@ -1428,19 +1426,6 @@ dependencies = [
  "loam-physics",
  "loam-shape",
  "loam-time",
-]
-
-[[package]]
-name = "loam-scene"
-version = "0.1.0"
-dependencies = [
- "glam",
- "loam-math",
- "loam-shape",
- "naga",
- "ron",
- "serde",
- "thiserror 1.0.69",
 ]
 
 [[package]]

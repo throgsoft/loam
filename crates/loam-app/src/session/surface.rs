@@ -19,7 +19,6 @@ impl SurfaceHost {
         surface: Surface<'static>,
         size: (u32, u32),
         request: FeatureRequest,
-        requested_msaa_samples: u32,
     ) -> Result<(Self, RenderDevice)> {
         let context = GpuContext::new(instance, request, Some(&surface)).await?;
         let caps = surface.get_capabilities(&context.adapter);
@@ -48,7 +47,7 @@ impl SurfaceHost {
         surface.configure(&context.device, &config);
         let present_modes = caps.present_modes;
         tracing::info!("surface present modes advertised: {present_modes:?}");
-        let renderer = RenderDevice::new(context, format, requested_msaa_samples, configured_size);
+        let renderer = RenderDevice::new(context, format, configured_size);
         Ok((
             Self {
                 surface,

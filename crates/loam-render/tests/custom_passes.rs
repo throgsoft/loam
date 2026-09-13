@@ -42,7 +42,11 @@ impl FramePass for Recorder {
         self.convention
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         self.log.store(
             self.log.load(Ordering::Relaxed) * 10 + self.tag,
             Ordering::Relaxed,
@@ -87,7 +91,7 @@ impl FramePass for Blit {
     }
 
     fn record(
-        &self,
+        &mut self,
         encoder: &mut CommandEncoder,
         _target: &FrameTarget<'_>,
     ) -> anyhow::Result<()> {
@@ -144,7 +148,7 @@ fn target(device: &Device) -> TextureView {
 }
 
 fn presenter_on(gpu: &GpuContext) -> Presenter {
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
+    let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
     presenter.attach(gpu).expect("attach");
     presenter
 }
@@ -161,8 +165,11 @@ fn frame(gpu: &GpuContext, presenter: &mut Presenter, view: &TextureView) {
         .device
         .create_command_encoder(&CommandEncoderDescriptor { label: None });
     presenter
-        .record(&gpu.device, &mut encoder, view, SIZE, Color::BLACK)
-        .expect("recorded");
+        .record_scene(&gpu.device, &mut encoder, view, SIZE, Color::BLACK)
+        .expect("recorded the scene");
+    presenter
+        .record_overlays(&mut encoder, view, SIZE)
+        .expect("recorded the overlays");
     gpu.queue.submit(Some(encoder.finish()));
     presenter.after_submit();
 }
@@ -201,7 +208,7 @@ fn a_consumer_registered_first_is_recorded_after_the_pass_that_writes_its_input(
 fn without_a_timer_a_recorded_pass_reports_its_gpu_time_unavailable() {
     let gpu = noop_context();
     let view = target(&gpu.device);
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
+    let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
     presenter
         .register_pass(Box::new(Recorder {
             name: "overlay",
@@ -236,7 +243,7 @@ fn a_timed_pass_reports_a_positive_gpu_duration_gpu_probe() {
         .features()
         .contains(loam_render::device::GPU_TIMER_FEATURES);
     let view = target(&gpu.device);
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
+    let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
     presenter
         .register_pass(Box::new(Blit::default()))
         .expect("registered");

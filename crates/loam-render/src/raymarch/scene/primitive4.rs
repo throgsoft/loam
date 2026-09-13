@@ -1,8 +1,8 @@
 use glam::Vec4;
 use loam_shape::Shape;
 
-use crate::literal::wgsl_f32;
-use crate::SENTINEL_DISTANCE;
+use super::literal::wgsl_f32;
+use super::SENTINEL_DISTANCE;
 
 /// CPU evaluation and named vec4 WGSL functions share primitive support rules.
 pub trait Primitive4 {

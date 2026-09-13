@@ -62,7 +62,6 @@ impl LineRasterNode {
         surface_format: TextureFormat,
         depth: crate::DepthMode,
         convention: crate::DepthConvention,
-        sample_count: u32,
     ) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("line_raster shader"),
@@ -184,7 +183,7 @@ impl LineRasterNode {
             },
             depth_stencil: depth_state(depth, convention),
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,

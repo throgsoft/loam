@@ -42,7 +42,7 @@ impl TriangleFeed {
         Box::new(TrianglePass {
             input: self.input.clone(),
             shading,
-            built: RefCell::new(None),
+            built: None,
         })
     }
 
@@ -95,7 +95,7 @@ struct Built {
 struct TrianglePass {
     input: Rc<RefCell<Input>>,
     shading: FragmentShading,
-    built: RefCell<Option<Built>>,
+    built: Option<Built>,
 }
 
 impl FramePass for TrianglePass {
@@ -119,12 +119,15 @@ impl FramePass for TrianglePass {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let Some(depth) = target.depth else {
             return Ok(());
         };
-        let mut built = self.built.borrow_mut();
-        let Some(built) = built.as_mut() else {
+        let Some(built) = self.built.as_mut() else {
             return Ok(());
         };
         let mut input = self.input.borrow_mut();
@@ -167,16 +170,14 @@ impl FramePass for TrianglePass {
             },
             DepthConvention::ReversedZ,
             self.shading,
-            frame.sample_count,
         )?;
         let sky_ground = SkyGroundNode::new(
             &gpu.device,
             frame.color,
             frame.depth,
             DepthConvention::ReversedZ,
-            frame.sample_count,
         );
-        *self.built.borrow_mut() = Some(Built {
+        self.built = Some(Built {
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
             triangles,
@@ -209,7 +210,6 @@ mod tests {
         FrameFormat {
             color: COLOR,
             depth: DEPTH_FORMAT,
-            sample_count: 1,
         }
     }
 
@@ -243,7 +243,12 @@ mod tests {
         })
     }
 
-    fn one_frame(gpu: &GpuContext, pass: &dyn FramePass, color: &TextureView, depth: &TextureView) {
+    fn one_frame(
+        gpu: &GpuContext,
+        pass: &mut dyn FramePass,
+        color: &TextureView,
+        depth: &TextureView,
+    ) {
         let mut encoder = gpu
             .device
             .create_command_encoder(&CommandEncoderDescriptor { label: None });
@@ -306,12 +311,12 @@ mod tests {
         let depth =
             attachment(&gpu, DEPTH_FORMAT, TextureUsages::empty()).create_view(&Default::default());
 
-        one_frame(&gpu, pass.as_ref(), &color, &depth);
+        one_frame(&gpu, pass.as_mut(), &color, &depth);
         feed.set_mesh(source.version(), source.get());
-        one_frame(&gpu, pass.as_ref(), &color, &depth);
+        one_frame(&gpu, pass.as_mut(), &color, &depth);
         source.get_mut().vertices[2][2] = -3.0;
         feed.set_mesh(source.version(), source.get());
-        one_frame(&gpu, pass.as_ref(), &color, &depth);
+        one_frame(&gpu, pass.as_mut(), &color, &depth);
 
         assert_eq!(
             feed.uploads(),
@@ -332,7 +337,7 @@ mod tests {
             attachment(&gpu, COLOR, TextureUsages::empty()).create_view(&Default::default());
         let depth =
             attachment(&gpu, DEPTH_FORMAT, TextureUsages::empty()).create_view(&Default::default());
-        one_frame(&gpu, pass.as_ref(), &color, &depth);
+        one_frame(&gpu, pass.as_mut(), &color, &depth);
 
         let lost = noop_context();
         pass.attach(&lost, frame_format()).expect("reattach");
@@ -340,7 +345,7 @@ mod tests {
             attachment(&lost, COLOR, TextureUsages::empty()).create_view(&Default::default());
         let depth = attachment(&lost, DEPTH_FORMAT, TextureUsages::empty())
             .create_view(&Default::default());
-        one_frame(&lost, pass.as_ref(), &color, &depth);
+        one_frame(&lost, pass.as_mut(), &color, &depth);
 
         assert_eq!(
             feed.uploads(),
@@ -373,7 +378,7 @@ mod tests {
         let depth_texture = attachment(&gpu, DEPTH_FORMAT, TextureUsages::COPY_SRC);
         one_frame(
             &gpu,
-            pass.as_ref(),
+            pass.as_mut(),
             &color_texture.create_view(&TextureViewDescriptor::default()),
             &depth_texture.create_view(&TextureViewDescriptor::default()),
         );

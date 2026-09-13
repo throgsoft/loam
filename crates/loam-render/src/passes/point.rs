@@ -98,7 +98,11 @@ impl FramePass for PointPass {
         PassStage::Scene
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         let State {
             eye,
@@ -136,7 +140,6 @@ impl FramePass for PointPass {
             frame.color,
             DepthMode::Off,
             DepthConvention::ReversedZ,
-            frame.sample_count,
         ));
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());

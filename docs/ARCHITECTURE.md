@@ -26,11 +26,10 @@ runtime, renderer, or host.
 |---|---|
 | `loam-math` | Spaces, frames, isometries, rotors, projections, and geometry WGSL |
 | `loam-shape` | Shapes, topology, sections, isovolumes, and distance-field contracts |
-| `loam-scene` | CSG scenes, CPU evaluation, loading, edits, and WGSL emission |
 | `loam-time` | Fixed steps, traces, replay data, timelines, and the parallel shim |
 | `loam-physics` | Bodies, collision, contacts, constraints, and world snapshots |
 | `loam-runtime` | Typed storage, entities, commands, domains, views, and CPU publication |
-| `loam-render` | GPU resources, pass ordering, shared depth, raster, and raymarch rendering |
+| `loam-render` | GPU resources, pass ordering, shared depth, raster and raymarch rendering, and CSG scene emission |
 | `loam-text` | Glyph overlays, extruded letter geometry, and text rendering |
 | `loam-console` | Console model and logging |
 | `loam-egui` | Debug UI and console integration |

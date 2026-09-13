@@ -832,8 +832,8 @@ const PROBE_BOX_HALF_EXTENTS: Vec3 = Vec3::new(0.20, 0.15, 0.25);
 const PROBE_PLANE_OFFSET: f32 = -0.30;
 const PROBE_SMOOTH_K: [f32; 2] = [0.12, 0.012];
 
-fn probe_scenes() -> Vec<(&'static str, loam_scene::Scene)> {
-    use loam_scene::{Scene, SceneNode};
+fn probe_scenes() -> Vec<(&'static str, loam_render::raymarch::scene::Scene)> {
+    use loam_render::raymarch::scene::{Scene, SceneNode};
     let ball_a = || SceneNode::sphere(PROBE_BALL_A.0, PROBE_BALL_A.1);
     let ball_b = || SceneNode::sphere(PROBE_BALL_B.0, PROBE_BALL_B.1);
     let box3 = || SceneNode::box_(PROBE_BOX_HALF_EXTENTS);
@@ -968,7 +968,7 @@ fn scene_sdf_gpu_probe_bounds_blended_space_error() {
 #[ignore = "requires a working wgpu adapter"]
 fn scene4_hyperslice_gpu_probe_matches_cpu() {
     use glam::Vec4;
-    use loam_scene::{Scene4, SceneNode4};
+    use loam_render::raymarch::scene::{Scene4, SceneNode4};
 
     const W_SLICE: f32 = 0.25;
     let scene = Scene4::new(
@@ -1024,7 +1024,7 @@ fn assert_near(what: &str, actual: f32, expected: f32, eps: f32) {
 #[test]
 #[ignore = "requires a working wgpu adapter"]
 fn hyperslice_march_bound_respects_boolean_geometry_gpu_probe() {
-    use loam_scene::{Scene4, SceneNode4};
+    use loam_render::raymarch::scene::{Scene4, SceneNode4};
     let plane = || SceneNode4::halfspace(Vec4::new(0.0, 0.6, 0.0, 0.8), -0.4);
     let sphere = || SceneNode4::hypersphere(Vec4::ZERO, 0.5);
     for (root, finite) in [
@@ -1069,7 +1069,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
 #[test]
 #[ignore = "requires a working wgpu adapter"]
 fn tiny_scene_constants_survive_shader_execution_gpu_probe() {
-    use loam_scene::{Scene, SceneNode};
+    use loam_render::raymarch::scene::{Scene, SceneNode};
     let centre = Vec3::new(3.7e-7, -1.25e-7, 0.0);
     let sphere = Scene::new(SceneNode::sphere(centre, 1e-7));
     let prelude = EuclideanR3.wgsl_impl();
@@ -1099,7 +1099,7 @@ fn tiny_scene_constants_survive_shader_execution_gpu_probe() {
 #[test]
 #[ignore = "requires a working wgpu adapter"]
 fn hyperslice_gate_changes_floor_distance_kind_and_march_bound_gpu_probe() {
-    use loam_scene::{Scene4, SceneNode4};
+    use loam_render::raymarch::scene::{Scene4, SceneNode4};
     use loam_shape::Shape;
     let root = SceneNode4::hypersphere(Vec4::new(0.0, 2.0, 0.0, 0.5), 0.5)
         .union(SceneNode4::halfspace(Vec4::Y, 0.0))

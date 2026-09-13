@@ -270,20 +270,13 @@ async fn start<A: Stores>(
         optional_features: wgpu::Features::empty(),
         ..FeatureRequest::default()
     };
-    let (surface, rd) = SurfaceHost::new(instance, surface, size, request, 1)
+    let (surface, rd) = SurfaceHost::new(instance, surface, size, request)
         .await
         .context("SurfaceHost::new")?;
 
     let mut frame = Frame::new(session, app);
     frame
-        .attach(
-            &rd.context,
-            rd.target_format(),
-            rd.sample_count(),
-            None,
-            size,
-            dpr,
-        )
+        .attach(&rd.context, rd.target_format(), 1, None, size, dpr)
         .map_err(|error| anyhow!("{error:?}"))?;
     let worker = Rc::new(RefCell::new(Some(Worker {
         frame,
@@ -725,7 +718,7 @@ impl<A: Stores> Worker<A> {
             ..
         } = self;
         {
-            let view = rd.msaa_view().or(rd.scene_view()).unwrap_or(&swap_view);
+            let view = rd.scene_view().unwrap_or(&swap_view);
             let target = Target {
                 view,
                 texture: &frame_surface.texture,
@@ -733,9 +726,6 @@ impl<A: Stores> Worker<A> {
                 size,
             };
             let result = frame.step(&rd.context, &target, now, |encoder| {
-                if rd.sample_count() > 1 {
-                    rd.resolve_scene_to_swap(encoder, &swap_view);
-                }
                 if rd.scene_view().is_some() {
                     rd.composite_to_swap(encoder, &swap_view);
                 }

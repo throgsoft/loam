@@ -59,7 +59,6 @@ fn render_crossing_segment() -> Vec<u8> {
         TextureFormat::Rgba8Unorm,
         DepthMode::Off,
         DepthConvention::ReversedZ,
-        1,
     );
     let mut mesh = LineMesh::<4>::default();
     mesh.segments

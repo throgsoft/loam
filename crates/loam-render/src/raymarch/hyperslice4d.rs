@@ -632,19 +632,8 @@ pub struct Hyperslice4DNode {
 }
 
 impl Hyperslice4DNode {
-    pub fn new(
-        device: &Device,
-        surface_format: TextureFormat,
-        module: &ShaderModule,
-        sample_count: u32,
-    ) -> Self {
-        Self::with_depth(
-            device,
-            surface_format,
-            module,
-            crate::DepthMode::Off,
-            sample_count,
-        )
+    pub fn new(device: &Device, surface_format: TextureFormat, module: &ShaderModule) -> Self {
+        Self::with_depth(device, surface_format, module, crate::DepthMode::Off)
     }
 
     pub fn with_depth(
@@ -652,7 +641,6 @@ impl Hyperslice4DNode {
         surface_format: TextureFormat,
         module: &ShaderModule,
         depth: crate::DepthMode,
-        sample_count: u32,
     ) -> Self {
         let uniform_buf = device.create_buffer(&BufferDescriptor {
             label: Some("hyperslice4d uniforms"),
@@ -696,14 +684,7 @@ impl Hyperslice4DNode {
             push_constant_ranges: &[],
         });
 
-        let pipeline = hyperslice_pipeline(
-            device,
-            &pipeline_layout,
-            module,
-            surface_format,
-            depth,
-            sample_count,
-        );
+        let pipeline = hyperslice_pipeline(device, &pipeline_layout, module, surface_format, depth);
         let strip_pipeline = depth.is_active().then(|| {
             hyperslice_pipeline(
                 device,
@@ -711,7 +692,6 @@ impl Hyperslice4DNode {
                 module,
                 surface_format,
                 crate::DepthMode::Off,
-                sample_count,
             )
         });
 
@@ -948,7 +928,6 @@ fn hyperslice_pipeline(
     module: &ShaderModule,
     surface_format: TextureFormat,
     depth: crate::DepthMode,
-    sample_count: u32,
 ) -> RenderPipeline {
     device.create_render_pipeline(&RenderPipelineDescriptor {
         label: Some("hyperslice4d pipeline"),
@@ -985,7 +964,7 @@ fn hyperslice_pipeline(
             bias: DepthBiasState::default(),
         }),
         multisample: MultisampleState {
-            count: sample_count,
+            count: 1,
             ..Default::default()
         },
         multiview: None,
@@ -999,8 +978,8 @@ mod tests {
 
     #[test]
     fn kernel_validates_with_real_scene_union() {
+        use crate::raymarch::scene::{Scene4, SceneNode4};
         use glam::Vec4;
-        use loam_scene::{Scene4, SceneNode4};
 
         let scene = Scene4::new(
             SceneNode4::hypersphere(Vec4::new(-0.6, 0.7, -1.5, 0.0), 0.7)
@@ -1022,8 +1001,8 @@ mod tests {
 
     #[test]
     fn kernel_validates_with_gated_scene() {
+        use crate::raymarch::scene::{Scene4, SceneNode4};
         use glam::Vec4;
-        use loam_scene::{Scene4, SceneNode4};
 
         let scene = Scene4::new(
             SceneNode4::hypersphere(Vec4::new(0.0, 1.0, 0.0, 0.0), 0.5)
@@ -1200,7 +1179,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         let view = target.create_view(&TextureViewDescriptor::default());
 
         let cells = strip_probe_cells();
-        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module, 1);
+        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module);
         let mut encoder = device.create_command_encoder(&Default::default());
         node.record_strip(&device, &queue, &mut encoder, &view, &cells)
             .expect("filmstrip should render");
@@ -1238,7 +1217,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     fn set_bodies_grows_past_the_old_thirty_two_body_ceiling() {
         let gpu = crate::device::noop_context();
         let module = strip_probe_module(&gpu.device);
-        let mut node = Hyperslice4DNode::new(&gpu.device, TextureFormat::Rgba8Unorm, &module, 1);
+        let mut node = Hyperslice4DNode::new(&gpu.device, TextureFormat::Rgba8Unorm, &module);
         let bodies = vec![BodyUniform::sphere([0.0; 4], 1.0, [1.0; 3]); 33];
         node.set_bodies(&bodies);
         assert_eq!(node.uniforms().body_count, 33.0);
@@ -1299,7 +1278,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             0.9,
             [1.0, 0.0, 0.0],
         ));
-        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module, 1);
+        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module);
         node.set_uniforms(
             &queue,
             Hyperslice4DUniforms {
@@ -1380,7 +1359,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             crate::DepthMode::ReadWrite {
                 format: crate::view::DEPTH_FORMAT,
             },
-            1,
         );
         node.set_uniforms(
             &queue,

@@ -96,7 +96,11 @@ impl FramePass for HyperslicePass {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         if !state.enabled {
             return Ok(());
@@ -152,7 +156,6 @@ impl FramePass for HyperslicePass {
             DepthMode::ReadWrite {
                 format: frame.depth,
             },
-            frame.sample_count,
         ));
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());

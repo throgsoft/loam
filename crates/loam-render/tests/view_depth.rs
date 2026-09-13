@@ -208,14 +208,9 @@ impl Gpu {
         let depth = DepthMode::ReadWrite {
             format: DEPTH_FORMAT,
         };
-        let march = RayMarchNode::with_depth(&device, COLOR_FORMAT, &module, depth, 1);
-        let lines = LineRasterStaticR4Node::new(
-            &device,
-            COLOR_FORMAT,
-            depth,
-            DepthConvention::ReversedZ,
-            1,
-        );
+        let march = RayMarchNode::with_depth(&device, COLOR_FORMAT, &module, depth);
+        let lines =
+            LineRasterStaticR4Node::new(&device, COLOR_FORMAT, depth, DepthConvention::ReversedZ);
         Self {
             device,
             queue,

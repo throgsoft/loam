@@ -5,8 +5,8 @@ use glam::Vec3;
 use loam_math::{Space, WgslSpace};
 use loam_shape::Shape;
 
-use crate::literal::wgsl_f32;
-use crate::SENTINEL_DISTANCE;
+use super::literal::wgsl_f32;
+use super::SENTINEL_DISTANCE;
 
 /// CPU evaluation and named WGSL functions share primitive support rules.
 pub trait Primitive {

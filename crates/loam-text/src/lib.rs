@@ -117,14 +117,12 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
-    /// `sample_count` must match the render target [`record`](TextRenderer::record) draws into, MSAA included.
     pub fn new(
         device: &Device,
         queue: &Queue,
         surface_format: TextureFormat,
         font_bytes: &[u8],
         bake_size_px: f32,
-        sample_count: u32,
     ) -> Result<Self> {
         validate_bake_size(bake_size_px)?;
         let font = FontRef::try_from_slice(font_bytes)
@@ -277,7 +275,7 @@ impl TextRenderer {
             },
             depth_stencil: None,
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,
@@ -320,7 +318,7 @@ impl TextRenderer {
         );
     }
 
-    /// Draws and clears the text queue; record the MSAA resolve after this pass.
+    /// Draws and clears the text queue.
     pub fn record(
         &mut self,
         device: &Device,

@@ -84,7 +84,6 @@ fn reversed_z_depths() -> Vec<f32> {
         TARGET_FORMAT,
         DEPTH_FORMAT,
         DepthConvention::ReversedZ,
-        1,
     );
     node.set_uniforms(
         &queue,

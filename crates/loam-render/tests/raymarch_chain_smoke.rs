@@ -1,8 +1,8 @@
 use glam::Vec3;
 use loam_math::{EuclideanR3, WgslSpace};
+use loam_render::raymarch::scene::{Scene, SceneNode};
 use loam_render::shader::{assemble_wgsl, validate_wgsl, GEODESIC_MARCH_KERNEL};
 use loam_render::{RayMarchNode, RayMarchUniforms};
-use loam_scene::{Scene, SceneNode};
 use wgpu::{Device, ShaderModuleDescriptor, ShaderSource, TextureFormat};
 
 fn probe_scene() -> Scene {
@@ -88,7 +88,7 @@ fn build_geodesic_node(
         label: Some("geodesic raymarch"),
         source: ShaderSource::Wgsl(source.into()),
     });
-    Ok(RayMarchNode::new(device, surface_format, &module, 1))
+    Ok(RayMarchNode::new(device, surface_format, &module))
 }
 
 fn build_raymarch_node(
@@ -105,7 +105,7 @@ fn build_raymarch_node(
         label: Some("scene raymarch"),
         source: ShaderSource::Wgsl(source.into()),
     });
-    Ok(RayMarchNode::new(device, surface_format, &module, 1))
+    Ok(RayMarchNode::new(device, surface_format, &module))
 }
 
 fn frame_uniforms() -> RayMarchUniforms {

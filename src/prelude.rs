@@ -6,10 +6,6 @@ pub use loam_math::{
     SphericalS3Embedded, WPlane, WgslSpace,
 };
 pub use loam_runtime::*;
-pub use loam_scene::{
-    EditError, NodePath, Primitive, Primitive4, PrimitiveKind, Scene, Scene4, SceneEdit,
-    SceneLoadError, SceneNode, SceneNode4,
-};
 pub use loam_shape::{
     Isovolume, LineMesh, NotVisualizable, PointMesh, Shape, ShapeKind, TriangleMesh, Visualizable,
 };

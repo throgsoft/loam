@@ -134,7 +134,7 @@ async fn request_device() -> (Device, Queue) {
 
 fn render(publication: &Publication<Landmarks>) -> Vec<u8> {
     let (device, queue) = pollster::block_on(request_device());
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
+    let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
     let color = device.create_texture(&TextureDescriptor {
         label: Some("present color"),
         size: Extent3d {
@@ -161,8 +161,11 @@ fn render(publication: &Publication<Landmarks>) -> Vec<u8> {
         label: Some("present"),
     });
     presenter
-        .record(&device, &mut encoder, &view, (SIZE, SIZE), BACKGROUND)
-        .expect("recorded");
+        .record_scene(&device, &mut encoder, &view, (SIZE, SIZE), BACKGROUND)
+        .expect("recorded the scene");
+    presenter
+        .record_overlays(&mut encoder, &view, (SIZE, SIZE))
+        .expect("recorded the overlays");
     let readback = device.create_buffer(&BufferDescriptor {
         label: Some("present readback"),
         size: (SIZE * SIZE * 4) as u64,

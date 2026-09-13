@@ -555,7 +555,11 @@ impl FramePass for LayerPass {
         PassStage::Overlay
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         self.shared.borrow_mut().paint(encoder, target.color)
     }
 
@@ -564,8 +568,7 @@ impl FramePass for LayerPass {
         layer.device = gpu.device.clone();
         layer.queue = gpu.queue.clone();
         layer.format = frame.color;
-        layer.sample_count = frame.sample_count;
-        layer.renderer = renderer(&gpu.device, frame.color, frame.sample_count);
+        layer.renderer = renderer(&gpu.device, frame.color, layer.sample_count);
         let Layer {
             renderer,
             managed_textures,
@@ -895,7 +898,6 @@ mod tests {
         let frame = FrameFormat {
             color: format,
             depth: TextureFormat::Depth32Float,
-            sample_count: 1,
         };
         let mut pass = layer.pass();
         pass.attach(&gpu, frame).expect("renderer recreated");

@@ -87,7 +87,7 @@ fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
     });
     let view = target.create_view(&TextureViewDescriptor::default());
 
-    let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module, 1);
+    let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module);
     {
         let u = node.uniforms_mut();
         u.camera_pos = [0.0, 1.8, 6.0];
@@ -227,7 +227,6 @@ fn a_published_strip_records_a_pipeline_its_attachments_accept_gpu_probe() {
         FrameFormat {
             color: TextureFormat::Rgba8Unorm,
             depth: DEPTH_FORMAT,
-            sample_count: 1,
         },
     )
     .expect("the hyperslice pass attaches");

@@ -4,14 +4,13 @@
 use std::boxed::Box;
 
 use glam::Vec3;
-use serde::{Deserialize, Serialize};
 
-use crate::combinator::smooth_min_fn;
-use crate::primitive::Primitive;
+use super::combinator::smooth_min_fn;
+use super::primitive::Primitive;
 use loam_math::{Space, WgslSpace};
 pub use loam_shape::Shape as PrimitiveKind;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum SceneNode {
     Leaf(PrimitiveKind),
     Union(Box<SceneNode>, Box<SceneNode>),
@@ -31,7 +30,7 @@ impl SceneNode {
         SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
     }
 
-    /// Emits chart-coord `dot(p, n) - d` in flat charts and [`crate::SENTINEL_DISTANCE`] in curved ones.
+    /// Emits chart-coord `dot(p, n) - d` in flat charts and [`super::SENTINEL_DISTANCE`] in curved ones.
     pub fn plane(normal: Vec3, offset: f32) -> Self {
         SceneNode::Leaf(PrimitiveKind::HalfSpace { normal, offset })
     }
@@ -67,7 +66,7 @@ impl SceneNode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Scene {
     pub root: SceneNode,
 }
@@ -176,20 +175,5 @@ fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S,
             let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
             (b * (1.0 - h) + a * h) - k * h * (1.0 - h)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use loam_math::EuclideanR3;
-
-    #[test]
-    fn ron_round_trip() {
-        let scene =
-            Scene::new(SceneNode::sphere(Vec3::ZERO, 0.3).union(SceneNode::plane(Vec3::Y, -0.4)));
-        let ron_str = scene.to_ron().expect("serialize");
-        let recovered = Scene::from_ron("<round trip>", &ron_str).expect("deserialize");
-        assert_eq!(scene.to_wgsl(&EuclideanR3), recovered.to_wgsl(&EuclideanR3),);
     }
 }

@@ -2,7 +2,6 @@
 members = [
   "crates/loam-math",
   "crates/loam-shape",
-  "crates/loam-scene",
   "crates/loam-time",
   "crates/loam-render",
   "crates/loam-physics",
@@ -66,7 +65,6 @@ categories = ["game-engines", "graphics", "mathematics"]
 [dependencies]
 loam-math    = { path = "crates/loam-math",    version = "0.1.0" }
 loam-runtime = { path = "crates/loam-runtime", version = "0.1.0" }
-loam-scene   = { path = "crates/loam-scene",   version = "0.1.0" }
 loam-shape   = { path = "crates/loam-shape",   version = "0.1.0" }
 loam-time    = { path = "crates/loam-time",    version = "0.1.0" }
 loam-app     = { path = "crates/loam-app",     version = "0.1.0", default-features = false, optional = true }

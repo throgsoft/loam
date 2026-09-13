@@ -6,8 +6,6 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use wgpu::*;
 
-use crate::gpu_timer::GpuTimer;
-
 pub const GPU_TIMER_FEATURES: Features =
     Features::TIMESTAMP_QUERY.union(Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
 
@@ -178,7 +176,6 @@ pub struct GpuContext {
     pub adapter: Adapter,
     pub device: Device,
     pub queue: Queue,
-    pub gpu_timer: Option<GpuTimer>,
     request: FeatureRequest,
     loss: Arc<LossSignal>,
 }
@@ -198,13 +195,11 @@ impl GpuContext {
             })
             .await?;
         let (device, queue, loss) = request_device(&adapter, &request).await?;
-        let gpu_timer = GpuTimer::new(&device, &queue);
         Ok(Self {
             instance,
             adapter,
             device,
             queue,
-            gpu_timer,
             request,
             loss,
         })
@@ -227,7 +222,6 @@ impl GpuContext {
     pub async fn recover(&mut self) -> Result<()> {
         let (device, queue, loss) = request_device(&self.adapter, &self.request).await?;
         self.device.destroy();
-        self.gpu_timer = GpuTimer::new(&device, &queue);
         self.device = device;
         self.queue = queue;
         self.loss = loss;
@@ -285,33 +279,20 @@ async fn request_device(
     Ok((device, queue, loss))
 }
 
-pub struct MsaaTarget {
-    #[allow(dead_code)]
-    texture: Texture,
-    pub view: TextureView,
-}
-
 pub struct OffscreenTarget {
     #[allow(dead_code)]
     texture: Texture,
     pub view: TextureView,
 }
 
-// Both ends of the MSAA resolve take the target's own format; a non-sRGB view would average encoded bytes.
-fn scene_view_descriptor() -> TextureViewDescriptor<'static> {
-    TextureViewDescriptor::default()
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PresentationSpec {
     format: TextureFormat,
-    sample_count: u32,
     scene_format: Option<TextureFormat>,
 }
 
 struct Presentation {
     spec: PresentationSpec,
-    msaa_target: Option<MsaaTarget>,
     scene_target: Option<OffscreenTarget>,
     composite: Option<crate::composite::CompositeNode>,
 }
@@ -323,7 +304,6 @@ impl Presentation {
             .map(|_| crate::composite::CompositeNode::new(device, spec.format));
         let mut presentation = Self {
             spec,
-            msaa_target: None,
             scene_target: None,
             composite,
         };
@@ -333,8 +313,6 @@ impl Presentation {
 
     fn resize(&mut self, device: &Device, size: (u32, u32)) {
         let spec = self.spec;
-        self.msaa_target = (spec.sample_count > 1)
-            .then(|| create_msaa_target(device, spec.format, size.0, size.1, spec.sample_count));
         if let (Some(scene_fmt), Some(composite)) = (spec.scene_format, self.composite.as_mut()) {
             let scene = create_scene_target(device, scene_fmt, size.0, size.1);
             composite.set_scene_view(device, &scene.view);
@@ -362,21 +340,8 @@ impl Deref for RenderDevice {
 }
 
 impl RenderDevice {
-    pub fn new(
-        context: GpuContext,
-        surface_format: TextureFormat,
-        requested_msaa_samples: u32,
-        size: (u32, u32),
-    ) -> Self {
+    pub fn new(context: GpuContext, surface_format: TextureFormat, size: (u32, u32)) -> Self {
         let needs_composite = !surface_format.is_srgb();
-        let effective_msaa = surface_msaa_request(surface_format, requested_msaa_samples);
-        if effective_msaa < requested_msaa_samples {
-            tracing::warn!(
-                "MSAA={requested_msaa_samples}x disabled: the non-sRGB surface composite uses a single-sample scene target",
-            );
-        }
-
-        let sample_count = negotiate_sample_count(&context.adapter, surface_format, effective_msaa);
         let scene_format = needs_composite.then(|| surface_format.add_srgb_suffix());
         if let Some(scene_fmt) = scene_format {
             tracing::info!(
@@ -388,7 +353,6 @@ impl RenderDevice {
             &context.device,
             PresentationSpec {
                 format: surface_format,
-                sample_count,
                 scene_format,
             },
             size,
@@ -401,7 +365,7 @@ impl RenderDevice {
         }
     }
 
-    /// Rebuilds the device, timer, and presentation targets.
+    /// Rebuilds the device and the presentation targets.
     pub async fn recover(&mut self) -> Result<()> {
         self.context.recover().await?;
         self.presentation.rebuild(&self.context.device, self.size);
@@ -416,15 +380,7 @@ impl RenderDevice {
         self.presentation.resize(&self.context.device, new_size);
     }
 
-    pub fn sample_count(&self) -> u32 {
-        self.presentation.spec.sample_count
-    }
-
-    pub fn msaa_view(&self) -> Option<&TextureView> {
-        self.presentation.msaa_target.as_ref().map(|t| &t.view)
-    }
-
-    /// Scene-pass target priority: `msaa_view`, then this, then the swapchain view.
+    /// Scene-pass target priority: this, then the swapchain view.
     pub fn scene_view(&self) -> Option<&TextureView> {
         self.presentation.scene_target.as_ref().map(|t| &t.view)
     }
@@ -437,67 +393,10 @@ impl RenderDevice {
             .unwrap_or(self.presentation.spec.format)
     }
 
-    /// No-op with MSAA off; both ends take the target's own sRGB format so the resolve averages linear samples.
-    pub fn resolve_scene_to_swap(&self, encoder: &mut CommandEncoder, swap_view: &TextureView) {
-        let Some(msaa) = self.presentation.msaa_target.as_ref() else {
-            return;
-        };
-        let _resolve_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("loam-render::scene-msaa-resolve"),
-            color_attachments: &[Some(RenderPassColorAttachment {
-                view: &msaa.view,
-                depth_slice: None,
-                resolve_target: Some(swap_view),
-                ops: Operations {
-                    load: LoadOp::Load,
-                    store: StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-    }
-
     pub fn composite_to_swap(&self, encoder: &mut wgpu::CommandEncoder, swap_view: &TextureView) {
         if let Some(composite) = self.presentation.composite.as_ref() {
             composite.run(encoder, swap_view);
         }
-    }
-
-    /// Compiles the composite PSO at setup rather than on the first frame.
-    pub fn warm_composite(&self) {
-        if self.presentation.composite.is_none() {
-            return;
-        }
-        let format = self.presentation.spec.format;
-        let dummy = self
-            .context
-            .device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("loam-render::composite::warm dummy"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-        let dummy_view = dummy.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder =
-            self.context
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("loam-render::composite::warm encoder"),
-                });
-        self.composite_to_swap(&mut encoder, &dummy_view);
-        self.context.queue.submit(Some(encoder.finish()));
     }
 }
 
@@ -523,83 +422,6 @@ fn create_scene_target(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     OffscreenTarget { texture, view }
-}
-
-fn surface_msaa_request(surface_format: TextureFormat, requested: u32) -> u32 {
-    if surface_format.is_srgb() {
-        requested
-    } else {
-        1
-    }
-}
-
-fn negotiate_sample_count(adapter: &Adapter, format: TextureFormat, requested: u32) -> u32 {
-    if requested <= 1 {
-        return 1;
-    }
-    let features = adapter.get_texture_format_features(format);
-    let flags = features.flags;
-    for count in [16u32, 8, 4, 2] {
-        if count > requested {
-            continue;
-        }
-        let supported = match count {
-            2 => flags.contains(TextureFormatFeatureFlags::MULTISAMPLE_X2),
-            4 => flags.contains(TextureFormatFeatureFlags::MULTISAMPLE_X4),
-            8 => flags.contains(TextureFormatFeatureFlags::MULTISAMPLE_X8),
-            16 => flags.contains(TextureFormatFeatureFlags::MULTISAMPLE_X16),
-            _ => false,
-        };
-        if supported {
-            if count != requested {
-                tracing::warn!(
-                    "requested MSAA {requested}x not supported on {format:?}; falling back to {count}x"
-                );
-            }
-            return count;
-        }
-    }
-    tracing::warn!("no multisampled count supported on {format:?}; MSAA disabled");
-    1
-}
-
-fn msaa_texture_descriptor(
-    format: TextureFormat,
-    width: u32,
-    height: u32,
-    sample_count: u32,
-) -> TextureDescriptor<'static> {
-    TextureDescriptor {
-        label: Some("loam-render::msaa-color"),
-        size: Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count,
-        dimension: TextureDimension::D2,
-        format,
-        usage: TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    }
-}
-
-fn create_msaa_target(
-    device: &Device,
-    format: TextureFormat,
-    width: u32,
-    height: u32,
-    sample_count: u32,
-) -> MsaaTarget {
-    let texture = device.create_texture(&msaa_texture_descriptor(
-        format,
-        width,
-        height,
-        sample_count,
-    ));
-    let view = texture.create_view(&scene_view_descriptor());
-    MsaaTarget { texture, view }
 }
 
 #[cfg(test)]
@@ -681,7 +503,6 @@ mod tests {
         let mut context = noop_context();
         let spec = PresentationSpec {
             format: TextureFormat::Bgra8Unorm,
-            sample_count: 1,
             scene_format: Some(TextureFormat::Bgra8UnormSrgb),
         };
         let mut presentation = Presentation::build(&context.device, spec, SIZE);
@@ -700,9 +521,6 @@ mod tests {
         device.push_error_scope(ErrorFilter::Validation);
         let target = render_target(device, spec.format);
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
-        if let Some(timer) = context.gpu_timer.as_ref() {
-            timer.write_start(&mut encoder);
-        }
         if let Some(composite) = presentation.composite.as_ref() {
             composite.run(&mut encoder, &target);
         }

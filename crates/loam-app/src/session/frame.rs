@@ -187,7 +187,7 @@ impl<A: Stores> Frame<A> {
         size: (u32, u32),
         scale: f32,
     ) -> Result<(), HostError> {
-        let mut presenter = Presenter::new(format, sample_count).map_err(failed)?;
+        let mut presenter = Presenter::new(format).map_err(failed)?;
         for pass in self.inner.app.passes.drain(..) {
             presenter.register_pass(pass).map_err(failed)?;
         }
@@ -579,7 +579,7 @@ mod tests {
         }
 
         fn record(
-            &self,
+            &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
         ) -> anyhow::Result<()> {
@@ -617,7 +617,7 @@ mod tests {
         }
 
         fn record(
-            &self,
+            &mut self,
             encoder: &mut CommandEncoder,
             target: &FrameTarget<'_>,
         ) -> anyhow::Result<()> {

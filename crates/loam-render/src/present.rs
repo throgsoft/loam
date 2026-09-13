@@ -23,10 +23,11 @@ struct ViewLines {
     translucent: LineRasterNode,
     scratch: Vec<SegmentRecord>,
     uploaded: Option<(DomainId, ViewTarget, Stamp)>,
+    camera: Option<(glam::Mat4, Vec2)>,
 }
 
 impl ViewLines {
-    fn new(device: &Device, format: TextureFormat, sample_count: u32) -> Self {
+    fn new(device: &Device, format: TextureFormat) -> Self {
         Self {
             opaque: LineRasterNode::new(
                 device,
@@ -35,7 +36,6 @@ impl ViewLines {
                     format: DEPTH_FORMAT,
                 },
                 DepthConvention::ReversedZ,
-                sample_count,
             ),
             translucent: LineRasterNode::new(
                 device,
@@ -44,14 +44,18 @@ impl ViewLines {
                     format: DEPTH_FORMAT,
                 },
                 DepthConvention::ReversedZ,
-                sample_count,
             ),
             scratch: Vec::new(),
             uploaded: None,
+            camera: None,
         }
     }
 
-    fn set_camera(&self, queue: &Queue, camera: glam::Mat4, viewport: Vec2) {
+    fn set_camera(&mut self, queue: &Queue, camera: glam::Mat4, viewport: Vec2) {
+        if self.camera == Some((camera, viewport)) {
+            return;
+        }
+        self.camera = Some((camera, viewport));
         self.opaque.set_camera(queue, camera, viewport);
         self.translucent.set_camera(queue, camera, viewport);
     }
@@ -101,7 +105,11 @@ impl FramePass for PublishedLines {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let Some(depth) = target.depth else {
             return Ok(());
         };
@@ -122,8 +130,8 @@ impl FramePass for PublishedLines {
 }
 
 pub struct Presenter {
+    uploads: u64,
     format: TextureFormat,
-    sample_count: u32,
     depth: Option<DepthBuffer>,
     views: Rc<RefCell<Vec<ViewLines>>>,
     fills: TriangleFeed,
@@ -132,7 +140,7 @@ pub struct Presenter {
 }
 
 impl Presenter {
-    pub fn new(format: TextureFormat, sample_count: u32) -> Result<Self, PassError> {
+    pub fn new(format: TextureFormat) -> Result<Self, PassError> {
         let fills = TriangleFeed::default();
         let views = Rc::new(RefCell::new(Vec::new()));
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
@@ -142,7 +150,7 @@ impl Presenter {
         }))?;
         Ok(Self {
             format,
-            sample_count,
+            uploads: 0,
             depth: None,
             views,
             fills,
@@ -160,13 +168,16 @@ impl Presenter {
             FrameFormat {
                 color: self.format,
                 depth: DEPTH_FORMAT,
-                sample_count: self.sample_count,
             },
         )
     }
 
     pub fn register_pass(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {
         self.schedule.register(pass)
+    }
+
+    pub fn uploads(&self) -> u64 {
+        self.uploads
     }
 
     pub fn sections(&self) -> &[Section] {
@@ -189,7 +200,7 @@ impl Presenter {
         let _scope = loam_time::frame_trace::scope("present-upload");
         let mut line_views = self.views.borrow_mut();
         while line_views.len() < views.len() {
-            line_views.push(ViewLines::new(device, self.format, self.sample_count));
+            line_views.push(ViewLines::new(device, self.format));
         }
         line_views.truncate(views.len());
         let mut rebuilt = false;
@@ -202,6 +213,7 @@ impl Presenter {
             }
             slot.uploaded = Some(published);
             rebuilt = true;
+            self.uploads += 1;
             slot.upload_segments(device, queue, view.records.segments());
         }
         drop(line_views);
@@ -240,13 +252,7 @@ impl Presenter {
         background: Color,
     ) -> Result<(), PassExecutionError> {
         self.schedule.begin_frame();
-        DepthBuffer::ensure(
-            &mut self.depth,
-            device,
-            DEPTH_FORMAT,
-            size,
-            self.sample_count,
-        );
+        DepthBuffer::ensure(&mut self.depth, device, DEPTH_FORMAT, size);
         let Some(depth) = self.depth.as_ref() else {
             return Ok(());
         };
@@ -301,18 +307,6 @@ impl Presenter {
         self.schedule.end_frame(encoder);
         Ok(())
     }
-
-    pub fn record(
-        &mut self,
-        device: &Device,
-        encoder: &mut CommandEncoder,
-        target: &TextureView,
-        size: (u32, u32),
-        background: Color,
-    ) -> Result<(), PassExecutionError> {
-        self.record_scene(device, encoder, target, size, background)?;
-        self.record_overlays(encoder, target, size)
-    }
 }
 
 fn segment_is_opaque(segment: &SegmentRecord) -> bool {
@@ -333,45 +327,9 @@ mod tests {
 
     use super::*;
 
-    mod alloc_probe {
-        use std::alloc::{GlobalAlloc, Layout, System};
-        use std::cell::Cell;
-
-        thread_local! {
-            static BYTES: Cell<usize> = const { Cell::new(0) };
-        }
-
-        pub struct Counting;
-
-        // SAFETY: Methods preserve System contracts; const TLS and wrapping Cell updates cannot unwind.
-        unsafe impl GlobalAlloc for Counting {
-            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(layout.size())));
-                // SAFETY: The caller supplies a valid nonzero allocation layout.
-                unsafe { System.alloc(layout) }
-            }
-
-            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-                // SAFETY: The caller supplies a live System allocation and its original layout.
-                unsafe { System.dealloc(ptr, layout) }
-            }
-
-            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(new_size)));
-                // SAFETY: The caller supplies a live System allocation, its layout, and a valid new size.
-                unsafe { System.realloc(ptr, layout, new_size) }
-            }
-        }
-
-        pub fn bytes_allocated_by(body: impl FnOnce()) -> usize {
-            let before = BYTES.with(Cell::get);
-            body();
-            BYTES.with(Cell::get).wrapping_sub(before)
-        }
-    }
-
     #[global_allocator]
-    static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
+    static COUNTING_ALLOCATOR: loam_time::alloc::CountingAllocator<std::alloc::System> =
+        loam_time::alloc::CountingAllocator::new(std::alloc::System);
 
     loam_runtime::stores! {
         #[derive(Default)]
@@ -445,7 +403,7 @@ mod tests {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         let mut records = Records::<Spun>::default();
         let eye = Eye::default();
         let spin = |session: &mut Session<Spun>| {
@@ -466,8 +424,11 @@ mod tests {
             presenter.upload(&device, &queue, &eye, Vec2::splat(64.0), &published.views);
             records.release(published);
             presenter
-                .record(&device, encoder, &target, (64, 64), Color::BLACK)
-                .expect("recorded");
+                .record_scene(&device, encoder, &target, (64, 64), Color::BLACK)
+                .expect("recorded the scene");
+            presenter
+                .record_overlays(encoder, &target, (64, 64))
+                .expect("recorded the overlays");
         };
 
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -476,7 +437,7 @@ mod tests {
             present(&mut session, &mut records, &mut presenter, &mut encoder);
         }
 
-        let published = alloc_probe::bytes_allocated_by(|| {
+        let published = loam_time::alloc::bytes_allocated_by(|| {
             for _ in 0..16 {
                 spin(&mut session);
                 records.publish(&mut session).unwrap();
@@ -487,16 +448,29 @@ mod tests {
             "16 warmed publications asked the allocator for {published} bytes"
         );
 
-        let idle = alloc_probe::bytes_allocated_by(|| {
+        present(&mut session, &mut records, &mut presenter, &mut encoder);
+        let before = presenter.uploads();
+        let idle = loam_time::alloc::bytes_allocated_by(|| {
             for _ in 0..16 {
                 present(&mut session, &mut records, &mut presenter, &mut encoder);
             }
+            assert_eq!(
+                presenter.uploads(),
+                before,
+                "an idle presenter uploaded a view"
+            );
         });
-        let busy = alloc_probe::bytes_allocated_by(|| {
+        let busy = loam_time::alloc::bytes_allocated_by(|| {
             for _ in 0..16 {
                 spin(&mut session);
                 present(&mut session, &mut records, &mut presenter, &mut encoder);
             }
+            assert_eq!(
+                presenter.uploads(),
+                before + 16,
+                "sixteen changed publications uploaded the view {} times",
+                presenter.uploads() - before
+            );
         });
         assert!(
             idle < busy,
@@ -535,7 +509,7 @@ mod tests {
         });
 
         let (device, queue) = noop_device();
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         let mut records = Records::<Spun>::default();
         let eye = Eye::default();
         records.publish(&mut session).expect("published");
@@ -599,7 +573,7 @@ mod tests {
         }
 
         let (device, queue) = noop_device();
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         let mut records = Records::<Spun>::default();
         let eye = Eye::default();
         records.publish(&mut session).expect("published");
@@ -653,7 +627,7 @@ mod tests {
         }
 
         fn record(
-            &self,
+            &mut self,
             encoder: &mut CommandEncoder,
             target: &FrameTarget<'_>,
         ) -> anyhow::Result<()> {
@@ -763,21 +737,24 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         presenter
             .register_pass(Box::new(Paint))
             .expect("registered");
         presenter.attach(&gpu).expect("attached");
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         presenter
-            .record(
+            .record_scene(
                 &gpu.device,
                 &mut encoder,
                 &view,
                 (PROBE_SIZE, PROBE_SIZE),
                 Color::BLACK,
             )
-            .expect("recorded");
+            .expect("recorded the scene");
+        presenter
+            .record_overlays(&mut encoder, &view, (PROBE_SIZE, PROBE_SIZE))
+            .expect("recorded the overlays");
         gpu.queue.submit(Some(encoder.finish()));
 
         assert_eq!(
@@ -811,7 +788,7 @@ mod tests {
             view_formats: &[],
         });
         let target = texture.create_view(&Default::default());
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         presenter.attach(&gpu).expect("attached");
         let eye = Eye::default();
         let camera = crate::view::placed_view_projection(&eye, Rigid::IDENTITY);
@@ -823,7 +800,7 @@ mod tests {
             mesh.indices.push([0, 1, 2]);
         });
 
-        let mut translucent = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm, 1);
+        let mut translucent = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm);
         translucent.set_camera(&gpu.queue, camera, Vec2::splat(PROBE_SIZE as f32));
         translucent.upload_segments(
             &gpu.device,
@@ -837,7 +814,7 @@ mod tests {
                 ..Default::default()
             }],
         );
-        let mut opaque = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm, 1);
+        let mut opaque = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm);
         opaque.set_camera(&gpu.queue, camera, Vec2::splat(PROBE_SIZE as f32));
         opaque.upload_segments(
             &gpu.device,
@@ -855,14 +832,17 @@ mod tests {
 
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         presenter
-            .record(
+            .record_scene(
                 &gpu.device,
                 &mut encoder,
                 &target,
                 (PROBE_SIZE, PROBE_SIZE),
                 Color::BLACK,
             )
-            .expect("recorded");
+            .expect("recorded the scene");
+        presenter
+            .record_overlays(&mut encoder, &target, (PROBE_SIZE, PROBE_SIZE))
+            .expect("recorded the overlays");
         gpu.queue.submit(Some(encoder.finish()));
 
         let surface = pixel_at(&gpu, &texture, [42, 32]);

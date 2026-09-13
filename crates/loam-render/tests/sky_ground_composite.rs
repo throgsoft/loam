@@ -106,7 +106,6 @@ fn render(gpu: &GpuContext, eye: Vec3, show_ground: bool) -> Vec<u8> {
         TARGET_FORMAT,
         DEPTH_FORMAT,
         DepthConvention::StandardZ,
-        1,
     );
     background.set_uniforms(
         queue,
@@ -131,7 +130,6 @@ fn render(gpu: &GpuContext, eye: Vec3, show_ground: bool) -> Vec<u8> {
         },
         DepthConvention::StandardZ,
         FragmentShading::Flat,
-        1,
     )
     .expect("triangle material");
     quad.set_camera(queue, view_proj(eye));

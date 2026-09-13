@@ -65,7 +65,11 @@ impl FramePass for SkyGroundPass {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let Some(depth) = target.depth else {
             return Ok(());
         };
@@ -93,7 +97,6 @@ impl FramePass for SkyGroundPass {
             frame.color,
             frame.depth,
             DepthConvention::ReversedZ,
-            frame.sample_count,
         ));
         state.queue = Some(gpu.queue.clone());
         Ok(())

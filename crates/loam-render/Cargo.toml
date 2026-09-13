@@ -25,7 +25,6 @@ loam-shape   = { path = "../loam-shape", version = "0.1.0" }
 loam-time    = { path = "../loam-time",  version = "0.1.0" }
 
 [dev-dependencies]
-loam-scene = { path = "../loam-scene", version = "0.1.0" }
 pollster.workspace = true
 wgpu = { workspace = true, features = ["noop"] }
 

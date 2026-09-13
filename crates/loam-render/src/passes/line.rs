@@ -76,7 +76,11 @@ impl FramePass for LinePass {
         PassStage::Scene
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         let Some(depth) = target.depth else {
             return Ok(());
         };
@@ -117,7 +121,6 @@ impl FramePass for LinePass {
                 format: frame.depth,
             },
             DepthConvention::ReversedZ,
-            frame.sample_count,
         ));
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());
