@@ -38,7 +38,7 @@ pub use host::{HostConfig, HostError};
 pub use input::{
     ActionEvent, ActionId, Bindings, Input, Key, Pointer, PointerButton, PointerPhase,
 };
-pub use phase::{Ctx, EntryId, Order, Phase, PhaseError, Step, System, SystemEntry, Tick};
+pub use phase::{Ctx, Order, Phase, PhaseError, Step, System, SystemEntry, Tick};
 #[cfg(feature = "physics")]
 pub use physics::{GrabConfig, Physics, PhysicsConfig};
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
@@ -48,9 +48,8 @@ pub use session::{
     DOMAIN_STEP,
 };
 pub use store::{
-    Change, Changes, Cursor, ErasedStore, LogCapacity, Part, Partition, PartitionError, Parts,
-    Publish, Published, RecordBuffer, Removal, SchemaId, Store, StoreError, StoreField,
-    StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,
+    Change, Changes, Cursor, LogCapacity, Part, Partition, PartitionError, Parts, RecordBuffer,
+    Removal, SchemaId, Store, StoreError, StoreField, StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,
 };
 pub use stores::{HasRelation, HasStore, Stores};
 pub use value::Value;
@@ -58,5 +57,5 @@ pub use view::{
     DepthEnvelope, DomainRay, Eye, Identity3, ImageRay, ImageSpace, ImageSpaceId, InstanceRecord,
     Klein, Orbit, Pick, Placement, PointRecord, Projection4, RefusalSource, Rigid, Section4,
     SectionCut, SegmentRecord, TriangleRecord, ViewId, ViewMapping, ViewRecords, ViewRefusal,
-    ViewRefusals, ViewSettings, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
+    ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
 };

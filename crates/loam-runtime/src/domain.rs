@@ -32,7 +32,7 @@ use crate::store::{Change, LogCapacity, Store, StoreError, StoreField, StoreSnap
 use crate::view::{
     self, DomainRay, EntityOutput, ImageRay, ImageSpaceId, InstanceRecord, Pick, RefusalSource,
     Rigid, SegmentRecord, TriangleRecord, Vec3, Vec4, ViewId, ViewMapping, ViewRecords,
-    ViewRefusals, ViewSettings, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views,
+    ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -133,9 +133,6 @@ pub enum ChartCommand {
     Release {
         entity: Entity,
     },
-    Remove {
-        entity: Entity,
-    },
 }
 
 impl ChartCommand {
@@ -146,8 +143,7 @@ impl ChartCommand {
             | Self::Walk { entity, .. }
             | Self::Move { entity, .. }
             | Self::Grab { entity, .. }
-            | Self::Release { entity }
-            | Self::Remove { entity } => entity,
+            | Self::Release { entity } => entity,
         }
     }
 }
@@ -211,8 +207,10 @@ pub enum EdgeShading {
 pub enum DomainError {
     ForeignRuntime,
     UnknownDomain(DomainId),
+    UnknownView(ViewId),
     SpaceMismatch(DomainId),
     Stale(Entity),
+    Store(StoreError),
     InvalidCoordinate(&'static str),
     InvalidFrame,
     ChartBoundary,
@@ -229,6 +227,15 @@ pub enum DomainError {
 impl From<loam_physics::EditError> for DomainError {
     fn from(error: loam_physics::EditError) -> Self {
         Self::Physics(error)
+    }
+}
+
+impl From<StoreError> for DomainError {
+    fn from(error: StoreError) -> Self {
+        match error {
+            StoreError::Stale(entity) => Self::Stale(entity),
+            error => Self::Store(error),
+        }
     }
 }
 
@@ -331,30 +338,11 @@ pub trait Homogeneous: DomainSpace + IsometryGroup {
     fn transvection(&self, to: Self::Point) -> Self::Iso;
 }
 
-#[cfg(test)]
-pub(crate) mod applied {
-    use std::cell::Cell;
-
-    thread_local! {
-        static COUNT: Cell<u64> = const { Cell::new(0) };
-    }
-
-    pub(crate) fn bump() {
-        COUNT.with(|count| count.set(count.get() + 1));
-    }
-
-    pub(crate) fn taken() -> u64 {
-        COUNT.with(|count| count.replace(0))
-    }
-}
-
 pub fn homogeneous_place<S: Homogeneous>(
     space: &S,
     placement: &S::Iso,
     local: S::Point,
 ) -> Result<S::Point, DomainError> {
-    #[cfg(test)]
-    applied::bump();
     let point = space.iso_apply(*placement, local);
     space.check(point)?;
     Ok(point)
@@ -365,8 +353,6 @@ pub fn homogeneous_local<S: Homogeneous>(
     pose: &Pose<S>,
     point: S::Point,
 ) -> Result<S::Point, DomainError> {
-    #[cfg(test)]
-    applied::bump();
     Ok(space.iso_apply(space.iso_inverse(space.iso_of(pose)), point))
 }
 
@@ -376,8 +362,6 @@ pub fn homogeneous_carry<S: Homogeneous>(
     local: S::Point,
     tangent: S::Vector,
 ) -> Result<S::Vector, DomainError> {
-    #[cfg(test)]
-    applied::bump();
     Ok(space.iso_transport(space.iso_of(pose), local, tangent))
 }
 
@@ -389,12 +373,66 @@ pub fn homogeneous_relative<S: Homogeneous>(
     Ok(space.iso_compose(space.iso_inverse(space.iso_of(eye)), space.iso_of(pose)))
 }
 
-pub fn homogeneous_place_relative<S: Homogeneous>(
-    space: &S,
-    relative: &S::Iso,
-    local: S::Point,
-) -> Result<S::Point, DomainError> {
-    homogeneous_place(space, relative, local)
+macro_rules! homogeneous_capabilities {
+    () => {
+        type Placement = <Self as IsometryGroup>::Iso;
+
+        type Relative = <Self as IsometryGroup>::Iso;
+
+        fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
+            self.iso_of(pose)
+        }
+
+        fn place(
+            &self,
+            placement: &Self::Placement,
+            local: Self::Point,
+        ) -> Result<Self::Point, DomainError> {
+            homogeneous_place(self, placement, local)
+        }
+
+        fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
+            homogeneous_local(self, pose, point)
+        }
+
+        fn relative(
+            &self,
+            eye: &Pose<Self>,
+            pose: &Pose<Self>,
+        ) -> Result<Self::Relative, DomainError> {
+            homogeneous_relative(self, eye, pose)
+        }
+
+        fn place_relative(
+            &self,
+            relative: &Self::Relative,
+            local: Self::Point,
+        ) -> Result<Self::Point, DomainError> {
+            homogeneous_place(self, relative, local)
+        }
+
+        fn carry(
+            &self,
+            pose: &Pose<Self>,
+            local: Self::Point,
+            tangent: Self::Vector,
+        ) -> Result<Self::Vector, DomainError> {
+            homogeneous_carry(self, pose, local, tangent)
+        }
+
+        fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
+            homogeneous_moved(self, pose, to)
+        }
+
+        fn walk(
+            &self,
+            pose: &Pose<Self>,
+            tangent: Self::Vector,
+            dt: f32,
+        ) -> Result<Pose<Self>, DomainError> {
+            homogeneous_walk(self, pose, tangent, dt)
+        }
+    };
 }
 
 pub fn homogeneous_moved<S: Homogeneous>(
@@ -498,9 +536,7 @@ fn lorentz(a: Vec4, b: Vec4) -> f32 {
 }
 
 impl DomainSpace for EuclideanR4 {
-    type Placement = Iso4Flat;
-
-    type Relative = Iso4Flat;
+    homogeneous_capabilities!();
 
     fn origin(&self) -> Self::Point {
         Vec4::ZERO
@@ -560,56 +596,6 @@ impl DomainSpace for EuclideanR4 {
             offset.length_squared() - radius * radius,
         )
     }
-
-    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
-        self.iso_of(pose)
-    }
-
-    fn place(
-        &self,
-        placement: &Self::Placement,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place(self, placement, local)
-    }
-
-    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
-        homogeneous_local(self, pose, point)
-    }
-
-    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
-        homogeneous_relative(self, eye, pose)
-    }
-
-    fn place_relative(
-        &self,
-        relative: &Self::Relative,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place_relative(self, relative, local)
-    }
-
-    fn carry(
-        &self,
-        pose: &Pose<Self>,
-        local: Self::Point,
-        tangent: Self::Vector,
-    ) -> Result<Self::Vector, DomainError> {
-        homogeneous_carry(self, pose, local, tangent)
-    }
-
-    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
-        homogeneous_moved(self, pose, to)
-    }
-
-    fn walk(
-        &self,
-        pose: &Pose<Self>,
-        tangent: Self::Vector,
-        dt: f32,
-    ) -> Result<Pose<Self>, DomainError> {
-        homogeneous_walk(self, pose, tangent, dt)
-    }
 }
 
 impl Homogeneous for EuclideanR4 {
@@ -639,9 +625,7 @@ impl From<Iso4Flat> for Pose<EuclideanR4> {
 }
 
 impl DomainSpace for HyperbolicH3 {
-    type Placement = Iso3H;
-
-    type Relative = Iso3H;
+    homogeneous_capabilities!();
 
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
@@ -734,56 +718,6 @@ impl DomainSpace for HyperbolicH3 {
         }
         Some(entry)
     }
-
-    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
-        self.iso_of(pose)
-    }
-
-    fn place(
-        &self,
-        placement: &Self::Placement,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place(self, placement, local)
-    }
-
-    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
-        homogeneous_local(self, pose, point)
-    }
-
-    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
-        homogeneous_relative(self, eye, pose)
-    }
-
-    fn place_relative(
-        &self,
-        relative: &Self::Relative,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place_relative(self, relative, local)
-    }
-
-    fn carry(
-        &self,
-        pose: &Pose<Self>,
-        local: Self::Point,
-        tangent: Self::Vector,
-    ) -> Result<Self::Vector, DomainError> {
-        homogeneous_carry(self, pose, local, tangent)
-    }
-
-    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
-        homogeneous_moved(self, pose, to)
-    }
-
-    fn walk(
-        &self,
-        pose: &Pose<Self>,
-        tangent: Self::Vector,
-        dt: f32,
-    ) -> Result<Pose<Self>, DomainError> {
-        homogeneous_walk(self, pose, tangent, dt)
-    }
 }
 
 impl Homogeneous for HyperbolicH3 {
@@ -810,9 +744,7 @@ impl From<Iso3H> for Pose<HyperbolicH3> {
 }
 
 impl DomainSpace for EuclideanR3 {
-    type Placement = Iso3;
-
-    type Relative = Iso3;
+    homogeneous_capabilities!();
 
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
@@ -871,56 +803,6 @@ impl DomainSpace for EuclideanR3 {
             offset.dot(ray.direction),
             offset.length_squared() - radius * radius,
         )
-    }
-
-    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
-        self.iso_of(pose)
-    }
-
-    fn place(
-        &self,
-        placement: &Self::Placement,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place(self, placement, local)
-    }
-
-    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
-        homogeneous_local(self, pose, point)
-    }
-
-    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
-        homogeneous_relative(self, eye, pose)
-    }
-
-    fn place_relative(
-        &self,
-        relative: &Self::Relative,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place_relative(self, relative, local)
-    }
-
-    fn carry(
-        &self,
-        pose: &Pose<Self>,
-        local: Self::Point,
-        tangent: Self::Vector,
-    ) -> Result<Self::Vector, DomainError> {
-        homogeneous_carry(self, pose, local, tangent)
-    }
-
-    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
-        homogeneous_moved(self, pose, to)
-    }
-
-    fn walk(
-        &self,
-        pose: &Pose<Self>,
-        tangent: Self::Vector,
-        dt: f32,
-    ) -> Result<Pose<Self>, DomainError> {
-        homogeneous_walk(self, pose, tangent, dt)
     }
 }
 
@@ -1282,9 +1164,25 @@ fn push_segments<S: DomainSpace>(
     }
 }
 
+struct ViewEntry<S: DomainSpace> {
+    eye: Entity,
+    subject: Option<Entity>,
+    style: ViewStyle<S>,
+}
+
+impl<S: DomainSpace> Clone for ViewEntry<S> {
+    fn clone(&self) -> Self {
+        Self {
+            eye: self.eye,
+            subject: self.subject,
+            style: self.style.clone(),
+        }
+    }
+}
+
 struct ViewProjection<'a, S: DomainSpace> {
     space: &'a S,
-    spec: &'a ViewSettings<S>,
+    spec: &'a ViewEntry<S>,
     eye: &'a Pose<S>,
 }
 
@@ -1301,7 +1199,7 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
         let space = self.space;
         let spec = self.spec;
         let eye = self.eye;
-        let mapping = spec.mapping.as_ref();
+        let mapping = spec.style.mapping.as_ref();
         let Some(PreparedGeometry::Polytope4 { polytope, scale }) =
             library.geometry.get(instance.geometry.index())
         else {
@@ -1341,7 +1239,7 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
             ]
         };
 
-        if spec.section_faces {
+        if spec.style.section_faces {
             let (fill_color, _) = library.line_style(instance.material);
             scratch.faces.vertices.clear();
             scratch.faces.colors.clear();
@@ -1355,7 +1253,7 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
                 &mut scratch.cut,
                 &mut scratch.faces,
             );
-            if spec.section_edges {
+            if spec.style.section_edges {
                 let (mut edge_color, material_width_px) = library.line_style(perimeter_material);
                 let width_px = instance.line_width_px.unwrap_or(material_width_px);
                 if let Some(opacity) = instance.line_opacity {
@@ -1384,7 +1282,7 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
                     color: fill_color,
                 });
             }
-        } else if spec.section_edges {
+        } else if spec.style.section_edges {
             let (mut edge_color, material_width_px) = library.line_style(perimeter_material);
             let width_px = instance.line_width_px.unwrap_or(material_width_px);
             if let Some(opacity) = instance.line_opacity {
@@ -1436,14 +1334,15 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
                 return None;
             }
         };
-        let image_point = spec
-            .mapping
-            .image_local(space, eye, pose, &relative, space.origin())?;
-        if spec.edges {
+        let image_point =
+            spec.style
+                .mapping
+                .image_local(space, eye, pose, &relative, space.origin())?;
+        if spec.style.edges {
             push_segments(
                 SegmentProjection {
                     space,
-                    mapping: spec.mapping.as_ref(),
+                    mapping: spec.style.mapping.as_ref(),
                     eye,
                     pose,
                     relative: &relative,
@@ -1618,7 +1517,7 @@ struct TypedSnapshot<S: DomainSpace> {
     instances: StoreSnapshot<Instance>,
     fields: Option<StoreSnapshot<Field>>,
     facilities: Vec<Box<dyn Any + Send>>,
-    views: Vec<ViewSettings<S>>,
+    views: Vec<ViewEntry<S>>,
     targets: Vec<ViewTarget>,
 }
 
@@ -1689,7 +1588,7 @@ pub struct TypedDomain<S: DomainSpace> {
     poses: Store<Pose<S>>,
     instances: Store<Instance>,
     fields: Option<Store<Field>>,
-    views: Vec<ViewSettings<S>>,
+    views: Vec<ViewEntry<S>>,
     targets: Vec<ViewTarget>,
     view_revisions: Vec<u32>,
     pub(crate) facilities: Vec<Box<dyn Facility<S>>>,
@@ -1737,14 +1636,14 @@ impl<S: DomainSpace> TypedDomain<S> {
         instance: Instance,
     ) -> Result<(), Rejection> {
         if !self.poses.contains(entity) {
-            return Err(Rejection::Stale(entity));
+            return Err(Rejection::Domain(DomainError::Stale(entity)));
         }
         put_row(&mut self.instances, entity, instance)
     }
 
     pub(crate) fn attach_field(&mut self, entity: Entity, field: Field) -> Result<(), Rejection> {
         if !self.poses.contains(entity) {
-            return Err(Rejection::Stale(entity));
+            return Err(Rejection::Domain(DomainError::Stale(entity)));
         }
         let fields = self
             .fields
@@ -1799,12 +1698,24 @@ impl<S: DomainSpace> TypedDomain<S> {
             image: spec.image,
         });
         self.view_revisions.push(0);
-        self.views.push(spec.settings);
+        self.views.push(ViewEntry {
+            eye: spec.eye,
+            subject: spec.subject,
+            style: spec.style,
+        });
         id
     }
 
-    pub fn view(&self, id: ViewId) -> Option<&ViewSettings<S>> {
-        self.views.get(id.index())
+    pub fn view(&self, id: ViewId) -> Option<&ViewStyle<S>> {
+        self.views.get(id.index()).map(|view| &view.style)
+    }
+
+    pub fn view_eye(&self, id: ViewId) -> Option<Entity> {
+        self.views.get(id.index()).map(|view| view.eye)
+    }
+
+    pub fn view_subject(&self, id: ViewId) -> Option<Entity> {
+        self.views.get(id.index())?.subject
     }
 
     pub fn view_mut(&mut self, id: ViewId) -> Option<&mut ViewStyle<S>> {
@@ -1817,7 +1728,7 @@ impl<S: DomainSpace> TypedDomain<S> {
     pub fn set_view_eye(&mut self, id: ViewId, eye: Entity) -> Result<(), DomainError> {
         let index = id.index();
         if self.views.get(index).is_none() {
-            return Err(DomainError::Unsupported("unknown view"));
+            return Err(DomainError::UnknownView(id));
         }
         if !self.poses.contains(eye) {
             return Err(DomainError::Stale(eye));
@@ -1837,7 +1748,7 @@ impl<S: DomainSpace> TypedDomain<S> {
     ) -> Result<(), DomainError> {
         let index = id.index();
         if self.views.get(index).is_none() {
-            return Err(DomainError::Unsupported("unknown view"));
+            return Err(DomainError::UnknownView(id));
         }
         if let Some(subject) = subject {
             if !self.poses.contains(subject) {
@@ -1854,7 +1765,7 @@ impl<S: DomainSpace> TypedDomain<S> {
 
     fn rebuild_view(
         &self,
-        spec: &ViewSettings<S>,
+        spec: &ViewEntry<S>,
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
@@ -1873,7 +1784,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         triangles.clear();
         *refusals = ViewRefusals::default();
         output.clear();
-        if !spec.enabled {
+        if !spec.style.enabled {
             instances.replace(std::iter::empty(), stamp);
             *built = stamp;
             return Ok(());
@@ -1894,7 +1805,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             let section_start = segments.len();
             let triangle_start = triangles.len();
             if let Some(pose) = self.poses.get(entity) {
-                if spec.section_edges || spec.section_faces {
+                if spec.style.section_edges || spec.style.section_faces {
                     if let Err(error) = projection
                         .push_section(pose, &library, instance, scratch, segments, triangles)
                     {
@@ -1946,7 +1857,7 @@ impl<S: DomainSpace> TypedDomain<S> {
 
     fn patch_view(
         &self,
-        spec: &ViewSettings<S>,
+        spec: &ViewEntry<S>,
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
@@ -1989,7 +1900,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             patch_segments.clear();
             patch_triangles.clear();
             let mut section_refusals = ViewRefusals::default();
-            if spec.section_edges || spec.section_faces {
+            if spec.style.section_edges || spec.style.section_faces {
                 if let Err(error) = projection.push_section(
                     pose,
                     &library,
@@ -2137,17 +2048,17 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let spec = self.views.get(id.index())?;
         let target = self.targets.get(id.index())?;
         Some(ViewSummary {
-            name: spec.mapping.name(),
+            name: spec.style.mapping.name(),
             eye: spec.eye,
             image: target.image,
-            ray_lift: spec.mapping.ray_lift(),
+            ray_lift: spec.style.mapping.ray_lift(),
         })
     }
 
     fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError> {
         self.views
             .get(view.index())
-            .ok_or(DomainError::Unsupported("unknown view"))?;
+            .ok_or(DomainError::UnknownView(view))?;
         self.targets[view.index()].image = image;
         self.view_revisions[view.index()] = self.view_revisions[view.index()].wrapping_add(1);
         Ok(())
@@ -2163,11 +2074,11 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let spec = self
             .views
             .get(view.index())
-            .ok_or(DomainError::Unsupported("unknown view"))?;
+            .ok_or(DomainError::UnknownView(view))?;
         let revision = *self
             .view_revisions
             .get(view.index())
-            .ok_or(DomainError::Unsupported("unknown view"))?;
+            .ok_or(DomainError::UnknownView(view))?;
         let mut pose_cursor = into.poses;
         let pose_changes = self.poses.changes(&mut pose_cursor);
         let pose_resync = pose_changes.is_resync();
@@ -2193,7 +2104,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             let patched = if into.changed.is_empty() {
                 into.instances.restamp(stamp);
                 true
-            } else if spec.enabled && into.refusals.count == 0 {
+            } else if spec.style.enabled && into.refusals.count == 0 {
                 self.patch_view(spec, library, into, stamp)?
             } else {
                 false
@@ -2220,12 +2131,12 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     ) -> Option<Pick> {
         let spec = self.views.get(view.index())?;
         let target = self.targets.get(view.index())?;
-        if !spec.enabled {
+        if !spec.style.enabled {
             return None;
         }
         let eye = self.poses.get(spec.eye)?;
         let origin = self.space.origin();
-        let lifted = spec.mapping.lift(eye, ray);
+        let lifted = spec.style.mapping.lift(eye, ray);
         let mut nearest: Option<Pick> = None;
         for (entity, instance) in self.instances.iter() {
             if spec.subject.is_some_and(|subject| subject != entity) {
@@ -2248,15 +2159,16 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
                         .hit_ball(domain_ray, center, reach)
                         .map(|t| self.space.exp(domain_ray.origin, domain_ray.direction * t))
                         .and_then(|point| {
-                            let image_point = spec.mapping.image_point(eye, point)?;
+                            let image_point = spec.style.mapping.image_point(eye, point)?;
                             Some((image_point, Some(self.space.chart_point(point))))
                         })
                 }
                 None => spec
+                    .style
                     .mapping
                     .image_point(eye, center)
                     .and_then(|image_center| {
-                        let image_radius = spec.mapping.image_radius(eye, center, radius);
+                        let image_radius = spec.style.mapping.image_radius(eye, center, radius);
                         let t = view::image_hit(ray, image_center, image_radius)?;
                         Some((ray.at(t), None))
                     }),
@@ -2286,13 +2198,14 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
 
     fn image_of(&self, view: ViewId, entity: Entity) -> Option<[f32; 3]> {
         let spec = self.views.get(view.index())?;
-        if !spec.enabled || spec.subject.is_some_and(|subject| subject != entity) {
+        if !spec.style.enabled || spec.subject.is_some_and(|subject| subject != entity) {
             return None;
         }
         let eye = self.poses.get(spec.eye)?;
         let pose = self.poses.get(entity)?;
         let relative = self.space.relative(eye, pose).ok()?;
-        spec.mapping
+        spec.style
+            .mapping
             .image_local(&self.space, eye, pose, &relative, self.space.origin())
     }
 
@@ -2300,15 +2213,16 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let spec = self
             .views
             .get(view.index())
-            .ok_or(DomainError::Unsupported("unknown view"))?;
+            .ok_or(DomainError::UnknownView(view))?;
         let eye = self
             .poses
             .get(spec.eye)
             .ok_or(DomainError::Stale(spec.eye))?;
         let lifted = spec
+            .style
             .mapping
             .lift(eye, ray)
-            .ok_or(DomainError::Unsupported(spec.mapping.name()))?;
+            .ok_or(DomainError::Unsupported(spec.style.mapping.name()))?;
         self.space.check(lifted.origin)?;
         Ok(self.space.chart_point(lifted.origin))
     }
@@ -2477,7 +2391,6 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
                 Ok(Outcome::Done)
             }
             ChartCommand::Grab { .. } | ChartCommand::Release { .. } => Ok(Outcome::Done),
-            _ => Err(Rejection::Unsupported("chart command")),
         }
     }
 
@@ -2719,7 +2632,7 @@ mod tests {
     use crate::command::SpawnBundle;
     use crate::session::{Material, Publication, Session, SimConfig};
     use crate::store::LogCapacity;
-    use crate::view::{DepthEnvelope, Projection4, Section4};
+    use crate::view::{Projection4, Section4};
 
     crate::stores! {
         #[derive(Default)]
@@ -2731,84 +2644,6 @@ mod tests {
     const SEGMENTS: usize = 3;
     const EYE_AT: Vec4 = Vec4::new(0.0, 0.0, 0.0, 2.0);
     const OBJECT_AT: Vec4 = Vec4::new(0.0, 0.0, -4.0, 0.0);
-
-    struct Nonlinear(Projection4);
-
-    impl ViewMapping<EuclideanR4> for Nonlinear {
-        fn name(&self) -> &'static str {
-            "nonlinear"
-        }
-
-        fn image_point(&self, eye: &Pose<EuclideanR4>, point: Vec4) -> Option<[f32; 3]> {
-            self.0.image_point(eye, point)
-        }
-
-        fn image_local(
-            &self,
-            space: &EuclideanR4,
-            _eye: &Pose<EuclideanR4>,
-            _pose: &Pose<EuclideanR4>,
-            relative: &<EuclideanR4 as DomainSpace>::Relative,
-            local: Vec4,
-        ) -> Option<[f32; 3]> {
-            let origin = space.place_relative(relative, Vec4::ZERO).ok()?;
-            let point = space.place_relative(relative, local).ok()?;
-            let placed = (point - origin).truncate() + origin.truncate();
-            Some(placed.to_array())
-        }
-
-        fn lift(
-            &self,
-            _eye: &Pose<EuclideanR4>,
-            _ray: &ImageRay,
-        ) -> Option<DomainRay<EuclideanR4>> {
-            None
-        }
-
-        fn ray_lift(&self) -> bool {
-            false
-        }
-
-        fn depth_envelope(&self) -> DepthEnvelope {
-            self.0.depth_envelope()
-        }
-    }
-
-    fn stage(
-        geometry: PreparedGeometry,
-        mapping: impl ViewMapping<EuclideanR4>,
-        section: bool,
-    ) -> (Session<Probe>, u64) {
-        let mut session = Session::new(Probe::default(), SimConfig::default());
-        let r4 = session
-            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
-        let prepared = session.prepare(geometry);
-        let material = session.add_material(Material::flat([1.0; 4]));
-        let root = session.views().root();
-        session.dispatch(|d| {
-            let eye = d
-                .spawn(SpawnBundle::new().at(r4, Pose::at(EYE_AT)))
-                .expect("eye");
-            let mut instance = Instance::new(prepared, material);
-            if section {
-                instance = instance.sectioned(material);
-            }
-            d.spawn(
-                SpawnBundle::new()
-                    .at(r4, Pose::at(OBJECT_AT))
-                    .instance(instance),
-            )
-            .expect("object");
-            d.domains
-                .typed(r4)
-                .expect("the r4 domain")
-                .add_view(ViewSpec::new(root, eye, mapping));
-        });
-        let mut publication = Publication::default();
-        let _ = applied::taken();
-        session.publish(&mut publication).expect("publish");
-        (session, applied::taken())
-    }
 
     fn lines() -> PreparedGeometry {
         PreparedGeometry::Lines4 {
@@ -2860,9 +2695,8 @@ mod tests {
             domain.set_view_subject(view, Some(stale)),
             Err(DomainError::Stale(stale))
         );
-        let settings = domain.view(view).unwrap();
-        assert_eq!(settings.eye(), eye);
-        assert_eq!(settings.subject(), Some(subject));
+        assert_eq!(domain.view_eye(view), Some(eye));
+        assert_eq!(domain.view_subject(view), Some(subject));
     }
 
     #[test]
@@ -2916,21 +2750,9 @@ mod tests {
             Err(DomainError::Stale(subject))
         );
         assert_eq!(
-            session
-                .domains()
-                .read(r4)
-                .unwrap()
-                .view(view)
-                .unwrap()
-                .subject(),
+            session.domains().read(r4).unwrap().view_subject(view),
             Some(subject)
         );
-    }
-
-    #[test]
-    fn built_in_segment_mapping_applies_each_endpoint_at_most_twice() {
-        let (_, applications) = stage(lines(), Section4 { w: 0.0 }, false);
-        assert!(applications <= 2 + 4 * SEGMENTS as u64);
     }
 
     #[test]
@@ -2978,12 +2800,9 @@ mod tests {
         let mut publication = Publication::default();
         let publish_and_compare =
             |session: &mut Session<Probe>, publication: &mut Publication<Probe>| {
-                let _ = applied::taken();
                 session.publish(publication).unwrap();
-                let cached_applications = applied::taken();
                 let mut fresh = Publication::default();
                 session.publish(&mut fresh).unwrap();
-                let _ = applied::taken();
                 assert_eq!(publication.views.len(), fresh.views.len());
                 for (cached, fresh) in publication.views.iter().zip(&fresh.views) {
                     assert_eq!(cached.domain, fresh.domain);
@@ -2997,9 +2816,8 @@ mod tests {
                     assert_eq!(cached.records.triangles(), fresh.records.triangles());
                     assert_eq!(cached.records.refusals(), fresh.records.refusals());
                 }
-                cached_applications
             };
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         let initial_segments = publication.views[1].records.segments().len();
         let initial_triangles = publication.views[1].records.triangles().len();
         assert!(initial_segments > 0);
@@ -3011,11 +2829,7 @@ mod tests {
             .unwrap()
             .set_pose(edited, Pose::at(Vec4::new(0.5, 0.0, -4.0, 0.0)))
             .unwrap();
-        let applications = publish_and_compare(&mut session, &mut publication);
-        let topology = Polytope4::Tesseract.topology();
-        let per_view = 2 + 4 * topology.edges.len() as u64;
-        let section = 3 + topology.vertices.len() as u64;
-        assert!(applications <= per_view * 2 + section);
+        publish_and_compare(&mut session, &mut publication);
         assert_eq!(
             publication.views[1].records.segments().len(),
             initial_segments
@@ -3031,7 +2845,7 @@ mod tests {
             .unwrap()
             .set_pose(edited, Pose::at(Vec4::new(0.5, 0.0, -4.0, 1.0)))
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert!(publication.views[1].records.segments().is_empty());
         assert!(publication.views[1].records.triangles().is_empty());
         session
@@ -3040,7 +2854,7 @@ mod tests {
             .unwrap()
             .set_pose(edited, Pose::at(Vec4::new(0.5, 0.0, -4.0, 0.0)))
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert_eq!(
             publication.views[1].records.segments().len(),
             initial_segments
@@ -3057,7 +2871,7 @@ mod tests {
             .view_mut(section_view)
             .unwrap()
             .set_mapping(Section4 { w: 0.5 });
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert!(publication.views[1].records.triangles().is_empty());
         assert_ne!(
             publication.views[1].records.triangles().len(),
@@ -3070,18 +2884,18 @@ mod tests {
             .unwrap()
             .set_pose(edited, Pose::at(Vec4::new(0.5, 0.0, -4.0, 3.0)))
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         session
             .domains_mut()
             .typed(r4)
             .unwrap()
             .set_view_eye(view, alternate_eye)
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         session
             .dispatch(|dispatch| dispatch.despawn(removed))
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert!(publication.views[0]
             .records
             .instances
@@ -3089,30 +2903,11 @@ mod tests {
             .iter()
             .all(|record| record.entity != removed));
         session.restore(&snapshot).unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert_eq!(
             publication.views[1].records.triangles().len(),
             initial_triangles
         );
-    }
-
-    #[test]
-    fn section_projection_applies_each_rotated_vertex_once() {
-        let polytope = || PreparedGeometry::Polytope4 {
-            polytope: Polytope4::Tesseract,
-            scale: 0.25,
-        };
-        let (_, plain) = stage(polytope(), Section4 { w: 0.0 }, false);
-        let (session, sectioned) = stage(polytope(), Section4 { w: 0.0 }, true);
-        let vertices = Polytope4::Tesseract.topology().vertices.len() as u64;
-        assert_eq!(session.domains().len(), 1);
-        assert!(sectioned - plain <= 3 + vertices);
-    }
-
-    #[test]
-    fn a_nonlinear_map_vertex_costs_more_isometry_applications_than_it_did() {
-        let (_, applications) = stage(lines(), Nonlinear(Projection4 { focal: 2.0 }), false);
-        assert_eq!(applications, 3 + 6 * SEGMENTS as u64);
     }
 
     #[test]

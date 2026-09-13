@@ -21,7 +21,6 @@ pub struct BridgeSpec {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BridgeError {
-    Stale(Entity),
     UnknownDomain(DomainId),
     UnknownView(ViewId),
     UnknownImage(ImageSpaceId),

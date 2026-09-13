@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use loam_shape::polytope::Polytope4Topology;
 
 use crate::bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
@@ -10,9 +12,7 @@ use crate::domain::{
 };
 use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
 use crate::input::Input;
-use crate::phase::{
-    Ctx, EntryId, Order, Phase, PhaseError, Phases, Step, System, SystemEntry, Tick,
-};
+use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, System, SystemEntry, Tick};
 use crate::relation::{LinkId, Relation, RelationSnapshot};
 use crate::store::{SchemaId, StoreField};
 use crate::stores::Stores;
@@ -26,7 +26,6 @@ const RELEASE_STALE_SECONDS: f64 = 0.12;
 pub struct SimConfig {
     pub fixed_hz: u32,
     pub max_ticks_per_frame: u32,
-    pub seed: u64,
 }
 
 impl SimConfig {
@@ -41,7 +40,6 @@ impl Default for SimConfig {
         Self {
             fixed_hz: 60,
             max_ticks_per_frame: 4,
-            seed: 0,
         }
     }
 }
@@ -192,19 +190,19 @@ pub struct PublishedView {
 
 /// What a frame presents; publication writes it and the host reads it.
 pub struct Publication<A: Stores> {
-    pub app: A::Records,
     pub views: Vec<PublishedView>,
     pub stamp: Stamp,
     source: Option<SceneId>,
+    app: PhantomData<fn() -> A>,
 }
 
 impl<A: Stores> Default for Publication<A> {
     fn default() -> Self {
         Self {
-            app: A::Records::default(),
             views: Vec::new(),
             stamp: Stamp::default(),
             source: None,
+            app: PhantomData,
         }
     }
 }
@@ -360,7 +358,7 @@ impl Manipulation {
             .ok_or(DomainError::UnknownDomain(drag.domain))?;
         let name = domain
             .view(drag.view)
-            .ok_or(DomainError::Unsupported("unknown view"))?
+            .ok_or(DomainError::UnknownView(drag.view))?
             .name;
         let ray = views
             .ray(drag.image, ndc)
@@ -464,7 +462,7 @@ impl<A: Stores> Session<A> {
         let mut phases = Phases::new();
         phases.push(
             Phase::Simulation,
-            SystemEntry::fallible(DOMAIN_STEP, |ctx: Ctx<'_, A>| {
+            SystemEntry::new(DOMAIN_STEP, |ctx: Ctx<'_, A>| {
                 for domain in ctx.domains.iter_mut() {
                     domain.step(ctx.step)?;
                 }
@@ -589,61 +587,32 @@ impl<A: Stores> Session<A> {
         self.materials.get(id.index())
     }
 
-    pub fn system<M>(
-        &mut self,
-        phase: Phase,
-        name: &'static str,
-        system: impl System<A, M>,
-    ) -> EntryId {
-        self.phases.push(phase, SystemEntry::new(name, system))
+    pub fn system(&mut self, phase: Phase, name: &'static str, system: impl System<A>) {
+        self.phases.push(phase, SystemEntry::new(name, system));
     }
 
-    pub fn fallible_system(
-        &mut self,
-        phase: Phase,
-        name: &'static str,
-        system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
-    ) -> EntryId {
-        self.phases.push(phase, SystemEntry::fallible(name, system))
-    }
-
-    pub fn orbit(&mut self, mut orbit: Orbit) -> EntryId {
-        self.system(
-            Phase::Dispatch,
-            "orbit",
-            move |input: &Input, views: &mut Views| {
-                orbit.drag(input.drag(PointerButton::Secondary));
-                orbit.zoom(input.scroll[1]);
-                let mut eye = orbit.eye();
-                let root = views.root_mut();
-                eye.aspect = root.eye.aspect;
-                root.eye = eye;
-            },
-        )
+    pub fn orbit(&mut self, mut orbit: Orbit) {
+        self.system(Phase::Dispatch, "orbit", move |ctx: Ctx<'_, A>| {
+            orbit.drag(ctx.input.drag(PointerButton::Secondary));
+            orbit.zoom(ctx.input.scroll[1]);
+            let mut eye = orbit.eye();
+            let root = ctx.views.root_mut();
+            eye.aspect = root.eye.aspect;
+            root.eye = eye;
+            Ok(())
+        });
     }
 
     /// `None` when no entry of that phase has the named anchor.
-    pub fn system_at<M>(
+    pub fn system_at(
         &mut self,
         phase: Phase,
         order: Order,
         name: &'static str,
-        system: impl System<A, M>,
-    ) -> Option<EntryId> {
+        system: impl System<A>,
+    ) -> Option<()> {
         self.phases
             .insert(phase, order, SystemEntry::new(name, system))
-    }
-
-    /// `None` when no entry of that phase has the named anchor.
-    pub fn fallible_system_at(
-        &mut self,
-        phase: Phase,
-        order: Order,
-        name: &'static str,
-        system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
-    ) -> Option<EntryId> {
-        self.phases
-            .insert(phase, order, SystemEntry::fallible(name, system))
     }
 
     pub fn entries(&self, phase: Phase) -> &[SystemEntry<A>] {
@@ -672,7 +641,7 @@ impl<A: Stores> Session<A> {
     /// Checks the anchor, domain, view, and placement kind before it links the view.
     pub fn bridge(&mut self, spec: BridgeSpec) -> Result<LinkId, BridgeError> {
         if self.entities().resolve(spec.anchor).is_none() {
-            return Err(BridgeError::Stale(spec.anchor));
+            return Err(BridgeError::Domain(DomainError::Stale(spec.anchor)));
         }
         let summary = {
             let source = self
@@ -687,7 +656,7 @@ impl<A: Stores> Session<A> {
             return Err(BridgeError::Nonlinear(summary.name));
         }
         if self.entities().resolve(summary.eye).is_none() {
-            return Err(BridgeError::Stale(summary.eye));
+            return Err(BridgeError::Domain(DomainError::Stale(summary.eye)));
         }
         let image = self
             .views
@@ -819,7 +788,6 @@ impl<A: Stores> Session<A> {
             sequence,
         };
         let extracted = (|| {
-            self.app.publish(&mut into.app, stamp);
             let library = Library {
                 geometry: &self.prepared,
                 materials: &self.materials,
@@ -1054,7 +1022,7 @@ mod tests {
     #[test]
     fn a_caught_system_unwind_keeps_the_unfinished_phase_blocked() {
         let mut session = Session::new(Quiet::default(), SimConfig::default());
-        session.system(Phase::Simulation, "panic", |_app: &mut Quiet| {
+        session.system(Phase::Simulation, "panic", |_ctx: Ctx<'_, Quiet>| {
             panic!("system panic")
         });
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.tick()));
@@ -1412,6 +1380,7 @@ mod tests {
             ctx.commands.submit(Command::Despawn(retired));
             let fresh = ctx.commands.spawn(SpawnBundle::new()).unwrap();
             pool.push(fresh.entity);
+            Ok(())
         });
         let cycle = |session: &mut Session<Churn>| {
             session.tick().unwrap();
@@ -1513,7 +1482,7 @@ mod tests {
 
     crate::stores! {
         pub struct Shown {
-            scores: Published<u32>,
+            scores: Store<u32>,
         }
     }
 
@@ -1589,10 +1558,8 @@ mod tests {
         let mut publication = Publication::default();
 
         first.publish(&mut publication).unwrap();
-        assert_eq!(publication.app.scores.rows(), &[11]);
         assert_eq!(publication.views[0].records.segments()[0].start[0], 0.0);
         second.publish(&mut publication).unwrap();
-        assert_eq!(publication.app.scores.rows(), &[22]);
         assert_eq!(publication.views[0].records.segments()[0].start[0], 4.0);
     }
 
@@ -1627,19 +1594,16 @@ mod tests {
                 .unwrap();
             }
         });
-        session.system(
-            Phase::Simulation,
-            "churn",
-            move |app: &mut Shown, domains: &mut Domains, step: Step| {
-                let domain = domains.typed(r4).unwrap();
-                for (entity, score) in app.scores.iter_mut() {
-                    *score += 1;
-                    let mut point = domain.poses().get(entity).unwrap().point;
-                    point.x += step.dt;
-                    domain.set_point(entity, point).unwrap();
-                }
-            },
-        );
+        session.system(Phase::Simulation, "churn", move |ctx: Ctx<'_, Shown>| {
+            let domain = ctx.domains.typed(r4).unwrap();
+            for (entity, score) in ctx.app.scores.iter_mut() {
+                *score += 1;
+                let mut point = domain.poses().get(entity).unwrap().point;
+                point.x += ctx.step.dt;
+                domain.set_point(entity, point).unwrap();
+            }
+            Ok(())
+        });
         let mut publication = Publication::default();
         let cycle = |session: &mut Session<Shown>, publication: &mut Publication<Shown>| {
             session.tick().unwrap();
@@ -1659,7 +1623,6 @@ mod tests {
             bytes, 0,
             "16 warmed publishes asked the allocator for {bytes} bytes"
         );
-        assert_eq!(publication.app.scores.rows().len(), 8);
         assert_eq!(publication.views[0].records.instances.rows().len(), 8);
     }
 }

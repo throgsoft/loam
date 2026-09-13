@@ -3,9 +3,9 @@ use loam::app::session::{launch, SessionApp};
 use loam::math::{Bivector, Bivector4, EuclideanR4};
 use loam::runtime::host::{HostConfig, HostError};
 use loam::runtime::{
-    ActionId, Bindings, Command, Commands, Dispatch, DomainBuilder, DomainError, Input, Instance,
-    Key, LogCapacity, Material, Orbit, Phase, Pose, PreparedGeometry, Projection4, Rejection,
-    Session, SimConfig, SpawnBundle, ViewSpec,
+    ActionId, Bindings, Command, Dispatch, DomainBuilder, DomainError, Instance, Key, LogCapacity,
+    Material, Orbit, Outcome, Phase, Pose, PreparedGeometry, Projection4, Rejection, Session,
+    SimConfig, SpawnBundle, ViewSpec,
 };
 use loam::shape::polytope::Polytope4;
 
@@ -64,17 +64,20 @@ fn build(
     session.system(
         Phase::Dispatch,
         "actions",
-        |input: &Input, commands: &mut Commands<TesseractStores>| {
-            if input.pressed(PAUSE) {
-                commands.app_fn("pause", |d: &mut Dispatch<'_, TesseractStores>| {
-                    for (_, spin) in d.app.spin.iter_mut() {
-                        spin.paused = !spin.paused;
-                    }
-                });
+        |ctx: loam::runtime::Ctx<'_, TesseractStores>| {
+            if ctx.input.pressed(PAUSE) {
+                ctx.commands
+                    .try_app_fn("pause", |d: &mut Dispatch<'_, TesseractStores>| {
+                        for (_, spin) in d.app.spin.iter_mut() {
+                            spin.paused = !spin.paused;
+                        }
+                        Ok(Outcome::Done)
+                    });
             }
-            if input.pressed(RESET) {
-                commands.submit(Command::Reset);
+            if ctx.input.pressed(RESET) {
+                ctx.commands.submit(Command::Reset);
             }
+            Ok(())
         },
     );
 
@@ -82,7 +85,7 @@ fn build(
     orbit.pitch = -0.15;
     session.orbit(orbit);
 
-    session.fallible_system(
+    session.system(
         Phase::Simulation,
         "spin",
         move |ctx: loam::runtime::Ctx<'_, TesseractStores>| -> Result<(), DomainError> {

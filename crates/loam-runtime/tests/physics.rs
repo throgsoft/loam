@@ -4,9 +4,9 @@ use loam_math::{EuclideanR4, Rotor4, Space};
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
 use loam_physics::{ColliderKind, EditError};
 use loam_runtime::{
-    Change, ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent, Command, Cursor,
-    DomainBuilder, DomainError, DomainHandle, Domains, Entity, Input, LogCapacity, Phase,
-    PhysicsConfig, Pose, Rejection, RestoreError, Session, SimConfig, SpawnBundle, Step, Store,
+    Change, ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent, Command, Ctx, Cursor,
+    DomainBuilder, DomainError, DomainHandle, Entity, Input, LogCapacity, Phase, PhysicsConfig,
+    Pose, Rejection, RestoreError, Session, SimConfig, SpawnBundle, Store,
 };
 
 loam_runtime::stores! {
@@ -223,7 +223,7 @@ fn stale_and_foreign_entities_cannot_reach_a_current_physics_body() {
                     },
                 },
             ))),
-            Err(Rejection::Stale(invalid))
+            Err(Rejection::Domain(DomainError::Stale(invalid)))
         );
     }
 
@@ -392,22 +392,30 @@ fn checked_pose_edits_update_the_body_and_mirror_before_step() {
     session.system(
         Phase::Dispatch,
         "domain edit",
-        move |domains: &mut Domains, _step: Step| {
-            domains
+        move |ctx: Ctx<'_, Probe>| {
+            ctx.domains
                 .typed(r4)
                 .unwrap()
                 .set_point(entity, paused)
                 .unwrap();
+            Ok(())
         },
     );
     session.system(
         Phase::Dispatch,
         "dependent pose query",
-        move |domains: &mut Domains, _step: Step| {
+        move |ctx: Ctx<'_, Probe>| {
             assert_eq!(
-                domains.read(r4).unwrap().poses().get(entity).unwrap().point,
+                ctx.domains
+                    .read(r4)
+                    .unwrap()
+                    .poses()
+                    .get(entity)
+                    .unwrap()
+                    .point,
                 paused
             );
+            Ok(())
         },
     );
     session.boundary(Input::default()).unwrap();

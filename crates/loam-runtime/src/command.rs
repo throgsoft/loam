@@ -21,7 +21,6 @@ pub enum Outcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {
-    Stale(Entity),
     Reserved(Entity),
     Capacity,
     Domain(DomainError),
@@ -82,16 +81,6 @@ pub enum Command<A> {
 }
 
 impl<A> Command<A> {
-    pub fn app_fn(
-        name: &'static str,
-        mut apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
-    ) -> Self {
-        Self::try_app_fn(name, move |dispatch| {
-            apply(dispatch);
-            Ok(Outcome::Done)
-        })
-    }
-
     pub fn try_app_fn(
         name: &'static str,
         apply: impl FnMut(&mut Dispatch<'_, A>) -> Result<Outcome, Rejection> + Send + 'static,
@@ -167,15 +156,6 @@ impl<A: Stores> Commands<A> {
 
     pub fn app(&mut self, command: impl AppCommand<A>) -> RequestId {
         self.submit(Command::App(Box::new(command)))
-    }
-
-    /// A command with no data of its own; one that carries data implements `AppCommand`.
-    pub fn app_fn(
-        &mut self,
-        name: &'static str,
-        apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
-    ) -> RequestId {
-        self.submit(Command::app_fn(name, apply))
     }
 
     pub fn try_app_fn(
@@ -369,7 +349,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
     pub fn spawn(&mut self, bundle: SpawnBundle<A>) -> Result<Entity, Rejection> {
         let entity = match bundle.reserved {
             Some(entity) if self.entities.is_reserved(entity) => entity,
-            Some(entity) => return Err(Rejection::Stale(entity)),
+            Some(entity) => return Err(Rejection::Domain(DomainError::Stale(entity))),
             None => self.entities.reserve(),
         };
         match self.attach_bundle(entity, bundle) {
@@ -465,7 +445,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
             return Err(Rejection::Reserved(entity));
         }
         if self.entities.resolve(entity).is_none() {
-            return Err(Rejection::Stale(entity));
+            return Err(Rejection::Domain(DomainError::Stale(entity)));
         }
         self.detach(entity);
         self.entities.despawn(entity)?;
@@ -476,7 +456,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         self.entities
             .resolve(entity)
             .map(|_| ())
-            .ok_or(Rejection::Stale(entity))
+            .ok_or(Rejection::Domain(DomainError::Stale(entity)))
     }
 
     pub fn apply(&mut self, command: Command<A>) -> Result<Outcome, Rejection> {
@@ -486,7 +466,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
             Command::Chart(domain, command) => {
                 let entity = command.entity();
                 if self.entities.resolve(entity).is_none() {
-                    return Err(Rejection::Stale(entity));
+                    return Err(Rejection::Domain(DomainError::Stale(entity)));
                 }
                 self.domains
                     .facade(domain)

@@ -645,6 +645,7 @@ mod tests {
             if ctx.input.pressed(WALK) {
                 ctx.app.walked.set(true);
             }
+            Ok(())
         });
 
         let mut map = InputMap::default();

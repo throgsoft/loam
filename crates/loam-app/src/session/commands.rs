@@ -107,9 +107,12 @@ impl<A: Stores> CommandSender<A> {
     pub fn app_fn(
         &self,
         name: &'static str,
-        apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
+        mut apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
     ) {
-        self.submit(Command::app_fn(name, apply));
+        self.submit(Command::try_app_fn(name, move |dispatch| {
+            apply(dispatch);
+            Ok(Outcome::Done)
+        }));
     }
 
     pub fn try_app_fn(
