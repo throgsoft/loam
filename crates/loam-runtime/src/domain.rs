@@ -32,7 +32,7 @@ use crate::store::{Change, LogCapacity, Store, StoreError, StoreField, StoreSnap
 use crate::view::{
     self, DomainRay, EntityOutput, ImageRay, ImageSpaceId, InstanceRecord, Pick, RefusalSource,
     Rigid, SegmentRecord, TriangleRecord, Vec3, Vec4, ViewId, ViewMapping, ViewRecords,
-    ViewRefusals, ViewSettings, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views,
+    ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1278,9 +1278,25 @@ fn push_segments<S: DomainSpace>(
     }
 }
 
+struct ViewEntry<S: DomainSpace> {
+    eye: Entity,
+    subject: Option<Entity>,
+    style: ViewStyle<S>,
+}
+
+impl<S: DomainSpace> Clone for ViewEntry<S> {
+    fn clone(&self) -> Self {
+        Self {
+            eye: self.eye,
+            subject: self.subject,
+            style: self.style.clone(),
+        }
+    }
+}
+
 struct ViewProjection<'a, S: DomainSpace> {
     space: &'a S,
-    spec: &'a ViewSettings<S>,
+    spec: &'a ViewEntry<S>,
     eye: &'a Pose<S>,
 }
 
@@ -1297,7 +1313,7 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
         let space = self.space;
         let spec = self.spec;
         let eye = self.eye;
-        let mapping = spec.mapping.as_ref();
+        let mapping = spec.style.mapping.as_ref();
         let Some(PreparedGeometry::Polytope4 { polytope, scale }) =
             library.geometry.get(instance.geometry.index())
         else {
@@ -1337,7 +1353,7 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
             ]
         };
 
-        if spec.section_faces {
+        if spec.style.section_faces {
             let (fill_color, _) = library.line_style(instance.material);
             scratch.faces.vertices.clear();
             scratch.faces.colors.clear();
@@ -1351,7 +1367,7 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
                 &mut scratch.cut,
                 &mut scratch.faces,
             );
-            if spec.section_edges {
+            if spec.style.section_edges {
                 let (mut edge_color, material_width_px) = library.line_style(perimeter_material);
                 let width_px = instance.line_width_px.unwrap_or(material_width_px);
                 if let Some(opacity) = instance.line_opacity {
@@ -1380,7 +1396,7 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
                     color: fill_color,
                 });
             }
-        } else if spec.section_edges {
+        } else if spec.style.section_edges {
             let (mut edge_color, material_width_px) = library.line_style(perimeter_material);
             let width_px = instance.line_width_px.unwrap_or(material_width_px);
             if let Some(opacity) = instance.line_opacity {
@@ -1432,14 +1448,15 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
                 return None;
             }
         };
-        let image_point = spec
-            .mapping
-            .image_local(space, eye, pose, &relative, space.origin())?;
-        if spec.edges {
+        let image_point =
+            spec.style
+                .mapping
+                .image_local(space, eye, pose, &relative, space.origin())?;
+        if spec.style.edges {
             push_segments(
                 SegmentProjection {
                     space,
-                    mapping: spec.mapping.as_ref(),
+                    mapping: spec.style.mapping.as_ref(),
                     eye,
                     pose,
                     relative: &relative,
@@ -1614,7 +1631,7 @@ struct TypedSnapshot<S: DomainSpace> {
     instances: StoreSnapshot<Instance>,
     fields: Option<StoreSnapshot<Field>>,
     facilities: Vec<Box<dyn Any + Send>>,
-    views: Vec<ViewSettings<S>>,
+    views: Vec<ViewEntry<S>>,
     targets: Vec<ViewTarget>,
 }
 
@@ -1685,7 +1702,7 @@ pub struct TypedDomain<S: DomainSpace> {
     poses: Store<Pose<S>>,
     instances: Store<Instance>,
     fields: Option<Store<Field>>,
-    views: Vec<ViewSettings<S>>,
+    views: Vec<ViewEntry<S>>,
     targets: Vec<ViewTarget>,
     view_revisions: Vec<u32>,
     pub(crate) facilities: Vec<Box<dyn Facility<S>>>,
@@ -1795,12 +1812,24 @@ impl<S: DomainSpace> TypedDomain<S> {
             image: spec.image,
         });
         self.view_revisions.push(0);
-        self.views.push(spec.settings);
+        self.views.push(ViewEntry {
+            eye: spec.eye,
+            subject: spec.subject,
+            style: spec.style,
+        });
         id
     }
 
-    pub fn view(&self, id: ViewId) -> Option<&ViewSettings<S>> {
-        self.views.get(id.index())
+    pub fn view(&self, id: ViewId) -> Option<&ViewStyle<S>> {
+        self.views.get(id.index()).map(|view| &view.style)
+    }
+
+    pub fn view_eye(&self, id: ViewId) -> Option<Entity> {
+        self.views.get(id.index()).map(|view| view.eye)
+    }
+
+    pub fn view_subject(&self, id: ViewId) -> Option<Entity> {
+        self.views.get(id.index())?.subject
     }
 
     pub fn view_mut(&mut self, id: ViewId) -> Option<&mut ViewStyle<S>> {
@@ -1850,7 +1879,7 @@ impl<S: DomainSpace> TypedDomain<S> {
 
     fn rebuild_view(
         &self,
-        spec: &ViewSettings<S>,
+        spec: &ViewEntry<S>,
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
@@ -1869,7 +1898,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         triangles.clear();
         *refusals = ViewRefusals::default();
         output.clear();
-        if !spec.enabled {
+        if !spec.style.enabled {
             instances.replace(std::iter::empty(), stamp);
             *built = stamp;
             return Ok(());
@@ -1890,7 +1919,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             let section_start = segments.len();
             let triangle_start = triangles.len();
             if let Some(pose) = self.poses.get(entity) {
-                if spec.section_edges || spec.section_faces {
+                if spec.style.section_edges || spec.style.section_faces {
                     if let Err(error) = projection
                         .push_section(pose, &library, instance, scratch, segments, triangles)
                     {
@@ -1942,7 +1971,7 @@ impl<S: DomainSpace> TypedDomain<S> {
 
     fn patch_view(
         &self,
-        spec: &ViewSettings<S>,
+        spec: &ViewEntry<S>,
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
@@ -1985,7 +2014,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             patch_segments.clear();
             patch_triangles.clear();
             let mut section_refusals = ViewRefusals::default();
-            if spec.section_edges || spec.section_faces {
+            if spec.style.section_edges || spec.style.section_faces {
                 if let Err(error) = projection.push_section(
                     pose,
                     &library,
@@ -2133,10 +2162,10 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         let spec = self.views.get(id.index())?;
         let target = self.targets.get(id.index())?;
         Some(ViewSummary {
-            name: spec.mapping.name(),
+            name: spec.style.mapping.name(),
             eye: spec.eye,
             image: target.image,
-            ray_lift: spec.mapping.ray_lift(),
+            ray_lift: spec.style.mapping.ray_lift(),
         })
     }
 
@@ -2189,7 +2218,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             let patched = if into.changed.is_empty() {
                 into.instances.restamp(stamp);
                 true
-            } else if spec.enabled && into.refusals.count == 0 {
+            } else if spec.style.enabled && into.refusals.count == 0 {
                 self.patch_view(spec, library, into, stamp)?
             } else {
                 false
@@ -2216,12 +2245,12 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     ) -> Option<Pick> {
         let spec = self.views.get(view.index())?;
         let target = self.targets.get(view.index())?;
-        if !spec.enabled {
+        if !spec.style.enabled {
             return None;
         }
         let eye = self.poses.get(spec.eye)?;
         let origin = self.space.origin();
-        let lifted = spec.mapping.lift(eye, ray);
+        let lifted = spec.style.mapping.lift(eye, ray);
         let mut nearest: Option<Pick> = None;
         for (entity, instance) in self.instances.iter() {
             if spec.subject.is_some_and(|subject| subject != entity) {
@@ -2244,15 +2273,16 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
                         .hit_ball(domain_ray, center, reach)
                         .map(|t| self.space.exp(domain_ray.origin, domain_ray.direction * t))
                         .and_then(|point| {
-                            let image_point = spec.mapping.image_point(eye, point)?;
+                            let image_point = spec.style.mapping.image_point(eye, point)?;
                             Some((image_point, Some(self.space.chart_point(point))))
                         })
                 }
                 None => spec
+                    .style
                     .mapping
                     .image_point(eye, center)
                     .and_then(|image_center| {
-                        let image_radius = spec.mapping.image_radius(eye, center, radius);
+                        let image_radius = spec.style.mapping.image_radius(eye, center, radius);
                         let t = view::image_hit(ray, image_center, image_radius)?;
                         Some((ray.at(t), None))
                     }),
@@ -2282,13 +2312,14 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
 
     fn image_of(&self, view: ViewId, entity: Entity) -> Option<[f32; 3]> {
         let spec = self.views.get(view.index())?;
-        if !spec.enabled || spec.subject.is_some_and(|subject| subject != entity) {
+        if !spec.style.enabled || spec.subject.is_some_and(|subject| subject != entity) {
             return None;
         }
         let eye = self.poses.get(spec.eye)?;
         let pose = self.poses.get(entity)?;
         let relative = self.space.relative(eye, pose).ok()?;
-        spec.mapping
+        spec.style
+            .mapping
             .image_local(&self.space, eye, pose, &relative, self.space.origin())
     }
 
@@ -2302,9 +2333,10 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             .get(spec.eye)
             .ok_or(DomainError::Stale(spec.eye))?;
         let lifted = spec
+            .style
             .mapping
             .lift(eye, ray)
-            .ok_or(DomainError::Unsupported(spec.mapping.name()))?;
+            .ok_or(DomainError::Unsupported(spec.style.mapping.name()))?;
         self.space.check(lifted.origin)?;
         Ok(self.space.chart_point(lifted.origin))
     }
@@ -2855,9 +2887,8 @@ mod tests {
             domain.set_view_subject(view, Some(stale)),
             Err(DomainError::Stale(stale))
         );
-        let settings = domain.view(view).unwrap();
-        assert_eq!(settings.eye(), eye);
-        assert_eq!(settings.subject(), Some(subject));
+        assert_eq!(domain.view_eye(view), Some(eye));
+        assert_eq!(domain.view_subject(view), Some(subject));
     }
 
     #[test]
@@ -2911,13 +2942,7 @@ mod tests {
             Err(DomainError::Stale(subject))
         );
         assert_eq!(
-            session
-                .domains()
-                .read(r4)
-                .unwrap()
-                .view(view)
-                .unwrap()
-                .subject(),
+            session.domains().read(r4).unwrap().view_subject(view),
             Some(subject)
         );
     }

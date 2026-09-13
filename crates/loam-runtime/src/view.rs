@@ -492,60 +492,12 @@ pub trait ViewMapping<S: DomainSpace>: Send + Sync + 'static {
     fn depth_envelope(&self) -> DepthEnvelope;
 }
 
-pub struct ViewSettings<S: DomainSpace> {
-    pub(crate) eye: Entity,
-    pub(crate) subject: Option<Entity>,
-    pub(crate) style: ViewStyle<S>,
-}
-
 pub struct ViewStyle<S: DomainSpace> {
     pub enabled: bool,
     pub edges: bool,
     pub section_edges: bool,
     pub section_faces: bool,
     pub(crate) mapping: Arc<dyn ViewMapping<S>>,
-}
-
-impl<S: DomainSpace> ViewSettings<S> {
-    pub(crate) fn new(eye: Entity, mapping: impl ViewMapping<S>) -> Self {
-        Self {
-            eye,
-            subject: None,
-            style: ViewStyle {
-                enabled: true,
-                edges: true,
-                section_edges: true,
-                section_faces: true,
-                mapping: Arc::new(mapping),
-            },
-        }
-    }
-
-    pub fn eye(&self) -> Entity {
-        self.eye
-    }
-
-    pub fn subject(&self) -> Option<Entity> {
-        self.subject
-    }
-}
-
-impl<S: DomainSpace> Clone for ViewSettings<S> {
-    fn clone(&self) -> Self {
-        Self {
-            eye: self.eye,
-            subject: self.subject,
-            style: self.style.clone(),
-        }
-    }
-}
-
-impl<S: DomainSpace> Deref for ViewSettings<S> {
-    type Target = ViewStyle<S>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.style
-    }
 }
 
 impl<S: DomainSpace> ViewStyle<S> {
@@ -573,14 +525,18 @@ impl<S: DomainSpace> Clone for ViewStyle<S> {
 
 pub struct ViewSpec<S: DomainSpace> {
     pub(crate) image: ImageSpaceId,
-    pub(crate) settings: ViewSettings<S>,
+    pub(crate) eye: Entity,
+    pub(crate) subject: Option<Entity>,
+    pub(crate) style: ViewStyle<S>,
 }
 
 impl<S: DomainSpace> Clone for ViewSpec<S> {
     fn clone(&self) -> Self {
         Self {
             image: self.image,
-            settings: self.settings.clone(),
+            eye: self.eye,
+            subject: self.subject,
+            style: self.style.clone(),
         }
     }
 }
@@ -589,12 +545,20 @@ impl<S: DomainSpace> ViewSpec<S> {
     pub fn new(image: ImageSpaceId, eye: Entity, mapping: impl ViewMapping<S>) -> Self {
         Self {
             image,
-            settings: ViewSettings::new(eye, mapping),
+            eye,
+            subject: None,
+            style: ViewStyle {
+                enabled: true,
+                edges: true,
+                section_edges: true,
+                section_faces: true,
+                mapping: Arc::new(mapping),
+            },
         }
     }
 
     pub fn subject(mut self, subject: Entity) -> Self {
-        self.settings.subject = Some(subject);
+        self.subject = Some(subject);
         self
     }
 }
@@ -603,13 +567,13 @@ impl<S: DomainSpace> Deref for ViewSpec<S> {
     type Target = ViewStyle<S>;
 
     fn deref(&self) -> &Self::Target {
-        &self.settings.style
+        &self.style
     }
 }
 
 impl<S: DomainSpace> DerefMut for ViewSpec<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.settings.style
+        &mut self.style
     }
 }
 

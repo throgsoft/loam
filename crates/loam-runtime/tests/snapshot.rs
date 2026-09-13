@@ -263,14 +263,14 @@ fn reset_restores_the_captured_view_configuration_and_rebases_its_entities() {
     let domain = session.domains().read(r4).unwrap();
     let restored = domain.view(view).unwrap();
     assert_eq!(restored.mapping().name(), "drop w");
-    assert_eq!(restored.eye().key(), eye.key());
-    assert_eq!(restored.eye().scene(), scene);
+    assert_eq!(domain.view_eye(view).map(Entity::key), Some(eye.key()));
+    assert_eq!(domain.view_eye(view).map(Entity::scene), Some(scene));
     assert!(!restored.enabled);
     assert!(!restored.edges);
     assert!(!restored.section_edges);
     assert!(!restored.section_faces);
-    assert_eq!(restored.subject().map(Entity::key), Some(eye.key()));
-    assert_eq!(restored.subject().map(Entity::scene), Some(scene));
+    assert_eq!(domain.view_subject(view).map(Entity::key), Some(eye.key()));
+    assert_eq!(domain.view_subject(view).map(Entity::scene), Some(scene));
     assert!(domain.view(later_view).is_none());
 
     let mut publication = Publication::default();

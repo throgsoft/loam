@@ -57,5 +57,5 @@ pub use view::{
     DepthEnvelope, DomainRay, Eye, Identity3, ImageRay, ImageSpace, ImageSpaceId, InstanceRecord,
     Klein, Orbit, Pick, Placement, PointRecord, Projection4, RefusalSource, Rigid, Section4,
     SectionCut, SegmentRecord, TriangleRecord, ViewId, ViewMapping, ViewRecords, ViewRefusal,
-    ViewRefusals, ViewSettings, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
+    ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
 };

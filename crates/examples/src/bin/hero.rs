@@ -536,7 +536,6 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
         SimConfig {
             fixed_hz: TICK_HZ * SUBSTEPS,
             max_ticks_per_frame: 2 * SUBSTEPS,
-            ..SimConfig::default()
         },
     );
     let r4 = session.register_domain(

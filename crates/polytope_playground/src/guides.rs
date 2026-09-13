@@ -52,11 +52,15 @@ impl Guides {
         let anchor = r4
             .physics()
             .and_then(|physics| physics.held_anchor(drag.entity));
-        if let (Some(anchor), Some(placement), Some(view)) = (anchor, placement, r4.view(drag.view))
-        {
+        if let (Some(anchor), Some(placement), Some(view), Some(eye)) = (
+            anchor,
+            placement,
+            r4.view(drag.view),
+            r4.view_eye(drag.view),
+        ) {
             if let Some(point) = r4
                 .poses()
-                .get(view.eye())
+                .get(eye)
                 .and_then(|eye| view.mapping().image_point(eye, anchor))
             {
                 self.points.push(PointRecord {
