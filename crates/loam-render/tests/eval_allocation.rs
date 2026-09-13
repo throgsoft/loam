@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use glam::{Vec3, Vec4};
 use loam_math::{EuclideanR3, HyperbolicH3};
-use loam_scene::{Scene, Scene4, SceneNode, SceneNode4};
+use loam_render::raymarch::scene::{Scene, Scene4, SceneNode, SceneNode4};
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 

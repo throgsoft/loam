@@ -3,20 +3,16 @@
 //! exact input bits and the emitter contributes no floor to CPU/GPU parity.
 
 pub mod combinator;
-pub mod edit;
 mod literal;
-pub mod load;
 pub mod primitive;
 pub mod primitive4;
-pub mod scene;
+pub mod scene3;
 pub mod scene4;
 
-pub use edit::{EditError, NodePath, SceneEdit};
-pub use load::SceneLoadError;
 pub use loam_shape::Shape;
 pub use primitive::Primitive;
 pub use primitive4::Primitive4;
-pub use scene::{PrimitiveKind, Scene, SceneNode};
+pub use scene3::{PrimitiveKind, Scene, SceneNode};
 pub use scene4::{
     Scene4, SceneNode4, PRIM_KIND_HALFSPACE4D, PRIM_KIND_HYPERSPHERE4D, PRIM_KIND_OTHER,
 };

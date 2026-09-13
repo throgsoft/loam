@@ -4,8 +4,8 @@
 
 use glam::Vec3;
 use loam_math::{FlatTorus3, QuotientSpace, Space, WgslSpace};
+use loam_render::raymarch::scene::{Scene, SceneNode};
 use loam_render::shader::{assemble_wgsl, validate_wgsl, GEODESIC_MARCH_KERNEL};
-use loam_scene::{Scene, SceneNode};
 mod support;
 use support::{dispatch, request_device};
 

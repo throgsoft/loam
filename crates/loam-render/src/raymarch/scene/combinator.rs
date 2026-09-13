@@ -1,7 +1,7 @@
 //! Callers pass WGSL `f32` expressions, ideally `let`-bound variable names
 //! rather than calls, since each operand appears twice in the emitted text.
 
-use crate::literal::wgsl_f32;
+use super::literal::wgsl_f32;
 
 pub fn union_expr(da: &str, db: &str) -> String {
     format!("min({da}, {db})")

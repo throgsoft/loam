@@ -1,12 +1,12 @@
 use glam::Vec4;
 use loam::math::EuclideanR4;
+use loam::render::raymarch::scene::{Scene4, SceneNode4};
 use loam::render::raymarch::{
     polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
 };
 use loam::render::sky_ground::{Ground, DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
 use loam::runtime::Eye;
 use loam::runtime::Pose;
-use loam::scene::{Scene4, SceneNode4};
 
 use crate::catalog::ShapeEntry;
 use crate::consts::FLOOR_Y;

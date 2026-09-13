@@ -1,14 +1,13 @@
 use std::boxed::Box;
 
 use glam::{Vec3, Vec4};
-use serde::{Deserialize, Serialize};
 
-use crate::literal::wgsl_f32;
-use crate::primitive4::Primitive4;
-use crate::SENTINEL_DISTANCE;
+use super::literal::wgsl_f32;
+use super::primitive4::Primitive4;
+use super::SENTINEL_DISTANCE;
 pub use loam_shape::Shape;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub enum SceneNode4 {
     Leaf(Shape),
     Union(Box<SceneNode4>, Box<SceneNode4>),
@@ -44,7 +43,7 @@ impl SceneNode4 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Scene4 {
     pub root: SceneNode4,
 }
@@ -300,20 +299,5 @@ fn eval_node_4d(node: &SceneNode4, p: Vec4, halfspace_gate: bool) -> (f32, u32) 
             let (rd, _rk) = eval_node_4d(right, p, halfspace_gate);
             (ld.max(-rd), PRIM_KIND_OTHER)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ron_round_trip_4d() {
-        let scene = Scene4::new(
-            SceneNode4::hypersphere(Vec4::ZERO, 0.3).union(SceneNode4::halfspace(Vec4::Y, -0.4)),
-        );
-        let ron_str = scene.to_ron().expect("serialize");
-        let recovered = Scene4::from_ron("<round trip>", &ron_str).expect("deserialize");
-        assert_eq!(scene.to_wgsl_4d(), recovered.to_wgsl_4d());
     }
 }

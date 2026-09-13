@@ -999,8 +999,8 @@ mod tests {
 
     #[test]
     fn kernel_validates_with_real_scene_union() {
+        use crate::raymarch::scene::{Scene4, SceneNode4};
         use glam::Vec4;
-        use loam_scene::{Scene4, SceneNode4};
 
         let scene = Scene4::new(
             SceneNode4::hypersphere(Vec4::new(-0.6, 0.7, -1.5, 0.0), 0.7)
@@ -1022,8 +1022,8 @@ mod tests {
 
     #[test]
     fn kernel_validates_with_gated_scene() {
+        use crate::raymarch::scene::{Scene4, SceneNode4};
         use glam::Vec4;
-        use loam_scene::{Scene4, SceneNode4};
 
         let scene = Scene4::new(
             SceneNode4::hypersphere(Vec4::new(0.0, 1.0, 0.0, 0.0), 0.5)
