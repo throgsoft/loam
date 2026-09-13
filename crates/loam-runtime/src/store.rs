@@ -282,7 +282,6 @@ impl SchemaId {
     }
 }
 
-/// Proof that the session is the caller; no code outside this crate can build one.
 #[derive(Clone, Copy)]
 pub struct Owner {
     _private: (),
