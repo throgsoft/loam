@@ -1190,7 +1190,7 @@ impl<S: PhysicsSpace> World<S> {
         };
     }
 
-    /// Reuses the world's sweep storage and replaces `pairs` with the current candidates.
+    /// Replaces `pairs` with the sorted candidates: bounding-ball overlaps under a certified bound, every masked non-static pair otherwise.
     pub fn broadphase_into(&mut self, pairs: &mut Vec<PairKey>) {
         self.counters = StepCounters::default();
         Self::fill_broadphase(

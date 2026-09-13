@@ -410,6 +410,7 @@ pub fn integrate_geodesic_frame_checked<S: ConformallyFlat<Point = Vec3, Vector 
     }
 }
 
+// Press et al., Numerical Recipes, 3rd ed., 2007, §18.1; Nocedal and Wright, Numerical Optimization, 2nd ed., 2006, ch. 10.
 fn gauss_newton_log_core<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
     from: Vec3,
@@ -614,8 +615,6 @@ pub const LOG_RESIDUAL_TOL: f32 = 1.0e-5;
 
 const LOG_JACOBIAN_EPS: f32 = 1.0e-3;
 
-// Press et al., Numerical Recipes, 3rd ed., 2007, §18.1.
-// Nocedal and Wright, Numerical Optimization, 2nd ed., 2006, ch. 10.
 /// Solves `exp_from(v) ≈ to`; failure returns the last finite iterate.
 pub fn gauss_newton_log<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
