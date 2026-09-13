@@ -5,19 +5,16 @@ use glam::Vec2;
 use loam_math::{EuclideanR3, Projection};
 use loam_runtime::{Eye, PointRecord};
 use loam_shape::PointMesh;
-use wgpu::{CommandEncoder, Device, Queue, TextureFormat};
+use wgpu::{CommandEncoder, Device, Queue};
 
-use crate::device::{GpuContext, MissingGpuCapability};
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR};
+use crate::device::GpuContext;
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR};
 use crate::{DepthConvention, DepthMode, PointRasterNode};
 
 const READS: [ResourceId; 1] = [SCENE_COLOR];
 const WRITES: [ResourceId; 1] = [SCENE_COLOR];
 
 struct State {
-    format: TextureFormat,
-    depth: TextureFormat,
-    sample_count: u32,
     eye: Eye,
     mesh: PointMesh<3>,
     uploaded: bool,
@@ -27,7 +24,7 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A `PointRasterNode` after the scene that reads and writes scene colour with no depth test; clones share one state.
+/// A shared point overlay pass without a depth test.
 #[derive(Clone)]
 pub struct PointPass {
     name: &'static str,
@@ -39,9 +36,6 @@ impl PointPass {
         Self {
             name,
             shared: Rc::new(RefCell::new(State {
-                format: TextureFormat::Rgba8UnormSrgb,
-                depth: crate::view::DEPTH_FORMAT,
-                sample_count: 1,
                 eye: Eye::default(),
                 mesh: PointMesh::default(),
                 uploaded: false,
@@ -53,7 +47,7 @@ impl PointPass {
         }
     }
 
-    /// Stores the eye and rebuilds the point mesh; the record uploads it again only when a position, colour, or radius differs from the last publish or the device was rebuilt.
+    /// Stores the eye and rebuilds the point mesh; the record uploads it again only when a position, color, or radius differs from the last publish or the device was rebuilt.
     pub fn publish(&self, eye: &Eye, points: &[PointRecord]) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;
@@ -100,11 +94,11 @@ impl FramePass for PointPass {
         &WRITES
     }
 
-    fn order(&self) -> PassOrder {
-        PassOrder::AfterScene
+    fn stage(&self) -> PassStage {
+        PassStage::Scene
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         let State {
             eye,
@@ -119,7 +113,7 @@ impl FramePass for PointPass {
         let (Some(node), Some(device), Some(queue)) =
             (node.as_mut(), device.as_ref(), queue.as_ref())
         else {
-            return;
+            return Ok(());
         };
         node.set_camera(
             queue,
@@ -132,26 +126,17 @@ impl FramePass for PointPass {
             *uploads += 1;
         }
         node.record(encoder, target.color, None, None);
+        Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
-        {
-            let mut state = self.shared.borrow_mut();
-            state.format = frame.color;
-            state.depth = frame.depth;
-            state.sample_count = frame.sample_count;
-        }
-        self.rebuild(gpu)
-    }
-
-    fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         state.node = Some(PointRasterNode::new(
             &gpu.device,
-            state.format,
+            frame.color,
             DepthMode::Off,
             DepthConvention::ReversedZ,
-            state.sample_count,
+            frame.sample_count,
         ));
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());

@@ -1,22 +1,46 @@
 use loam_egui::{egui, ConsoleWriter};
 use loam_render::pass::{FramePass, Section};
 use loam_runtime::host::HostConfig;
-use loam_runtime::{Session, Stores};
+use loam_runtime::host::HostError;
+use loam_runtime::{ActionId, Growth, Input, Publication, Session, Stores};
 
+use super::commands::{CommandInbox, CommandSender};
 use super::console::{SessionConsole, Submit};
+use super::cursor::{CursorCapture, CursorPolicy};
 use super::pacing::Pacer;
-use super::WorkContext;
 use crate::args::Args;
-use crate::capture::CaptureRequest;
+use crate::capture::{CaptureRequest, CaptureUnavailable};
 use crate::script::{driver_from_args, ScriptDriver};
 
-/// Runs each frame between publication and presentation, with capture control; the presenter reads the root eye after it, and `sections` are the previous frame's, since the presenter clears them at upload.
+/// Runs before the frame boundary with read-only session input.
+pub struct InputHook<'a, A: Stores> {
+    pub session: &'a Session<A>,
+    pub input: &'a Input,
+    pub ui: Option<&'a egui::Context>,
+    pub size: (u32, u32),
+    pub sender: &'a CommandSender<A>,
+}
+
+/// Runs between publication and presentation.
 pub struct FrameHook<'a, A: Stores> {
-    pub session: &'a mut Session<A>,
+    pub session: &'a Session<A>,
+    pub published: &'a Publication<A>,
     pub sections: &'a [Section],
     pub ui: Option<&'a egui::Context>,
     pub size: (u32, u32),
+    pub sender: &'a CommandSender<A>,
     pub capture: CaptureControl<'a>,
+    pub(crate) cursor: &'a mut CursorCapture,
+}
+
+impl<A: Stores> FrameHook<'_, A> {
+    pub fn capture_cursor(&mut self, enabled: bool, policy: CursorPolicy) {
+        self.cursor.capture(enabled, policy);
+    }
+
+    pub fn cursor_locked(&self) -> bool {
+        self.cursor.locked()
+    }
 }
 
 /// Queues capture starts and stops that the host drains at the end of the same frame.
@@ -24,37 +48,48 @@ pub struct CaptureControl<'a> {
     requests: &'a mut Vec<CaptureRequest>,
 }
 
+fn queue_capture(
+    requests: &mut Vec<CaptureRequest>,
+    request: CaptureRequest,
+) -> Result<(), CaptureUnavailable> {
+    if !cfg!(all(feature = "capture", not(target_arch = "wasm32"))) {
+        return Err(CaptureUnavailable);
+    }
+    requests.push(request);
+    Ok(())
+}
+
 impl<'a> CaptureControl<'a> {
     pub(crate) fn new(requests: &'a mut Vec<CaptureRequest>) -> Self {
         Self { requests }
     }
 
-    pub fn start(&mut self, request: CaptureRequest) {
-        self.requests.push(request);
+    pub fn start(&mut self, request: CaptureRequest) -> Result<(), CaptureUnavailable> {
+        queue_capture(self.requests, request)
     }
 
-    pub fn stop(&mut self) {
-        self.requests.push(CaptureRequest::Stop);
+    pub fn stop(&mut self) -> Result<(), CaptureUnavailable> {
+        self.start(CaptureRequest::Stop)
     }
 }
 
 pub(crate) type FrameFn<A> = Box<dyn FnMut(&mut FrameHook<'_, A>)>;
-pub(crate) type WorkFn = Box<dyn FnMut(WorkContext<'_>)>;
+pub(crate) type InputFn<A> = Box<dyn FnMut(&InputHook<'_, A>)>;
 
-/// What the host runs on the application's behalf: pacing, vsync, passes, the frame hook, the console, the work recorder, captures, and the browser element ids.
 pub struct SessionApp<A: Stores> {
     pub config: HostConfig,
     pub args: Args,
     pub(crate) pacer: Pacer,
     pub(crate) vsync: Option<bool>,
     pub(crate) passes: Vec<Box<dyn FramePass>>,
+    pub(crate) input: Option<InputFn<A>>,
+    pub(crate) fault_recovery: Option<ActionId>,
     pub(crate) frame: Option<FrameFn<A>>,
+    pub(crate) commands: CommandInbox<A>,
     pub(crate) console: SessionConsole<A>,
-    pub(crate) work: WorkFn,
     pub(crate) captures: Vec<CaptureRequest>,
     pub(crate) debug_layer: bool,
     pub(crate) script: Option<ScriptDriver>,
-    pub wasm: crate::WasmConfig,
 }
 
 impl<A: Stores> SessionApp<A> {
@@ -63,19 +98,22 @@ impl<A: Stores> SessionApp<A> {
     }
 
     pub fn with_args(config: HostConfig, args: Args) -> Self {
+        let commands = CommandInbox::default();
+        let console = SessionConsole::new(commands.sender());
         let mut host = Self {
             config,
             args,
             pacer: Pacer::default(),
             vsync: None,
             passes: Vec::new(),
+            input: None,
+            fault_recovery: None,
             frame: None,
-            console: SessionConsole::default(),
-            work: Box::new(|_| {}),
+            commands,
+            console,
             captures: Vec::new(),
             debug_layer: true,
             script: None,
-            wasm: crate::WasmConfig::default(),
         };
         host.apply_args();
         host
@@ -109,6 +147,35 @@ impl<A: Stores> SessionApp<A> {
         self
     }
 
+    pub fn on_input(mut self, hook: impl FnMut(&InputHook<'_, A>) + 'static) -> Self {
+        self.input = Some(Box::new(hook));
+        self
+    }
+
+    pub fn recover_on_fault(mut self, action: ActionId) -> Self {
+        self.fault_recovery = Some(action);
+        self
+    }
+
+    pub fn sender(&self) -> CommandSender<A> {
+        self.commands.sender()
+    }
+
+    pub fn boundary(
+        &mut self,
+        session: &mut Session<A>,
+        input: Input,
+    ) -> Result<Growth, HostError> {
+        let result = (|| {
+            self.commands.recover(session)?;
+            self.commands.drain(session);
+            session.boundary(input).map_err(HostError::from)
+        })();
+        self.commands.collect(session);
+        self.console.collect();
+        result
+    }
+
     pub fn command(
         mut self,
         name: &'static str,
@@ -116,11 +183,6 @@ impl<A: Stores> SessionApp<A> {
         handler: impl FnMut(&[&str], &mut Submit<A>, &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
     ) -> Self {
         self.console.register(name, help, handler);
-        self
-    }
-
-    pub fn work(mut self, record: impl FnMut(WorkContext<'_>) + 'static) -> Self {
-        self.work = Box::new(record);
         self
     }
 
@@ -134,9 +196,9 @@ impl<A: Stores> SessionApp<A> {
         self
     }
 
-    pub fn capture(mut self, request: CaptureRequest) -> Self {
-        self.captures.push(request);
-        self
+    pub fn capture(mut self, request: CaptureRequest) -> Result<Self, CaptureUnavailable> {
+        queue_capture(&mut self.captures, request)?;
+        Ok(self)
     }
 
     pub fn debug_layer(mut self, enabled: bool) -> Self {
@@ -146,5 +208,40 @@ impl<A: Stores> SessionApp<A> {
 
     pub fn console_mut(&mut self) -> &mut SessionConsole<A> {
         &mut self.console
+    }
+}
+
+#[cfg(all(test, any(not(feature = "capture"), target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    loam_runtime::stores! {
+        #[derive(Default)]
+        pub struct Bare {}
+    }
+
+    #[test]
+    fn unsupported_capture_refuses_without_retaining_requests() {
+        let mut requests = Vec::new();
+        let mut control = CaptureControl::new(&mut requests);
+        assert_eq!(
+            control.start(CaptureRequest::OneShot {
+                stage: crate::capture::CaptureStage::Post,
+                dir: None,
+                name: None,
+            }),
+            Err(CaptureUnavailable)
+        );
+        assert_eq!(control.stop(), Err(CaptureUnavailable));
+        assert!(requests.is_empty());
+
+        let app = SessionApp::<Bare>::with_args(
+            HostConfig::new("capture", loam_runtime::Bindings::new()),
+            Args::default(),
+        );
+        assert!(matches!(
+            app.capture(CaptureRequest::Stop),
+            Err(CaptureUnavailable)
+        ));
     }
 }

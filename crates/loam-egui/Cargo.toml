@@ -6,21 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "egui integration for Loam: the debug layer's winit input and console panel."
-keywords = ["egui", "gui", "wgpu", "winit", "gamedev"]
+description = "Loam egui controls and console panel."
+keywords = ["egui", "gui", "gamedev"]
 categories = ["game-development", "gui"]
 
 [dependencies]
-winit.workspace = true
 egui = "0.33"
 
 loam-console = { path = "../loam-console", version = "0.1.0" }
 loam-math    = { path = "../loam-math",    version = "0.1.0" }
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-egui-winit = { version = "0.33", default-features = false, features = ["clipboard", "links"] }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-egui-winit = { version = "0.33", default-features = false, features = ["links"] }
-
 [lints]
 workspace = true

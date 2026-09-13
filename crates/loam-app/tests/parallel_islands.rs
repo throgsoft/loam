@@ -14,16 +14,18 @@ const STEPS: usize = 30;
 fn columns() -> World<EuclideanR3> {
     let mut world = World::new(EuclideanR3);
     register_default_narrowphase(&mut world.narrowphase);
-    world.gravity = Some(Vec3::new(0.0, -9.8, 0.0));
+    world
+        .set_gravity(Some(Vec3::new(0.0, -9.8, 0.0)))
+        .expect("valid gravity");
     let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0).unwrap());
-    world.bodies[floor].restitution = 0.0;
+    world.set_restitution(floor, 0.0).unwrap();
     for column in 0..COLUMNS {
         let x = column as f32 * 4.0;
         for level in 0..2 {
             let y = RADIUS + level as f32 * 2.0 * RADIUS;
             let id = world
                 .push_body(sphere_body_r3(Vec3::new(x, y, 0.0), Vec3::ZERO, RADIUS, 1.0).unwrap());
-            world.bodies[id].restitution = 0.0;
+            world.set_restitution(id, 0.0).unwrap();
         }
     }
     world
@@ -55,7 +57,7 @@ fn sample(body: &RigidBody<EuclideanR3>, words: &mut Vec<u32>) {
 fn run() -> u64 {
     let mut world = columns();
     for _ in 0..STEPS {
-        world.step(DT);
+        world.step(DT).expect("step");
     }
     let islands = world.islands().len();
     assert!(

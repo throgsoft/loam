@@ -1,24 +1,22 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use wgpu::{CommandEncoder, Device, Queue, TextureFormat};
+use wgpu::{CommandEncoder, Device, Queue};
 
-use crate::device::{GpuContext, MissingGpuCapability};
+use crate::device::GpuContext;
 use crate::pass::{
-    FrameFormat, FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR, SCENE_DEPTH,
+    FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_BASE, SCENE_COLOR,
+    SCENE_DEPTH,
 };
 use crate::raymarch::{BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms};
 use crate::{DepthConvention, DepthMode, Viewport};
 
 const WRITES: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
-
-const STRIP_WRITES: [ResourceId; 1] = [SCENE_COLOR];
+const READS: [ResourceId; 1] = [SCENE_BASE];
 
 struct State {
+    enabled: bool,
     source: String,
-    format: TextureFormat,
-    depth: TextureFormat,
-    sample_count: u32,
     uniforms: Hyperslice4DUniforms,
     bodies: Vec<BodyUniform>,
     cells: Vec<(Viewport, f32, BodyUniform)>,
@@ -27,7 +25,7 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A `Hyperslice4DNode` after the scene that writes scene colour and depth under reversed Z, or colour only per cell while a strip is published; clones share one state.
+/// A shared hyperslice pass that writes scene color and reversed Z depth.
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,
@@ -37,10 +35,8 @@ impl HyperslicePass {
     pub fn new(source: String) -> Self {
         Self {
             shared: Rc::new(RefCell::new(State {
+                enabled: true,
                 source,
-                format: TextureFormat::Rgba8UnormSrgb,
-                depth: crate::view::DEPTH_FORMAT,
-                sample_count: 1,
                 uniforms: Hyperslice4DUniforms::default(),
                 bodies: Vec::new(),
                 cells: Vec::new(),
@@ -70,6 +66,10 @@ impl HyperslicePass {
         self.shared.borrow().bodies.len()
     }
 
+    pub fn set_enabled(&self, enabled: bool) {
+        self.shared.borrow_mut().enabled = enabled;
+    }
+
     pub fn strip_cells(&self) -> usize {
         self.shared.borrow().cells.len()
     }
@@ -81,23 +81,26 @@ impl FramePass for HyperslicePass {
     }
 
     fn writes(&self) -> &[ResourceId] {
-        if self.shared.borrow().cells.is_empty() {
-            &WRITES
-        } else {
-            &STRIP_WRITES
-        }
+        &WRITES
     }
 
-    fn order(&self) -> PassOrder {
-        PassOrder::AfterScene
+    fn reads(&self) -> &[ResourceId] {
+        &READS
+    }
+
+    fn stage(&self) -> PassStage {
+        PassStage::Scene
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
+        if !state.enabled {
+            return Ok(());
+        }
         let State {
             uniforms,
             bodies,
@@ -110,17 +113,17 @@ impl FramePass for HyperslicePass {
         let (Some(node), Some(device), Some(queue)) =
             (node.as_mut(), device.as_ref(), queue.as_ref())
         else {
-            return;
+            return Ok(());
         };
         uniforms.resolution = [target.size.0 as f32, target.size.1 as f32];
         uniforms.viewport_origin = [0.0, 0.0];
         *node.uniforms_mut() = *uniforms;
         if !cells.is_empty() {
-            let _ = node.record_strip(device, queue, encoder, target.color, cells);
-            return;
+            node.record_strip(device, queue, encoder, target.color, cells)?;
+            return Ok(());
         }
         let Some(depth) = target.depth else {
-            return;
+            return Ok(());
         };
         node.set_bodies(bodies);
         node.flush_uniforms(queue);
@@ -130,20 +133,12 @@ impl FramePass for HyperslicePass {
             Some(depth),
             Viewport::full([target.size.0, target.size.1]),
         );
+        Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
-        {
-            let mut state = self.shared.borrow_mut();
-            state.format = frame.color;
-            state.depth = frame.depth;
-            state.sample_count = frame.sample_count;
-        }
-        self.rebuild(gpu)
-    }
-
-    fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
+        crate::shader::validate_hyperslice_wgsl(&state.source)?;
         let module = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -152,12 +147,12 @@ impl FramePass for HyperslicePass {
             });
         state.node = Some(Hyperslice4DNode::with_depth(
             &gpu.device,
-            state.format,
+            frame.color,
             &module,
             DepthMode::ReadWrite {
-                format: state.depth,
+                format: frame.depth,
             },
-            state.sample_count,
+            frame.sample_count,
         ));
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());

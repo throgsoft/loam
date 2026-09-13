@@ -1,30 +1,21 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use loam_egui::{cmd, Console, ConsoleWriter, HistoryLine};
-use loam_runtime::{
-    Access, AppCommand, Command, Commands, Dispatch, Input, Phase, RequestId, Session, Stores,
-};
+use loam_runtime::{AppCommand, Dispatch, Stores};
 
+use super::commands::{CommandSender, Reported};
 use crate::command::CommandLine;
 
-enum Queued<A> {
-    App(Box<dyn AppCommand<A>>),
-    Reset,
-}
-
-impl<A: 'static> Queued<A> {
-    fn name(&self) -> &'static str {
-        match self {
-            Queued::App(command) => command.name(),
-            Queued::Reset => "reset",
-        }
-    }
-}
-
-struct Inbox<A> {
-    queued: Vec<Queued<A>>,
-    submitted: Vec<(RequestId, &'static str)>,
+#[derive(Default)]
+struct ConsoleState {
     controls: Controls,
+    responses: Vec<HistoryLine>,
+}
+
+type Shared = Arc<Mutex<ConsoleState>>;
+
+fn lock(shared: &Shared) -> MutexGuard<'_, ConsoleState> {
+    shared.lock().unwrap_or_else(|error| error.into_inner())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -33,32 +24,27 @@ pub struct Controls {
     pub vsync: Option<bool>,
 }
 
-impl<A> Default for Inbox<A> {
-    fn default() -> Self {
-        Self {
-            queued: Vec::new(),
-            submitted: Vec::new(),
-            controls: Controls::default(),
-        }
-    }
-}
-
-type Shared<A> = Arc<Mutex<Inbox<A>>>;
-
-fn lock<A>(shared: &Shared<A>) -> std::sync::MutexGuard<'_, Inbox<A>> {
-    shared.lock().unwrap_or_else(|error| error.into_inner())
-}
-
-/// What a console verb may ask of the session: an app command, a reset, a frame cap, or vsync.
 pub struct Submit<A: Stores> {
-    inbox: Shared<A>,
+    commands: CommandSender<A>,
+    console: Shared,
 }
 
 impl<A: Stores> Submit<A> {
+    /// Reads committed state at the command boundary and returns its text to the console.
+    pub fn inspect(
+        &mut self,
+        name: &'static str,
+        read: impl FnMut(&Dispatch<'_, A>, &mut ConsoleWriter) + Send + 'static,
+    ) {
+        self.commands.app(Inspect {
+            name,
+            read,
+            console: self.console.clone(),
+        });
+    }
+
     pub fn app(&mut self, command: impl AppCommand<A>) {
-        lock(&self.inbox)
-            .queued
-            .push(Queued::App(Box::new(command)));
+        self.commands.app(command);
     }
 
     pub fn app_fn(
@@ -66,30 +52,31 @@ impl<A: Stores> Submit<A> {
         name: &'static str,
         apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
     ) {
-        self.app(FnCommand { name, apply });
+        self.commands.app_fn(name, apply);
     }
 
     pub fn reset(&mut self) {
-        lock(&self.inbox).queued.push(Queued::Reset);
+        self.commands.reset();
     }
 
     pub fn target_fps(&mut self, fps: f32) {
-        lock(&self.inbox).controls.target_fps = Some(fps);
+        lock(&self.console).controls.target_fps = Some(fps);
     }
 
     pub fn vsync(&mut self, enabled: bool) {
-        lock(&self.inbox).controls.vsync = Some(enabled);
+        lock(&self.console).controls.vsync = Some(enabled);
     }
 }
 
-struct FnCommand<F> {
+struct Inspect<F> {
     name: &'static str,
-    apply: F,
+    read: F,
+    console: Shared,
 }
 
-impl<A, F> AppCommand<A> for FnCommand<F>
+impl<A: Stores, F> AppCommand<A> for Inspect<F>
 where
-    F: FnMut(&mut Dispatch<'_, A>) + Send + 'static,
+    F: FnMut(&Dispatch<'_, A>, &mut ConsoleWriter) + Send + 'static,
 {
     fn name(&self) -> &'static str {
         self.name
@@ -99,31 +86,45 @@ where
         &mut self,
         dispatch: &mut Dispatch<'_, A>,
     ) -> Result<loam_runtime::Outcome, loam_runtime::Rejection> {
-        (self.apply)(dispatch);
+        let mut output = ConsoleWriter::new();
+        (self.read)(dispatch, &mut output);
+        lock(&self.console).responses.extend(output.take_lines());
         Ok(loam_runtime::Outcome::Done)
     }
 }
 
-/// The egui console bound to a session: verbs queue through a Dispatch entry, and a command's result reaches the history at the next boundary.
 pub struct SessionConsole<A: Stores> {
     console: Console<Submit<A>>,
     submit: Submit<A>,
-    inbox: Shared<A>,
-    lines: Vec<String>,
+    state: Shared,
+    completed: Vec<Reported>,
 }
 
-impl<A: Stores> Default for SessionConsole<A> {
-    fn default() -> Self {
-        let inbox = Shared::default();
+impl<A: Stores> SessionConsole<A> {
+    pub(crate) fn new(sender: CommandSender<A>) -> Self {
+        let state = Shared::default();
         let mut console = Self {
             console: Console::new(),
             submit: Submit {
-                inbox: inbox.clone(),
+                commands: sender.reported(),
+                console: state.clone(),
             },
-            inbox,
-            lines: Vec::new(),
+            state,
+            completed: Vec::new(),
         };
         crate::trace::register_command(&mut console.console);
+        console.register(
+            "recover",
+            "restore the initial session after a fault",
+            |args, submit: &mut Submit<A>, out| {
+                if args.is_empty() {
+                    submit.reset();
+                } else {
+                    out.line("usage: recover");
+                }
+                Ok(())
+            },
+        );
         console.register(
             "fps",
             "show or set the frame cap; unlimited removes it",
@@ -169,11 +170,7 @@ impl<A: Stores> Default for SessionConsole<A> {
         );
         console
     }
-}
 
-const MAX_ACCEPTED_FPS: f32 = 1000.0;
-
-impl<A: Stores> SessionConsole<A> {
     pub fn register(
         &mut self,
         name: &'static str,
@@ -200,7 +197,7 @@ impl<A: Stores> SessionConsole<A> {
     }
 
     pub fn take_controls(&mut self) -> Controls {
-        std::mem::take(&mut lock(&self.inbox).controls)
+        std::mem::take(&mut lock(&self.state).controls)
     }
 
     pub fn execute(&mut self, line: &str) {
@@ -211,57 +208,24 @@ impl<A: Stores> SessionConsole<A> {
         self.submit.app(command);
     }
 
-    /// Registers the Dispatch entry that submits queued commands; once per session.
-    pub fn install(&self, session: &mut Session<A>) {
-        let inbox = self.inbox.clone();
-        let mut scratch: Vec<Queued<A>> = Vec::new();
-        session.system(
-            Phase::Dispatch,
-            "loam-app::console",
-            Access::new().commands(),
-            move |_input: &Input, commands: &mut Commands<A>| {
-                {
-                    let mut held = lock(&inbox);
-                    if held.queued.is_empty() {
-                        return;
-                    }
-                    std::mem::swap(&mut held.queued, &mut scratch);
-                }
-                for queued in scratch.drain(..) {
-                    let name = queued.name();
-                    let request = match queued {
-                        Queued::App(command) => commands.submit(Command::App(command)),
-                        Queued::Reset => commands.submit(Command::Reset),
-                    };
-                    lock(&inbox).submitted.push((request, name));
-                }
-            },
-        );
-    }
-
-    /// Matches this boundary's results to the requests the console submitted and writes them to the history.
-    pub fn collect(&mut self, session: &Session<A>) {
-        let mut inbox = lock(&self.inbox);
-        if inbox.submitted.is_empty() {
-            return;
+    pub(crate) fn collect(&mut self) {
+        let mut state = lock(&self.state);
+        for line in state.responses.drain(..) {
+            self.console.write(line);
         }
-        for result in session.results() {
-            let Some(index) = inbox
-                .submitted
-                .iter()
-                .position(|(request, _)| *request == result.request)
-            else {
-                continue;
+        drop(state);
+        let dropped = self.submit.commands.take_reported(&mut self.completed);
+        for reported in self.completed.drain(..) {
+            let line = match reported.outcome {
+                Ok(outcome) => format!("{}: {outcome:?}", reported.name),
+                Err(rejection) => format!("{}: rejected, {rejection:?}", reported.name),
             };
-            let (_, name) = inbox.submitted.swap_remove(index);
-            self.lines.push(match &result.outcome {
-                Ok(outcome) => format!("{name}: {outcome:?}"),
-                Err(rejection) => format!("{name}: rejected, {rejection:?}"),
-            });
-        }
-        drop(inbox);
-        for line in self.lines.drain(..) {
             self.console.write(HistoryLine::output(line));
+        }
+        if dropped > 0 {
+            self.console.write(HistoryLine::output(format!(
+                "commands: {dropped} results omitted"
+            )));
         }
     }
 
@@ -276,11 +240,15 @@ impl<A: Stores> SessionConsole<A> {
     }
 }
 
+const MAX_ACCEPTED_FPS: f32 = 1000.0;
+
 #[cfg(test)]
 mod tests {
-    use loam_runtime::SimConfig;
+    use loam_runtime::{Bindings, HostConfig, Input, Session, SimConfig};
 
     use super::*;
+    use crate::args::Args;
+    use crate::session::SessionApp;
 
     loam_runtime::stores! {
         #[derive(Default)]
@@ -292,32 +260,44 @@ mod tests {
     #[test]
     fn a_console_commands_session_result_reaches_the_console_at_the_next_boundary() {
         let mut session = Session::new(Counted::default(), SimConfig::default());
-        let mut console = SessionConsole::<Counted>::default();
-        console.register("bump", "raise the counter", |_args, submit, out| {
-            submit.app_fn("bump", |d: &mut Dispatch<'_, Counted>| {
-                *d.app.hits.get_mut() += 1;
+        let mut app =
+            SessionApp::with_args(HostConfig::new("console", Bindings::new()), Args::default());
+        app.console
+            .register("bump", "raise the counter", |_args, submit, out| {
+                submit.app_fn("bump", |d: &mut Dispatch<'_, Counted>| {
+                    *d.app.hits.get_mut() += 1;
+                });
+                out.line("queued");
+                Ok(())
             });
-            out.line("queued");
-            Ok(())
-        });
-        console.install(&mut session);
-
-        console.execute("bump");
-        console.dispatch_pending();
-        console.collect(&session);
+        app.console
+            .register("count", "read the counter", |_args, submit, _out| {
+                submit.inspect("count", |dispatch, out| {
+                    out.line(format!("count={}", dispatch.app.hits.get()));
+                });
+                Ok(())
+            });
+        app.console.execute("bump");
+        app.console.execute("count");
+        app.console.dispatch_pending();
         assert!(
-            !history(&console).iter().any(|line| line.contains("Done")),
+            !history(&app.console)
+                .iter()
+                .any(|line| line.contains("Done")),
             "the result cannot exist before the boundary that applies the command"
         );
 
-        session.boundary(Input::default()).expect("boundary");
-        console.collect(&session);
+        app.boundary(&mut session, Input::default())
+            .expect("boundary");
 
         assert_eq!(*session.app.hits.get(), 1);
+        assert!(history(&app.console).iter().any(|line| line == "count=1"));
         assert!(
-            history(&console).iter().any(|line| line == "bump: Done"),
+            history(&app.console)
+                .iter()
+                .any(|line| line == "bump: Done"),
             "the console never matched its request to the session result: {:?}",
-            history(&console)
+            history(&app.console)
         );
     }
 

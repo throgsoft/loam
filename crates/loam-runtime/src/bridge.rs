@@ -1,5 +1,3 @@
-use loam_shape::field::FieldKind;
-
 use crate::domain::{DomainError, DomainId};
 use crate::entity::Entity;
 use crate::store::StoreError;
@@ -28,9 +26,6 @@ pub enum BridgeError {
     UnknownView(ViewId),
     UnknownImage(ImageSpaceId),
     Nonlinear(&'static str),
-    NoRayLift(&'static str),
-    NoPrelude(&'static str),
-    NoStepBound(&'static str, FieldKind),
     Domain(DomainError),
     Link(StoreError),
 }
@@ -45,13 +40,6 @@ impl From<StoreError> for BridgeError {
     fn from(error: StoreError) -> Self {
         Self::Link(error)
     }
-}
-
-pub(crate) fn step_bound(kind: FieldKind) -> bool {
-    matches!(
-        kind,
-        FieldKind::ExactDistance | FieldKind::ConservativeBound
-    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +83,10 @@ pub struct DragRelease {
 const PLANE_EPSILON: f32 = 1e-6;
 
 impl Drag {
+    pub fn image_point(&self) -> [f32; 3] {
+        self.at
+    }
+
     pub(crate) fn meet(&self, ray: &ImageRay) -> Option<[f32; 3]> {
         let normal = Vec3::from(self.normal);
         let along = Vec3::from(ray.direction).dot(normal);

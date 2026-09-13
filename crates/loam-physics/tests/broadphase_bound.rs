@@ -192,7 +192,7 @@ fn seam_world(bound: BroadphaseBound) -> (World<SeamR2>, Vec<BodyId>) {
                     Collider::sphere_at_origin(RADIUS),
                     1.0,
                     1.0,
-                    &world.space,
+                    world.space(),
                 )
                 .unwrap(),
             )
@@ -224,8 +224,8 @@ fn touching_under_the_quotient(world: &World<SeamR2>, ids: &[BodyId]) -> Vec<Pai
     let mut pairs = Vec::new();
     for i in 0..ids.len() {
         for j in (i + 1)..ids.len() {
-            let a = world.bodies[ids[i]].position;
-            let b = world.bodies[ids[j]].position;
+            let a = world.bodies()[ids[i]].position;
+            let b = world.bodies()[ids[j]].position;
             if seam_distance(a, b) <= 2.0 * RADIUS {
                 pairs.push(key(ids[i], ids[j]));
             }

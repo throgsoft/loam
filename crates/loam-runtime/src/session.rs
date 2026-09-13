@@ -1,10 +1,6 @@
 use loam_shape::polytope::Polytope4Topology;
 
-use crate::bridge::{self, Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
-use crate::bulk::{
-    Bulk, BulkAction, BulkCheckpoint, BulkError, BulkId, BulkSnapshot, BulkSpec, InFlight, Landed,
-    Landing, SnapshotPolicy, Wait, WorkOrder, WorkStats,
-};
+use crate::bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
 use crate::command::{
     Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
 };
@@ -15,23 +11,22 @@ use crate::domain::{
 use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
 use crate::input::Input;
 use crate::phase::{
-    Access, Ctx, Entry, EntryId, Order, Phase, Phases, Schedule, Step, System, SystemEntry, Tick,
-    WorkItem,
+    Ctx, EntryId, Order, Phase, PhaseError, Phases, Step, System, SystemEntry, Tick,
 };
 use crate::relation::{LinkId, Relation, RelationSnapshot};
 use crate::store::{SchemaId, StoreField};
 use crate::stores::Stores;
-use crate::view::{ImageRay, Pick, Rigid, ViewRecords, ViewTarget, Views, ViewsSnapshot};
+use crate::view::{ImageRay, Orbit, Pick, Rigid, ViewRecords, ViewTarget, Views, ViewsSnapshot};
+use crate::PointerButton;
+
+const RELEASE_STALE_SECONDS: f64 = 0.12;
 
 /// Fixed steps on both hosts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SimConfig {
     pub fixed_hz: u32,
     pub max_ticks_per_frame: u32,
-    pub overlap: bool,
     pub seed: u64,
-    /// In-flight work orders before `issue_work` delays the rest.
-    pub work_queue: u32,
 }
 
 impl SimConfig {
@@ -46,9 +41,7 @@ impl Default for SimConfig {
         Self {
             fixed_hz: 60,
             max_ticks_per_frame: 4,
-            overlap: false,
             seed: 0,
-            work_queue: 4,
         }
     }
 }
@@ -65,7 +58,6 @@ pub struct Growth {
     pub commands: usize,
     pub spawned: usize,
     pub despawned: usize,
-    pub bulk_elements: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -103,10 +95,6 @@ pub enum PreparedGeometry {
     Lines3 {
         segments: Vec<[[f32; 3]; 2]>,
     },
-    Mesh3 {
-        positions: Vec<[f32; 3]>,
-        indices: Vec<u32>,
-    },
     /// Edges for the wireframe and cells for the section, at canonical coordinates times `scale`.
     Polytope4 {
         polytope: loam_shape::polytope::Polytope4,
@@ -143,9 +131,6 @@ impl PreparedGeometry {
             Self::Lines3 { segments } => {
                 farthest(segments.iter().flatten().map(|point| point.as_slice()))
             }
-            Self::Mesh3 { positions, .. } => {
-                farthest(positions.iter().map(|point| point.as_slice()))
-            }
             Self::Polytope4 { polytope, scale } => {
                 polytope
                     .topology()
@@ -177,9 +162,9 @@ impl Material {
 
 #[derive(Clone, Copy)]
 pub struct Library<'a> {
-    pub geometry: &'a [PreparedGeometry],
-    pub materials: &'a [Material],
-    pub palettes: &'a [Vec<[f32; 4]>],
+    pub(crate) geometry: &'a [PreparedGeometry],
+    pub(crate) materials: &'a [Material],
+    pub(crate) palettes: &'a [Vec<[f32; 4]>],
 }
 
 impl Library<'_> {
@@ -210,6 +195,7 @@ pub struct Publication<A: Stores> {
     pub app: A::Records,
     pub views: Vec<PublishedView>,
     pub stamp: Stamp,
+    source: Option<SceneId>,
 }
 
 impl<A: Stores> Default for Publication<A> {
@@ -218,6 +204,7 @@ impl<A: Stores> Default for Publication<A> {
             app: A::Records::default(),
             views: Vec::new(),
             stamp: Stamp::default(),
+            source: None,
         }
     }
 }
@@ -225,12 +212,12 @@ impl<A: Stores> Default for Publication<A> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublishError {
     Borrowed,
-    Domain(DomainError),
+    Phase(PhaseError),
 }
 
-impl From<DomainError> for PublishError {
-    fn from(error: DomainError) -> Self {
-        Self::Domain(error)
+impl From<PhaseError> for PublishError {
+    fn from(error: PhaseError) -> Self {
+        Self::Phase(error)
     }
 }
 
@@ -265,29 +252,180 @@ impl<A: Stores> Records<A> {
 }
 
 pub struct SessionSnapshot<A: Stores> {
-    pub app: A::Snapshot,
-    pub entities: EntitiesSnapshot,
-    pub domains: Vec<DomainSnapshot>,
-    pub views: ViewsSnapshot,
-    pub bridges: RelationSnapshot<Bridge>,
-    pub tick: Tick,
-    pub config: SimConfig,
-    pub next_request: RequestId,
-    pub bulk: BulkSnapshot,
+    runtime: RuntimeId,
+    app: A::Snapshot,
+    entities: EntitiesSnapshot,
+    domains: Vec<DomainSnapshot>,
+    views: ViewsSnapshot,
+    bridges: RelationSnapshot<Bridge>,
+    tick: Tick,
+    config: SimConfig,
+    next_request: RequestId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RestoreError {
     Pending,
+    Unfinished(Phase),
     NoInitial,
+    ForeignRuntime,
     Schema(SchemaId),
     Domain(DomainId),
-    Readback(&'static str),
-    NoCheckpoint(&'static str),
-    CheckpointTick(&'static str),
     /// A domain's world refused its snapshot before anything was touched.
     #[cfg(feature = "physics")]
     Edit(loam_physics::EditError),
+}
+
+#[derive(Default)]
+pub(crate) struct Manipulation {
+    drag: Option<Drag>,
+}
+
+impl Manipulation {
+    pub(crate) fn dragging(&self) -> Option<Drag> {
+        self.drag
+    }
+
+    pub(crate) fn grab<A: Stores>(
+        &mut self,
+        domains: &Domains,
+        views: &Views,
+        prepared: &[PreparedGeometry],
+        commands: &mut Commands<A>,
+        ndc: [f32; 2],
+        time: f64,
+    ) -> Result<Pick, DragError> {
+        let pick = domains
+            .pick_lifted(views, prepared, ndc)
+            .ok_or(DragError::NoPick)?;
+        let domain = domains
+            .get(pick.domain)
+            .ok_or(DomainError::UnknownDomain(pick.domain))?;
+        let into = views
+            .to_root(pick.image)
+            .and_then(|to| to.rigid())
+            .ok_or(DomainError::Unsupported("image space"))?
+            .inverse();
+        let center = domain
+            .image_of(pick.view, pick.entity)
+            .ok_or(DomainError::Stale(pick.entity))?;
+        let forward = views
+            .get(views.root())
+            .ok_or(DomainError::Unsupported("image space"))?
+            .eye
+            .forward;
+        let plane = into.apply(pick.image_point);
+        let hit = pick.hit.ok_or(DomainError::Unsupported("view ray lift"))?;
+        if let Some(held) = self.drag.take() {
+            commands.submit(Command::Chart(
+                held.domain,
+                ChartCommand::Release {
+                    entity: held.entity,
+                },
+            ));
+        }
+        self.drag = Some(Drag {
+            entity: pick.entity,
+            domain: pick.domain,
+            view: pick.view,
+            image: pick.image,
+            plane,
+            normal: into.direction(forward),
+            center,
+            at: plane,
+            time,
+            velocity: [0.0; 3],
+        });
+        commands.submit(Command::Chart(
+            pick.domain,
+            ChartCommand::Grab {
+                entity: pick.entity,
+                point: hit,
+            },
+        ));
+        Ok(pick)
+    }
+
+    pub(crate) fn drag<A: Stores>(
+        &mut self,
+        domains: &Domains,
+        views: &Views,
+        commands: &mut Commands<A>,
+        ndc: [f32; 2],
+        time: f64,
+    ) -> Result<ChartPoint, DragError> {
+        let mut drag = self.drag.ok_or(DragError::NotGrabbed)?;
+        let domain = domains
+            .get(drag.domain)
+            .ok_or(DomainError::UnknownDomain(drag.domain))?;
+        let name = domain
+            .view(drag.view)
+            .ok_or(DomainError::Unsupported("unknown view"))?
+            .name;
+        let ray = views
+            .ray(drag.image, ndc)
+            .ok_or(DomainError::Unsupported("image space"))?;
+        let at = drag.meet(&ray).ok_or(DragError::Ambiguous(name))?;
+        let point = domain.lift_origin(
+            drag.view,
+            &ImageRay {
+                origin: drag.moved(at),
+                direction: drag.normal,
+            },
+        )?;
+        drag.sample(at, time);
+        self.drag = Some(drag);
+        commands.submit(Command::Chart(
+            drag.domain,
+            ChartCommand::Move {
+                entity: drag.entity,
+                point,
+            },
+        ));
+        Ok(point)
+    }
+
+    fn finish<A: Stores>(commands: &mut Commands<A>, drag: Drag, throw: bool) -> DragRelease {
+        let mut release = drag.released();
+        if !throw {
+            release.velocity = [0.0; 3];
+        }
+        commands.submit(Command::Chart(
+            drag.domain,
+            ChartCommand::Release {
+                entity: drag.entity,
+            },
+        ));
+        release
+    }
+
+    pub(crate) fn release<A: Stores>(&mut self, commands: &mut Commands<A>) -> Option<DragRelease> {
+        let drag = self.drag.take()?;
+        Some(Self::finish(commands, drag, true))
+    }
+
+    pub(crate) fn release_at<A: Stores>(
+        &mut self,
+        commands: &mut Commands<A>,
+        time: f64,
+    ) -> Option<DragRelease> {
+        let drag = self.drag.take()?;
+        let age = time - drag.time;
+        Some(Self::finish(
+            commands,
+            drag,
+            (0.0..=RELEASE_STALE_SECONDS).contains(&age),
+        ))
+    }
+
+    pub(crate) fn cancel<A: Stores>(&mut self, commands: &mut Commands<A>) -> Option<DragRelease> {
+        let drag = self.drag.take()?;
+        Some(Self::finish(commands, drag, false))
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.drag = None;
+    }
 }
 
 /// The simulation entry `Session::new` registers; `system_at` places app entries around it.
@@ -299,7 +437,7 @@ pub struct Session<A: Stores> {
     domains: Domains,
     views: Views,
     bridges: Relation<Bridge>,
-    drag: Option<Drag>,
+    manipulation: Manipulation,
     phases: Phases<A>,
     commands: Commands<A>,
     batch: Vec<Request<A>>,
@@ -312,17 +450,8 @@ pub struct Session<A: Stores> {
     tick: Tick,
     sequence: u64,
     initial: Option<SessionSnapshot<A>>,
-    resume: Option<EntryId>,
-    bulk: Bulk,
-    checkpoints: Vec<Option<BulkCheckpoint>>,
-    restore_plan: Vec<(BulkId, BulkAction)>,
-    flight: InFlight,
-    work: Vec<WorkOrder>,
-    work_head: usize,
-    ahead_for: Vec<EntryId>,
-    ahead_tick: Tick,
-    stats: WorkStats,
-    wait: Option<Wait>,
+    unfinished: Option<Phase>,
+    phase_error: Option<PhaseError>,
 }
 
 impl<A: Stores> Session<A> {
@@ -335,16 +464,12 @@ impl<A: Stores> Session<A> {
         let mut phases = Phases::new();
         phases.push(
             Phase::Simulation,
-            Entry::System(SystemEntry::fallible(
-                DOMAIN_STEP,
-                Access::new().every_domain(),
-                |ctx: Ctx<'_, A>| {
-                    for domain in ctx.domains.iter_mut() {
-                        domain.step(ctx.step)?;
-                    }
-                    Ok(())
-                },
-            )),
+            SystemEntry::fallible(DOMAIN_STEP, |ctx: Ctx<'_, A>| {
+                for domain in ctx.domains.iter_mut() {
+                    domain.step(ctx.step)?;
+                }
+                Ok(())
+            }),
         );
         let mut bridges = Relation::new();
         StoreField::bind(&mut bridges, scene);
@@ -353,7 +478,7 @@ impl<A: Stores> Session<A> {
             domains: Domains::new(scene.runtime),
             views: Views::new(),
             bridges,
-            drag: None,
+            manipulation: Manipulation::default(),
             phases,
             commands: Commands::new(scene),
             batch: Vec::new(),
@@ -366,17 +491,8 @@ impl<A: Stores> Session<A> {
             tick: Tick::default(),
             sequence: 0,
             initial: None,
-            resume: None,
-            bulk: Bulk::default(),
-            checkpoints: Vec::new(),
-            restore_plan: Vec::new(),
-            flight: InFlight::new(config.work_queue),
-            work: Vec::new(),
-            work_head: 0,
-            ahead_for: Vec::new(),
-            ahead_tick: Tick::default(),
-            stats: WorkStats::default(),
-            wait: None,
+            unfinished: None,
+            phase_error: None,
         }
     }
 
@@ -390,6 +506,25 @@ impl<A: Stores> Session<A> {
 
     pub fn current_tick(&self) -> Tick {
         self.tick
+    }
+
+    pub fn faulted_phase(&self) -> Option<Phase> {
+        self.unfinished
+    }
+
+    pub fn phase_error(&self) -> Option<PhaseError> {
+        self.phase_error
+    }
+
+    fn unfinished_error(&self) -> Option<PhaseError> {
+        self.unfinished.map(|phase| {
+            self.phase_error.unwrap_or_else(|| {
+                PhaseError::unnamed(
+                    phase,
+                    DomainError::Unsupported("unfinished phase requires restore"),
+                )
+            })
+        })
     }
 
     pub fn register_domain<S: DomainSpace>(
@@ -422,6 +557,10 @@ impl<A: Stores> Session<A> {
         self.commands.entities()
     }
 
+    pub fn submit(&mut self, command: Command<A>) -> RequestId {
+        self.commands.submit(command)
+    }
+
     pub fn prepare(&mut self, geometry: PreparedGeometry) -> PreparedId {
         self.prepared.push(geometry);
         PreparedId((self.prepared.len() - 1) as u32)
@@ -431,7 +570,7 @@ impl<A: Stores> Session<A> {
         self.prepared.get(id.index())
     }
 
-    /// Two colours per prepared segment, start then end, read in the prepared geometry's own order; a segment past the palette's end keeps the material colour.
+    /// Two colors per prepared segment, start then end, read in the prepared geometry's own order; a segment past the palette's end keeps the material color.
     pub fn add_palette(&mut self, colors: Vec<[f32; 4]>) -> PaletteId {
         self.palettes.push(colors);
         PaletteId((self.palettes.len() - 1) as u32)
@@ -454,11 +593,33 @@ impl<A: Stores> Session<A> {
         &mut self,
         phase: Phase,
         name: &'static str,
-        access: Access,
         system: impl System<A, M>,
     ) -> EntryId {
-        self.phases
-            .push(phase, Entry::System(SystemEntry::new(name, access, system)))
+        self.phases.push(phase, SystemEntry::new(name, system))
+    }
+
+    pub fn fallible_system(
+        &mut self,
+        phase: Phase,
+        name: &'static str,
+        system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+    ) -> EntryId {
+        self.phases.push(phase, SystemEntry::fallible(name, system))
+    }
+
+    pub fn orbit(&mut self, mut orbit: Orbit) -> EntryId {
+        self.system(
+            Phase::Dispatch,
+            "orbit",
+            move |input: &Input, views: &mut Views| {
+                orbit.drag(input.drag(PointerButton::Secondary));
+                orbit.zoom(input.scroll[1]);
+                let mut eye = orbit.eye();
+                let root = views.root_mut();
+                eye.aspect = root.eye.aspect;
+                root.eye = eye;
+            },
+        )
     }
 
     /// `None` when no entry of that phase has the named anchor.
@@ -467,229 +628,73 @@ impl<A: Stores> Session<A> {
         phase: Phase,
         order: Order,
         name: &'static str,
-        access: Access,
         system: impl System<A, M>,
     ) -> Option<EntryId> {
-        self.phases.insert(
-            phase,
-            order,
-            Entry::System(SystemEntry::new(name, access, system)),
-        )
+        self.phases
+            .insert(phase, order, SystemEntry::new(name, system))
     }
 
-    pub fn work(&mut self, phase: Phase, item: WorkItem) -> EntryId {
-        self.phases.push(phase, Entry::Work(item))
+    /// `None` when no entry of that phase has the named anchor.
+    pub fn fallible_system_at(
+        &mut self,
+        phase: Phase,
+        order: Order,
+        name: &'static str,
+        system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+    ) -> Option<EntryId> {
+        self.phases
+            .insert(phase, order, SystemEntry::fallible(name, system))
     }
 
-    pub fn register_bulk(&mut self, spec: BulkSpec) -> BulkId {
-        let id = self.bulk.register(spec);
-        self.checkpoints.resize(self.bulk.len(), None);
-        id
-    }
-
-    pub fn remove_bulk(&mut self, id: BulkId) -> bool {
-        if !self.bulk.remove(id) {
-            return false;
-        }
-        self.flight.cancel_bulk(id);
-        if let Some(slot) = self.checkpoints.get_mut(id.index()) {
-            *slot = None;
-        }
-        true
-    }
-
-    pub fn bulk(&self) -> &Bulk {
-        &self.bulk
-    }
-
-    pub fn work_list(&self) -> &[WorkOrder] {
-        &self.work[self.work_head..]
-    }
-
-    pub fn work_stats(&self) -> WorkStats {
-        WorkStats {
-            discarded: self.flight.discarded(),
-            ..self.stats
-        }
-    }
-
-    /// Drains the plan in order into `execute`; a full in-flight queue stops the drain and counts a delay until a slot frees, on `submitted` for a `Readback::None` order and on `release_readback` otherwise.
-    pub fn issue_work(&mut self, mut execute: impl FnMut(&WorkOrder)) -> usize {
-        let mut issued = 0;
-        while let Some(order) = self.work.get(self.work_head).copied() {
-            let full = {
-                let Session { phases, flight, .. } = self;
-                let writes = match phases
-                    .entries(order.entry.phase)
-                    .get(order.entry.index as usize)
-                {
-                    Some(Entry::Work(item)) => item.write_set(),
-                    _ => &[][..],
-                };
-                !flight.submit(order, writes)
-            };
-            if full {
-                self.stats.delayed += 1;
-                return issued;
-            }
-            self.work_head += 1;
-            self.stats.issued += 1;
-            execute(&order);
-            issued += 1;
-        }
-        self.work.clear();
-        self.work_head = 0;
-        issued
-    }
-
-    /// Call once per issued order after the queue submit; a `Readback::None` order frees its slot here.
-    pub fn submitted(&mut self, request: RequestId) -> bool {
-        self.flight.submitted(request)
-    }
-
-    pub fn land_readback(&mut self, request: RequestId, rows: Option<&[u8]>) -> Landing {
-        self.flight.land(request, rows)
-    }
-
-    /// Landed results not yet released.
-    pub fn readbacks(&self) -> impl Iterator<Item = Landed<'_>> {
-        self.flight.landed()
-    }
-
-    /// Frees the queue slot a landed result holds; until then the slot counts against `work_queue`.
-    pub fn release_readback(&mut self, request: RequestId) -> bool {
-        self.flight.release(request)
-    }
-
-    /// The entry stopped for a required readback; `boundary`, `tick`, and `publish` resume there once it lands or fails, or after `cancel_work` drops it.
-    pub fn waiting(&self) -> Option<Wait> {
-        self.wait
-    }
-
-    pub fn cancel_work(&mut self) {
-        self.flight.cancel_all();
-        self.work.clear();
-        self.work_head = 0;
-        self.ahead_for.clear();
-        self.resume = self.wait.take().map(|wait| wait.entry);
-    }
-
-    pub fn checkpoint(&mut self, id: BulkId, tick: Tick, rows: &[u8]) -> Result<(), BulkError> {
-        if !self.bulk.is_live(id) {
-            return Err(if id.index() < self.bulk.len() {
-                BulkError::Removed(id)
-            } else {
-                BulkError::Unknown(id)
-            });
-        }
-        self.checkpoints.resize(self.bulk.len(), None);
-        match &mut self.checkpoints[id.index()] {
-            Some(existing) => {
-                existing.tick = tick;
-                existing.rows.clear();
-                existing.rows.extend_from_slice(rows);
-            }
-            slot => {
-                *slot = Some(BulkCheckpoint {
-                    tick,
-                    rows: rows.to_vec(),
-                })
-            }
-        }
-        Ok(())
-    }
-
-    pub fn checkpoint_rows(&self, id: BulkId) -> Option<&[u8]> {
-        Some(self.checkpoints.get(id.index())?.as_ref()?.rows.as_slice())
-    }
-
-    /// Hands `apply` each store `restore` planned with its checkpoint rows, empty for a reinitialization.
-    pub fn apply_restore(&mut self, mut apply: impl FnMut(BulkId, BulkAction, &[u8])) -> usize {
-        let mut plan = std::mem::take(&mut self.restore_plan);
-        let applied = plan.len();
-        for (id, action) in plan.drain(..) {
-            let rows = self
-                .checkpoints
-                .get(id.index())
-                .and_then(|slot| slot.as_ref())
-                .map_or(&[][..], |checkpoint| checkpoint.rows.as_slice());
-            apply(id, action, rows);
-        }
-        self.restore_plan = plan;
-        applied
-    }
-
-    pub fn entries(&self, phase: Phase) -> &[Entry<A>] {
+    pub fn entries(&self, phase: Phase) -> &[SystemEntry<A>] {
         self.phases.entries(phase)
     }
 
-    pub fn work_items(&self, phase: Phase) -> impl Iterator<Item = &WorkItem> {
-        self.entries(phase).iter().filter_map(|entry| match entry {
-            Entry::Work(item) => Some(item),
-            Entry::System(_) => None,
-        })
-    }
-
     pub fn dispatch<R>(&mut self, f: impl FnOnce(&mut Dispatch<'_, A>) -> R) -> R {
-        let mut dispatch = Dispatch::new(
-            &mut self.app,
-            &mut self.domains,
-            &mut self.views,
-            self.commands.entities_mut(),
-            &mut self.bridges,
-        );
-        f(&mut dispatch)
+        let result = {
+            let mut dispatch = Dispatch::new(
+                &mut self.app,
+                &mut self.domains,
+                &mut self.views,
+                self.commands.entities_mut(),
+                &mut self.bridges,
+            );
+            f(&mut dispatch)
+        };
+        self.domains.synchronize();
+        result
     }
 
     pub fn bridges(&self) -> &Relation<Bridge> {
         &self.bridges
     }
 
-    /// Checks the anchor, domain, view, and placement kind, and for a field domain the ray lift, the shader prelude, and the step bound; then places a child space, links anchor to the view's eye, and retargets the view into it.
+    /// Checks the anchor, domain, view, and placement kind before it links the view.
     pub fn bridge(&mut self, spec: BridgeSpec) -> Result<LinkId, BridgeError> {
         if self.entities().resolve(spec.anchor).is_none() {
             return Err(BridgeError::Stale(spec.anchor));
         }
-        let (summary, has_fields, marched, name) = {
+        let summary = {
             let source = self
                 .domains
                 .get(spec.source)
                 .ok_or(BridgeError::UnknownDomain(spec.source))?;
-            let summary = source
+            source
                 .view(spec.view)
-                .ok_or(BridgeError::UnknownView(spec.view))?;
-            (
-                summary,
-                source.has_fields(),
-                source.shader_prelude().is_some(),
-                source.name(),
-            )
+                .ok_or(BridgeError::UnknownView(spec.view))?
         };
         if spec.placement.rigid().is_none() {
             return Err(BridgeError::Nonlinear(summary.name));
         }
-        if has_fields {
-            if !summary.ray_lift {
-                return Err(BridgeError::NoRayLift(summary.name));
-            }
-            if !marched {
-                return Err(BridgeError::NoPrelude(name));
-            }
-            let source = self
-                .domains
-                .facade(spec.source)
-                .ok_or(BridgeError::UnknownDomain(spec.source))?;
-            source.compile_fields()?;
-            let kind = source.field_program().kind;
-            if !bridge::step_bound(kind) {
-                return Err(BridgeError::NoStepBound(summary.name, kind));
-            }
+        if self.entities().resolve(summary.eye).is_none() {
+            return Err(BridgeError::Stale(summary.eye));
         }
         let image = self
             .views
             .place(spec.into, spec.placement)
             .ok_or(BridgeError::UnknownImage(spec.into))?;
         let link = self.bridges.link(
+            self.commands.entities(),
             spec.anchor,
             summary.eye,
             Bridge {
@@ -714,329 +719,159 @@ impl<A: Stores> Session<A> {
     }
 
     pub fn dragging(&self) -> Option<Drag> {
-        self.drag
+        self.manipulation.dragging()
     }
 
     /// Picks among the views with a ray lift and records a drag plane through the hit facing the root eye.
     pub fn grab(&mut self, ndc: [f32; 2], time: f64) -> Result<Pick, DragError> {
-        let pick = self
-            .domains
-            .pick_lifted(&self.views, &self.prepared, ndc)
-            .ok_or(DragError::NoPick)?;
-        let domain = self
-            .domains
-            .get(pick.domain)
-            .ok_or(DomainError::UnknownDomain(pick.domain))?;
-        let into = self
-            .views
-            .to_root(pick.image)
-            .and_then(|to| to.rigid())
-            .ok_or(DomainError::Unsupported("image space"))?
-            .inverse();
-        let center = domain
-            .image_of(pick.view, pick.entity)
-            .ok_or(DomainError::Stale(pick.entity))?;
-        let forward = self
-            .views
-            .get(self.views.root())
-            .ok_or(DomainError::Unsupported("image space"))?
-            .eye
-            .forward;
-        let plane = into.apply(pick.image_point);
-        self.drag = Some(Drag {
-            entity: pick.entity,
-            domain: pick.domain,
-            view: pick.view,
-            image: pick.image,
-            plane,
-            normal: into.direction(forward),
-            center,
-            at: plane,
+        self.manipulation.grab(
+            &self.domains,
+            &self.views,
+            &self.prepared,
+            &mut self.commands,
+            ndc,
             time,
-            velocity: [0.0; 3],
-        });
-        Ok(pick)
+        )
     }
 
     /// Meets the pointer ray with the drag plane, refusing a parallel ray as ambiguous, moves the entity's image point by the pointer delta, lifts it through the view's own map, and submits a `Move`.
     pub fn drag(&mut self, ndc: [f32; 2], time: f64) -> Result<ChartPoint, DragError> {
-        let mut drag = self.drag.ok_or(DragError::NotGrabbed)?;
-        let domain = self
-            .domains
-            .get(drag.domain)
-            .ok_or(DomainError::UnknownDomain(drag.domain))?;
-        let name = domain
-            .view(drag.view)
-            .ok_or(DomainError::Unsupported("unknown view"))?
-            .name;
-        let ray = self
-            .views
-            .ray(drag.image, ndc)
-            .ok_or(DomainError::Unsupported("image space"))?;
-        let at = drag.meet(&ray).ok_or(DragError::Ambiguous(name))?;
-        let point = domain.lift_origin(
-            drag.view,
-            &ImageRay {
-                origin: drag.moved(at),
-                direction: drag.normal,
-            },
-        )?;
-        drag.sample(at, time);
-        self.drag = Some(drag);
-        self.commands.submit(Command::Chart(
-            drag.domain,
-            ChartCommand::Move {
-                entity: drag.entity,
-                point,
-            },
-        ));
-        Ok(point)
+        self.manipulation
+            .drag(&self.domains, &self.views, &mut self.commands, ndc, time)
     }
 
     pub fn release(&mut self) -> Option<DragRelease> {
-        self.drag.take().map(|drag| drag.released())
+        self.manipulation.release(&mut self.commands)
     }
 
-    /// Commits deferred commands, runs each dispatch entry and then its commands, and counts what grew; runs while paused, and a call that resumes a suspended entry keeps the input it started with.
-    pub fn boundary(&mut self, input: Input) -> Result<Growth, DomainError> {
+    pub fn release_at(&mut self, time: f64) -> Option<DragRelease> {
+        self.manipulation.release_at(&mut self.commands, time)
+    }
+
+    pub fn cancel_drag(&mut self) -> Option<DragRelease> {
+        self.manipulation.cancel(&mut self.commands)
+    }
+
+    /// Commits deferred commands, runs each dispatch entry and then its commands, and counts what grew.
+    pub fn boundary(&mut self, input: Input) -> Result<Growth, PhaseError> {
+        self.input = input;
+        if let Some(error) = self.unfinished_error() {
+            return Err(error);
+        }
+        self.unfinished = Some(Phase::Dispatch);
+        self.results.clear();
         let mut growth = Growth::default();
-        let suspended = self.wait.map(|wait| wait.entry).or(self.resume);
-        let mut index = match suspended {
-            Some(entry) if entry.phase == Phase::Dispatch => {
-                self.wait = None;
-                self.resume = None;
-                entry.index as usize
-            }
-            Some(_) => {
-                return Ok(growth);
-            }
-            None => {
-                self.input = input;
-                self.results.clear();
-                self.commit(&mut growth);
-                self.plan(Phase::Dispatch, self.tick);
-                0
-            }
-        };
+        self.commit(&mut growth);
         let step = Step {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
         };
-        while index < self.phases.entries(Phase::Dispatch).len() {
-            if !self.run_entry(Phase::Dispatch, index, step)? {
-                return Ok(growth);
-            }
+        for index in 0..self.phases.entries(Phase::Dispatch).len() {
+            self.run_entry(Phase::Dispatch, index, step)?;
             self.commit(&mut growth);
-            index += 1;
         }
-        growth.bulk_elements = self.bulk.take_growth();
         self.app.boundary();
         for domain in self.domains.iter_mut() {
             domain.boundary();
         }
+        self.unfinished = None;
         Ok(growth)
     }
 
-    /// One fixed step: the simulation phase's entries in their order, the domain step among them; a call that resumes a suspended entry finishes that same step.
-    pub fn tick(&mut self) -> Result<(), DomainError> {
+    /// One fixed step with the domain step among the simulation entries.
+    pub fn tick(&mut self) -> Result<(), PhaseError> {
+        if let Some(error) = self.unfinished_error() {
+            return Err(error);
+        }
         let Some(dt) = self.config.dt() else {
             return Ok(());
         };
+        self.unfinished = Some(Phase::Simulation);
         let step = Step {
             tick: self.tick,
             dt,
         };
-        let suspended = self.wait.map(|wait| wait.entry).or(self.resume);
-        let mut index = match suspended {
-            Some(entry) if entry.phase == Phase::Simulation => {
-                self.wait = None;
-                self.resume = None;
-                entry.index as usize
-            }
-            Some(_) => {
-                return Ok(());
-            }
-            None => {
-                self.plan(Phase::Simulation, step.tick);
-                0
-            }
-        };
-        while index < self.phases.entries(Phase::Simulation).len() {
-            if !self.run_entry(Phase::Simulation, index, step)? {
-                return Ok(());
-            }
-            index += 1;
+        for index in 0..self.phases.entries(Phase::Simulation).len() {
+            self.run_entry(Phase::Simulation, index, step)?;
         }
         self.tick = Tick(self.tick.0 + 1);
+        self.unfinished = None;
         Ok(())
     }
 
-    fn plan(&mut self, phase: Phase, tick: Tick) {
-        let Session {
-            phases,
-            commands,
-            work,
-            ahead_for,
-            ahead_tick,
-            stats,
-            ..
-        } = self;
-        for (index, entry) in phases.entries(phase).iter().enumerate() {
-            let Entry::Work(item) = entry else {
-                continue;
-            };
-            let entry = EntryId {
-                phase,
-                index: index as u32,
-            };
-            if item.schedule == Schedule::Ahead {
-                if *ahead_tick == tick && ahead_for.contains(&entry) {
-                    continue;
-                }
-                stats.fallbacks += 1;
-            }
-            work.push(WorkOrder {
-                entry,
-                name: item.name,
-                schedule: Schedule::InStep,
-                readback: item.readback,
-                tick,
-                request: commands.reserve_request(),
-            });
+    pub fn publish(&mut self, into: &mut Publication<A>) -> Result<(), PhaseError> {
+        if let Some(error) = self.unfinished_error() {
+            return Err(error);
         }
-    }
-
-    fn plan_ahead(&mut self, tick: Tick) {
-        let Session {
-            phases,
-            bulk,
-            flight,
-            commands,
-            work,
-            ahead_for,
-            ahead_tick,
-            ..
-        } = self;
-        ahead_for.clear();
-        *ahead_tick = tick;
-        for phase in [Phase::Dispatch, Phase::Simulation] {
-            for (index, entry) in phases.entries(phase).iter().enumerate() {
-                let Entry::Work(item) = entry else {
-                    continue;
-                };
-                if item.schedule != Schedule::Ahead {
-                    continue;
-                }
-                let entry = EntryId {
-                    phase,
-                    index: index as u32,
-                };
-                let ready = item
-                    .read_set()
-                    .iter()
-                    .all(|id| bulk.is_live(*id) && !flight.writes_pending(*id));
-                if !ready {
-                    continue;
-                }
-                ahead_for.push(entry);
-                work.push(WorkOrder {
-                    entry,
-                    name: item.name,
-                    schedule: Schedule::Ahead,
-                    readback: item.readback,
-                    tick,
-                    request: commands.reserve_request(),
-                });
-            }
-        }
-    }
-
-    /// Runs the Publication systems, stamps every record buffer with the tick and a sequence that advances while paused, then runs the Presentation systems; an entry awaiting a readback suspends the call, and the next call resumes at that entry.
-    pub fn publish(&mut self, into: &mut Publication<A>) -> Result<(), DomainError> {
         let step = Step {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
         };
-        let suspended = self.wait.map(|wait| wait.entry).or(self.resume);
-        if suspended.is_some_and(|entry| entry.phase == Phase::Presentation) {
-            let index = suspended.map_or(0, |entry| entry.index as usize);
-            self.wait = None;
-            self.resume = None;
-            self.run_phase(Phase::Presentation, index, step)?;
-            return Ok(());
+        self.unfinished = Some(Phase::Publication);
+        self.run_phase(Phase::Publication, step)?;
+        let scene = self.scene();
+        if into.source != Some(scene) {
+            *into = Publication::default();
         }
-        let late = match suspended {
-            Some(entry) if entry.phase == Phase::Publication => {
-                self.wait = None;
-                self.resume = None;
-                Some(entry.index as usize)
-            }
-            Some(_) => None,
-            None => {
-                self.plan_ahead(self.tick);
-                self.plan(Phase::Publication, self.tick);
-                self.plan(Phase::Presentation, self.tick);
-                Some(0)
-            }
-        };
-        if let Some(from) = late {
-            if !self.run_phase(Phase::Publication, from, step)? {
-                return Ok(());
-            }
-        }
-        self.sequence += 1;
+        let sequence = self.sequence.wrapping_add(1);
         let stamp = Stamp {
             tick: self.tick,
-            sequence: self.sequence,
+            sequence,
         };
-        self.app.publish(&mut into.app, stamp);
-        let library = Library {
-            geometry: &self.prepared,
-            materials: &self.materials,
-            palettes: &self.palettes,
-        };
-        let mut count = 0;
-        for domain in self.domains.iter() {
-            for &target in domain.views() {
-                let Some(placement) = self.views.to_root(target.image).and_then(|to| to.rigid())
-                else {
-                    continue;
-                };
-                let current = into
-                    .views
-                    .get(count)
-                    .is_some_and(|view| view.domain == domain.id() && view.target == target);
-                if !current {
-                    into.views.truncate(count);
-                    into.views.push(PublishedView {
-                        domain: domain.id(),
-                        target,
-                        placement,
-                        records: ViewRecords::default(),
-                    });
+        let extracted = (|| {
+            self.app.publish(&mut into.app, stamp);
+            let library = Library {
+                geometry: &self.prepared,
+                materials: &self.materials,
+                palettes: &self.palettes,
+            };
+            let mut count = 0;
+            for domain in self.domains.iter() {
+                for &target in domain.views() {
+                    let Some(placement) =
+                        self.views.to_root(target.image).and_then(|to| to.rigid())
+                    else {
+                        continue;
+                    };
+                    let current = into
+                        .views
+                        .get(count)
+                        .is_some_and(|view| view.domain == domain.id() && view.target == target);
+                    if !current {
+                        into.views.truncate(count);
+                        into.views.push(PublishedView {
+                            domain: domain.id(),
+                            target,
+                            placement,
+                            records: ViewRecords::default(),
+                        });
+                    }
+                    into.views[count].placement = placement;
+                    domain.publish(target.view, library, &mut into.views[count].records, stamp)?;
+                    count += 1;
                 }
-                into.views[count].placement = placement;
-                domain.publish(target.view, library, &mut into.views[count].records, stamp)?;
-                count += 1;
             }
+            into.views.truncate(count);
+            into.stamp = stamp;
+            Ok::<(), DomainError>(())
+        })();
+        if let Err(error) = extracted {
+            *into = Publication::default();
+            let error = PhaseError::unnamed(Phase::Publication, error);
+            self.phase_error = Some(error);
+            return Err(error);
         }
-        into.views.truncate(count);
-        into.stamp = stamp;
-        if late.is_some() {
-            self.run_phase(Phase::Presentation, 0, step)?;
-        }
+        into.source = Some(scene);
+        self.sequence = sequence;
+        self.unfinished = None;
         Ok(())
     }
 
-    fn run_phase(&mut self, phase: Phase, from: usize, step: Step) -> Result<bool, DomainError> {
-        let mut index = from;
-        while index < self.phases.entries(phase).len() {
-            if !self.run_entry(phase, index, step)? {
-                return Ok(false);
-            }
-            index += 1;
+    fn run_phase(&mut self, phase: Phase, step: Step) -> Result<(), PhaseError> {
+        for index in 0..self.phases.entries(phase).len() {
+            self.run_entry(phase, index, step)?;
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Call after the frame's last tick; systems see an empty input until the next boundary.
@@ -1052,24 +887,16 @@ impl<A: Stores> Session<A> {
         self.domains.pick(&self.views, &self.prepared, ndc)
     }
 
-    /// `Pending` while a deferred command or a reservation is outstanding, `Readback` while a required readback is unlanded, and `CheckpointTick` when an authoritative checkpoint is from another tick.
+    /// `Unfinished` while a phase is incomplete and `Pending` while deferred mutation remains.
     pub fn snapshot(&self) -> Result<SessionSnapshot<A>, RestoreError> {
+        if let Some(phase) = self.unfinished {
+            return Err(RestoreError::Unfinished(phase));
+        }
         if !self.commands.is_empty() || self.entities().has_reservations() {
             return Err(RestoreError::Pending);
         }
-        if let Some(order) = self.flight.any_required() {
-            return Err(RestoreError::Readback(order.name));
-        }
-        for (id, spec) in self.bulk.iter() {
-            if spec.snapshot != SnapshotPolicy::Authoritative {
-                continue;
-            }
-            let checkpoint = self.checkpoints.get(id.index()).and_then(Option::as_ref);
-            if checkpoint.is_some_and(|checkpoint| checkpoint.tick != self.tick) {
-                return Err(RestoreError::CheckpointTick(spec.name));
-            }
-        }
         Ok(SessionSnapshot {
+            runtime: self.scene().runtime,
             app: self.app.snapshot(),
             entities: self.entities().snapshot(),
             domains: self
@@ -1082,55 +909,21 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             config: self.config,
             next_request: self.commands.next_request(),
-            bulk: self.bulk.snapshot(&self.checkpoints),
         })
     }
 
-    /// Validates the domain count, the authoritative checkpoints, and every domain's snapshot against its live configuration before it changes anything; then cancels pending commands, reservations, and in-flight work, advances the epoch so every earlier external handle fails, and queues the bulk plan for `apply_restore`.
+    /// Validates ownership and every domain before it cancels pending commands and advances the epoch.
     pub fn restore(&mut self, from: &SessionSnapshot<A>) -> Result<(), RestoreError> {
+        if from.runtime != self.scene().runtime {
+            return Err(RestoreError::ForeignRuntime);
+        }
         if from.domains.len() != self.domains.len() {
             let first = from.domains.len().min(self.domains.len());
             return Err(RestoreError::Domain(DomainId::new(first)));
         }
-        for (index, spec) in from.bulk.specs.iter().enumerate() {
-            let authoritative = spec.snapshot == SnapshotPolicy::Authoritative;
-            if !from.bulk.live[index] || !authoritative {
-                continue;
-            }
-            if from
-                .bulk
-                .checkpoints
-                .get(index)
-                .and_then(Option::as_ref)
-                .is_none()
-            {
-                return Err(RestoreError::NoCheckpoint(spec.name));
-            }
-        }
         for (domain, snapshot) in self.domains.iter().zip(&from.domains) {
             domain.check_restore(snapshot)?;
         }
-        self.flight.cancel_all();
-        self.bulk.restore(&from.bulk);
-        self.checkpoints.clear();
-        self.checkpoints.extend_from_slice(&from.bulk.checkpoints);
-        self.restore_plan.clear();
-        for (index, spec) in from.bulk.specs.iter().enumerate() {
-            if !from.bulk.live[index] {
-                continue;
-            }
-            let action = match spec.snapshot {
-                SnapshotPolicy::Authoritative => BulkAction::Replace,
-                SnapshotPolicy::Reinitializable => BulkAction::Reinitialize,
-                SnapshotPolicy::Derived => continue,
-            };
-            self.restore_plan.push((BulkId::new(index), action));
-        }
-        self.wait = None;
-        self.resume = None;
-        self.work.clear();
-        self.work_head = 0;
-        self.ahead_for.clear();
         self.commands.cancel_into(&mut self.results);
         self.commands.restore(&from.entities, from.next_request);
         let scene = self.scene();
@@ -1140,9 +933,11 @@ impl<A: Stores> Session<A> {
         self.app.restore(&from.app, scene);
         self.views.restore(&from.views);
         StoreField::restore(&mut self.bridges, &from.bridges, scene);
-        self.drag = None;
+        self.manipulation.clear();
         self.tick = from.tick;
         self.config = from.config;
+        self.unfinished = None;
+        self.phase_error = None;
         Ok(())
     }
 
@@ -1172,10 +967,14 @@ impl<A: Stores> Session<A> {
             } else {
                 match request.command {
                     Command::Reset => {
+                        let unfinished = self.unfinished;
+                        let phase_error = self.phase_error;
                         let outcome = self
                             .reset()
                             .map(|()| Outcome::Done)
                             .map_err(Rejection::Restore);
+                        self.unfinished = unfinished;
+                        self.phase_error = phase_error;
                         cancelled = outcome.is_ok();
                         outcome
                     }
@@ -1196,7 +995,7 @@ impl<A: Stores> Session<A> {
         self.batch = batch;
     }
 
-    fn run_entry(&mut self, phase: Phase, index: usize, step: Step) -> Result<bool, DomainError> {
+    fn run_entry(&mut self, phase: Phase, index: usize, step: Step) -> Result<(), PhaseError> {
         let Session {
             app,
             domains,
@@ -1206,30 +1005,15 @@ impl<A: Stores> Session<A> {
             results,
             input,
             prepared,
-            flight,
-            work,
-            work_head,
-            wait,
+            manipulation,
+            phase_error,
             ..
         } = self;
-        let Some(Entry::System(system)) = phases.entries_mut(phase).get_mut(index) else {
-            return Ok(true);
+        let Some(system) = phases.entries_mut(phase).get_mut(index) else {
+            return Ok(());
         };
-        if let Some(awaited) = system.access().awaited() {
-            if let Some(order) = flight.outstanding(&work[*work_head..], awaited) {
-                *wait = Some(Wait {
-                    entry: EntryId {
-                        phase,
-                        index: index as u32,
-                    },
-                    work: awaited,
-                    request: order.request,
-                    tick: order.tick,
-                });
-                return Ok(false);
-            }
-        }
-        system.run(Ctx {
+        let name = system.name();
+        let result = system.run(Ctx {
             app,
             domains,
             views,
@@ -1238,8 +1022,14 @@ impl<A: Stores> Session<A> {
             input,
             prepared: prepared.as_slice(),
             step,
-        })?;
-        Ok(true)
+            manipulation,
+        });
+        domains.synchronize();
+        result.map_err(|cause| {
+            let error = PhaseError::system(phase, name, cause);
+            *phase_error = Some(error);
+            error
+        })
     }
 }
 
@@ -1252,7 +1042,6 @@ mod tests {
     use crate::command::SpawnBundle;
     use crate::domain::{Instance, Pose};
     use crate::entity::Entity;
-    use crate::phase::Readback;
     use crate::store::tests::alloc_probe::bytes_allocated_by;
     use crate::store::{LogCapacity, Store};
     use crate::view::{DepthEnvelope, DomainRay, ImageRay, ViewMapping, ViewSpec};
@@ -1262,9 +1051,32 @@ mod tests {
         pub struct Quiet {}
     }
 
+    #[test]
+    fn a_caught_system_unwind_keeps_the_unfinished_phase_blocked() {
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        session.system(Phase::Simulation, "panic", |_app: &mut Quiet| {
+            panic!("system panic")
+        });
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.tick()));
+        assert!(unwind.is_err());
+
+        let mut publication = Publication::default();
+        assert_eq!(
+            session.publish(&mut publication),
+            Err(PhaseError {
+                phase: Phase::Simulation,
+                system: None,
+                cause: DomainError::Unsupported("unfinished phase requires restore"),
+            })
+        );
+        assert_eq!(session.faulted_phase(), Some(Phase::Simulation));
+    }
+
     fn shaded_segments(
         shading: crate::domain::EdgeShading,
         at_w: f32,
+        line_style: Option<(f32, f32)>,
+        sectioned: bool,
         prepare: impl FnOnce(&mut Session<Quiet>) -> (PreparedId, MaterialId),
     ) -> Vec<crate::view::SegmentRecord> {
         use crate::view::{Eye, Section4, Vec4};
@@ -1277,10 +1089,17 @@ mod tests {
         session
             .dispatch(|d| -> Result<(), Rejection> {
                 let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
+                let mut instance = Instance::new(geometry, material).shaded(shading);
+                if let Some((width_px, opacity)) = line_style {
+                    instance = instance.line_style(width_px, opacity);
+                }
+                if sectioned {
+                    instance = instance.sectioned(material);
+                }
                 d.spawn(
                     SpawnBundle::new()
                         .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, at_w)))
-                        .instance(Instance::new(geometry, material).shaded(shading)),
+                        .instance(instance),
                 )?;
                 d.domains
                     .typed(r4)?
@@ -1362,7 +1181,7 @@ mod tests {
                     .typed(r4)?
                     .view_mut(view)
                     .ok_or(Rejection::Unsupported("view"))?
-                    .mapping = Box::new(Section4 { w: LIFT });
+                    .set_mapping(Section4 { w: LIFT });
                 Ok(())
             })
             .expect("the slice moved");
@@ -1378,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn a_depth_shaded_segment_reads_its_colour_from_the_endpoints_own_w_not_the_bodys() {
+    fn a_depth_shaded_segment_reads_its_color_from_the_endpoints_own_w_not_the_bodys() {
         use crate::domain::EdgeShading;
 
         const EXTENT: f32 = 0.5;
@@ -1399,7 +1218,7 @@ mod tests {
         };
 
         for lifted in [0.0, 3.0] {
-            let segments = shaded_segments(shading, lifted, prepare);
+            let segments = shaded_segments(shading, lifted, None, false, prepare);
             assert_eq!(
                 segments[0].start_color,
                 [0.5, 0.0, 0.5, 1.0],
@@ -1413,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn a_palette_colours_each_segment_by_its_prepared_index_and_no_shading_keeps_the_material() {
+    fn a_palette_colors_each_segment_by_its_prepared_index_and_no_shading_keeps_the_material() {
         use crate::domain::EdgeShading;
 
         const COLORS: [[f32; 4]; 4] = [
@@ -1428,7 +1247,7 @@ mod tests {
             [[0.0; 4], [0.0, 0.5, 0.0, 0.0]],
         ];
 
-        let painted = shaded_segments(EdgeShading::Material, 0.0, |session| {
+        let painted = shaded_segments(EdgeShading::Material, 0.0, None, false, |session| {
             (
                 session.prepare(PreparedGeometry::Lines4 {
                     segments: two_edges.clone(),
@@ -1439,13 +1258,15 @@ mod tests {
         assert_eq!(
             painted.iter().map(|s| s.start_color).collect::<Vec<_>>(),
             [MATERIAL, MATERIAL],
-            "an instance with no shading lost the material's line colour"
+            "an instance with no shading lost the material's line color"
         );
 
         let mut id = None;
         let painted = shaded_segments(
             EdgeShading::Palette(PaletteId(0)),
             0.0,
+            None,
+            false,
             |session: &mut Session<Quiet>| {
                 id = Some(session.add_palette(COLORS.to_vec()));
                 (
@@ -1465,6 +1286,51 @@ mod tests {
             COLORS,
             "the palette did not follow the prepared segment endpoints in order"
         );
+    }
+
+    #[test]
+    fn an_instance_line_style_replaces_the_material_width_and_opacity() {
+        let [segment] = shaded_segments(
+            crate::domain::EdgeShading::Material,
+            0.0,
+            Some((2.5, 0.4)),
+            false,
+            |session| {
+                (
+                    session.prepare(PreparedGeometry::Lines4 {
+                        segments: vec![[[0.0; 4], [0.5, 0.0, 0.0, 0.0]]],
+                    }),
+                    session.add_material(Material::lines([0.2, 0.4, 0.6, 0.8], 1.0)),
+                )
+            },
+        )[..] else {
+            panic!("the line did not publish as one segment");
+        };
+        assert_eq!(segment.width_px, 2.5);
+        assert_eq!(segment.start_color, [0.2, 0.4, 0.6, 0.4]);
+        assert_eq!(segment.end_color, [0.2, 0.4, 0.6, 0.4]);
+
+        let sectioned = shaded_segments(
+            crate::domain::EdgeShading::Material,
+            0.0,
+            Some((2.5, 0.4)),
+            true,
+            |session| {
+                (
+                    session.prepare(PreparedGeometry::Polytope4 {
+                        polytope: loam_shape::polytope::Polytope4::Tesseract,
+                        scale: 0.7,
+                    }),
+                    session.add_material(Material::lines([0.2, 0.4, 0.6, 0.8], 1.0)),
+                )
+            },
+        );
+        assert!(sectioned.len() > 32, "the section edge did not publish");
+        assert!(sectioned[..sectioned.len() - 32].iter().all(|segment| {
+            segment.width_px == 2.5
+                && segment.start_color == [0.2, 0.4, 0.6, 0.4]
+                && segment.end_color == [0.2, 0.4, 0.6, 0.4]
+        }));
     }
 
     #[test]
@@ -1517,199 +1383,6 @@ mod tests {
 
     crate::stores! {
         #[derive(Default)]
-        pub struct Late {
-            published: Value<u32>,
-            presented: Value<u32>,
-        }
-    }
-
-    #[test]
-    fn a_system_in_each_late_phase_runs_once_per_publish() {
-        let mut session = Session::new(Late::default(), SimConfig::default());
-        session.system(
-            Phase::Publication,
-            "count published",
-            Access::new().writes::<u32>(),
-            |app: &mut Late| {
-                *app.published.get_mut() += 1;
-            },
-        );
-        session.system(
-            Phase::Presentation,
-            "count presented",
-            Access::new().writes::<u32>(),
-            |app: &mut Late| {
-                *app.presented.get_mut() += 1;
-            },
-        );
-        let mut publication = Publication::default();
-        for _ in 0..3 {
-            session.publish(&mut publication).expect("published");
-        }
-        assert_eq!(
-            (*session.app.published.get(), *session.app.presented.get()),
-            (3, 3),
-            "a system registered in a late phase never ran"
-        );
-    }
-
-    #[test]
-    fn a_publication_entry_awaiting_a_readback_suspends_publish_until_it_lands() {
-        let mut session = Session::new(Late::default(), SimConfig::default());
-        let grid = session.register_bulk(BulkSpec {
-            name: "grid",
-            element_size: 4,
-            count: 4,
-            readback: Readback::Required,
-            snapshot: SnapshotPolicy::Derived,
-            schedule: Schedule::InStep,
-        });
-        session.work(
-            Phase::Simulation,
-            WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
-        );
-        session.system(
-            Phase::Publication,
-            "consume",
-            Access::new().writes::<u32>().awaits("reduce"),
-            |app: &mut Late| {
-                *app.published.get_mut() += 1;
-            },
-        );
-        session.boundary(Input::default()).expect("boundary");
-        session.tick().expect("tick");
-        let mut issued: Option<RequestId> = None;
-        session.issue_work(|order| issued = Some(order.request));
-        let request = issued.expect("the tick ordered the work item");
-        session.submitted(request);
-
-        let mut publication = Publication::default();
-        session.publish(&mut publication).expect("published");
-        assert_eq!(
-            *session.app.published.get(),
-            0,
-            "the entry ran before the readback it awaits landed"
-        );
-        assert!(
-            session.waiting().is_some(),
-            "publish never suspended at the awaiting entry"
-        );
-
-        session.land_readback(request, Some(&[0u8; 16]));
-        session.publish(&mut publication).expect("published");
-        assert_eq!(
-            *session.app.published.get(),
-            1,
-            "the landed readback never resumed the suspended publication entry"
-        );
-    }
-
-    #[test]
-    fn a_warmed_tick_allocates_while_it_orders_its_work_items() {
-        let mut session = Session::new(Quiet::default(), SimConfig::default());
-        let grid = session.register_bulk(BulkSpec {
-            name: "grid",
-            element_size: 4,
-            count: 64,
-            readback: Readback::Optional,
-            snapshot: SnapshotPolicy::Derived,
-            schedule: Schedule::InStep,
-        });
-        session.work(
-            Phase::Simulation,
-            WorkItem::new("step", Schedule::InStep, Readback::Optional).writes(grid),
-        );
-        session.work(
-            Phase::Simulation,
-            WorkItem::new("blur", Schedule::Ahead, Readback::Optional).reads(grid),
-        );
-        let rows = [0u8; 256];
-        let mut publication = Publication::default();
-        let mut requests: Vec<RequestId> = Vec::with_capacity(8);
-        let cycle = |session: &mut Session<Quiet>,
-                     publication: &mut Publication<Quiet>,
-                     requests: &mut Vec<RequestId>| {
-            session.boundary(Input::default()).unwrap();
-            session.tick().unwrap();
-            let settle = |session: &mut Session<Quiet>, requests: &mut Vec<RequestId>| {
-                requests.clear();
-                session.issue_work(|order| requests.push(order.request));
-                for request in requests.iter() {
-                    session.land_readback(*request, Some(&rows));
-                    session.release_readback(*request);
-                }
-            };
-            settle(session, requests);
-            session.publish(publication).unwrap();
-            settle(session, requests);
-        };
-        for _ in 0..8 {
-            cycle(&mut session, &mut publication, &mut requests);
-        }
-
-        let bytes = bytes_allocated_by(|| {
-            for _ in 0..16 {
-                cycle(&mut session, &mut publication, &mut requests);
-            }
-        });
-        assert_eq!(
-            bytes, 0,
-            "16 warmed ticks of work ordering asked the allocator for {bytes} bytes"
-        );
-        assert_eq!(session.work_stats().delayed, 0);
-        assert_eq!(session.work_stats().discarded, 0);
-    }
-
-    #[test]
-    fn a_warmed_tick_allocates_while_an_entry_waits_for_the_item_it_awaits() {
-        let mut session = Session::new(Quiet::default(), SimConfig::default());
-        let grid = session.register_bulk(BulkSpec {
-            name: "grid",
-            element_size: 4,
-            count: 64,
-            readback: Readback::Required,
-            snapshot: SnapshotPolicy::Derived,
-            schedule: Schedule::InStep,
-        });
-        session.work(
-            Phase::Simulation,
-            WorkItem::new("reduce", Schedule::InStep, Readback::Required).writes(grid),
-        );
-        session.system(
-            Phase::Simulation,
-            "consume",
-            Access::new().awaits("reduce"),
-            |_app: &mut Quiet| {},
-        );
-        let rows = [0u8; 256];
-        let cycle = |session: &mut Session<Quiet>| {
-            session.boundary(Input::default()).unwrap();
-            session.tick().unwrap();
-            let mut ordered = None;
-            session.issue_work(|order| ordered = Some(order.request));
-            let request = ordered.expect("the tick ordered the work item");
-            session.land_readback(request, Some(&rows));
-            session.tick().unwrap();
-            session.release_readback(request);
-        };
-        for _ in 0..8 {
-            cycle(&mut session);
-        }
-
-        let bytes = bytes_allocated_by(|| {
-            for _ in 0..16 {
-                cycle(&mut session);
-            }
-        });
-        assert_eq!(
-            bytes, 0,
-            "16 warmed ticks that hold an entry on a work item asked the allocator for {bytes} bytes"
-        );
-        assert_eq!(session.current_tick(), Tick(24));
-    }
-
-    crate::stores! {
-        #[derive(Default)]
         pub struct Churn {
             counters: Store<u32>,
             pool: Value<Vec<Entity>>,
@@ -1730,21 +1403,16 @@ mod tests {
                 .collect()
         });
         session.app.pool.set(pool);
-        session.system(
-            Phase::Simulation,
-            "churn",
-            Access::new().writes::<u32>().commands(),
-            |ctx: Ctx<'_, Churn>| {
-                for (_, counter) in ctx.app.counters.iter_mut() {
-                    *counter += 1;
-                }
-                let pool = ctx.app.pool.get_mut();
-                let retired = pool.swap_remove(0);
-                ctx.commands.submit(Command::Despawn(retired));
-                let fresh = ctx.commands.spawn(SpawnBundle::new()).unwrap();
-                pool.push(fresh.entity);
-            },
-        );
+        session.system(Phase::Simulation, "churn", |ctx: Ctx<'_, Churn>| {
+            for (_, counter) in ctx.app.counters.iter_mut() {
+                *counter += 1;
+            }
+            let pool = ctx.app.pool.get_mut();
+            let retired = pool.swap_remove(0);
+            ctx.commands.submit(Command::Despawn(retired));
+            let fresh = ctx.commands.spawn(SpawnBundle::new()).unwrap();
+            pool.push(fresh.entity);
+        });
         let cycle = |session: &mut Session<Churn>| {
             session.tick().unwrap();
             session.boundary(Input::default()).unwrap()
@@ -1762,7 +1430,6 @@ mod tests {
                         commands: 2,
                         spawned: 1,
                         despawned: 1,
-                        bulk_elements: 0,
                     }
                 );
             }
@@ -1800,29 +1467,28 @@ mod tests {
             let left = d.spawn(at(-1.0).row(1u32)).unwrap();
             let right = d.spawn(at(1.0).row(2u32)).unwrap();
             let union = d.spawn(at(0.0).row(3u32)).unwrap();
-            let fields = d.domains.typed(r4).unwrap().fields_mut().unwrap();
             for operand in [left, right] {
-                fields
-                    .insert(
-                        operand,
-                        Field {
-                            kind: FieldKind::ExactDistance,
-                            op: FieldOp::HyperSphere { radius: 1.0 },
-                            operands: Vec::new(),
-                        },
-                    )
-                    .unwrap();
-            }
-            fields
-                .insert(
-                    union,
+                d.attach_field(
+                    r4,
+                    operand,
                     Field {
                         kind: FieldKind::ExactDistance,
-                        op: FieldOp::Union,
-                        operands: vec![left, right],
+                        op: FieldOp::HyperSphere { radius: 1.0 },
+                        operands: Vec::new(),
                     },
                 )
                 .unwrap();
+            }
+            d.attach_field(
+                r4,
+                union,
+                Field {
+                    kind: FieldKind::ExactDistance,
+                    op: FieldOp::Union,
+                    operands: vec![left, right],
+                },
+            )
+            .unwrap();
         });
         let snapshot = session.snapshot().unwrap();
         for _ in 0..8 {
@@ -1884,6 +1550,53 @@ mod tests {
     }
 
     #[test]
+    fn a_foreign_publication_buffer_does_not_restamp_the_previous_sessions_records() {
+        let build = |score: u32, offset: f32| {
+            let shown = Shown {
+                scores: Store::tracked(LogCapacity::default()),
+            };
+            let mut session = Session::new(shown, SimConfig::default());
+            let r4 = session.register_domain(
+                DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()),
+            );
+            let geometry = session.prepare(PreparedGeometry::Lines4 {
+                segments: vec![[[offset, 0.0, 0.0, 0.0], [offset + 1.0, 0.0, 0.0, 0.0]]],
+            });
+            let material = session.add_material(Material::flat([1.0; 4]));
+            let root = session.views().root();
+            session.dispatch(|dispatch| {
+                let eye = dispatch
+                    .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
+                    .unwrap();
+                dispatch
+                    .spawn(
+                        SpawnBundle::new()
+                            .at(r4, Pose::at(Vec4::ZERO))
+                            .instance(Instance::new(geometry, material))
+                            .row(score),
+                    )
+                    .unwrap();
+                dispatch
+                    .domains
+                    .typed(r4)
+                    .unwrap()
+                    .add_view(ViewSpec::new(root, eye, Flat));
+            });
+            session
+        };
+        let mut first = build(11, 0.0);
+        let mut second = build(22, 4.0);
+        let mut publication = Publication::default();
+
+        first.publish(&mut publication).unwrap();
+        assert_eq!(publication.app.scores.rows(), &[11]);
+        assert_eq!(publication.views[0].records.segments()[0].start[0], 0.0);
+        second.publish(&mut publication).unwrap();
+        assert_eq!(publication.app.scores.rows(), &[22]);
+        assert_eq!(publication.views[0].records.segments()[0].start[0], 4.0);
+    }
+
+    #[test]
     fn warmed_publish_allocates() {
         let shown = Shown {
             scores: Store::tracked(LogCapacity::default()),
@@ -1917,13 +1630,13 @@ mod tests {
         session.system(
             Phase::Simulation,
             "churn",
-            Access::new().writes::<u32>().domain(r4.id()),
             move |app: &mut Shown, domains: &mut Domains, step: Step| {
-                for (_, score) in app.scores.iter_mut() {
+                let domain = domains.typed(r4).unwrap();
+                for (entity, score) in app.scores.iter_mut() {
                     *score += 1;
-                }
-                for (_, pose) in domains.typed(r4).unwrap().poses.iter_mut() {
-                    pose.point.x += step.dt;
+                    let mut point = domain.poses().get(entity).unwrap().point;
+                    point.x += step.dt;
+                    domain.set_point(entity, point).unwrap();
                 }
             },
         );

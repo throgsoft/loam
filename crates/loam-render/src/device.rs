@@ -1,13 +1,10 @@
-//! sRGB surface: the scene draws and resolves through sRGB views; the UI
-//! paints through the swapchain's non-sRGB twin. Non-sRGB surface: MSAA off,
-//! scene and UI draw into [`OffscreenTarget`] and the composite encodes them.
+//! Non-sRGB presentation uses an sRGB offscreen target and a final composite.
 
 use anyhow::Result;
 use std::fmt;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use wgpu::*;
-use winit::window::Window;
 
 use crate::gpu_timer::GpuTimer;
 
@@ -113,12 +110,66 @@ pub struct DeviceLoss {
     pub message: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GpuErrorKind {
+    OutOfMemory,
+    Validation,
+    Internal,
+}
+
+impl fmt::Display for GpuErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutOfMemory => f.write_str("out of memory"),
+            Self::Validation => f.write_str("validation"),
+            Self::Internal => f.write_str("internal"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct UncapturedGpuError {
+    backend: Backend,
+    kind: GpuErrorKind,
+    cause: String,
+}
+
+impl fmt::Display for UncapturedGpuError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:?} backend {} error: {}",
+            self.backend, self.kind, self.cause
+        )
+    }
+}
+
+impl std::error::Error for UncapturedGpuError {}
+
 #[derive(Default)]
-struct LossSignal(Mutex<Option<DeviceLoss>>);
+struct DeviceSignals {
+    loss: Option<DeviceLoss>,
+    error: Option<UncapturedGpuError>,
+}
+
+#[derive(Default)]
+pub(crate) struct LossSignal(Mutex<DeviceSignals>);
 
 impl LossSignal {
-    fn take(&self) -> Option<DeviceLoss> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+    fn take_loss(&self) -> Option<DeviceLoss> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .loss
+            .take()
+    }
+
+    pub(crate) fn take_error(&self) -> Option<UncapturedGpuError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .error
+            .take()
     }
 }
 
@@ -161,7 +212,15 @@ impl GpuContext {
 
     /// Poll at a frame boundary; a loss is reported once.
     pub fn take_device_loss(&self) -> Option<DeviceLoss> {
-        self.loss.take()
+        self.loss.take_loss()
+    }
+
+    pub fn take_uncaptured_error(&self) -> Option<UncapturedGpuError> {
+        self.loss.take_error()
+    }
+
+    pub(crate) fn loss_signal(&self) -> Arc<LossSignal> {
+        self.loss.clone()
     }
 
     /// A new device from the same adapter and request; the old device's work is cancelled and its late callbacks are ignored.
@@ -195,18 +254,35 @@ async fn request_device(
         "GPU features enabled: {resolved:?}; optional features absent: {:?}",
         request.optional_features - resolved
     );
+    let backend = adapter.get_info().backend;
     let loss = Arc::new(LossSignal::default());
     let signal = loss.clone();
     device.set_device_lost_callback(move |reason, message| {
-        *signal.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(DeviceLoss { reason, message });
+        let mut signal = signal.0.lock().unwrap_or_else(|error| error.into_inner());
+        signal.loss.get_or_insert(DeviceLoss { reason, message });
     });
+    let signal = loss.clone();
+    device.on_uncaptured_error(Arc::new(move |error| {
+        let kind = match &error {
+            Error::OutOfMemory { .. } => GpuErrorKind::OutOfMemory,
+            Error::Validation { .. } => GpuErrorKind::Validation,
+            Error::Internal { .. } => GpuErrorKind::Internal,
+        };
+        let mut cause = error.to_string();
+        let mut source = std::error::Error::source(&error);
+        while let Some(next) = source {
+            cause.push_str(": ");
+            cause.push_str(&next.to_string());
+            source = next.source();
+        }
+        let mut signal = signal.0.lock().unwrap_or_else(|error| error.into_inner());
+        signal.error.get_or_insert(UncapturedGpuError {
+            backend,
+            kind,
+            cause,
+        });
+    }));
     Ok((device, queue, loss))
-}
-
-pub struct SurfaceBundle {
-    pub surface: Surface<'static>,
-    pub config: SurfaceConfiguration,
-    pub size: winit::dpi::PhysicalSize<u32>,
 }
 
 pub struct MsaaTarget {
@@ -219,58 +295,6 @@ pub struct OffscreenTarget {
     #[allow(dead_code)]
     texture: Texture,
     pub view: TextureView,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct UiTargetFormats {
-    pub ui_format: TextureFormat,
-    /// `None`: the UI paints through the swapchain's own format.
-    pub swap_view_format: Option<TextureFormat>,
-}
-
-fn ui_target_formats(surface_format: TextureFormat, downlevel: DownlevelFlags) -> UiTargetFormats {
-    if !surface_format.is_srgb() {
-        return UiTargetFormats {
-            ui_format: surface_format.add_srgb_suffix(),
-            swap_view_format: None,
-        };
-    }
-    if !downlevel.contains(DownlevelFlags::SURFACE_VIEW_FORMATS) {
-        return UiTargetFormats {
-            ui_format: surface_format,
-            swap_view_format: None,
-        };
-    }
-    let gamma = surface_format.remove_srgb_suffix();
-    UiTargetFormats {
-        ui_format: gamma,
-        swap_view_format: Some(gamma),
-    }
-}
-
-fn surface_configuration(
-    format: TextureFormat,
-    size: winit::dpi::PhysicalSize<u32>,
-    alpha_mode: CompositeAlphaMode,
-    ui_targets: UiTargetFormats,
-) -> SurfaceConfiguration {
-    SurfaceConfiguration {
-        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-        format,
-        width: size.width,
-        height: size.height,
-        present_mode: PresentMode::Fifo,
-        alpha_mode,
-        view_formats: ui_targets.swap_view_format.into_iter().collect(),
-        desired_maximum_frame_latency: 2,
-    }
-}
-
-fn ui_view_descriptor(ui_view_format: Option<TextureFormat>) -> TextureViewDescriptor<'static> {
-    TextureViewDescriptor {
-        format: ui_view_format,
-        ..Default::default()
-    }
 }
 
 // Both ends of the MSAA resolve take the target's own format; a non-sRGB view would average encoded bytes.
@@ -293,7 +317,7 @@ struct Presentation {
 }
 
 impl Presentation {
-    fn build(device: &Device, spec: PresentationSpec, size: winit::dpi::PhysicalSize<u32>) -> Self {
+    fn build(device: &Device, spec: PresentationSpec, size: (u32, u32)) -> Self {
         let composite = spec
             .scene_format
             .map(|_| crate::composite::CompositeNode::new(device, spec.format));
@@ -307,35 +331,26 @@ impl Presentation {
         presentation
     }
 
-    fn resize(&mut self, device: &Device, size: winit::dpi::PhysicalSize<u32>) {
+    fn resize(&mut self, device: &Device, size: (u32, u32)) {
         let spec = self.spec;
-        self.msaa_target = (spec.sample_count > 1).then(|| {
-            create_msaa_target(
-                device,
-                spec.format,
-                size.width,
-                size.height,
-                spec.sample_count,
-            )
-        });
+        self.msaa_target = (spec.sample_count > 1)
+            .then(|| create_msaa_target(device, spec.format, size.0, size.1, spec.sample_count));
         if let (Some(scene_fmt), Some(composite)) = (spec.scene_format, self.composite.as_mut()) {
-            let scene = create_scene_target(device, scene_fmt, size.width, size.height);
+            let scene = create_scene_target(device, scene_fmt, size.0, size.1);
             composite.set_scene_view(device, &scene.view);
             self.scene_target = Some(scene);
         }
     }
 
-    fn rebuild(&mut self, device: &Device, size: winit::dpi::PhysicalSize<u32>) {
+    fn rebuild(&mut self, device: &Device, size: (u32, u32)) {
         *self = Self::build(device, self.spec, size);
     }
 }
 
 pub struct RenderDevice {
     pub context: GpuContext,
-    pub surface_bundle: SurfaceBundle,
     presentation: Presentation,
-    present_modes: Vec<PresentMode>,
-    ui_targets: UiTargetFormats,
+    size: (u32, u32),
 }
 
 impl Deref for RenderDevice {
@@ -347,161 +362,62 @@ impl Deref for RenderDevice {
 }
 
 impl RenderDevice {
-    pub async fn new(
-        window: Arc<Window>,
-        request: FeatureRequest,
-        requested_msaa_samples: u32,
-    ) -> Result<Self> {
-        let instance = Instance::default();
-        let surface = instance.create_surface(window.clone())?;
-        let size = window.inner_size();
-        let context = GpuContext::new(instance, request, Some(&surface)).await?;
-        Self::attach(context, surface, size, requested_msaa_samples)
-    }
-
-    /// Configures `surface` on the context's device and builds the presentation resources for it.
-    pub fn attach(
+    pub fn new(
         context: GpuContext,
-        surface: Surface<'static>,
-        size: winit::dpi::PhysicalSize<u32>,
+        surface_format: TextureFormat,
         requested_msaa_samples: u32,
-    ) -> Result<Self> {
-        let caps = surface.get_capabilities(&context.adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .or(caps.formats.first().copied())
-            .ok_or_else(|| anyhow::anyhow!("the surface advertises no texture format"))?;
-        tracing::info!(
-            "surface picked format={format:?} (advertised={:?})",
-            caps.formats
-        );
-
-        let alpha_mode = caps
-            .alpha_modes
-            .iter()
-            .copied()
-            .find(|m| *m == CompositeAlphaMode::Opaque)
-            .or(caps.alpha_modes.first().copied())
-            .ok_or_else(|| anyhow::anyhow!("the surface advertises no alpha mode"))?;
-
-        let ui_targets =
-            ui_target_formats(format, context.adapter.get_downlevel_capabilities().flags);
-        if format.is_srgb() && ui_targets.swap_view_format.is_none() {
-            tracing::warn!(
-                "adapter lacks SURFACE_VIEW_FORMATS; UI blends in linear space and \
-                 egui feathering will look thin on hairlines"
-            );
-        }
-        let config = surface_configuration(format, size, alpha_mode, ui_targets);
-
-        surface.configure(&context.device, &config);
-
-        let needs_composite = !format.is_srgb();
-        let effective_msaa = surface_msaa_request(format, requested_msaa_samples);
+        size: (u32, u32),
+    ) -> Self {
+        let needs_composite = !surface_format.is_srgb();
+        let effective_msaa = surface_msaa_request(surface_format, requested_msaa_samples);
         if effective_msaa < requested_msaa_samples {
             tracing::warn!(
-                "MSAA={requested_msaa_samples}x ignored: composite pass for sRGB \
-                 gamma encoding (browser-WebGPU linear surface) is incompatible \
-                 with MSAA in v1; falling back to sample_count=1",
+                "MSAA={requested_msaa_samples}x disabled: the non-sRGB surface composite uses a single-sample scene target",
             );
         }
 
-        let sample_count = negotiate_sample_count(&context.adapter, format, effective_msaa);
-        let scene_format = needs_composite.then(|| format.add_srgb_suffix());
+        let sample_count = negotiate_sample_count(&context.adapter, surface_format, effective_msaa);
+        let scene_format = needs_composite.then(|| surface_format.add_srgb_suffix());
         if let Some(scene_fmt) = scene_format {
             tracing::info!(
                 "non-sRGB surface; rendering through offscreen scene target {scene_fmt:?} \
-                 with composite pass to {format:?} swapchain"
+                 with composite pass to {surface_format:?} swapchain"
             );
         }
         let presentation = Presentation::build(
             &context.device,
             PresentationSpec {
-                format,
+                format: surface_format,
                 sample_count,
                 scene_format,
             },
             size,
         );
 
-        let present_modes = caps.present_modes.clone();
-        tracing::info!("surface present modes advertised: {present_modes:?}");
-
-        Ok(Self {
+        Self {
             context,
-            surface_bundle: SurfaceBundle {
-                surface,
-                config,
-                size,
-            },
             presentation,
-            present_modes,
-            ui_targets,
-        })
+            size,
+        }
     }
 
-    /// Regenerable: the swapchain configuration, the MSAA and scene targets, the composite pass, and the GPU timer.
+    /// Rebuilds the device, timer, and presentation targets.
     pub async fn recover(&mut self) -> Result<()> {
         self.context.recover().await?;
-        self.surface_bundle
-            .surface
-            .configure(&self.context.device, &self.surface_bundle.config);
-        self.presentation
-            .rebuild(&self.context.device, self.surface_bundle.size);
+        self.presentation.rebuild(&self.context.device, self.size);
         Ok(())
     }
 
-    /// No-op on a zero dimension, which wgpu rejects.
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width == 0 || new_size.height == 0 {
+    pub fn resize(&mut self, new_size: (u32, u32)) {
+        if new_size.0 == 0 || new_size.1 == 0 {
             return;
         }
-        self.surface_bundle.size = new_size;
-        self.surface_bundle.config.width = new_size.width;
-        self.surface_bundle.config.height = new_size.height;
-        self.surface_bundle
-            .surface
-            .configure(&self.context.device, &self.surface_bundle.config);
+        self.size = new_size;
         self.presentation.resize(&self.context.device, new_size);
-    }
-
-    pub fn begin_frame(
-        &self,
-    ) -> std::result::Result<(SurfaceTexture, TextureView), wgpu::SurfaceError> {
-        let frame = self.surface_bundle.surface.get_current_texture()?;
-        let view = frame.texture.create_view(&scene_view_descriptor());
-        Ok((frame, view))
     }
 
     pub fn sample_count(&self) -> u32 {
         self.presentation.spec.sample_count
-    }
-
-    pub fn present_mode(&self) -> PresentMode {
-        self.surface_bundle.config.present_mode
-    }
-
-    pub fn supported_present_modes(&self) -> &[PresentMode] {
-        &self.present_modes
-    }
-
-    /// `Fifo` is the only browser-WebGPU mode.
-    pub fn set_present_mode(&mut self, mode: PresentMode) -> std::result::Result<(), PresentMode> {
-        if !self.present_modes.contains(&mode) {
-            return Err(mode);
-        }
-        if self.surface_bundle.config.present_mode == mode {
-            return Ok(());
-        }
-        self.surface_bundle.config.present_mode = mode;
-        self.surface_bundle
-            .surface
-            .configure(&self.context.device, &self.surface_bundle.config);
-        tracing::info!("surface present_mode -> {mode:?}");
-        Ok(())
     }
 
     pub fn msaa_view(&self) -> Option<&TextureView> {
@@ -518,19 +434,7 @@ impl RenderDevice {
         self.presentation
             .spec
             .scene_format
-            .unwrap_or(self.surface_bundle.config.format)
-    }
-
-    /// The format of every view the UI pass renders into.
-    pub fn ui_format(&self) -> TextureFormat {
-        self.ui_targets.ui_format
-    }
-
-    /// Never a `resolve_target`; the UI pass is single-sampled on every path.
-    pub fn create_ui_swap_view(&self, frame: &SurfaceTexture) -> TextureView {
-        frame
-            .texture
-            .create_view(&ui_view_descriptor(self.ui_targets.swap_view_format))
+            .unwrap_or(self.presentation.spec.format)
     }
 
     /// No-op with MSAA off; both ends take the target's own sRGB format so the resolve averages linear samples.
@@ -566,7 +470,7 @@ impl RenderDevice {
         if self.presentation.composite.is_none() {
             return;
         }
-        let format = self.surface_bundle.config.format;
+        let format = self.presentation.spec.format;
         let dummy = self
             .context
             .device
@@ -702,85 +606,7 @@ fn create_msaa_target(
 mod tests {
     use super::*;
 
-    const BOTH: DownlevelFlags =
-        DownlevelFlags::SURFACE_VIEW_FORMATS.union(DownlevelFlags::VIEW_FORMATS);
-
-    const SURFACES: [TextureFormat; 4] = [
-        TextureFormat::Bgra8UnormSrgb,
-        TextureFormat::Rgba8UnormSrgb,
-        TextureFormat::Bgra8Unorm,
-        TextureFormat::Rgba16Float,
-    ];
-
-    const DOWNLEVELS: [DownlevelFlags; 5] = [
-        DownlevelFlags::empty(),
-        DownlevelFlags::SURFACE_VIEW_FORMATS,
-        DownlevelFlags::VIEW_FORMATS,
-        BOTH,
-        DownlevelFlags::all(),
-    ];
-
-    const SIZE: winit::dpi::PhysicalSize<u32> = winit::dpi::PhysicalSize {
-        width: 800,
-        height: 600,
-    };
-
-    #[test]
-    fn srgb_surface_registers_the_gamma_twin_only_with_surface_view_formats() {
-        let srgb = TextureFormat::Bgra8UnormSrgb;
-        let gamma = TextureFormat::Bgra8Unorm;
-        let table = [
-            (DownlevelFlags::empty(), None),
-            (DownlevelFlags::SURFACE_VIEW_FORMATS, Some(gamma)),
-            (DownlevelFlags::VIEW_FORMATS, None),
-            (BOTH, Some(gamma)),
-            (DownlevelFlags::all(), Some(gamma)),
-        ];
-        for (downlevel, expected) in table {
-            let targets = ui_target_formats(srgb, downlevel);
-            assert_eq!(targets.swap_view_format, expected, "{downlevel:?}");
-            assert_eq!(targets.ui_format, expected.unwrap_or(srgb), "{downlevel:?}");
-        }
-    }
-
-    #[test]
-    fn composite_path_registers_no_view_formats_and_targets_the_scene_format() {
-        let table = [
-            (TextureFormat::Bgra8Unorm, TextureFormat::Bgra8UnormSrgb),
-            (TextureFormat::Rgba8Unorm, TextureFormat::Rgba8UnormSrgb),
-            (TextureFormat::Rgba16Float, TextureFormat::Rgba16Float),
-        ];
-        for (surface, scene) in table {
-            for downlevel in [DownlevelFlags::empty(), DownlevelFlags::all()] {
-                let targets = ui_target_formats(surface, downlevel);
-                assert_eq!(targets.swap_view_format, None, "{surface:?} {downlevel:?}");
-                assert_eq!(targets.ui_format, scene, "{surface:?} {downlevel:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn ui_view_requests_match_their_target_registration_in_both_arms() {
-        for surface in SURFACES {
-            for downlevel in DOWNLEVELS {
-                let case = format!("{surface:?} {downlevel:?}");
-                let expected = (surface.is_srgb()
-                    && downlevel.contains(DownlevelFlags::SURFACE_VIEW_FORMATS))
-                .then(|| surface.remove_srgb_suffix());
-                let targets = ui_target_formats(surface, downlevel);
-
-                let swap_request = ui_view_descriptor(targets.swap_view_format).format;
-                assert_eq!(swap_request, expected, "swapchain request: {case}");
-                let config =
-                    surface_configuration(surface, SIZE, CompositeAlphaMode::Opaque, targets);
-                assert_eq!(
-                    config.view_formats,
-                    swap_request.into_iter().collect::<Vec<_>>(),
-                    "swapchain registration: {case}"
-                );
-            }
-        }
-    }
+    const SIZE: (u32, u32) = (800, 600);
 
     #[test]
     fn launch_names_the_absent_required_feature_or_limit() {
@@ -836,8 +662,8 @@ mod tests {
             .create_texture(&TextureDescriptor {
                 label: Some("recovery target"),
                 size: Extent3d {
-                    width: SIZE.width,
-                    height: SIZE.height,
+                    width: SIZE.0,
+                    height: SIZE.1,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,

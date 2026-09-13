@@ -1,19 +1,17 @@
-mod sim_config;
-pub use sim_config::{CatchUp, SimConfig, DEFAULT_MAX_TICKS_PER_FRAME};
-
 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
 pub mod capture;
 
 pub mod args;
 #[cfg(any(not(feature = "capture"), target_arch = "wasm32"))]
 pub mod capture {
-    pub use crate::capture_types::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
+    pub use crate::capture_types::{
+        CaptureFormat, CaptureRequest, CaptureStage, CaptureUnavailable, PaletteMode,
+    };
 }
 mod capture_types;
 
 pub mod command;
 pub mod environment;
-pub mod frame_pacing;
 pub mod keymap;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod par_native;
@@ -29,6 +27,7 @@ pub mod wasm {
 }
 
 pub use loam_egui::egui;
+pub use session::CursorPolicy;
 
 #[derive(Clone)]
 pub struct WasmConfig {
@@ -47,6 +46,5 @@ impl Default for WasmConfig {
     }
 }
 
-// `crate::trace` subtracts these from `frame` to report `unscoped`.
 pub(crate) const FRAME_LOOP_SECTIONS: &[&str] =
     &["dispatch", "simulation", "publication", "presentation"];

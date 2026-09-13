@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
-use loam_app::args::Args;
-use loam_render::raymarch::RaymarchShape;
-use loam_shape::polytope::Polytope4;
+use loam::app::args::Args;
+use loam::render::raymarch::RaymarchShape;
+use loam::shape::polytope::Polytope4;
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct ShapeEntry {
@@ -108,6 +108,46 @@ pub(crate) const SHAPE_CATALOG: &[ShapeEntry] = &[
     },
 ];
 
+pub(crate) fn shape_catalog_menu(ui: &mut loam::app::egui::Ui, mut choose: impl FnMut(usize)) {
+    for category in SHAPE_CATEGORIES {
+        ui.menu_button(category.name, |ui| {
+            for (offset, entry) in SHAPE_CATALOG[category.start..category.end]
+                .iter()
+                .enumerate()
+            {
+                let card = category.start + offset;
+                if ui
+                    .button(entry.label)
+                    .on_hover_text(entry.long_name)
+                    .clicked()
+                {
+                    choose(card);
+                    ui.close_kind(loam::app::egui::UiKind::Menu);
+                }
+            }
+        });
+    }
+}
+
+struct ShapeCategory {
+    name: &'static str,
+    start: usize,
+    end: usize,
+}
+
+const SHAPE_CATEGORIES: &[ShapeCategory] = &[
+    ShapeCategory {
+        name: "Regular polychora",
+        start: 0,
+        end: 6,
+    },
+    ShapeCategory {
+        name: "Smooth solids",
+        start: 6,
+        end: 10,
+    },
+];
+
 pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
     let n = name.to_lowercase();
     let needle: &str = n.as_str();
@@ -166,7 +206,7 @@ mod tests {
     fn row_comes_from_the_args_value_not_the_process_environment() {
         assert_eq!(parse_row(&Args::default()).unwrap(), DEFAULT_ROW);
         assert_eq!(
-            parse_row(&Args::from_pairs([("seed", "42")])).unwrap(),
+            parse_row(&Args::from_pairs([("scene", "rotate")])).unwrap(),
             DEFAULT_ROW
         );
 
@@ -184,12 +224,16 @@ mod tests {
         let err = parse_row(&args).unwrap_err().to_string();
         assert!(err.contains("--shapes="), "{err}");
 
-        assert!(parse_row(&Args::from_argv(["--seed=42", "--shapes"])).is_err());
+        assert!(parse_row(&Args::from_argv(["--scene=rotate", "--shapes"])).is_err());
     }
 
     #[test]
     fn the_attached_form_and_unrelated_arguments_are_not_diagnosed() {
-        let row = parse_row(&Args::from_argv(["--seed=42", "--shapes=5-cell,8-cell"])).unwrap();
+        let row = parse_row(&Args::from_argv([
+            "--scene=rotate",
+            "--shapes=5-cell,8-cell",
+        ]))
+        .unwrap();
         assert_eq!(
             row.iter().map(|e| e.label).collect::<Vec<_>>(),
             ["5-cell", "8-cell"]

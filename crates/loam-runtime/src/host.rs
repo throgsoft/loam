@@ -3,6 +3,7 @@ use std::ops::Range;
 use crate::command::Rejection;
 use crate::domain::DomainError;
 use crate::input::{ActionEvent, ActionId, Bindings, Input, Key};
+use crate::phase::PhaseError;
 use crate::session::{Publication, RestoreError, Session};
 use crate::stores::Stores;
 
@@ -21,6 +22,7 @@ impl HostConfig {
 pub enum HostError {
     MissingCapability(&'static str),
     Setup(Rejection),
+    Phase(PhaseError),
     Host(String),
 }
 
@@ -39,6 +41,12 @@ impl From<DomainError> for HostError {
 impl From<RestoreError> for HostError {
     fn from(error: RestoreError) -> Self {
         Self::Setup(Rejection::Restore(error))
+    }
+}
+
+impl From<PhaseError> for HostError {
+    fn from(error: PhaseError) -> Self {
+        Self::Phase(error)
     }
 }
 

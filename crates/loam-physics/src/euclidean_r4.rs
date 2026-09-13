@@ -47,6 +47,7 @@ impl PhysicsSpace for EuclideanR4 {
 
     fn valid_orientation(&self, orientation: Iso4Flat) -> bool {
         let r = orientation.rotation;
+        let product = r * r.inverse();
         r.s.is_finite()
             && r.xy.is_finite()
             && r.xz.is_finite()
@@ -55,6 +56,14 @@ impl PhysicsSpace for EuclideanR4 {
             && r.yw.is_finite()
             && r.zw.is_finite()
             && r.xyzw.is_finite()
+            && (product.s - 1.0).abs() <= 1e-4
+            && product.xy.abs() <= 1e-4
+            && product.xz.abs() <= 1e-4
+            && product.xw.abs() <= 1e-4
+            && product.yz.abs() <= 1e-4
+            && product.yw.abs() <= 1e-4
+            && product.zw.abs() <= 1e-4
+            && product.xyzw.abs() <= 1e-4
             && orientation.translation.is_finite()
     }
 
@@ -191,6 +200,8 @@ fn sphere_halfspace_r4(
     let Some(&Collider::HalfSpace4D { normal, offset }) = geometry.get(b.collider()) else {
         return None;
     };
+    let normal = b.orientation.rotation.apply(normal);
+    let offset = offset + normal.dot(b.position);
     let signed = a.position.dot(normal) - offset;
     let penetration = radius - signed;
     if penetration <= 0.0 {
@@ -222,6 +233,8 @@ fn polytope_halfspace_r4(
     else {
         return None;
     };
+    let plane_n = b.orientation.rotation.apply(plane_n);
+    let offset = offset + plane_n.dot(b.position);
 
     let mut deepest = Vec4::ZERO;
     let mut deepest_depth = 0.0_f32;
@@ -509,13 +522,15 @@ mod tests {
     fn sphere_settles_on_4d_floor() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        world.gravity = Some(Vec4::new(0.0, -9.8, 0.0, 0.0));
+        world
+            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
+            .unwrap();
         let _floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
         let ball = world.push_body(
             sphere_body_r4(Vec4::new(0.0, 2.0, 0.0, 0.0), Vec4::ZERO, 0.5, 1.0).unwrap(),
         );
         for _ in 0..300 {
-            world.step(1.0 / 60.0);
+            world.step(1.0 / 60.0).unwrap();
         }
         let body = &world.bodies[ball];
         let lowest = body.position.y - 0.5;
@@ -534,7 +549,9 @@ mod tests {
     fn pentatope_settles_on_4d_floor() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        world.gravity = Some(Vec4::new(0.0, -9.8, 0.0, 0.0));
+        world
+            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
+            .unwrap();
         let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
         let body_id = world.push_body(
             polytope_body_r4(
@@ -549,7 +566,7 @@ mod tests {
         world.bodies[body_id].restitution = 0.0;
 
         for _ in 0..600 {
-            world.step(1.0 / 60.0);
+            world.step(1.0 / 60.0).unwrap();
         }
         let body = &world.bodies[body_id];
 
@@ -590,7 +607,9 @@ mod tests {
     fn tesseract_settles_on_4d_floor() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        world.gravity = Some(Vec4::new(0.0, -9.8, 0.0, 0.0));
+        world
+            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
+            .unwrap();
         let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
         let body_id = world.push_body(
             polytope_body_r4(
@@ -605,7 +624,7 @@ mod tests {
         world.bodies[body_id].restitution = 0.0;
 
         for _ in 0..600 {
-            world.step(1.0 / 60.0);
+            world.step(1.0 / 60.0).unwrap();
         }
         let body = &world.bodies[body_id];
 
@@ -648,7 +667,9 @@ mod tests {
         fn new() -> Self {
             let mut world = World::new(EuclideanR4);
             register_default_narrowphase(&mut world.narrowphase);
-            world.gravity = Some(Vec4::new(0.0, CORNER_DROP_GRAVITY, 0.0, 0.0));
+            world
+                .set_gravity(Some(Vec4::new(0.0, CORNER_DROP_GRAVITY, 0.0, 0.0)))
+                .unwrap();
             let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
             world.bodies[floor].restitution = 0.05;
             let body = world.push_body(
@@ -674,7 +695,7 @@ mod tests {
         }
 
         fn step(&mut self) {
-            self.world.step(CORNER_DROP_DT);
+            self.world.step(CORNER_DROP_DT).unwrap();
             let decay = self.decay;
             let body = &mut self.world.bodies[self.body];
             body.angular_velocity = body.angular_velocity * decay;
@@ -746,12 +767,14 @@ mod tests {
     fn falling_sphere_accelerates_in_r4() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        world.gravity = Some(Vec4::new(0.0, -9.8, 0.0, 0.0));
+        world
+            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
+            .unwrap();
 
         let id = world.push_body(
             sphere_body_r4(Vec4::new(0.0, 5.0, 0.0, 0.0), Vec4::ZERO, 0.5, 1.0).unwrap(),
         );
-        world.step(1.0 / 60.0);
+        world.step(1.0 / 60.0).unwrap();
         let body = &world.bodies[id];
         assert!(body.velocity.y < -0.1 && body.velocity.y > -0.2);
         assert_close(body.velocity.x, 0.0, 1e-6);
@@ -784,7 +807,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 120.0);
+            world.step(1.0 / 120.0).unwrap();
         }
         let a = &world.bodies[0];
         let b = &world.bodies[1];
@@ -814,7 +837,7 @@ mod tests {
         let b = world
             .push_body(sphere_body_r4(b_pos, (a_pos - b_pos).normalize() * 2.0, 0.5, 1.0).unwrap());
         for _ in 0..120 {
-            world.step(1.0 / 120.0);
+            world.step(1.0 / 120.0).unwrap();
         }
         let rel = world.bodies[b].velocity - world.bodies[a].velocity;
         let axis = (b_pos - a_pos).normalize();

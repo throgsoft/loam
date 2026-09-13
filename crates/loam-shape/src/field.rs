@@ -29,17 +29,19 @@ pub const GRADIENT_STEP: f32 = 1.0e-3;
 /// Below this a contact query refuses rather than normalizes noise into a normal.
 pub const MIN_GRADIENT_NORM: f32 = 1.0e-4;
 
-/// `distance` returns what `field_kind` says it does, a distance, a lower bound, or an implicit value, off by at most `error`.
+/// `distance` returns the Euclidean value described by `field_kind` in the first `dimension` coordinates, off by at most `error_at` at the query point.
 pub trait DistanceField: Send + Sync {
     fn field_kind(&self) -> FieldKind;
 
+    fn dimension(&self) -> u32;
+
     fn distance(&self, point: [f32; 4]) -> f32;
 
-    fn error(&self) -> f32;
+    fn error_at(&self, point: [f32; 4]) -> f32;
 
     fn gradient(&self, point: [f32; 4]) -> [f32; 4] {
         let mut gradient = [0.0; 4];
-        for axis in 0..4 {
+        for axis in 0..self.dimension().min(gradient.len() as u32) as usize {
             let mut ahead = point;
             let mut behind = point;
             ahead[axis] += GRADIENT_STEP;
@@ -58,14 +60,18 @@ mod tests {
 
     impl DistanceField for Ramp {
         fn field_kind(&self) -> FieldKind {
-            FieldKind::ExactDistance
+            FieldKind::Implicit
+        }
+
+        fn dimension(&self) -> u32 {
+            4
         }
 
         fn distance(&self, p: [f32; 4]) -> f32 {
             p[0] + 2.0 * p[1] + 3.0 * p[2] + 4.0 * p[3] - 5.0
         }
 
-        fn error(&self) -> f32 {
+        fn error_at(&self, _point: [f32; 4]) -> f32 {
             0.0
         }
     }

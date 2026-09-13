@@ -20,5 +20,17 @@ loam-math    = { path = "../loam-math",    version = "0.1.0" }
 loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
 loam-physics = { path = "../loam-physics", version = "0.1.0", default-features = false, features = ["r3", "r4"], optional = true }
 
+[dev-dependencies]
+loam-time = { path = "../loam-time", version = "0.1.0", default-features = false }
+
+[[bench]]
+name = "publication"
+harness = false
+
+[[bench]]
+name = "fields"
+harness = false
+required-features = ["physics"]
+
 [lints]
 workspace = true

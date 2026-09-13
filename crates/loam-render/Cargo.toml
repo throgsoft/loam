@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam renderer: wgpu surface lifecycle, raymarch and raster pipelines, GPU frame timing."
+description = "Loam renderer: GPU targets, raymarch and raster pipelines, and frame timing."
 keywords = ["wgpu", "renderer", "raymarching", "graphics", "gamedev"]
 categories = ["graphics", "rendering", "game-development"]
 
@@ -16,7 +16,6 @@ naga.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 wgpu.workspace = true
-winit.workspace = true
 web-time.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
@@ -28,7 +27,6 @@ loam-time    = { path = "../loam-time",  version = "0.1.0" }
 [dev-dependencies]
 loam-scene = { path = "../loam-scene", version = "0.1.0" }
 pollster.workspace = true
-tempfile = "3"
 wgpu = { workspace = true, features = ["noop"] }
 
 [lints]

@@ -106,7 +106,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Apply the target to the repository-pinned toolchain.
       - run: rustup target add wasm32-unknown-unknown
-      - run: cargo build --target wasm32-unknown-unknown -p polytope_playground --no-default-features
+      - name: Build the runnable worker bundle
+        run: cargo xtask web --bin polytope_playground --public-url /
 
   wasm-session:
     name: wasm32 build (session crates)

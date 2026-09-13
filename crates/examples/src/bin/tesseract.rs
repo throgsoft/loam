@@ -1,13 +1,13 @@
 use glam::Vec4;
-use loam_app::session::run;
-use loam_math::{Bivector, Bivector4, EuclideanR4};
-use loam_runtime::host::{HostConfig, HostError};
-use loam_runtime::{
-    Access, ActionId, Bindings, Command, Commands, Dispatch, DomainBuilder, Domains, Input,
-    Instance, Key, LogCapacity, Material, Orbit, Phase, Pose, PreparedGeometry, Projection4,
-    Rejection, Session, SimConfig, SpawnBundle, Step, ViewSpec, Views,
+use loam::app::session::{launch, SessionApp};
+use loam::math::{Bivector, Bivector4, EuclideanR4};
+use loam::runtime::host::{HostConfig, HostError};
+use loam::runtime::{
+    ActionId, Bindings, Command, Commands, Dispatch, DomainBuilder, DomainError, Input, Instance,
+    Key, LogCapacity, Material, Orbit, Phase, Pose, PreparedGeometry, Projection4, Rejection,
+    Session, SimConfig, SpawnBundle, ViewSpec,
 };
-use loam_shape::polytope::Polytope4;
+use loam::shape::polytope::Polytope4;
 
 const PAUSE: ActionId = ActionId(0);
 const RESET: ActionId = ActionId(1);
@@ -21,14 +21,16 @@ struct Spin {
     paused: bool,
 }
 
-loam_runtime::stores! {
+loam::runtime::stores! {
     #[derive(Default)]
     pub struct TesseractStores {
         spin: Store<Spin>,
     }
 }
 
-fn main() -> Result<(), HostError> {
+fn build(
+    args: loam::app::args::Args,
+) -> Result<(Session<TesseractStores>, SessionApp<TesseractStores>), HostError> {
     let mut session = Session::new(TesseractStores::default(), SimConfig::default());
     let r4 = session
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
@@ -62,7 +64,6 @@ fn main() -> Result<(), HostError> {
     session.system(
         Phase::Dispatch,
         "actions",
-        Access::new().commands(),
         |input: &Input, commands: &mut Commands<TesseractStores>| {
             if input.pressed(PAUSE) {
                 commands.app_fn("pause", |d: &mut Dispatch<'_, TesseractStores>| {
@@ -79,32 +80,23 @@ fn main() -> Result<(), HostError> {
 
     let mut orbit = Orbit::around([0.0; 3], 5.0);
     orbit.pitch = -0.15;
-    session.system(
-        Phase::Dispatch,
-        "orbit",
-        Access::new().views(),
-        move |input: &Input, views: &mut Views| {
-            orbit.drag(input.drag());
-            views.root_mut().eye = orbit.eye();
-        },
-    );
+    session.orbit(orbit);
 
-    session.system(
+    session.fallible_system(
         Phase::Simulation,
         "spin",
-        Access::new().reads::<Spin>().domain(r4.id()),
-        move |app: &mut TesseractStores, domains: &mut Domains, step: Step| {
-            let Ok(r4) = domains.typed(r4) else {
-                return;
-            };
-            for (entity, spin) in app.spin.iter() {
+        move |ctx: loam::runtime::Ctx<'_, TesseractStores>| -> Result<(), DomainError> {
+            let r4 = ctx.domains.typed(r4)?;
+            for (entity, spin) in ctx.app.spin.iter() {
                 if spin.paused {
                     continue;
                 }
-                if let Some(pose) = r4.poses.get_mut(entity) {
-                    pose.frame = ((spin.omega * step.dt).exp() * pose.frame).normalize();
+                if let Some(pose) = r4.poses().get(entity) {
+                    let frame = ((spin.omega * ctx.step.dt).exp() * pose.frame).normalize();
+                    r4.set_frame(entity, frame)?;
                 }
             }
+            Ok(())
         },
     );
 
@@ -113,5 +105,11 @@ fn main() -> Result<(), HostError> {
         .key(Key::Letter('t'), PAUSE)
         .key(Key::Space, PAUSE)
         .key(Key::Letter('r'), RESET);
-    run(session, HostConfig::new("tesseract", bindings))
+    let app =
+        SessionApp::with_args(HostConfig::new("tesseract", bindings), args).recover_on_fault(RESET);
+    Ok((session, app))
+}
+
+fn main() -> Result<(), HostError> {
+    launch(build)
 }

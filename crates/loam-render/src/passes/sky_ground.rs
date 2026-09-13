@@ -2,24 +2,23 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use loam_runtime::Eye;
-use wgpu::{CommandEncoder, Queue, TextureFormat};
+use wgpu::{CommandEncoder, Queue};
 
-use crate::device::{GpuContext, MissingGpuCapability};
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassOrder};
+use crate::device::GpuContext;
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_BASE};
 use crate::sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
 use crate::{DepthConvention, Viewport};
 
 struct State {
-    format: TextureFormat,
-    depth: TextureFormat,
-    sample_count: u32,
     eye: Eye,
     ground: Ground,
     node: Option<SkyGroundNode>,
     queue: Option<Queue>,
 }
 
-/// A `SkyGroundNode` before the scene that paints the sky and checker floor over the presenter's clear and writes their depth under reversed Z; clones share one state.
+const BASE: [ResourceId; 1] = [SCENE_BASE];
+
+/// A shared scene background pass with a sky and reversed Z floor.
 #[derive(Clone)]
 pub struct SkyGroundPass {
     shared: Rc<RefCell<State>>,
@@ -29,9 +28,6 @@ impl SkyGroundPass {
     pub fn new(ground: Ground) -> Self {
         Self {
             shared: Rc::new(RefCell::new(State {
-                format: TextureFormat::Rgba8UnormSrgb,
-                depth: crate::view::DEPTH_FORMAT,
-                sample_count: 1,
                 eye: Eye::default(),
                 ground,
                 node: None,
@@ -53,21 +49,29 @@ impl FramePass for SkyGroundPass {
         "sky-ground"
     }
 
-    fn order(&self) -> PassOrder {
-        PassOrder::BeforeScene
+    fn reads(&self) -> &[ResourceId] {
+        &BASE
+    }
+
+    fn writes(&self) -> &[ResourceId] {
+        &BASE
+    }
+
+    fn stage(&self) -> PassStage {
+        PassStage::Scene
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
         let Some(depth) = target.depth else {
-            return;
+            return Ok(());
         };
         let state = self.shared.borrow();
         let (Some(node), Some(queue)) = (state.node.as_ref(), state.queue.as_ref()) else {
-            return;
+            return Ok(());
         };
         let viewport = Viewport::full([target.size.0, target.size.1]);
         node.set_uniforms(
@@ -79,26 +83,17 @@ impl FramePass for SkyGroundPass {
             ),
         );
         node.record(encoder, target.color, depth, Some(&viewport));
+        Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
-        {
-            let mut state = self.shared.borrow_mut();
-            state.format = frame.color;
-            state.depth = frame.depth;
-            state.sample_count = frame.sample_count;
-        }
-        self.rebuild(gpu)
-    }
-
-    fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         state.node = Some(SkyGroundNode::new(
             &gpu.device,
-            state.format,
-            state.depth,
+            frame.color,
+            frame.depth,
             DepthConvention::ReversedZ,
-            state.sample_count,
+            frame.sample_count,
         ));
         state.queue = Some(gpu.queue.clone());
         Ok(())

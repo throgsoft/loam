@@ -1,24 +1,23 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use wgpu::{CommandEncoder, Queue, TextureFormat};
+use wgpu::{CommandEncoder, Queue};
 
-use crate::device::{GpuContext, MissingGpuCapability};
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassOrder};
+use crate::device::GpuContext;
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_BASE};
 use crate::raymarch::{RayMarchNode, RayMarchUniforms};
 use crate::Viewport;
 
 struct State {
     source: String,
-    format: TextureFormat,
-    depth: TextureFormat,
-    sample_count: u32,
     uniforms: RayMarchUniforms,
     node: Option<RayMarchNode>,
     queue: Option<Queue>,
 }
 
-/// A `RayMarchNode` before the scene, built from its shader source at every attach; clones share one state.
+const BASE: [ResourceId; 1] = [SCENE_BASE];
+
+/// A shared scene background pass built from WGSL source.
 #[derive(Clone)]
 pub struct RaymarchPass {
     shared: Rc<RefCell<State>>,
@@ -29,9 +28,6 @@ impl RaymarchPass {
         Self {
             shared: Rc::new(RefCell::new(State {
                 source,
-                format: TextureFormat::Rgba8UnormSrgb,
-                depth: crate::view::DEPTH_FORMAT,
-                sample_count: 1,
                 uniforms: RayMarchUniforms::default(),
                 node: None,
                 queue: None,
@@ -50,11 +46,19 @@ impl FramePass for RaymarchPass {
         "raymarch"
     }
 
-    fn order(&self) -> PassOrder {
-        PassOrder::BeforeScene
+    fn reads(&self) -> &[ResourceId] {
+        &BASE
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+    fn writes(&self) -> &[ResourceId] {
+        &BASE
+    }
+
+    fn stage(&self) -> PassStage {
+        PassStage::Scene
+    }
+
+    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         let State {
             uniforms,
@@ -63,7 +67,7 @@ impl FramePass for RaymarchPass {
             ..
         } = &mut *state;
         let (Some(node), Some(queue)) = (node.as_mut(), queue.as_ref()) else {
-            return;
+            return Ok(());
         };
         uniforms.resolution = [target.size.0 as f32, target.size.1 as f32];
         *node.uniforms_mut() = *uniforms;
@@ -74,20 +78,12 @@ impl FramePass for RaymarchPass {
             None,
             Viewport::full([target.size.0, target.size.1]),
         );
+        Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
-        {
-            let mut state = self.shared.borrow_mut();
-            state.format = frame.color;
-            state.depth = frame.depth;
-            state.sample_count = frame.sample_count;
-        }
-        self.rebuild(gpu)
-    }
-
-    fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
+        crate::shader::validate_raymarch_wgsl(&state.source)?;
         let module = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -96,9 +92,9 @@ impl FramePass for RaymarchPass {
             });
         state.node = Some(RayMarchNode::new(
             &gpu.device,
-            state.format,
+            frame.color,
             &module,
-            state.sample_count,
+            frame.sample_count,
         ));
         state.queue = Some(gpu.queue.clone());
         Ok(())

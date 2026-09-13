@@ -5,7 +5,15 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use loam_input::PointerPhase;
+pub const SCROLL_PIXELS_PER_LINE: f32 = 50.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerPhase {
+    Down,
+    Move,
+    Up,
+    Cancel,
+}
 
 #[derive(Debug)]
 pub enum InputMessage {
@@ -23,6 +31,7 @@ pub enum InputMessage {
         buttons: u8,
         dx: f32,
         dy: f32,
+        time: Duration,
     },
 
     /// `button` is `MouseEvent.button` (0=primary, 1=middle, 2=secondary).
@@ -31,6 +40,7 @@ pub enum InputMessage {
         y: f32,
         button: u8,
         pressed: bool,
+        time: Duration,
     },
 
     /// Lines in DOM convention: positive is right/down.
@@ -58,7 +68,10 @@ pub enum InputMessage {
     Start,
 
     /// Browser-confirmed lock state, including releases by Esc or focus loss.
-    PointerLockChanged(bool),
+    PointerLockChanged {
+        locked: bool,
+        released: bool,
+    },
 
     /// Canvas-local CSS position and the DOM `timeStamp`.
     Pointer {
@@ -81,7 +94,7 @@ fn control_kind(msg: &InputMessage) -> Option<usize> {
         InputMessage::Resize { .. } => Some(0),
         InputMessage::Visibility(_) => Some(1),
         InputMessage::Start => Some(2),
-        InputMessage::PointerLockChanged(_) => Some(3),
+        InputMessage::PointerLockChanged { .. } => Some(3),
         InputMessage::Focus(_) => Some(4),
         _ => None,
     }
@@ -126,8 +139,7 @@ pub fn enqueue(msg: InputMessage) {
             }
             let mut index = 0;
             q.retain(|queued| {
-                let keep = control_kind(queued).is_some_and(|kind| latest[kind] == Some(index))
-                    || matches!(queued, InputMessage::Pointer { phase, .. } if *phase != PointerPhase::Move);
+                let keep = control_kind(queued).is_some_and(|kind| latest[kind] == Some(index));
                 index += 1;
                 keep
             });

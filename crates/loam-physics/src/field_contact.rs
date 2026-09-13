@@ -11,12 +11,14 @@ use crate::integrator::PhysicsSpace;
 pub enum FieldRefusal {
     /// No query is registered for the body's collider kind.
     Collider(ColliderKind),
+    Dimension(u32),
     /// The field's value is not an exact distance, so it is not a separation.
     Kind(FieldKind),
+    Numerical,
     DegenerateGradient,
 }
 
-/// `separation` is negative in penetration, `normal` points from the field surface toward the body, `witness` lies on that surface, all within `error`.
+/// `error` bounds the separation sample and the absolute field value at `witness`.
 pub struct FieldContact<S: PhysicsSpace> {
     pub separation: f32,
     pub normal: S::Vector,
@@ -94,6 +96,17 @@ mod r3 {
     use crate::collider::{Collider, ColliderKind};
     use crate::geometry::GeometryStore;
 
+    fn finite_upper(value: f64) -> Option<f32> {
+        if !value.is_finite() || value > f32::MAX as f64 {
+            return None;
+        }
+        let mut rounded = value as f32;
+        if (rounded as f64) < value {
+            rounded = rounded.next_up();
+        }
+        Some(rounded)
+    }
+
     /// Separation is the field distance at the sphere's center minus its radius; the field must be an exact distance.
     pub fn sphere_against_field(
         body: &RigidBody<EuclideanR3>,
@@ -101,6 +114,10 @@ mod r3 {
         field: &dyn DistanceField,
         _space: &EuclideanR3,
     ) -> Result<FieldContact<EuclideanR3>, FieldRefusal> {
+        let dimension = field.dimension();
+        if dimension != 3 {
+            return Err(FieldRefusal::Dimension(dimension));
+        }
         if field.field_kind() != FieldKind::ExactDistance {
             return Err(FieldRefusal::Kind(field.field_kind()));
         }
@@ -110,17 +127,52 @@ mod r3 {
         let center = body.position;
         let point = [center.x, center.y, center.z, 0.0];
         let distance = field.distance(point);
+        let distance_error = field.error_at(point);
+        if !distance.is_finite() || !distance_error.is_finite() || distance_error < 0.0 {
+            return Err(FieldRefusal::Numerical);
+        }
         let gradient = field.gradient(point);
         let direction = Vec3::new(gradient[0], gradient[1], gradient[2]);
-        if direction.length() < MIN_GRADIENT_NORM {
+        let length = direction.length();
+        if !length.is_finite() {
+            return Err(FieldRefusal::Numerical);
+        }
+        if length < MIN_GRADIENT_NORM {
             return Err(FieldRefusal::DegenerateGradient);
         }
-        let normal = direction.normalize();
+        let normal = direction / length;
+        if !normal.is_finite() {
+            return Err(FieldRefusal::Numerical);
+        }
+        let separation = distance - radius;
+        let witness = center - normal * distance;
+        if !separation.is_finite() || !witness.is_finite() {
+            return Err(FieldRefusal::Numerical);
+        }
+        let separation_roundoff = (separation as f64 - (distance as f64 - radius as f64)).abs();
+        let Some(separation_error) = finite_upper(distance_error as f64 + separation_roundoff)
+        else {
+            return Err(FieldRefusal::Numerical);
+        };
+        let witness_point = [witness.x, witness.y, witness.z, 0.0];
+        let witness_distance = field.distance(witness_point);
+        let witness_error = field.error_at(witness_point);
+        if !witness_distance.is_finite() || !witness_error.is_finite() || witness_error < 0.0 {
+            return Err(FieldRefusal::Numerical);
+        }
+        let residual_bound = witness_distance.abs() as f64 + witness_error as f64;
+        let Some(witness_residual) = finite_upper(residual_bound) else {
+            return Err(FieldRefusal::Numerical);
+        };
+        let error = separation_error.max(witness_residual);
+        if !error.is_finite() {
+            return Err(FieldRefusal::Numerical);
+        }
         Ok(FieldContact {
-            separation: distance - radius,
+            separation,
             normal,
-            witness: center - normal * distance,
-            error: field.error(),
+            witness,
+            error,
         })
     }
 
@@ -153,11 +205,15 @@ mod tests {
             FieldKind::ExactDistance
         }
 
+        fn dimension(&self) -> u32 {
+            3
+        }
+
         fn distance(&self, point: [f32; 4]) -> f32 {
             point[1]
         }
 
-        fn error(&self) -> f32 {
+        fn error_at(&self, _point: [f32; 4]) -> f32 {
             0.0
         }
     }
@@ -169,12 +225,36 @@ mod tests {
             FieldKind::ConservativeBound
         }
 
+        fn dimension(&self) -> u32 {
+            3
+        }
+
         fn distance(&self, point: [f32; 4]) -> f32 {
             point[1] * 0.5
         }
 
-        fn error(&self) -> f32 {
+        fn error_at(&self, _point: [f32; 4]) -> f32 {
             1.0
+        }
+    }
+
+    struct UncertainGround;
+
+    impl DistanceField for UncertainGround {
+        fn field_kind(&self) -> FieldKind {
+            FieldKind::ExactDistance
+        }
+
+        fn dimension(&self) -> u32 {
+            3
+        }
+
+        fn distance(&self, point: [f32; 4]) -> f32 {
+            point[1]
+        }
+
+        fn error_at(&self, _point: [f32; 4]) -> f32 {
+            0.1
         }
     }
 
@@ -185,11 +265,15 @@ mod tests {
             FieldKind::ExactDistance
         }
 
+        fn dimension(&self) -> u32 {
+            3
+        }
+
         fn distance(&self, point: [f32; 4]) -> f32 {
             (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt() - 1.0
         }
 
-        fn error(&self) -> f32 {
+        fn error_at(&self, _point: [f32; 4]) -> f32 {
             0.0
         }
     }
@@ -214,7 +298,7 @@ mod tests {
     fn ground_world() -> (World<EuclideanR3>, BodyId, FieldId, BodyId) {
         let mut world = World::new(EuclideanR3);
         register_field_contacts(&mut world.field_narrowphase);
-        world.gravity = Some(Vec3::new(0.0, -9.8, 0.0));
+        world.set_gravity(Some(Vec3::new(0.0, -9.8, 0.0))).unwrap();
         let anchor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0).expect("anchor"));
         world.bodies[anchor].restitution = 0.0;
         let field = world
@@ -228,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sphere_dropped_onto_an_exact_half_space_field_rests_at_the_analytic_height() {
+    fn a_certain_field_supports_a_sphere_while_an_uncertain_sign_creates_no_contact() {
         let (mut world, anchor, field, ball) = ground_world();
         assert_eq!(
             world.bind_field(anchor, field),
@@ -237,13 +321,25 @@ mod tests {
         world.bind_field(ball, field).expect("binding");
 
         for _ in 0..600 {
-            world.step(1.0 / 240.0);
+            world.step(1.0 / 240.0).unwrap();
         }
         let rest = world.bodies[ball].position.y;
         assert!(
             (rest - (RADIUS - PENETRATION_SLOP)).abs() < 1.0e-3,
             "the ball rests at {rest}, not at radius minus the solver slop"
         );
+
+        let mut uncertain = World::new(EuclideanR3);
+        register_field_contacts(&mut uncertain.field_narrowphase);
+        let anchor = uncertain.push_body(halfspace_body_r3(Vec3::Y, 0.0).expect("anchor"));
+        let field = uncertain
+            .insert_field(anchor, Box::new(UncertainGround))
+            .expect("field handle");
+        let ball = uncertain
+            .push_body(sphere_body_r3(Vec3::Y * 0.45, Vec3::ZERO, RADIUS, 1.0).expect("ball"));
+        uncertain.bind_field(ball, field).expect("binding");
+        uncertain.step(0.0).unwrap();
+        assert_eq!(uncertain.manifolds().len(), 0);
     }
 
     #[test]
@@ -264,7 +360,7 @@ mod tests {
         let (mut world, _, field, ball) = ground_world();
         world.bind_field(ball, field).expect("binding");
         for _ in 0..60 {
-            world.step(1.0 / 240.0);
+            world.step(1.0 / 240.0).unwrap();
         }
         let saved = world.snapshot();
         let second = world.push_body(halfspace_body_r3(Vec3::Y, -8.0).expect("anchor"));

@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-use loam_render::device::{FeatureRequest, GpuContext, MissingGpuCapability};
+use loam_render::device::{FeatureRequest, GpuContext};
 use loam_render::gpu_timer::SectionTimer;
-use loam_render::pass::{FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR};
+use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR};
 use loam_render::present::Presenter;
 use loam_render::{DepthConvention, GpuTime};
 use wgpu::*;
@@ -34,15 +34,15 @@ impl FramePass for Recorder {
         self.writes
     }
 
-    fn order(&self) -> PassOrder {
-        PassOrder::AfterScene
+    fn stage(&self) -> PassStage {
+        PassStage::Scene
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
         self.convention
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
         self.log.store(
             self.log.load(Ordering::Relaxed) * 10 + self.tag,
             Ordering::Relaxed,
@@ -62,9 +62,10 @@ impl FramePass for Recorder {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        Ok(())
     }
 
-    fn rebuild(&mut self, _gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -81,17 +82,22 @@ impl FramePass for Blit {
         "blit"
     }
 
-    fn order(&self) -> PassOrder {
-        PassOrder::AfterScene
+    fn stage(&self) -> PassStage {
+        PassStage::Scene
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, _target: &FrameTarget<'_>) {
+    fn record(
+        &self,
+        encoder: &mut CommandEncoder,
+        _target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
         if let Some((source, sink)) = self.buffers.as_ref() {
             encoder.copy_buffer_to_buffer(source, 0, sink, 0, COPY_BYTES);
         }
+        Ok(())
     }
 
-    fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    fn attach(&mut self, gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
         let held = |usage| {
             gpu.device.create_buffer(&BufferDescriptor {
                 label: Some("blit"),
@@ -138,7 +144,7 @@ fn target(device: &Device) -> TextureView {
 }
 
 fn presenter_on(gpu: &GpuContext) -> Presenter {
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1);
+    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
     presenter.attach(gpu).expect("attach");
     presenter
 }
@@ -154,7 +160,9 @@ fn frame(gpu: &GpuContext, presenter: &mut Presenter, view: &TextureView) {
     let mut encoder = gpu
         .device
         .create_command_encoder(&CommandEncoderDescriptor { label: None });
-    presenter.record(&gpu.device, &mut encoder, view, SIZE, Color::BLACK);
+    presenter
+        .record(&gpu.device, &mut encoder, view, SIZE, Color::BLACK)
+        .expect("recorded");
     gpu.queue.submit(Some(encoder.finish()));
     presenter.after_submit();
 }
@@ -193,7 +201,7 @@ fn a_consumer_registered_first_is_recorded_after_the_pass_that_writes_its_input(
 fn without_a_timer_a_recorded_pass_reports_its_gpu_time_unavailable() {
     let gpu = noop_context();
     let view = target(&gpu.device);
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1);
+    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
     presenter
         .register_pass(Box::new(Recorder {
             name: "overlay",
@@ -228,7 +236,7 @@ fn a_timed_pass_reports_a_positive_gpu_duration_gpu_probe() {
         .features()
         .contains(loam_render::device::GPU_TIMER_FEATURES);
     let view = target(&gpu.device);
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1);
+    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
     presenter
         .register_pass(Box::new(Blit::default()))
         .expect("registered");

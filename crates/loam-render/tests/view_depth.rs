@@ -1,6 +1,6 @@
 use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
-use loam_math::{HyperbolicH3, Iso3, Iso3H, IsometryGroup, Rotor4};
-use loam_render::shader::ShaderDb;
+use loam_math::{HyperbolicH3, Iso3, Iso3H, IsometryGroup, Rotor4, WgslSpace};
+use loam_render::shader::{assemble_wgsl, validate_wgsl, GEODESIC_MARCH_KERNEL};
 use loam_render::view::{
     self, DEPTH_FORMAT, H3_DEPTH_ENVELOPE, H3_DEPTH_SEPARATION, H3_EYE_CHART_REACH,
 };
@@ -188,23 +188,27 @@ struct Gpu {
     queue: Queue,
     march: RayMarchNode,
     lines: LineRasterStaticR4Node,
-    _shader_dir: tempfile::TempDir,
 }
 
 impl Gpu {
     fn new() -> Self {
         let (device, queue) = pollster::block_on(request_device());
-        let shader_dir = tempfile::tempdir().expect("tempdir");
-        let path = shader_dir.path().join("h3_view.wgsl");
-        std::fs::write(&path, USER_WGSL).expect("write shader");
-        let mut db = ShaderDb::new(device.clone());
-        let id = db
-            .load_geodesic_scene(ShaderDb::ROOT_OWNER, &path, SCENE_WGSL, &HyperbolicH3)
-            .expect("H3 view shader");
+        let prelude = HyperbolicH3.wgsl_impl();
+        let source = assemble_wgsl(&[
+            prelude.as_ref(),
+            SCENE_WGSL,
+            GEODESIC_MARCH_KERNEL,
+            USER_WGSL,
+        ]);
+        validate_wgsl(&source).expect("H3 view shader");
+        let module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("H3 view depth"),
+            source: ShaderSource::Wgsl(source.into()),
+        });
         let depth = DepthMode::ReadWrite {
             format: DEPTH_FORMAT,
         };
-        let march = RayMarchNode::with_depth(&device, COLOR_FORMAT, db.module(id), depth, 1);
+        let march = RayMarchNode::with_depth(&device, COLOR_FORMAT, &module, depth, 1);
         let lines = LineRasterStaticR4Node::new(
             &device,
             COLOR_FORMAT,
@@ -217,7 +221,6 @@ impl Gpu {
             queue,
             march,
             lines,
-            _shader_dir: shader_dir,
         }
     }
 

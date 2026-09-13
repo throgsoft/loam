@@ -3,7 +3,7 @@ use crate::relation::Relation;
 use crate::session::Stamp;
 use crate::store::{ErasedStore, Store};
 
-/// The application's store struct; `stores!` writes the impl and its two companion types.
+/// The application's storage contract; only `Session` calls its lifetime hooks.
 pub trait Stores: Send + 'static {
     type Records: Default + Send + 'static;
 

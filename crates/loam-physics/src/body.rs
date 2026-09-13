@@ -3,6 +3,7 @@ use std::ops::{Add, Deref, Index, IndexMut, Mul};
 use loam_math::Bivector;
 
 use crate::collider::{Collider, ColliderKind};
+use crate::collision::VectorOps;
 use crate::edit::EditError;
 use crate::geometry::{ColliderRef, GeometryStore};
 use crate::integrator::PhysicsSpace;
@@ -255,7 +256,7 @@ fn is_halfspace_kind(kind: ColliderKind) -> bool {
     matches!(kind, ColliderKind::HalfSpace | ColliderKind::HalfSpace4D)
 }
 
-fn valid_collider<S: PhysicsSpace>(space: &S, collider: &Collider, mass: f32) -> bool {
+pub(crate) fn valid_collider<S: PhysicsSpace>(space: &S, collider: &Collider, mass: f32) -> bool {
     if !space.supports_collider(collider.kind())
         || (mass > 0.0 && is_halfspace_kind(collider.kind()))
     {
@@ -305,7 +306,7 @@ fn convex_ccw_polygon(vertices: &[glam::Vec2]) -> bool {
     has_area
 }
 
-/// Ordered by slot, then generation.
+/// A body handle is valid only in its owning arena and is ordered by slot, then generation.
 #[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BodyId {
@@ -452,6 +453,74 @@ impl<S: PhysicsSpace> BodyArena<S> {
 
     pub(crate) fn dense_mut(&mut self) -> &mut [RigidBody<S>] {
         &mut self.dense
+    }
+
+    pub(crate) fn validate(&self, space: &S, geometry: &GeometryStore) -> Result<(), EditError>
+    where
+        S::Vector: VectorOps,
+        S::AngVel: PartialEq,
+    {
+        if self.dense.len() != self.ids.len() {
+            return Err(EditError::InvalidBodyArena);
+        }
+        let mut occupied = vec![false; self.slots.len()];
+        for (dense, (&id, body)) in self.ids.iter().zip(&self.dense).enumerate() {
+            let Ok(dense_index) = u32::try_from(dense) else {
+                return Err(EditError::InvalidBodyArena);
+            };
+            let Some(slot) = self.slots.get(id.slot as usize) else {
+                return Err(EditError::InvalidBodyArena);
+            };
+            if occupied[id.slot as usize]
+                || slot.generation != id.generation
+                || slot.dense != Some(dense_index)
+            {
+                return Err(EditError::InvalidBodyArena);
+            }
+            occupied[id.slot as usize] = true;
+            let expected_inv_mass = if body.mass > 0.0 {
+                body.mass.recip()
+            } else {
+                0.0
+            };
+            let Some(collider) = geometry.get(body.collider) else {
+                return Err(EditError::InvalidGeometry);
+            };
+            if !valid_mass(body.mass)
+                || body.inv_mass != expected_inv_mass
+                || !space.valid_initial_state(body.position, body.velocity, body.inertia)
+                || !space.valid_orientation(body.orientation)
+                || !space.valid_angular_velocity(body.angular_velocity)
+                || (body.sleeping
+                    && (body.mass == 0.0
+                        || body.velocity != S::Vector::zero()
+                        || body.angular_velocity != S::AngVel::zero()))
+                || !body.restitution.is_finite()
+                || body.restitution < 0.0
+                || body.collider.kind() != collider.kind()
+                || !valid_collider(space, collider, body.mass)
+            {
+                return Err(EditError::InvalidBody);
+            }
+        }
+        let mut free = vec![false; self.slots.len()];
+        for &slot in &self.free {
+            let Some(entry) = self.slots.get(slot as usize) else {
+                return Err(EditError::InvalidBodyArena);
+            };
+            if free[slot as usize] || entry.dense.is_some() || occupied[slot as usize] {
+                return Err(EditError::InvalidBodyArena);
+            }
+            free[slot as usize] = true;
+        }
+        for (slot, entry) in self.slots.iter().enumerate() {
+            if occupied[slot] != entry.dense.is_some()
+                || (!occupied[slot] && entry.generation != u32::MAX && !free[slot])
+            {
+                return Err(EditError::InvalidBodyArena);
+            }
+        }
+        geometry.validate(self.dense.iter().map(|body| body.collider))
     }
 }
 
@@ -835,5 +904,47 @@ mod tests {
         }
         arena.spawn(body_r3(Vec3::ZERO, 1.0, 1.0));
         assert_consistent(&arena);
+    }
+
+    #[test]
+    fn decoded_arena_with_a_wrong_dense_id_is_rejected() {
+        let mut geometry = GeometryStore::default();
+        let mut arena = BodyArena::new();
+        let first = arena.spawn(def_r3(Vec3::X, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
+        let second = arena.spawn(def_r3(Vec3::Y, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
+        assert!(arena.validate(&EuclideanR3, &geometry).is_ok());
+
+        arena.ids.swap(0, 1);
+        assert_eq!(
+            arena.validate(&EuclideanR3, &geometry),
+            Err(EditError::InvalidBodyArena)
+        );
+        assert_eq!(arena.get(first).map(|body| body.position), Some(Vec3::X));
+        assert_eq!(arena.get(second).map(|body| body.position), Some(Vec3::Y));
+    }
+
+    #[test]
+    fn a_maximum_generation_slot_is_reused_once_then_retired() {
+        let mut geometry = GeometryStore::default();
+        let mut arena = BodyArena::new();
+        let first = arena.spawn(def_r3(Vec3::X, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
+        arena.ids[0].generation = u32::MAX - 1;
+        arena.slots[0].generation = u32::MAX - 1;
+        let first = BodyId {
+            slot: first.slot,
+            generation: u32::MAX - 1,
+        };
+
+        let removed = arena.despawn(first).unwrap();
+        geometry.release(removed.collider());
+        assert!(arena.validate(&EuclideanR3, &geometry).is_ok());
+        let last = arena.spawn(def_r3(Vec3::Y, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
+        assert_eq!(last.generation(), u32::MAX);
+        let removed = arena.despawn(last).unwrap();
+        geometry.release(removed.collider());
+        assert!(arena.validate(&EuclideanR3, &geometry).is_ok());
+
+        let fresh = arena.spawn(def_r3(Vec3::Z, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
+        assert_ne!(fresh.slot(), last.slot());
     }
 }

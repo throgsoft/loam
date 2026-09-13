@@ -1,9 +1,8 @@
-#[path = "../src/wasm/input_queue.rs"]
-#[allow(dead_code)]
-mod input_queue;
-
-use input_queue::{drain_messages_into, enqueue, InputMessage, MESSAGE_QUEUE_CAPACITY};
-use loam_input::PointerPhase;
+use loam_app::session::input::{apply, InputMap};
+use loam_app::wasm::input_queue::{
+    drain_messages_into, enqueue, InputMessage, PointerPhase, MESSAGE_QUEUE_CAPACITY,
+};
+use loam_runtime::PointerPhase as RuntimePointerPhase;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -14,13 +13,19 @@ fn overflow_releases_held_input_before_new_events() {
         height: 300,
         dpr: 1.0,
     });
-    enqueue(InputMessage::PointerLockChanged(false));
+    enqueue(InputMessage::PointerLockChanged {
+        locked: false,
+        released: false,
+    });
     enqueue(InputMessage::Resize {
         width: 800,
         height: 600,
         dpr: 2.0,
     });
-    enqueue(InputMessage::PointerLockChanged(true));
+    enqueue(InputMessage::PointerLockChanged {
+        locked: true,
+        released: false,
+    });
     enqueue(InputMessage::Start);
     enqueue(InputMessage::Visibility(true));
     for _ in 0..MESSAGE_QUEUE_CAPACITY - 6 {
@@ -44,7 +49,7 @@ fn overflow_releases_held_input_before_new_events() {
     ));
     assert!(matches!(
         batch.pop_front(),
-        Some(InputMessage::PointerLockChanged(true))
+        Some(InputMessage::PointerLockChanged { locked: true, .. })
     ));
     assert!(matches!(batch.pop_front(), Some(InputMessage::Start)));
     assert!(matches!(
@@ -60,28 +65,81 @@ fn overflow_releases_held_input_before_new_events() {
 }
 
 #[test]
-fn overflow_keeps_pointer_transitions_so_a_drag_does_not_stick() {
-    enqueue(pointer(7, PointerPhase::Down, 1.0, 1));
-    enqueue(pointer(7, PointerPhase::Move, 2.0, 2));
-    enqueue(pointer(7, PointerPhase::Up, 3.0, 3));
-    for _ in 0..MESSAGE_QUEUE_CAPACITY {
-        enqueue(InputMessage::MouseWheel { dx: 0.0, dy: 1.0 });
-    }
+fn overflow_discards_pointer_bursts_but_cancels_active_drag_and_keeps_controls() {
+    let bindings = loam_runtime::Bindings::new();
+    let mut map = InputMap::default();
     let mut batch = VecDeque::new();
+    apply(
+        &mut map,
+        &bindings,
+        &pointer(7, PointerPhase::Down, 1.0, 1),
+        false,
+    );
+    let _ = map.take();
+
+    for burst in 0..MESSAGE_QUEUE_CAPACITY * 2 {
+        let id = burst as u64;
+        enqueue(pointer(id, PointerPhase::Down, 1.0, 1));
+        enqueue(pointer(id, PointerPhase::Up, 3.0, 3));
+    }
     drain_messages_into(&mut batch);
-    let transitions: Vec<(PointerPhase, f32)> = batch
+    assert!(batch.len() <= MESSAGE_QUEUE_CAPACITY);
+    batch.clear();
+
+    enqueue(InputMessage::Resize {
+        width: 1920,
+        height: 1080,
+        dpr: 2.0,
+    });
+    enqueue(InputMessage::Visibility(false));
+    for burst in 0..MESSAGE_QUEUE_CAPACITY - 2 {
+        let id = (1000 + burst) as u64;
+        let phase = if burst % 2 == 0 {
+            PointerPhase::Down
+        } else {
+            PointerPhase::Up
+        };
+        enqueue(pointer(id, phase, 4.0, 4));
+    }
+    enqueue(pointer(99_999, PointerPhase::Move, 7.0, 7));
+
+    drain_messages_into(&mut batch);
+    assert!(batch.len() <= MESSAGE_QUEUE_CAPACITY);
+    assert!(matches!(batch.front(), Some(InputMessage::Focus(false))));
+    assert!(batch.iter().any(|message| matches!(
+        message,
+        InputMessage::Resize {
+            width: 1920,
+            height: 1080,
+            dpr: 2.0
+        }
+    )));
+    assert!(batch
         .iter()
-        .filter_map(|msg| match msg {
-            InputMessage::Pointer {
-                id: 7, phase, x, ..
-            } if *phase != PointerPhase::Move => Some((*phase, *x)),
+        .any(|message| matches!(message, InputMessage::Visibility(false))));
+    let pointers: Vec<_> = batch
+        .iter()
+        .filter_map(|message| match message {
+            InputMessage::Pointer { id, phase, .. } => Some((*id, *phase)),
             _ => None,
         })
         .collect();
     assert_eq!(
-        transitions,
-        [(PointerPhase::Down, 1.0), (PointerPhase::Up, 3.0)]
+        pointers,
+        [(99_999, PointerPhase::Move)],
+        "overflow retained stale pointer transitions"
     );
+
+    for message in &batch {
+        apply(&mut map, &bindings, message, false);
+    }
+    let input = map.take();
+    assert_eq!(map.size(), (1920, 1080));
+    assert_eq!(map.scale(), 2.0);
+    assert!(input
+        .pointers
+        .iter()
+        .any(|pointer| { pointer.id == 7 && pointer.phase == RuntimePointerPhase::Cancelled }));
 }
 
 fn pointer(id: u64, phase: PointerPhase, x: f32, millis: u64) -> InputMessage {

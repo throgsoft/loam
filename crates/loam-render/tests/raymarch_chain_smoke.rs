@@ -1,13 +1,9 @@
-//! The 3D raymarch chain, `loam_scene::Scene` -> WGSL -> `ShaderDb` ->
-//! `RayMarchNode`: nothing else in the workspace instantiates it. Headless
-//! except the `gpu_probe`.
-
 use glam::Vec3;
-use loam_math::EuclideanR3;
-use loam_render::shader::ShaderDb;
+use loam_math::{EuclideanR3, WgslSpace};
+use loam_render::shader::{assemble_wgsl, validate_wgsl, GEODESIC_MARCH_KERNEL};
 use loam_render::{RayMarchNode, RayMarchUniforms};
 use loam_scene::{Scene, SceneNode};
-use wgpu::{Device, TextureFormat};
+use wgpu::{Device, ShaderModuleDescriptor, ShaderSource, TextureFormat};
 
 fn probe_scene() -> Scene {
     Scene::new(SceneNode::sphere(Vec3::ZERO, 0.5).union(SceneNode::plane(Vec3::Y, -0.5)))
@@ -76,33 +72,40 @@ fn scene_user_shader() -> String {
 fn build_geodesic_node(
     device: &Device,
     surface_format: TextureFormat,
-    shader_path: &std::path::Path,
     scene: &Scene,
-) -> anyhow::Result<RayMarchNode> {
-    let mut db = ShaderDb::new(device.clone());
-    let id = db.load_geodesic_scene(
-        ShaderDb::ROOT_OWNER,
-        shader_path,
-        &scene.to_wgsl(&EuclideanR3),
-        &EuclideanR3,
-    )?;
-    Ok(RayMarchNode::new(device, surface_format, db.module(id), 1))
+) -> Result<RayMarchNode, loam_render::shader::WgslValidationError> {
+    let prelude = EuclideanR3.wgsl_impl();
+    let scene = scene.to_wgsl(&EuclideanR3);
+    let user = geodesic_user_shader();
+    let source = assemble_wgsl(&[
+        prelude.as_ref(),
+        scene.as_str(),
+        GEODESIC_MARCH_KERNEL,
+        user.as_str(),
+    ]);
+    validate_wgsl(&source)?;
+    let module = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("geodesic raymarch"),
+        source: ShaderSource::Wgsl(source.into()),
+    });
+    Ok(RayMarchNode::new(device, surface_format, &module, 1))
 }
 
 fn build_raymarch_node(
     device: &Device,
     surface_format: TextureFormat,
-    shader_path: &std::path::Path,
     scene: &Scene,
-) -> anyhow::Result<RayMarchNode> {
-    let mut db = ShaderDb::new(device.clone());
-    let id = db.load_with_scene(
-        ShaderDb::ROOT_OWNER,
-        shader_path,
-        &scene.to_wgsl(&EuclideanR3),
-        &EuclideanR3,
-    )?;
-    Ok(RayMarchNode::new(device, surface_format, db.module(id), 1))
+) -> Result<RayMarchNode, loam_render::shader::WgslValidationError> {
+    let prelude = EuclideanR3.wgsl_impl();
+    let scene = scene.to_wgsl(&EuclideanR3);
+    let user = scene_user_shader();
+    let source = assemble_wgsl(&[prelude.as_ref(), scene.as_str(), user.as_str()]);
+    validate_wgsl(&source)?;
+    let module = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("scene raymarch"),
+        source: ShaderSource::Wgsl(source.into()),
+    });
+    Ok(RayMarchNode::new(device, surface_format, &module, 1))
 }
 
 fn frame_uniforms() -> RayMarchUniforms {
@@ -138,16 +141,12 @@ async fn request_device() -> Result<(wgpu::Device, wgpu::Queue), String> {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn scene_and_geodesic_shaders_draw_through_shader_db_gpu_probe() {
+fn scene_and_geodesic_string_sources_draw_gpu_probe() {
     let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
     let surface_format = TextureFormat::Rgba8UnormSrgb;
     let scene = probe_scene();
 
-    let dir = tempfile::tempdir().expect("tempdir");
-
-    let geodesic_path = dir.path().join("geodesic.wgsl");
-    std::fs::write(&geodesic_path, geodesic_user_shader()).expect("write geodesic shader");
-    let mut geodesic = build_geodesic_node(&device, surface_format, &geodesic_path, &scene)
+    let mut geodesic = build_geodesic_node(&device, surface_format, &scene)
         .expect("geodesic chain should build a pipeline");
     geodesic.set_uniforms(&queue, frame_uniforms());
     let pixel = center_pixel(&device, &queue, &mut geodesic);
@@ -156,9 +155,7 @@ fn scene_and_geodesic_shaders_draw_through_shader_db_gpu_probe() {
         "sphere normal pixel: {pixel:?}"
     );
 
-    let scene_path = dir.path().join("scene.wgsl");
-    std::fs::write(&scene_path, scene_user_shader()).expect("write scene shader");
-    let mut plain = build_raymarch_node(&device, surface_format, &scene_path, &scene)
+    let mut plain = build_raymarch_node(&device, surface_format, &scene)
         .expect("scene chain should build a pipeline");
     plain.set_uniforms(&queue, frame_uniforms());
     assert_eq!(center_pixel(&device, &queue, &mut plain), [255; 4]);

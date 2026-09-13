@@ -1,10 +1,11 @@
-use std::any::TypeId;
+use std::fmt;
 
-use crate::bulk::BulkId;
+use crate::bridge::{Drag, DragError, DragRelease};
 use crate::command::{CommandResult, Commands};
-use crate::domain::{DomainError, DomainId, Domains};
+use crate::domain::{ChartPoint, DomainError, Domains};
 use crate::input::Input;
-use crate::session::PreparedGeometry;
+use crate::session::{Manipulation, PreparedGeometry};
+use crate::stores::Stores;
 use crate::view::{Pick, Views};
 
 /// Fixed order; dispatch runs while paused and is the only phase where capacity grows.
@@ -13,16 +14,10 @@ pub enum Phase {
     Dispatch,
     Simulation,
     Publication,
-    Presentation,
 }
 
 impl Phase {
-    pub const ALL: [Phase; 4] = [
-        Phase::Dispatch,
-        Phase::Simulation,
-        Phase::Publication,
-        Phase::Presentation,
-    ];
+    pub const ALL: [Phase; 3] = [Phase::Dispatch, Phase::Simulation, Phase::Publication];
 
     fn index(self) -> usize {
         self as usize
@@ -45,100 +40,45 @@ pub struct Step {
     pub dt: f32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct StoreId(TypeId);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PhaseError {
+    pub phase: Phase,
+    pub system: Option<&'static str>,
+    pub cause: DomainError,
+}
 
-impl StoreId {
-    pub fn of<T: 'static>() -> Self {
-        Self(TypeId::of::<T>())
+impl PhaseError {
+    pub(crate) fn system(phase: Phase, system: &'static str, cause: DomainError) -> Self {
+        Self {
+            phase,
+            system: Some(system),
+            cause,
+        }
     }
 
-    pub fn type_id(self) -> TypeId {
-        self.0
+    pub(crate) fn unnamed(phase: Phase, cause: DomainError) -> Self {
+        Self {
+            phase,
+            system: None,
+            cause,
+        }
     }
 }
 
-/// Declared at registration; the runtime infers nothing from a function pointer.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Access {
-    reads: Vec<StoreId>,
-    writes: Vec<StoreId>,
-    domains: Vec<DomainId>,
-    every_domain: bool,
-    views: bool,
-    commands: bool,
-    awaits: Option<&'static str>,
-}
-
-impl Access {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn reads<T: 'static>(mut self) -> Self {
-        self.reads.push(StoreId::of::<T>());
-        self
-    }
-
-    pub fn writes<T: 'static>(mut self) -> Self {
-        self.writes.push(StoreId::of::<T>());
-        self
-    }
-
-    pub fn domain(mut self, id: DomainId) -> Self {
-        self.domains.push(id);
-        self
-    }
-
-    pub fn every_domain(mut self) -> Self {
-        self.every_domain = true;
-        self
-    }
-
-    pub fn views(mut self) -> Self {
-        self.views = true;
-        self
-    }
-
-    pub fn commands(mut self) -> Self {
-        self.commands = true;
-        self
-    }
-
-    /// The entry holds from the tick that plans the named item, when its readback is required, until the rows land, fail, or are cancelled.
-    pub fn awaits(mut self, work: &'static str) -> Self {
-        self.awaits = Some(work);
-        self
-    }
-
-    pub fn read_set(&self) -> &[StoreId] {
-        &self.reads
-    }
-
-    pub fn write_set(&self) -> &[StoreId] {
-        &self.writes
-    }
-
-    pub fn domain_set(&self) -> &[DomainId] {
-        &self.domains
-    }
-
-    pub fn touches_every_domain(&self) -> bool {
-        self.every_domain
-    }
-
-    pub fn touches_views(&self) -> bool {
-        self.views
-    }
-
-    pub fn submits_commands(&self) -> bool {
-        self.commands
-    }
-
-    pub fn awaited(&self) -> Option<&'static str> {
-        self.awaits
+impl fmt::Display for PhaseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.system {
+            Some(system) => write!(
+                formatter,
+                "system `{system}` failed in {:?}: {:?}",
+                self.phase, self.cause
+            ),
+            None => write!(formatter, "{:?} phase failed: {:?}", self.phase, self.cause),
+        }
     }
 }
+
+impl std::error::Error for PhaseError {}
 
 /// The common callback every adapter targets.
 pub struct Ctx<'a, A> {
@@ -150,11 +90,44 @@ pub struct Ctx<'a, A> {
     pub input: &'a Input,
     pub prepared: &'a [PreparedGeometry],
     pub step: Step,
+    pub(crate) manipulation: &'a mut Manipulation,
 }
 
-impl<A> Ctx<'_, A> {
+impl<A: Stores> Ctx<'_, A> {
     pub fn pick(&self, ndc: [f32; 2]) -> Option<Pick> {
         self.domains.pick(self.views, self.prepared, ndc)
+    }
+
+    pub fn dragging(&self) -> Option<Drag> {
+        self.manipulation.dragging()
+    }
+
+    pub fn grab(&mut self, ndc: [f32; 2], time: f64) -> Result<Pick, DragError> {
+        self.manipulation.grab(
+            self.domains,
+            self.views,
+            self.prepared,
+            self.commands,
+            ndc,
+            time,
+        )
+    }
+
+    pub fn drag(&mut self, ndc: [f32; 2], time: f64) -> Result<ChartPoint, DragError> {
+        self.manipulation
+            .drag(self.domains, self.views, self.commands, ndc, time)
+    }
+
+    pub fn release(&mut self) -> Option<DragRelease> {
+        self.manipulation.release(self.commands)
+    }
+
+    pub fn release_at(&mut self, time: f64) -> Option<DragRelease> {
+        self.manipulation.release_at(self.commands, time)
+    }
+
+    pub fn cancel_drag(&mut self) -> Option<DragRelease> {
+        self.manipulation.cancel(self.commands)
     }
 }
 
@@ -215,14 +188,13 @@ type Runner<A> = Box<dyn FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send>;
 
 pub struct SystemEntry<A> {
     name: &'static str,
-    access: Access,
     run: Runner<A>,
 }
 
 impl<A: 'static> SystemEntry<A> {
-    pub(crate) fn new<M>(name: &'static str, access: Access, system: impl System<A, M>) -> Self {
+    pub(crate) fn new<M>(name: &'static str, system: impl System<A, M>) -> Self {
         let mut system = system;
-        Self::fallible(name, access, move |ctx: Ctx<'_, A>| {
+        Self::fallible(name, move |ctx: Ctx<'_, A>| {
             system.run(ctx);
             Ok(())
         })
@@ -230,96 +202,22 @@ impl<A: 'static> SystemEntry<A> {
 
     pub(crate) fn fallible(
         name: &'static str,
-        access: Access,
         run: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
     ) -> Self {
         Self {
             name,
-            access,
             run: Box::new(run),
         }
     }
+}
 
+impl<A> SystemEntry<A> {
     pub fn name(&self) -> &'static str {
         self.name
     }
 
-    pub fn access(&self) -> &Access {
-        &self.access
-    }
-
     pub(crate) fn run(&mut self, ctx: Ctx<'_, A>) -> Result<(), DomainError> {
         (self.run)(ctx)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Schedule {
-    InStep,
-    /// Issued at publish for the next tick when every store it reads is live with no write in flight; otherwise it runs in-step and counts a fallback.
-    Ahead,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Readback {
-    None,
-    /// An entry that awaits the item holds from the tick the order is planned for until the result lands, fails, or is cancelled; `snapshot` refuses only while an issued order is unlanded, not a planned one.
-    Required,
-    /// Never holds an entry; the landed result carries the tick that produced it.
-    Optional,
-}
-
-/// Ordered by the session, executed by the host's GPU context.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkItem {
-    pub name: &'static str,
-    pub schedule: Schedule,
-    pub readback: Readback,
-    reads: Vec<BulkId>,
-    writes: Vec<BulkId>,
-}
-
-impl WorkItem {
-    pub fn new(name: &'static str, schedule: Schedule, readback: Readback) -> Self {
-        Self {
-            name,
-            schedule,
-            readback,
-            reads: Vec::new(),
-            writes: Vec::new(),
-        }
-    }
-
-    pub fn reads(mut self, id: BulkId) -> Self {
-        self.reads.push(id);
-        self
-    }
-
-    pub fn writes(mut self, id: BulkId) -> Self {
-        self.writes.push(id);
-        self
-    }
-
-    pub fn read_set(&self) -> &[BulkId] {
-        &self.reads
-    }
-
-    pub fn write_set(&self) -> &[BulkId] {
-        &self.writes
-    }
-}
-
-pub enum Entry<A> {
-    System(SystemEntry<A>),
-    Work(WorkItem),
-}
-
-impl<A> Entry<A> {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Entry::System(system) => system.name,
-            Entry::Work(item) => item.name,
-        }
     }
 }
 
@@ -330,7 +228,7 @@ pub struct EntryId {
 }
 
 pub(crate) struct Phases<A> {
-    entries: [Vec<Entry<A>>; 4],
+    entries: [Vec<SystemEntry<A>>; 3],
 }
 
 impl<A> Phases<A> {
@@ -340,7 +238,7 @@ impl<A> Phases<A> {
         }
     }
 
-    pub(crate) fn push(&mut self, phase: Phase, entry: Entry<A>) -> EntryId {
+    pub(crate) fn push(&mut self, phase: Phase, entry: SystemEntry<A>) -> EntryId {
         let list = &mut self.entries[phase.index()];
         list.push(entry);
         EntryId {
@@ -353,7 +251,7 @@ impl<A> Phases<A> {
         &mut self,
         phase: Phase,
         order: Order,
-        entry: Entry<A>,
+        entry: SystemEntry<A>,
     ) -> Option<EntryId> {
         let list = &mut self.entries[phase.index()];
         let index = match order {
@@ -367,11 +265,11 @@ impl<A> Phases<A> {
         })
     }
 
-    pub(crate) fn entries(&self, phase: Phase) -> &[Entry<A>] {
+    pub(crate) fn entries(&self, phase: Phase) -> &[SystemEntry<A>] {
         &self.entries[phase.index()]
     }
 
-    pub(crate) fn entries_mut(&mut self, phase: Phase) -> &mut [Entry<A>] {
+    pub(crate) fn entries_mut(&mut self, phase: Phase) -> &mut [SystemEntry<A>] {
         &mut self.entries[phase.index()]
     }
 }

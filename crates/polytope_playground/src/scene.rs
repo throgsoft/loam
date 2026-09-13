@@ -1,15 +1,15 @@
 use glam::Vec4;
-use loam_math::EuclideanR4;
-use loam_render::raymarch::{
+use loam::math::EuclideanR4;
+use loam::render::raymarch::{
     polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
 };
-use loam_render::sky_ground::{Ground, DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
-use loam_runtime::Eye;
-use loam_runtime::Pose;
-use loam_scene::{Scene4, SceneNode4};
+use loam::render::sky_ground::{Ground, DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
+use loam::runtime::Eye;
+use loam::runtime::Pose;
+use loam::scene::{Scene4, SceneNode4};
 
 use crate::catalog::ShapeEntry;
-use crate::consts::{BODY_SIZE, FLOOR_Y};
+use crate::consts::FLOOR_Y;
 
 pub(crate) fn shader_source() -> String {
     let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, FLOOR_Y));
@@ -31,11 +31,11 @@ pub(crate) fn ground(visible: bool) -> Ground {
     }
 }
 
-pub(crate) fn body_of(entry: &ShapeEntry, pose: &Pose<EuclideanR4>) -> BodyUniform {
+pub(crate) fn body_of(entry: &ShapeEntry, pose: &Pose<EuclideanR4>, size: f32) -> BodyUniform {
     BodyUniform::polytope_with_rotor(
         pose.point.to_array(),
         entry.shape.shape_id(),
-        BODY_SIZE,
+        size,
         pose.frame,
         entry.body_color,
     )

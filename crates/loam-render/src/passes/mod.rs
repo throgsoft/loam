@@ -1,11 +1,9 @@
-mod field;
 mod hyperslice;
 mod line;
 mod point;
 mod raymarch;
 mod sky_ground;
 
-pub use field::FieldPass;
 pub use hyperslice::HyperslicePass;
 pub use line::LinePass;
 pub use point::PointPass;
@@ -140,8 +138,12 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             size: SIZE,
         };
         schedule.begin_frame();
-        schedule.record(crate::PassOrder::BeforeScene, &mut encoder, &target);
-        schedule.record(crate::PassOrder::AfterScene, &mut encoder, &target);
+        schedule
+            .record(crate::PassStage::Scene, &mut encoder, &target)
+            .expect("scene recorded");
+        schedule
+            .record(crate::PassStage::Overlay, &mut encoder, &target)
+            .expect("overlays recorded");
         schedule.end_frame(&mut encoder);
         gpu.queue.submit(Some(encoder.finish()));
     }
@@ -149,9 +151,22 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     #[test]
     fn the_background_wrapper_precedes_the_scene_and_the_overlays_follow_the_depth_writer() {
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        for pass in wrappers() {
+        let hyperslice = HyperslicePass::new(kernel());
+        hyperslice.publish_strip(&[(
+            crate::Viewport::full([SIZE.0, SIZE.1]),
+            0.0,
+            BodyUniform::sphere([0.0; 4], 0.5, [1.0; 3]),
+        )]);
+        for pass in [
+            Box::new(LinePass::new("edges")) as Box<dyn FramePass>,
+            Box::new(PointPass::new("vertices")),
+            Box::new(PointPass::new("grab-point")),
+            Box::new(hyperslice.clone()),
+            Box::new(SkyGroundPass::new(ground())),
+        ] {
             schedule.register(pass).expect("registered");
         }
+        hyperslice.publish_strip(&[]);
         let names: Vec<&'static str> = schedule.names().collect();
         let index = |name: &str| {
             names
@@ -167,6 +182,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             index("hyperslice") < index("edges") && index("hyperslice") < index("vertices"),
             "an overlay records before the pass that writes the depth it tests: {names:?}"
         );
+        assert!(index("vertices") < index("grab-point"));
     }
 
     #[test]
@@ -180,11 +196,11 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         }
 
         schedule
-            .rebuild(&first, frame(SAMPLES))
+            .attach(&first, frame(SAMPLES))
             .expect("first attach");
         record_once(&first, &mut schedule, SAMPLES);
 
-        schedule.rebuild(&second, frame(SAMPLES)).expect("recovery");
+        schedule.attach(&second, frame(SAMPLES)).expect("recovery");
         second
             .device
             .push_error_scope(wgpu::ErrorFilter::Validation);
@@ -196,7 +212,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         );
     }
     #[test]
-    fn a_publish_that_changes_only_a_colour_still_reaches_the_gpu() {
+    fn a_publish_that_changes_only_a_color_still_reaches_the_gpu() {
         let gpu = noop_gpu();
         let mut point = PointPass::new("vertices");
         let record = PointRecord {
@@ -225,7 +241,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         assert_eq!(
             point.uploads(),
             after_first + 1,
-            "the colour change never left the CPU: the pass uploaded {} times across both frames",
+            "the color change never left the CPU: the pass uploaded {} times across both frames",
             point.uploads()
         );
     }

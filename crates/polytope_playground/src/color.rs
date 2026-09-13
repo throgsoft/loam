@@ -1,6 +1,5 @@
-use glam::Vec4;
-use loam_runtime::{EdgeShading, PaletteId};
-use loam_shape::polytope::{vertex_color_by_position, Polytope4Topology};
+use loam::runtime::{EdgeShading, PaletteId};
+use loam::shape::polytope::{vertex_color_by_position, Polytope4Topology};
 
 // Matches the depth cue in the LineRasterStaticR4 shader.
 pub(crate) const W_DEPTH_BACK: [f32; 4] = [0.30, 0.42, 0.58, 1.0];
@@ -125,22 +124,6 @@ pub(crate) fn w_extent(topology: &Polytope4Topology, scale: f32) -> f32 {
         * scale
 }
 
-pub(crate) fn w_depth_color(w: f32, extent: f32) -> [f32; 4] {
-    let t = ((w / extent.max(1e-6)) * 0.5 + 0.5).clamp(0.0, 1.0);
-    let mut mixed = [0.0; 4];
-    for (channel, value) in mixed.iter_mut().enumerate() {
-        *value = W_DEPTH_BACK[channel] + (W_DEPTH_FRONT[channel] - W_DEPTH_BACK[channel]) * t;
-    }
-    mixed
-}
-
-pub(crate) fn point_color(mode: ColorMode, canonical: Vec4, local: Vec4, extent: f32) -> [f32; 4] {
-    match mode {
-        ColorMode::VertexGradient | ColorMode::UniqueEdge => vertex_color_by_position(canonical),
-        ColorMode::WDepth => w_depth_color(local.w, extent),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,35 +132,20 @@ mod tests {
     fn the_greedy_palette_separates_edges_that_share_a_vertex() {
         let edges: &[[u32; 2]] = &[[0, 1], [0, 2], [0, 3]];
         let colors = unique_edge_colors(edges);
-        assert_eq!(colors.len(), 6, "one colour per endpoint");
+        assert_eq!(colors.len(), 6, "one color per endpoint");
         for edge in 0..3 {
             assert_eq!(
                 colors[edge * 2],
                 colors[edge * 2 + 1],
-                "an edge is one colour"
+                "an edge is one color"
             );
             for other in (edge + 1)..3 {
                 assert_ne!(
                     colors[edge * 2],
                     colors[other * 2],
-                    "edges {edge} and {other} share vertex 0 and got one colour"
+                    "edges {edge} and {other} share vertex 0 and got one color"
                 );
             }
         }
-    }
-
-    #[test]
-    fn the_w_depth_ramp_clamps_past_its_extent() {
-        assert_eq!(w_depth_color(5.0, 1.0), W_DEPTH_FRONT);
-        assert_eq!(w_depth_color(-5.0, 1.0), W_DEPTH_BACK);
-        assert_eq!(
-            w_depth_color(0.0, 1.0),
-            [
-                (W_DEPTH_BACK[0] + W_DEPTH_FRONT[0]) * 0.5,
-                (W_DEPTH_BACK[1] + W_DEPTH_FRONT[1]) * 0.5,
-                (W_DEPTH_BACK[2] + W_DEPTH_FRONT[2]) * 0.5,
-                1.0
-            ]
-        );
     }
 }

@@ -8,54 +8,54 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, OffscreenCanvas};
 
 use loam_egui::egui;
-use loam_render::device::{FeatureRequest, GpuContext, RenderDevice};
-use loam_runtime::host::{HostConfig, HostError};
+use loam_render::device::{FeatureRequest, RenderDevice};
+use loam_runtime::host::HostError;
 use loam_runtime::{Session, Stores};
 use web_time::Instant;
 
-use super::animation::{self, Next};
+use super::animation::{self, Lifecycle, Next};
 use super::app::SessionApp;
 use super::frame::{failed, Frame, Target};
+use super::input::TouchCapture;
 use super::pacing::Pace;
-use super::WorkContext;
+use super::surface::SurfaceHost;
 use crate::wasm::input_queue::{self, InputMessage};
 use crate::wasm::messages;
 use crate::wasm::{install_logging_idempotent, post_failure, worker_scope};
+use crate::{args::Args, WasmConfig};
 
-/// [`launch`] with a default [`SessionApp`]; on the page it returns at once and the worker owns the loop.
-pub fn run<A: Stores>(session: Session<A>, config: HostConfig) -> Result<(), HostError> {
-    launch(session, SessionApp::new(config))
-}
+#[path = "browser_measurement.rs"]
+mod measurement;
+use measurement::{Attempt, Probe};
 
-/// `record` runs once per issued order inside the frame's encoder before the presenter draws.
-pub fn run_with_work<A: Stores>(
-    session: Session<A>,
-    config: HostConfig,
-    record: impl FnMut(WorkContext<'_>) + 'static,
+pub fn launch<A: Stores>(
+    factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
 ) -> Result<(), HostError> {
-    launch(session, SessionApp::new(config).work(record))
+    launch_with(WasmConfig::default(), factory)
 }
 
-/// In the worker, listens for `init` and drives frames from the offscreen canvas; on the page, starts the worker and returns at once.
-pub fn launch<A: Stores>(session: Session<A>, app: SessionApp<A>) -> Result<(), HostError> {
+pub fn launch_with<A: Stores>(
+    wasm: WasmConfig,
+    factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
+) -> Result<(), HostError> {
     install_logging_idempotent();
     if crate::wasm::is_worker_context() {
-        return listen(session, app).map_err(|error| failed(format!("{error:#}")));
+        return listen(factory).map_err(|error| failed(format!("{error:#}")));
     }
-    let sim = crate::SimConfig {
-        fixed_hz: session.config().fixed_hz,
-        catch_up: crate::CatchUp::Cap(session.config().max_ticks_per_frame),
-        seed: session.config().seed,
-        overlap: session.config().overlap,
-    };
-    let wasm = app.wasm.clone();
-    drop(session);
-    drop(app);
-    crate::wasm::launch_on_click(&wasm.host_id, &wasm.button_id, &wasm.canvas_id, sim)
+    drop(factory);
+    crate::wasm::launch_on_click(&wasm.host_id, &wasm.button_id, &wasm.canvas_id)
         .map_err(|error| failed(format!("{error:#}")))
 }
 
-type Pending<A> = Rc<RefCell<Option<(Session<A>, SessionApp<A>)>>>;
+pub fn launch_or_headless<A: Stores>(
+    factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
+    headless: impl FnOnce(Args) -> Result<(), HostError>,
+) -> Result<(), HostError> {
+    drop(headless);
+    launch(factory)
+}
+
+type Pending<F> = Rc<RefCell<Option<F>>>;
 
 thread_local! {
     static RAF_KICKOFF: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
@@ -64,15 +64,21 @@ thread_local! {
     static START_REQUESTED: Cell<bool> = const { Cell::new(false) };
     static PAUSED: Cell<bool> = const { Cell::new(false) };
     static LOOP_STARTED: Cell<bool> = const { Cell::new(false) };
+    static LIFECYCLE: Cell<Lifecycle> = const { Cell::new(Lifecycle::Ready) };
 }
 
-fn listen<A: Stores>(session: Session<A>, app: SessionApp<A>) -> Result<()> {
+fn listen<A: Stores, F>(factory: F) -> Result<()>
+where
+    F: FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
+{
     let scope = worker_scope()?;
-    let pending: Pending<A> = Rc::new(RefCell::new(Some((session, app))));
+    let pending: Pending<F> = Rc::new(RefCell::new(Some(factory)));
     let handler_scope = scope.clone();
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         if let Err(error) = on_message(&handler_scope, event, &pending) {
-            tracing::error!("loam-app::session::browser: message handler failed: {error:#}");
+            let message = format!("message handler failed: {error:#}");
+            tracing::error!("loam-app::session::browser: {message}");
+            post_failure(&handler_scope, &message);
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     scope
@@ -95,11 +101,54 @@ fn post(scope: &DedicatedWorkerGlobalScope, kind: &str) {
     }
 }
 
-fn on_message<A: Stores>(
+fn post_cursor_request(scope: &DedicatedWorkerGlobalScope, locked: bool) {
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str("cursor_lock"),
+    );
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("locked"),
+        &JsValue::from_bool(locked),
+    );
+    if let Err(error) = scope.post_message(&message) {
+        tracing::warn!("loam-app::session::browser: cursor request failed: {error:?}");
+    }
+}
+
+fn post_measurement(scope: &DedicatedWorkerGlobalScope, result: &str) {
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str("measurement"),
+    );
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("result"),
+        &JsValue::from_str(result),
+    );
+    if let Err(error) = scope.post_message(&message) {
+        tracing::warn!("loam-app::session::browser: measurement post failed: {error:?}");
+    }
+}
+
+fn committed_wasm_memory_bytes() -> u64 {
+    let memory = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
+    let buffer = memory.buffer().unchecked_into::<js_sys::ArrayBuffer>();
+    u64::from(buffer.byte_length())
+}
+
+fn on_message<A: Stores, F>(
     scope: &DedicatedWorkerGlobalScope,
     event: MessageEvent,
-    pending: &Pending<A>,
-) -> Result<()> {
+    pending: &Pending<F>,
+) -> Result<()>
+where
+    F: FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
+{
     let data: JsValue = event.data();
     let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
         .ok()
@@ -115,12 +164,19 @@ fn on_message<A: Stores>(
         Some("pause") => {
             if !PAUSED.with(|paused| paused.replace(true)) {
                 input_queue::enqueue(InputMessage::Focus(false));
+                post_cursor_request(scope, false);
             }
             return Ok(());
         }
         Some("resume") => {
             let was_paused = PAUSED.with(|paused| paused.replace(false));
-            if was_paused && LOOP_STARTED.with(|started| started.get()) {
+            if was_paused {
+                input_queue::enqueue(InputMessage::Focus(true));
+            }
+            let started = LOOP_STARTED.with(|started| started.get());
+            let pending = RAF_PENDING.with(|pending| pending.get());
+            let lifecycle = LIFECYCLE.with(|lifecycle| lifecycle.get());
+            if animation::resumed(was_paused, started, pending, lifecycle) == Next::Frame {
                 RAF_RESTART.with(|restart| {
                     if let Some(restart) = restart.borrow().as_ref() {
                         restart();
@@ -130,7 +186,7 @@ fn on_message<A: Stores>(
             return Ok(());
         }
         Some("init") => {
-            let Some((session, app)) = pending.borrow_mut().take() else {
+            let Some(factory) = pending.borrow_mut().take() else {
                 return Err(anyhow!("a second init reached the session worker"));
             };
             let canvas = js_sys::Reflect::get(&data, &JsValue::from_str("canvas"))
@@ -150,13 +206,26 @@ fn on_message<A: Stores>(
                     .unwrap_or_default()
             };
             crate::args::set_query_override(read_str("search"), read_str("hash"));
+            let args = Args::current();
+            let (session, app) = factory(args.clone())
+                .map_err(|error| anyhow!("session factory failed: {error:?}"))?;
             let width = read_u32("width").unwrap_or(800);
             let height = read_u32("height").unwrap_or(600);
             let dpr = messages::read_device_pixel_ratio(&data);
+            let measurement = Probe::from_args(&args, width, height, dpr);
             let scope = scope.clone();
             let failure_scope = scope.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let started = start(scope, session, app, canvas, width, height, dpr).await;
+                let started = start(
+                    scope,
+                    session,
+                    app,
+                    canvas,
+                    (width, height),
+                    dpr,
+                    measurement,
+                )
+                .await;
                 if let Err(error) = started {
                     let message = format!("initialization failed: {error:#}");
                     tracing::error!("loam-app::session::browser: {message}");
@@ -184,14 +253,12 @@ fn on_message<A: Stores>(
 async fn start<A: Stores>(
     scope: DedicatedWorkerGlobalScope,
     session: Session<A>,
-    mut app: SessionApp<A>,
+    app: SessionApp<A>,
     canvas: OffscreenCanvas,
-    width: u32,
-    height: u32,
+    size: (u32, u32),
     dpr: f32,
+    measurement: Option<Probe>,
 ) -> Result<()> {
-    app.args = crate::args::Args::current();
-    app.apply_args();
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::BROWSER_WEBGPU,
         ..Default::default()
@@ -203,11 +270,9 @@ async fn start<A: Stores>(
         optional_features: wgpu::Features::empty(),
         ..FeatureRequest::default()
     };
-    let context = GpuContext::new(instance, request, Some(&surface))
+    let (surface, rd) = SurfaceHost::new(instance, surface, size, request, 1)
         .await
-        .context("GpuContext::new")?;
-    let size = winit::dpi::PhysicalSize::new(width, height);
-    let rd = RenderDevice::attach(context, surface, size, 1).context("RenderDevice::attach")?;
+        .context("SurfaceHost::new")?;
 
     let mut frame = Frame::new(session, app);
     frame
@@ -216,17 +281,21 @@ async fn start<A: Stores>(
             rd.target_format(),
             rd.sample_count(),
             None,
-            (width, height),
+            size,
             dpr,
         )
         .map_err(|error| anyhow!("{error:?}"))?;
-    let worker = Rc::new(RefCell::new(Worker {
+    let worker = Rc::new(RefCell::new(Some(Worker {
         frame,
+        surface,
         rd,
         canvas,
+        scope: scope.clone(),
         messages: VecDeque::new(),
+        touches: TouchCapture::default(),
         dpr,
-    }));
+        measurement,
+    })));
     post(&scope, "preview_ready");
     install_animation_frame(scope, worker);
     Ok(())
@@ -234,7 +303,7 @@ async fn start<A: Stores>(
 
 fn install_animation_frame<A: Stores>(
     scope: DedicatedWorkerGlobalScope,
-    worker: Rc<RefCell<Worker<A>>>,
+    worker: Rc<RefCell<Option<Worker<A>>>>,
 ) {
     let callback: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
     let callback_for_closure = callback.clone();
@@ -245,11 +314,47 @@ fn install_animation_frame<A: Stores>(
         let paused = PAUSED.with(|paused| paused.get());
         let loss = match paused {
             true => None,
-            false => worker_for_closure.borrow().rd.take_device_loss(),
+            false => worker_for_closure
+                .borrow()
+                .as_ref()
+                .and_then(|worker| worker.rd.take_device_loss()),
         };
-        match animation::frame(paused, loss.is_some(), || {
-            worker_for_closure.borrow_mut().animate()
-        }) {
+        let next = LIFECYCLE.with(|lifecycle| {
+            let mut state = lifecycle.get();
+            let next = animation::frame(paused, &mut state, loss.is_some(), || {
+                let mut held = worker_for_closure.borrow_mut();
+                let Some(worker) = held.as_mut() else {
+                    return Err(failed("the session worker is unavailable"));
+                };
+                let started = worker.measurement.as_ref().map(|_| Instant::now());
+                let attempt = worker.animate()?;
+                if let Some(started) = started {
+                    let cpu_ms = started.elapsed().as_secs_f64() * 1000.0;
+                    let report = match worker.frame.phase_error() {
+                        Some(error) => worker
+                            .measurement
+                            .take()
+                            .map(|probe| probe.invalid(error)),
+                        None => worker
+                            .measurement
+                            .as_mut()
+                            .and_then(|probe| probe.observe(attempt, started, cpu_ms)),
+                    };
+                    if let Some(mut report) = report {
+                        report.push_str(&format!(
+                            "\nWASM linear memory committed at report: {} bytes\nGPU memory: unavailable\nGPU duration: unavailable; no timestamp query",
+                            committed_wasm_memory_bytes()
+                        ));
+                        post_measurement(&worker.scope, &report);
+                        worker.measurement = None;
+                    }
+                }
+                Ok(())
+            });
+            lifecycle.set(state);
+            next
+        });
+        match next {
             Next::Idle => {}
             Next::Frame => request_frame(&scope_for_closure, &callback_for_closure),
             Next::Failed(message) => {
@@ -267,9 +372,20 @@ fn install_animation_frame<A: Stores>(
                     };
                     let paused = PAUSED.with(|paused| paused.get());
                     let pending = RAF_PENDING.with(|pending| pending.get());
-                    match animation::recovered(paused, pending, outcome) {
+                    let next = LIFECYCLE.with(|lifecycle| {
+                        let mut state = lifecycle.get();
+                        let next = animation::recovered(&mut state, paused, pending, outcome);
+                        lifecycle.set(state);
+                        next
+                    });
+                    match next {
                         Next::Frame => {
-                            worker.borrow_mut().frame.reset_clock(Instant::now());
+                            let mut held = worker.borrow_mut();
+                            let Some(worker) = held.as_mut() else {
+                                return;
+                            };
+                            worker.frame.reset_clock(Instant::now());
+                            drop(held);
                             request_frame(&scope, &callback);
                         }
                         Next::Failed(message) => {
@@ -288,10 +404,12 @@ fn install_animation_frame<A: Stores>(
     let worker_for_kickoff = worker.clone();
     RAF_KICKOFF.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(move || {
-            worker_for_kickoff
-                .borrow_mut()
-                .frame
-                .reset_clock(Instant::now());
+            let mut held = worker_for_kickoff.borrow_mut();
+            let Some(worker) = held.as_mut() else {
+                return;
+            };
+            worker.frame.reset_clock(Instant::now());
+            drop(held);
             LOOP_STARTED.with(|started| started.set(true));
             request_frame(&scope_for_kickoff, &callback_for_kickoff);
         }));
@@ -304,7 +422,12 @@ fn install_animation_frame<A: Stores>(
             if RAF_PENDING.with(|pending| pending.get()) {
                 return;
             }
-            worker.borrow_mut().frame.reset_clock(Instant::now());
+            let mut held = worker.borrow_mut();
+            let Some(worker) = held.as_mut() else {
+                return;
+            };
+            worker.frame.reset_clock(Instant::now());
+            drop(held);
             request_frame(&scope_for_restart, &callback_for_restart);
         }));
     });
@@ -331,27 +454,38 @@ fn request_frame(
 }
 
 async fn recover<A: Stores>(
-    worker: &Rc<RefCell<Worker<A>>>,
+    worker: &Rc<RefCell<Option<Worker<A>>>>,
     loss: &loam_render::device::DeviceLoss,
 ) -> std::result::Result<(), String> {
-    let rebuilt = {
-        let mut held = worker.borrow_mut();
-        held.rd.recover().await
+    let active = worker.borrow_mut().take();
+    let Some(mut active) = active else {
+        return Err("the session worker is unavailable during recovery".to_owned());
     };
-    if let Err(error) = rebuilt {
-        return Err(format!(
+    if let Some(probe) = active.measurement.as_mut() {
+        probe.recover();
+    }
+
+    let outcome = if let Err(error) = active.rd.recover().await {
+        Err(format!(
             "GPU device lost ({:?}: {}); the device was not rebuilt: {error:#}",
             loss.reason, loss.message
-        ));
-    }
-    let mut held = worker.borrow_mut();
-    let Worker { frame, rd, .. } = &mut *held;
-    frame
-        .recover(&rd.context)
-        .map_err(|error| format!("presentation recovery failed: {error:?}"))
+        ))
+    } else {
+        active.surface.reconfigure(&active.rd.context.device);
+        active
+            .frame
+            .recover(&active.rd.context)
+            .map_err(|error| format!("presentation recovery failed: {error:?}"))
+    };
+    *worker.borrow_mut() = Some(active);
+    outcome
 }
 
-fn feed_layer(layer: &super::DebugLayer, message: &InputMessage) -> bool {
+fn feed_layer(
+    layer: &super::DebugLayer,
+    touches: &mut TouchCapture,
+    message: &InputMessage,
+) -> bool {
     let context = layer.context();
     match message {
         InputMessage::MouseMove { x, y, .. } => {
@@ -365,6 +499,7 @@ fn feed_layer(layer: &super::DebugLayer, message: &InputMessage) -> bool {
             y,
             button,
             pressed,
+            ..
         } => {
             if let Some(egui_button) = crate::keymap::mouse_button_egui(*button) {
                 layer.push(egui::Event::PointerButton {
@@ -423,84 +558,200 @@ fn feed_layer(layer: &super::DebugLayer, message: &InputMessage) -> bool {
             context.wants_keyboard_input()
         }
         InputMessage::Focus(focused) => {
+            if !focused {
+                layer.cancel_touches(touches);
+            }
             layer.push(egui::Event::WindowFocused(*focused));
             false
+        }
+        InputMessage::Pointer {
+            id, x, y, phase, ..
+        } => {
+            let pos = egui::pos2(*x, *y) / context.zoom_factor();
+            let pointer_before = touches.is_pointer(*id);
+            let over_ui = *phase == crate::wasm::input_queue::PointerPhase::Down
+                && context.layer_id_at(pos).is_some_and(|layer| {
+                    layer.order != egui::Order::Background
+                        || !context.available_rect().contains(pos)
+                });
+            let consumed = touches.route(*id, *phase, over_ui, [pos.x, pos.y]);
+            let pointer = pointer_before || touches.is_pointer(*id);
+            if !consumed {
+                return false;
+            }
+            let touch_phase = match phase {
+                crate::wasm::input_queue::PointerPhase::Down => egui::TouchPhase::Start,
+                crate::wasm::input_queue::PointerPhase::Move => egui::TouchPhase::Move,
+                crate::wasm::input_queue::PointerPhase::Up => egui::TouchPhase::End,
+                crate::wasm::input_queue::PointerPhase::Cancel => egui::TouchPhase::Cancel,
+            };
+            if *phase == crate::wasm::input_queue::PointerPhase::Cancel {
+                layer.cancel_touch(*id, pos, pointer);
+            } else {
+                layer.push(egui::Event::Touch {
+                    device_id: egui::TouchDeviceId(0),
+                    id: egui::TouchId::from(*id),
+                    phase: touch_phase,
+                    pos,
+                    force: None,
+                });
+            }
+            if pointer {
+                match phase {
+                    crate::wasm::input_queue::PointerPhase::Down => {
+                        layer.push(egui::Event::PointerMoved(pos));
+                        layer.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: layer.modifiers(),
+                        });
+                    }
+                    crate::wasm::input_queue::PointerPhase::Move => {
+                        layer.push(egui::Event::PointerMoved(pos));
+                    }
+                    crate::wasm::input_queue::PointerPhase::Up => {
+                        layer.push(egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: layer.modifiers(),
+                        });
+                        layer.push(egui::Event::PointerGone);
+                    }
+                    crate::wasm::input_queue::PointerPhase::Cancel => {}
+                }
+            }
+            consumed
         }
         InputMessage::Resize { .. }
         | InputMessage::Visibility(_)
         | InputMessage::Start
-        | InputMessage::PointerLockChanged(_)
-        | InputMessage::Pointer { .. } => false,
+        | InputMessage::PointerLockChanged { .. } => false,
     }
 }
 
 struct Worker<A: Stores> {
     frame: Frame<A>,
+    surface: SurfaceHost,
     rd: RenderDevice,
     canvas: OffscreenCanvas,
+    scope: DedicatedWorkerGlobalScope,
     messages: VecDeque<InputMessage>,
+    touches: TouchCapture,
     dpr: f32,
+    measurement: Option<Probe>,
 }
 
 impl<A: Stores> Worker<A> {
     fn resize(&mut self, width: u32, height: u32, dpr: f32) {
-        if width == 0 || height == 0 {
-            return;
-        }
         self.canvas.set_width(width);
         self.canvas.set_height(height);
-        self.rd.resize(winit::dpi::PhysicalSize::new(width, height));
+        let size = (width, height);
+        self.surface.resize(&self.rd.context.device, size);
+        self.rd.resize(size);
         self.dpr = dpr;
         self.frame.resize(width, height, dpr);
     }
 
     fn apply(&mut self, message: InputMessage) {
+        if let Some(probe) = self.measurement.as_mut() {
+            probe.observe_message(&message);
+        }
+        self.frame.observe_message(&message);
+        if self.frame.cursor_locked()
+            && matches!(
+                &message,
+                InputMessage::MouseMove { .. }
+                    | InputMessage::MouseButton { .. }
+                    | InputMessage::MouseWheel { .. }
+            )
+        {
+            if matches!(&message, InputMessage::MouseMove { .. }) {
+                self.frame.apply_message(&message, false);
+            }
+            return;
+        }
         let layer = self.frame.layer().cloned();
         let consumed = layer
             .as_ref()
-            .is_some_and(|layer| feed_layer(layer, &message));
+            .is_some_and(|layer| feed_layer(layer, &mut self.touches, &message));
         match &message {
             InputMessage::Resize { width, height, dpr } => self.resize(*width, *height, *dpr),
-            _ if consumed => {}
-            _ => self.frame.apply_message(&message),
+            _ => self.frame.apply_message(&message, consumed),
         }
     }
 
-    fn animate(&mut self) -> Result<(), HostError> {
+    fn animate(&mut self) -> Result<Attempt, HostError> {
         input_queue::drain_messages_into(&mut self.messages);
         while let Some(message) = self.messages.pop_front() {
             self.apply(message);
         }
+        self.flush_cursor_request();
         if let Some(enabled) = self.frame.app_mut().vsync.take() {
-            crate::frame_pacing::apply_present_mode(&mut self.rd, enabled);
+            self.surface.set_vsync(&self.rd.context.device, enabled);
         }
         let now = Instant::now();
         if let Pace::Wait(_) = self.frame.app_mut().pacer.decide(now) {
-            return Ok(());
+            return Ok(Attempt::Paced);
         }
-        let size = self.rd.surface_bundle.size;
-        let Ok((surface, swap_view)) = self.rd.begin_frame() else {
-            return Ok(());
+        let size = self.surface.size();
+        if size.0 == 0 || size.1 == 0 {
+            return Ok(Attempt::EmptySurface);
+        }
+        let (frame_surface, swap_view) = match self.surface.begin_frame() {
+            Ok(frame) => frame,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.surface.reconfigure(&self.rd.context.device);
+                return Ok(Attempt::ReconfiguredSurface);
+            }
+            Err(wgpu::SurfaceError::Timeout) => {
+                tracing::warn!("surface frame timed out");
+                return Ok(Attempt::TimedOutSurface);
+            }
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                return Err(failed("surface ran out of memory"));
+            }
+            Err(wgpu::SurfaceError::Other) => {
+                tracing::warn!("surface frame failed");
+                return Ok(Attempt::FailedSurface);
+            }
         };
-        let Worker { frame, rd, .. } = self;
+        let Worker {
+            frame,
+            surface,
+            rd,
+            scope,
+            ..
+        } = self;
         {
             let view = rd.msaa_view().or(rd.scene_view()).unwrap_or(&swap_view);
             let target = Target {
                 view,
-                texture: &surface.texture,
-                format: rd.surface_bundle.config.format,
-                size: (size.width, size.height),
+                texture: &frame_surface.texture,
+                format: surface.format(),
+                size,
             };
-            frame.step(&rd.context, &target, now, |encoder| {
+            let result = frame.step(&rd.context, &target, now, |encoder| {
                 if rd.sample_count() > 1 {
                     rd.resolve_scene_to_swap(encoder, &swap_view);
                 }
                 if rd.scene_view().is_some() {
                     rd.composite_to_swap(encoder, &swap_view);
                 }
-            })?;
+            });
+            if let Some(locked) = frame.take_cursor_request() {
+                post_cursor_request(scope, locked);
+            }
+            result?;
         }
-        surface.present();
-        Ok(())
+        frame_surface.present();
+        Ok(Attempt::Presented)
+    }
+
+    fn flush_cursor_request(&mut self) {
+        if let Some(locked) = self.frame.take_cursor_request() {
+            post_cursor_request(&self.scope, locked);
+        }
     }
 }

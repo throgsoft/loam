@@ -3,8 +3,10 @@ use loam_math::hyperbolic::{klein_to_poincare, poincare_to_klein, H3_DEPTH_ENVEL
 use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Space};
 use loam_shape::polytope::SectionScratch;
 use loam_shape::{LineMesh, TriangleMesh};
+use std::ops::{Deref, DerefMut, Range};
+use std::sync::Arc;
 
-use crate::domain::{ChartPoint, ChartPose, DomainId, DomainSpace, Pose};
+use crate::domain::{ChartPoint, ChartPose, DomainError, DomainId, DomainSpace, Pose};
 use crate::entity::Entity;
 use crate::session::{MaterialId, PreparedId, Stamp};
 use crate::store::{Cursor, RecordBuffer};
@@ -96,7 +98,8 @@ impl Default for Eye {
     }
 }
 
-/// Yaw and pitch around a target at a distance; pointer drag in NDC turns it.
+/// Orbits a target using the delta convention in `Pointer`.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Orbit {
     pub target: [f32; 3],
     pub yaw: f32,
@@ -119,10 +122,15 @@ impl Orbit {
         self.pitch = (self.pitch + delta[1] * ORBIT_GAIN).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
+    pub fn zoom(&mut self, lines: f32) {
+        self.distance =
+            (self.distance * (-lines * ZOOM_GAIN).exp()).clamp(MIN_DISTANCE, MAX_DISTANCE);
+    }
+
     pub fn eye(&self) -> Eye {
         let (yaw_sin, yaw_cos) = self.yaw.sin_cos();
         let (pitch_sin, pitch_cos) = self.pitch.sin_cos();
-        let offset = Vec3::new(yaw_sin * pitch_cos, pitch_sin, yaw_cos * pitch_cos);
+        let offset = Vec3::new(yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos);
         Eye::looking_at(
             (Vec3::from(self.target) + offset * self.distance).to_array(),
             self.target,
@@ -131,8 +139,11 @@ impl Orbit {
     }
 }
 
-const ORBIT_GAIN: f32 = 2.0;
+const ORBIT_GAIN: f32 = 0.006;
 const PITCH_LIMIT: f32 = 1.5;
+const ZOOM_GAIN: f32 = 0.12;
+const MIN_DISTANCE: f32 = 1.5;
+const MAX_DISTANCE: f32 = 20.0;
 
 pub struct ImageSpace {
     pub eye: Eye,
@@ -234,6 +245,7 @@ struct Placed {
 
 #[derive(Clone, Default)]
 pub struct ViewsSnapshot {
+    root_eye: Eye,
     placed: Vec<Placed>,
 }
 
@@ -380,11 +392,13 @@ impl Views {
 
     pub(crate) fn snapshot(&self) -> ViewsSnapshot {
         ViewsSnapshot {
+            root_eye: self.root.eye,
             placed: self.placed.clone(),
         }
     }
 
     pub(crate) fn restore(&mut self, from: &ViewsSnapshot) {
+        self.root.eye = from.root_eye;
         self.placed.clear();
         self.placed.extend_from_slice(&from.placed);
     }
@@ -420,8 +434,8 @@ const UNBOUNDED: DepthEnvelope = DepthEnvelope {
     far: f32::INFINITY,
 };
 
-/// Eye-relative map from a domain into an image space, with its ray construction.
-pub trait ViewMapping<S: DomainSpace>: Send + 'static {
+/// Results stay stable for the same inputs; configuration changes replace the map through `ViewSpec::set_mapping`.
+pub trait ViewMapping<S: DomainSpace>: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
     fn image_point(&self, eye: &Pose<S>, point: S::Point) -> Option<[f32; 3]>;
@@ -435,7 +449,27 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
         _relative: &S::Relative,
         local: S::Point,
     ) -> Option<[f32; 3]> {
-        self.image_point(eye, space.place(&space.prepare(pose), local))
+        self.image_point(eye, space.place(&space.prepare(pose), local).ok()?)
+    }
+
+    /// Emits an ordered image polyline; `None` breaks the line.
+    fn image_segment(
+        &self,
+        space: &S,
+        eye: &Pose<S>,
+        pose: &Pose<S>,
+        relative: &S::Relative,
+        segment: [S::Point; 2],
+        emit: &mut dyn FnMut(f32, Option<[f32; 3]>),
+    ) {
+        emit(
+            0.0,
+            self.image_local(space, eye, pose, relative, segment[0]),
+        );
+        emit(
+            1.0,
+            self.image_local(space, eye, pose, relative, segment[1]),
+        );
     }
 
     fn lift(&self, eye: &Pose<S>, ray: &ImageRay) -> Option<DomainRay<S>>;
@@ -458,21 +492,124 @@ pub trait ViewMapping<S: DomainSpace>: Send + 'static {
     fn depth_envelope(&self) -> DepthEnvelope;
 }
 
+pub struct ViewSettings<S: DomainSpace> {
+    pub(crate) eye: Entity,
+    pub(crate) subject: Option<Entity>,
+    pub(crate) style: ViewStyle<S>,
+}
+
+pub struct ViewStyle<S: DomainSpace> {
+    pub enabled: bool,
+    pub edges: bool,
+    pub section_edges: bool,
+    pub section_faces: bool,
+    pub(crate) mapping: Arc<dyn ViewMapping<S>>,
+}
+
+impl<S: DomainSpace> ViewSettings<S> {
+    pub(crate) fn new(eye: Entity, mapping: impl ViewMapping<S>) -> Self {
+        Self {
+            eye,
+            subject: None,
+            style: ViewStyle {
+                enabled: true,
+                edges: true,
+                section_edges: true,
+                section_faces: true,
+                mapping: Arc::new(mapping),
+            },
+        }
+    }
+
+    pub fn eye(&self) -> Entity {
+        self.eye
+    }
+
+    pub fn subject(&self) -> Option<Entity> {
+        self.subject
+    }
+}
+
+impl<S: DomainSpace> Clone for ViewSettings<S> {
+    fn clone(&self) -> Self {
+        Self {
+            eye: self.eye,
+            subject: self.subject,
+            style: self.style.clone(),
+        }
+    }
+}
+
+impl<S: DomainSpace> Deref for ViewSettings<S> {
+    type Target = ViewStyle<S>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.style
+    }
+}
+
+impl<S: DomainSpace> ViewStyle<S> {
+    pub fn set_mapping(&mut self, mapping: impl ViewMapping<S>) -> &mut Self {
+        self.mapping = Arc::new(mapping);
+        self
+    }
+
+    pub fn mapping(&self) -> &dyn ViewMapping<S> {
+        self.mapping.as_ref()
+    }
+}
+
+impl<S: DomainSpace> Clone for ViewStyle<S> {
+    fn clone(&self) -> Self {
+        Self {
+            enabled: self.enabled,
+            edges: self.edges,
+            section_edges: self.section_edges,
+            section_faces: self.section_faces,
+            mapping: Arc::clone(&self.mapping),
+        }
+    }
+}
+
 pub struct ViewSpec<S: DomainSpace> {
-    pub image: ImageSpaceId,
-    pub eye: Entity,
-    pub mapping: Box<dyn ViewMapping<S>>,
-    pub(crate) revision: u32,
+    pub(crate) image: ImageSpaceId,
+    pub(crate) settings: ViewSettings<S>,
+}
+
+impl<S: DomainSpace> Clone for ViewSpec<S> {
+    fn clone(&self) -> Self {
+        Self {
+            image: self.image,
+            settings: self.settings.clone(),
+        }
+    }
 }
 
 impl<S: DomainSpace> ViewSpec<S> {
     pub fn new(image: ImageSpaceId, eye: Entity, mapping: impl ViewMapping<S>) -> Self {
         Self {
             image,
-            eye,
-            mapping: Box::new(mapping),
-            revision: 0,
+            settings: ViewSettings::new(eye, mapping),
         }
+    }
+
+    pub fn subject(mut self, subject: Entity) -> Self {
+        self.settings.subject = Some(subject);
+        self
+    }
+}
+
+impl<S: DomainSpace> Deref for ViewSpec<S> {
+    type Target = ViewStyle<S>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.settings.style
+    }
+}
+
+impl<S: DomainSpace> DerefMut for ViewSpec<S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.settings.style
     }
 }
 
@@ -508,6 +645,19 @@ impl ViewMapping<EuclideanR4> for Projection4 {
         point: <EuclideanR4 as Space>::Point,
     ) -> Option<[f32; 3]> {
         let relative = eye_relative4(eye, point)?;
+        let scale = self.scale(relative.w)?;
+        Some((relative.truncate() * scale).to_array())
+    }
+
+    fn image_local(
+        &self,
+        space: &EuclideanR4,
+        _eye: &Pose<EuclideanR4>,
+        _pose: &Pose<EuclideanR4>,
+        relative: &<EuclideanR4 as DomainSpace>::Relative,
+        local: Vec4,
+    ) -> Option<[f32; 3]> {
+        let relative = space.place_relative(relative, local).ok()?;
         let scale = self.scale(relative.w)?;
         Some((relative.truncate() * scale).to_array())
     }
@@ -554,6 +704,23 @@ impl ViewMapping<EuclideanR4> for Section4 {
         Some(eye_relative4(eye, point)?.truncate().to_array())
     }
 
+    fn image_local(
+        &self,
+        space: &EuclideanR4,
+        _eye: &Pose<EuclideanR4>,
+        _pose: &Pose<EuclideanR4>,
+        relative: &<EuclideanR4 as DomainSpace>::Relative,
+        local: Vec4,
+    ) -> Option<[f32; 3]> {
+        Some(
+            space
+                .place_relative(relative, local)
+                .ok()?
+                .truncate()
+                .to_array(),
+        )
+    }
+
     fn section(&self, eye: &Pose<EuclideanR4>, pose: &Pose<EuclideanR4>) -> Option<SectionCut> {
         Some(SectionCut {
             offset: self.w - eye_relative4(eye, pose.point)?.w,
@@ -565,7 +732,7 @@ impl ViewMapping<EuclideanR4> for Section4 {
         let direction = Vec3::from(ray.direction).try_normalize()?;
         let origin = Vec3::from(ray.origin).extend(self.w);
         Some(DomainRay {
-            origin: EuclideanR4.place(&EuclideanR4.prepare(eye), origin),
+            origin: EuclideanR4.place(&EuclideanR4.prepare(eye), origin).ok()?,
             direction: EuclideanR4.carry(eye, origin, direction.extend(0.0)).ok()?,
         })
     }
@@ -596,6 +763,17 @@ impl ViewMapping<HyperbolicH3> for Klein {
         Some(poincare_to_klein(HyperbolicH3.local(eye, point).ok()?).to_array())
     }
 
+    fn image_local(
+        &self,
+        space: &HyperbolicH3,
+        _eye: &Pose<HyperbolicH3>,
+        _pose: &Pose<HyperbolicH3>,
+        relative: &<HyperbolicH3 as DomainSpace>::Relative,
+        local: Vec3,
+    ) -> Option<[f32; 3]> {
+        Some(poincare_to_klein(space.place_relative(relative, local).ok()?).to_array())
+    }
+
     fn lift(&self, eye: &Pose<HyperbolicH3>, ray: &ImageRay) -> Option<DomainRay<HyperbolicH3>> {
         let origin = Vec3::from(ray.origin);
         let direction = Vec3::from(ray.direction).try_normalize()?;
@@ -613,7 +791,7 @@ impl ViewMapping<HyperbolicH3> for Klein {
         }
         let unit = HyperbolicH3.log(from, toward) * (1.0 / length);
         Some(DomainRay {
-            origin: HyperbolicH3.place(&HyperbolicH3.prepare(eye), from),
+            origin: HyperbolicH3.place(&HyperbolicH3.prepare(eye), from).ok()?,
             direction: HyperbolicH3.carry(eye, from, unit).ok()?,
         })
     }
@@ -641,11 +819,22 @@ impl ViewMapping<EuclideanR3> for Identity3 {
         Some(EuclideanR3.local(eye, point).ok()?.to_array())
     }
 
+    fn image_local(
+        &self,
+        space: &EuclideanR3,
+        _eye: &Pose<EuclideanR3>,
+        _pose: &Pose<EuclideanR3>,
+        relative: &<EuclideanR3 as DomainSpace>::Relative,
+        local: Vec3,
+    ) -> Option<[f32; 3]> {
+        Some(space.place_relative(relative, local).ok()?.to_array())
+    }
+
     fn lift(&self, eye: &Pose<EuclideanR3>, ray: &ImageRay) -> Option<DomainRay<EuclideanR3>> {
         let origin = Vec3::from(ray.origin);
         let direction = Vec3::from(ray.direction).try_normalize()?;
         Some(DomainRay {
-            origin: EuclideanR3.place(&EuclideanR3.prepare(eye), origin),
+            origin: EuclideanR3.place(&EuclideanR3.prepare(eye), origin).ok()?,
             direction: EuclideanR3.carry(eye, origin, direction).ok()?,
         })
     }
@@ -707,7 +896,7 @@ pub struct PointRecord {
     pub color: [f32; 4],
 }
 
-/// One triangle of a view in its image space, with one colour for the face.
+/// One triangle of a view in its image space, with one color for the face.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct TriangleRecord {
@@ -723,13 +912,97 @@ pub(crate) struct SectionScratchpad {
     pub(crate) perimeter: LineMesh<3>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalSource {
+    Instance,
+    Segment,
+    Section,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewRefusal {
+    pub entity: Entity,
+    pub error: DomainError,
+    pub source: RefusalSource,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewRefusals {
+    pub count: u32,
+    pub first: Option<ViewRefusal>,
+    pub last: Option<ViewRefusal>,
+}
+
+impl ViewRefusals {
+    pub(crate) fn record(&mut self, entity: Entity, error: DomainError, source: RefusalSource) {
+        let refusal = ViewRefusal {
+            entity,
+            error,
+            source,
+        };
+        self.count = self.count.saturating_add(1);
+        self.first.get_or_insert(refusal);
+        self.last = Some(refusal);
+    }
+}
+
+const NO_OUTPUT: u32 = u32::MAX;
+
+#[derive(Clone)]
+pub(crate) struct EntityOutput {
+    pub(crate) entity: Entity,
+    pub(crate) section_segments: Range<usize>,
+    pub(crate) line_segments: Range<usize>,
+    pub(crate) triangles: Range<usize>,
+    pub(crate) instance: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct ViewOutputCache {
+    entries: Vec<EntityOutput>,
+    positions: Vec<u32>,
+}
+
+impl ViewOutputCache {
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.positions.fill(NO_OUTPUT);
+    }
+
+    pub(crate) fn push(&mut self, output: EntityOutput) {
+        let slot = output.entity.key().slot() as usize;
+        if slot >= self.positions.len() {
+            self.positions.resize(slot + 1, NO_OUTPUT);
+        }
+        self.positions[slot] = self.entries.len() as u32;
+        self.entries.push(output);
+    }
+
+    pub(crate) fn get(&self, entity: Entity) -> Option<&EntityOutput> {
+        let position = *self.positions.get(entity.key().slot() as usize)?;
+        if position == NO_OUTPUT || self.entries[position as usize].entity != entity {
+            return None;
+        }
+        Some(&self.entries[position as usize])
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut EntityOutput> {
+        self.entries.iter_mut()
+    }
+}
+
 /// Records of one view map, in its image space.
 #[derive(Default)]
 pub struct ViewRecords {
     pub instances: RecordBuffer<InstanceRecord>,
     pub(crate) segments: Vec<SegmentRecord>,
     pub(crate) triangles: Vec<TriangleRecord>,
+    pub(crate) refusals: ViewRefusals,
     pub(crate) scratch: SectionScratchpad,
+    pub(crate) output: ViewOutputCache,
+    pub(crate) patch_segments: Vec<SegmentRecord>,
+    pub(crate) patch_triangles: Vec<TriangleRecord>,
+    pub(crate) changed: Vec<Entity>,
     pub(crate) poses: Cursor,
     pub(crate) attachments: Cursor,
     pub(crate) revision: u32,
@@ -743,6 +1016,10 @@ impl ViewRecords {
 
     pub fn triangles(&self) -> &[TriangleRecord] {
         &self.triangles
+    }
+
+    pub fn refusals(&self) -> ViewRefusals {
+        self.refusals
     }
 
     /// The publication that last rebuilt these records; a skipped rebuild keeps it.

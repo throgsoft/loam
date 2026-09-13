@@ -4,7 +4,7 @@
 
 use glam::Vec3;
 use loam_math::{FlatTorus3, QuotientSpace, Space, WgslSpace};
-use loam_render::shader::{validate_wgsl, GEODESIC_MARCH_KERNEL};
+use loam_render::shader::{assemble_wgsl, validate_wgsl, GEODESIC_MARCH_KERNEL};
 use loam_scene::{Scene, SceneNode};
 mod support;
 use support::{dispatch, request_device};
@@ -56,13 +56,14 @@ fn probe(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 fn assemble_probe_source() -> String {
     let space = torus();
-    format!(
-        "{}\n{}\n{}\n{}",
-        space.wgsl_impl(),
-        room().to_wgsl(&space),
+    let prelude = space.wgsl_impl();
+    let scene = room().to_wgsl(&space);
+    assemble_wgsl(&[
+        prelude.as_ref(),
+        scene.as_str(),
         GEODESIC_MARCH_KERNEL,
-        PROBE_WGSL
-    )
+        PROBE_WGSL,
+    ])
 }
 
 #[test]

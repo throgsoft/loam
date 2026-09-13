@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
-use loam_app::egui;
-use loam_math::Plane4;
-use loam_text::{TextDraw, TextPass};
+use loam::app::egui;
+use loam::math::Plane4;
+use loam::text::{TextDraw, TextPass};
 
 const SIZE_PT: f32 = 16.0;
 
@@ -147,7 +147,7 @@ mod tests {
         ] {
             write_readout(&mut out, &readout(value, [true; 6]));
             assert!(
-                loam_text::is_renderable(&out),
+                loam::text::is_renderable(&out),
                 "the readout for {value} carries characters loam-text drops: {out:?}"
             );
         }
@@ -190,7 +190,7 @@ mod tests {
                     held.origin_px
                 );
                 assert!((at.size_px - held.size_px * ratio).abs() < 1e-3);
-                assert_eq!(at.color, held.color, "the scale changed a colour");
+                assert_eq!(at.color, held.color, "the scale changed a color");
             }
         }
     }

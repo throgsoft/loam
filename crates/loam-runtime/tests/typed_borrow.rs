@@ -1,7 +1,7 @@
 use loam_math::{EuclideanR4, Iso4Flat, Rotor4};
 use loam_runtime::{
-    Access, DomainBuilder, DomainError, Domains, Entity, Entry, Phase, Pose, Publish, Session,
-    SimConfig, SpawnBundle, Step, StoreId, DOMAIN_STEP,
+    DomainBuilder, DomainError, Domains, Entity, Phase, Pose, Publish, Session, SimConfig,
+    SpawnBundle, Step, DOMAIN_STEP,
 };
 
 #[derive(Clone, Copy)]
@@ -48,30 +48,24 @@ fn typed_borrow_never_reaches_another_domain_or_session() {
         .unwrap();
     });
 
-    session.system(
-        Phase::Simulation,
-        "count",
-        Access::new().writes::<Tally>(),
-        |app: &mut Probe, step: Step| {
-            for (_, tally) in app.tallies.iter_mut() {
-                tally.ticks += 1;
-            }
-            *app.elapsed.get_mut() += step.dt;
-        },
-    );
+    session.system(Phase::Simulation, "count", |app: &mut Probe, step: Step| {
+        for (_, tally) in app.tallies.iter_mut() {
+            tally.ticks += 1;
+        }
+        *app.elapsed.get_mut() += step.dt;
+    });
     session.system(
         Phase::Simulation,
         "read far",
-        Access::new().reads::<Tally>().domain(far.id()),
         move |app: &mut Probe, domains: &mut Domains| {
             assert!(matches!(
-                domains.typed(foreign),
+                domains.read(foreign),
                 Err(DomainError::ForeignRuntime)
             ));
-            assert!(domains.typed(near).unwrap().poses.is_empty());
-            let far = domains.typed(far).unwrap();
+            assert!(domains.read(near).unwrap().poses().is_empty());
+            let far = domains.read(far).unwrap();
             for (entity, tally) in app.tallies.iter() {
-                let pose = far.poses.get(entity).unwrap();
+                let pose = far.poses().get(entity).unwrap();
                 app.seen.set(Some(pose.frame.xy * tally.ticks as f32));
             }
         },
@@ -82,9 +76,9 @@ fn typed_borrow_never_reaches_another_domain_or_session() {
     assert_eq!(*session.app.elapsed.get(), 1.0 / 60.0);
     assert_eq!(*session.app.seen.get(), Some(1.0));
     match session.entries(Phase::Simulation) {
-        [step, Entry::System(count), Entry::System(_)] => {
+        [step, count, _] => {
             assert_eq!(step.name(), DOMAIN_STEP);
-            assert_eq!(count.access().write_set(), [StoreId::of::<Tally>()]);
+            assert_eq!(count.name(), "count");
         }
         entries => panic!("{} entries registered", entries.len()),
     }

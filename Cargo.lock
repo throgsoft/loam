@@ -668,15 +668,9 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "glam",
- "loam-app",
- "loam-math",
- "loam-physics",
- "loam-render",
- "loam-runtime",
- "loam-shape",
- "loam-text",
- "loam-time",
+ "loam",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -1320,10 +1314,10 @@ name = "loam"
 version = "0.1.0"
 dependencies = [
  "loam-app",
- "loam-input",
  "loam-math",
  "loam-physics",
  "loam-render",
+ "loam-runtime",
  "loam-scene",
  "loam-shape",
  "loam-text",
@@ -1338,17 +1332,18 @@ dependencies = [
  "color_quant",
  "console_error_panic_hook",
  "egui-wgpu",
+ "egui-winit",
  "gif",
  "glam",
  "image",
  "js-sys",
  "loam-console",
  "loam-egui",
- "loam-input",
  "loam-math",
  "loam-physics",
  "loam-render",
  "loam-runtime",
+ "loam-text",
  "loam-time",
  "png 0.17.16",
  "pollster",
@@ -1376,18 +1371,8 @@ name = "loam-egui"
 version = "0.1.0"
 dependencies = [
  "egui",
- "egui-winit",
  "loam-console",
  "loam-math",
- "winit",
-]
-
-[[package]]
-name = "loam-input"
-version = "0.1.0"
-dependencies = [
- "glam",
- "winit",
 ]
 
 [[package]]
@@ -1428,12 +1413,10 @@ dependencies = [
  "loam-time",
  "naga",
  "pollster",
- "tempfile",
  "thiserror 1.0.69",
  "tracing",
  "web-time",
  "wgpu",
- "winit",
 ]
 
 [[package]]
@@ -1444,6 +1427,7 @@ dependencies = [
  "loam-math",
  "loam-physics",
  "loam-shape",
+ "loam-time",
 ]
 
 [[package]]
@@ -2104,14 +2088,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "glam",
- "loam-app",
- "loam-math",
- "loam-physics",
- "loam-render",
- "loam-runtime",
- "loam-scene",
- "loam-shape",
- "loam-text",
+ "loam",
+ "loam-egui",
 ]
 
 [[package]]

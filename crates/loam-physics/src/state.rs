@@ -17,12 +17,14 @@ use crate::world::{FieldId, PairKey};
     ))
 )]
 pub struct WorldState<S: PhysicsSpace> {
-    pub bodies: BodyArena<S>,
-    pub geometry: GeometryStore,
-    pub manifolds: BTreeMap<PairKey, Manifold<S>>,
-    pub time: f32,
-    pub field_bindings: Vec<(BodyId, FieldId)>,
-    pub field_anchors: Vec<BodyId>,
+    pub(crate) bodies: BodyArena<S>,
+    pub(crate) geometry: GeometryStore,
+    pub(crate) manifolds: BTreeMap<PairKey, Manifold<S>>,
+    pub(crate) time: f32,
+    pub(crate) field_bindings: Vec<(BodyId, FieldId)>,
+    pub(crate) field_anchors: Vec<BodyId>,
     #[cfg_attr(feature = "persist", serde(skip))]
     pub(crate) registrations: Vec<(ColliderKind, ColliderKind)>,
+    #[cfg_attr(feature = "persist", serde(skip))]
+    pub(crate) field_registrations: Vec<ColliderKind>,
 }

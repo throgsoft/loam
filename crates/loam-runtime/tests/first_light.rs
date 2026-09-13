@@ -3,13 +3,15 @@ use std::f32::consts::FRAC_PI_2;
 use loam_math::blended::{BlendedSpace, LinearBlendX};
 use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3H, IsometryGroup, Space};
 use loam_runtime::{
-    ChartId, ChartPose, DomainBuilder, DomainError, DomainHandle, DomainSpace, Entity, Eye,
-    Instance, Klein, LogCapacity, Material, Orbit, Pose, PreparedGeometry, Projection4,
-    Publication, Session, SimConfig, SpawnBundle, ViewMapping, ViewSpec,
+    ChartId, ChartPose, DepthEnvelope, DomainBuilder, DomainError, DomainHandle, DomainRay,
+    DomainSpace, Entity, Eye, ImageRay, Instance, Klein, LogCapacity, Material, Orbit, Pose,
+    PreparedGeometry, Projection4, Publication, RefusalSource, Session, SimConfig, SpawnBundle,
+    ViewMapping, ViewSpec,
 };
 
 type Vec3 = <EuclideanR3 as Space>::Point;
 type Vec4 = <EuclideanR4 as Space>::Point;
+type Blend = BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>;
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -41,12 +43,39 @@ fn h3_walker() -> (Session<Probe>, DomainHandle<HyperbolicH3>, Entity) {
     (session, h3, walker)
 }
 
-fn blend() -> BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX> {
+fn blend() -> Blend {
     BlendedSpace::new(
         EuclideanR3,
         HyperbolicH3,
         LinearBlendX::new(-0.5, 0.5).expect("a blend zone with width"),
     )
+}
+
+struct ChartIdentity;
+
+impl ViewMapping<Blend> for ChartIdentity {
+    fn name(&self) -> &'static str {
+        "chart identity"
+    }
+
+    fn image_point(&self, _eye: &Pose<Blend>, point: Vec3) -> Option<[f32; 3]> {
+        Some(point.to_array())
+    }
+
+    fn lift(&self, _eye: &Pose<Blend>, _ray: &ImageRay) -> Option<DomainRay<Blend>> {
+        None
+    }
+
+    fn ray_lift(&self) -> bool {
+        false
+    }
+
+    fn depth_envelope(&self) -> DepthEnvelope {
+        DepthEnvelope {
+            near: 0.0,
+            far: f32::INFINITY,
+        }
+    }
 }
 
 #[test]
@@ -61,14 +90,66 @@ fn a_blended_local_answers_past_its_metric_error_budget() {
 }
 
 #[test]
-fn a_blended_local_answers_from_a_log_that_did_not_converge() {
+fn a_blended_local_answers_from_a_path_past_its_error_budget() {
     let space = blend();
     let pose = Pose::new(&space, Vec3::X * 0.8);
     assert_eq!(
         space.local(&pose, Vec3::new(-0.8, 0.1, 0.0)),
-        Err(DomainError::NoConvergence)
+        Err(DomainError::ErrorBudget)
     );
     assert!(space.local(&pose, Vec3::new(0.7, 0.05, 0.0)).is_ok());
+}
+
+#[test]
+fn blended_walk_refuses_an_incomplete_geodesic_step() {
+    let space = blend();
+    let pose = Pose::new(&space, Vec3::ZERO);
+    assert_eq!(
+        space.walk(&pose, Vec3::splat(1.0e20), 1.0).err(),
+        Some(DomainError::InvalidCoordinate("geodesic"))
+    );
+}
+
+#[test]
+fn partial_blended_placement_is_refused_during_publication() {
+    let space = blend();
+    let pose = Pose::new(&space, Vec3::ZERO);
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let blend =
+        session.register_domain(DomainBuilder::new("blend", space).tracked(LogCapacity::default()));
+    let geometry = session.prepare(PreparedGeometry::Lines3 {
+        segments: vec![[Vec3::splat(1.0e20).to_array(), [0.0; 3]]],
+    });
+    let material = session.add_material(Material::flat([1.0; 4]));
+    let root = session.views().root();
+    let object = session.dispatch(|dispatch| {
+        let eye = dispatch.spawn(SpawnBundle::new().at(blend, pose)).unwrap();
+        let object = dispatch
+            .spawn(
+                SpawnBundle::new()
+                    .at(blend, pose)
+                    .instance(Instance::new(geometry, material)),
+            )
+            .unwrap();
+        dispatch
+            .domains
+            .typed(blend)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, ChartIdentity));
+        object
+    });
+
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    let records = &publication.views[0].records;
+    let refusals = records.refusals();
+    assert!(records.segments().is_empty());
+    assert_eq!(refusals.count, 1);
+    let refusal = refusals.first.unwrap();
+    assert_eq!(refusals.last, Some(refusal));
+    assert_eq!(refusal.entity, object);
+    assert_eq!(refusal.error, DomainError::InvalidCoordinate("geodesic"));
+    assert_eq!(refusal.source, RefusalSource::Segment);
 }
 
 #[test]
@@ -104,8 +185,11 @@ fn chart_pose_outside_the_ball_or_with_a_non_finite_coordinate_is_accepted() {
     ));
     let data = HyperbolicH3.chart_pose(&pose);
     let back = HyperbolicH3.pose_from_chart(&data).unwrap();
-    let placed =
-        |pose: &Pose<HyperbolicH3>, local| HyperbolicH3.place(&HyperbolicH3.prepare(pose), local);
+    let placed = |pose: &Pose<HyperbolicH3>, local| {
+        HyperbolicH3
+            .place(&HyperbolicH3.prepare(pose), local)
+            .unwrap()
+    };
     for local in [Vec3::X * 0.1, Vec3::Y * 0.1, Vec3::Z * 0.1] {
         let (there, back_there) = (placed(&pose, local), placed(&back, local));
         assert!(
@@ -232,10 +316,8 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
             .domains_mut()
             .typed(r4)
             .unwrap()
-            .poses
-            .get_mut(object4)
-            .unwrap()
-            .point = point.extend(0.0);
+            .set_point(object4, point.extend(0.0))
+            .unwrap();
         session.pick(ndc3).map(|pick| pick.entity)
     };
     assert_eq!(place4(0.5), Some(object4));
@@ -243,66 +325,50 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
 }
 
 #[test]
-fn transport_has_the_wrong_signed_holonomy_or_loses_normalization_on_a_geodesic_triangle() {
-    let (a, b) = (1.0_f32, 1.0_f32);
-    // Gauss-Bonnet: holonomy = K · area, with the right triangle at the origin giving tan β = tanh b / sinh a, tan γ = tanh a / sinh b, area = π/2 - β - γ.
-    let beta = (b.tanh() / a.sinh()).atan();
-    let gamma = (a.tanh() / b.sinh()).atan();
-    let c = (a.cosh() * b.cosh()).acosh();
-    let area = FRAC_PI_2 - beta - gamma;
-    let turn = beta + gamma;
-    let forward = [
-        ([1.0, 0.0], a),
-        ([-beta.cos(), beta.sin()], c),
-        ([turn.cos(), -turn.sin()], b),
-    ];
-    let reverse = [
-        ([0.0, 1.0], b),
-        ([gamma.sin(), -gamma.cos()], c),
-        ([-turn.sin(), turn.cos()], a),
-    ];
-    let retrace = [([1.0, 0.0], a), ([-1.0, 0.0], a)];
-    for (legs, expected) in [
-        (&forward[..], -area),
-        (&reverse[..], area),
-        (&retrace[..], 0.0),
-    ] {
-        let (mut session, h3, walker) = h3_walker();
-        let domain = session.domains_mut().typed(h3).unwrap();
-        for ([dx, dy], length) in legs {
-            // The chart tangent at the origin has metric length 2|v|.
-            let velocity = Vec3::new(*dx, *dy, 0.0) * (length / 2.0);
-            domain.walk(walker, velocity, 1.0).unwrap();
-        }
-        let pose = *domain.poses.get(walker).unwrap();
-        let position = pose.point;
-        assert!(position.length() <= 1e-3, "loop ended at {position:?}");
-        let carried = [Vec3::X, Vec3::Y, Vec3::Z]
-            .map(|axis| HyperbolicH3.carry(&pose, Vec3::ZERO, axis).unwrap());
-        let angle = carried[0].y.atan2(carried[0].x);
-        assert!(
-            (angle - expected).abs() <= 1e-3,
-            "holonomy {angle} against {expected} for {legs:?}"
-        );
-        for (i, column) in carried.iter().enumerate() {
-            assert!((column.length() - 1.0).abs() <= 1e-4);
-            assert!(column.dot(carried[(i + 1) % 3]).abs() <= 1e-4);
+fn move_to_parallel_transports_around_an_h3_geodesic_triangle() {
+    let origin = Vec3::ZERO;
+    let a = HyperbolicH3.exp(origin, Vec3::X * 0.5);
+    let b = HyperbolicH3.exp(origin, Vec3::Y * 0.5);
+    let path = [origin, a, b, origin];
+    let (mut session, h3, walker) = h3_walker();
+    let domain = session.domains_mut().typed(h3).unwrap();
+
+    for index in 1..path.len() {
+        domain
+            .move_to(walker, HyperbolicH3.chart_point(path[index]))
+            .unwrap();
+        let pose = *domain.poses().get(walker).unwrap();
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+            let got = HyperbolicH3.carry(&pose, Vec3::ZERO, axis).unwrap();
+            let want = HyperbolicH3.parallel_transport_along(&path[..=index], axis);
+            assert!((got - want).length() <= 1e-4, "{got:?} is not {want:?}");
         }
     }
+
+    let pose = *domain.poses().get(walker).unwrap();
+    let carried = HyperbolicH3.carry(&pose, Vec3::ZERO, Vec3::X).unwrap();
+    assert!(pose.point.length() <= 1e-5);
+    assert!((carried - Vec3::X).length() > 0.1);
 }
 
 #[test]
-fn walk_leaving_the_envelope_is_reported_as_within_it() {
+fn h3_admission_and_movement_obey_the_numerical_envelope() {
     let (mut session, h3, walker) = h3_walker();
     let domain = session.domains_mut().typed(h3).unwrap();
+    let outside = Vec3::new(0.997, 0.0, 0.0);
+    assert_eq!(HyperbolicH3.check(outside), Err(DomainError::ErrorBudget));
     assert_eq!(
-        domain.walk(walker, Vec3::X * 10.0, 1.0),
-        Err(DomainError::ChartBoundary)
+        domain.move_to(walker, HyperbolicH3.chart_point(outside)),
+        Err(DomainError::ErrorBudget)
     );
-    let held = *domain.poses.get(walker).unwrap();
-    assert_eq!(held.point, Vec3::ZERO);
-    assert_eq!(HyperbolicH3.carry(&held, Vec3::ZERO, Vec3::X), Ok(Vec3::X));
-    assert_eq!(domain.walk(walker, Vec3::X * 8.0, 1.0), Ok(()));
+    assert_eq!(domain.poses().get(walker).unwrap().point, Vec3::ZERO);
+
+    let inside = Vec3::new(0.99, 0.0, 0.0);
+    assert_eq!(HyperbolicH3.check(inside), Ok(()));
+    assert_eq!(
+        domain.move_to(walker, HyperbolicH3.chart_point(inside)),
+        Ok(())
+    );
 }
 
 #[test]
@@ -330,4 +396,22 @@ fn looking_at_mirrors_the_eye_basis_or_the_orbit_sits_on_the_wrong_side_of_its_t
     close(turned.forward, [-1.0, 0.0, 0.0]);
     close(turned.right, [0.0, 0.0, -1.0]);
     close(turned.up, [0.0, 1.0, 0.0]);
+
+    let pitched = Orbit {
+        target: [1.0, 2.0, 3.0],
+        yaw: 0.0,
+        pitch: -FRAC_PI_2,
+        distance: 4.0,
+    }
+    .eye();
+    close(pitched.position, [1.0, 6.0, 3.0]);
+}
+
+#[test]
+fn orbit_zoom_runs_past_its_distance_limits() {
+    let mut orbit = Orbit::around([0.0; 3], 5.0);
+    orbit.zoom(100.0);
+    assert_eq!(orbit.distance, 1.5);
+    orbit.zoom(-100.0);
+    assert_eq!(orbit.distance, 20.0);
 }

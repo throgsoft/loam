@@ -3,8 +3,8 @@
 //! arithmetic, or the sim and the shader walk different manifolds.
 
 use glam::Vec4;
-use loam_math::{IsometryGroup, LensSpace, QuotientSpace, Space, SphericalS3Embedded};
-use loam_render::shader::validate_wgsl;
+use loam_math::{CoveringSpace, LensSpace, QuotientSpace, Space, SphericalS3Embedded};
+use loam_render::shader::{assemble_wgsl, validate_wgsl};
 mod support;
 use support::{dispatch, request_device};
 
@@ -64,15 +64,12 @@ fn probe(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 fn probe_source() -> String {
     let centre = probe_centre();
-    format!(
-        "{}\nconst LENS_PROBE_CENTRE = vec4<f32>({:?}, {:?}, {:?}, {:?});\n{}",
-        LensSpace::new(P, Q).wgsl_prelude(),
-        centre.x,
-        centre.y,
-        centre.z,
-        centre.w,
-        PROBE_WGSL
-    )
+    let prelude = LensSpace::new(P, Q).wgsl_prelude();
+    let constants = format!(
+        "const LENS_PROBE_CENTRE = vec4<f32>({:?}, {:?}, {:?}, {:?});",
+        centre.x, centre.y, centre.z, centre.w
+    );
+    assemble_wgsl(&[prelude.as_str(), constants.as_str(), PROBE_WGSL])
 }
 
 #[test]
@@ -125,7 +122,7 @@ fn the_emitted_prelude_wraps_and_measures_as_the_rust_impl_does_gpu_probe() {
             result[1][0]
         );
         let power = result[1][1] as i32;
-        let selected = lens.iso_apply(lens.deck(power), centre);
+        let selected = lens.cover_apply(lens.deck(power), centre);
         assert!(
             (SphericalS3Embedded.distance(*lift, selected) - cpu_distance).abs() < 1e-5,
             "the GPU picked deck power {power}, which is not the nearest lift"

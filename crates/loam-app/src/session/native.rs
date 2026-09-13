@@ -2,37 +2,53 @@ use std::sync::Arc;
 
 use web_time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
 use loam_render::device::{FeatureRequest, RenderDevice};
-use loam_runtime::host::{HostConfig, HostError};
-use loam_runtime::{Session, Stores};
+use loam_runtime::host::HostError;
+use loam_runtime::{PointerButton, Session, Stores};
 
 use super::app::SessionApp;
 use super::frame::{failed, Frame, Target};
-use super::input::winit_key;
+use super::input::{winit_alt, winit_key};
 use super::pacing::Pace;
-use super::WorkContext;
+use super::surface::SurfaceHost;
+use crate::args::Args;
+use crate::WasmConfig;
 
-/// Owns the window, device, and loop; the session stays a CPU value.
-pub fn run<A: Stores>(session: Session<A>, config: HostConfig) -> Result<(), HostError> {
-    launch(session, SessionApp::new(config))
-}
-
-/// `record` runs once per issued order inside the frame's encoder before the presenter draws.
-pub fn run_with_work<A: Stores>(
-    session: Session<A>,
-    config: HostConfig,
-    record: impl FnMut(WorkContext<'_>) + 'static,
+pub fn launch<A: Stores>(
+    factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
 ) -> Result<(), HostError> {
-    launch(session, SessionApp::new(config).work(record))
+    launch_with(WasmConfig::default(), factory)
 }
 
-/// `run` with the application's own [`SessionApp`]; returns when the window closes or a frame fails.
-pub fn launch<A: Stores>(session: Session<A>, app: SessionApp<A>) -> Result<(), HostError> {
+pub fn launch_with<A: Stores>(
+    _wasm: WasmConfig,
+    factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
+) -> Result<(), HostError> {
     crate::par_native::install();
+    run(Args::current(), factory)
+}
+
+pub fn launch_or_headless<A: Stores>(
+    factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
+    headless: impl FnOnce(Args) -> Result<(), HostError>,
+) -> Result<(), HostError> {
+    crate::par_native::install();
+    let args = Args::current();
+    if args.has_bare_flag("headless") {
+        return headless(args);
+    }
+    run(args, factory)
+}
+
+fn run<A: Stores>(
+    args: Args,
+    factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
+) -> Result<(), HostError> {
+    let (session, app) = factory(args)?;
     let event_loop = EventLoop::new().map_err(failed)?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut host = Host::new(session, app);
@@ -46,7 +62,9 @@ pub fn launch<A: Stores>(session: Session<A>, app: SessionApp<A>) -> Result<(), 
 struct Host<A: Stores> {
     frame: Frame<A>,
     window: Option<Arc<Window>>,
+    surface: Option<SurfaceHost>,
     device: Option<RenderDevice>,
+    redraw_deadline: Option<Instant>,
     failure: Option<HostError>,
 }
 
@@ -55,7 +73,9 @@ impl<A: Stores> Host<A> {
         Self {
             frame: Frame::new(session, app),
             window: None,
+            surface: None,
             device: None,
+            redraw_deadline: None,
             failure: None,
         }
     }
@@ -66,41 +86,71 @@ impl<A: Stores> Host<A> {
     }
 
     fn redraw(&mut self, elwt: &ActiveEventLoop) {
-        if let Err(error) = self.present() {
+        if let Err(error) = self.present(elwt) {
             self.stop(elwt, error);
         }
     }
 
-    fn present(&mut self) -> Result<(), HostError> {
-        let Host { frame, device, .. } = self;
+    fn present(&mut self, elwt: &ActiveEventLoop) -> Result<(), HostError> {
+        let Host {
+            frame,
+            window,
+            surface,
+            device,
+            redraw_deadline,
+            ..
+        } = self;
         let Some(device) = device.as_mut() else {
             return Ok(());
         };
-        let size = device.surface_bundle.size;
-        if size.width == 0 || size.height == 0 {
+        let Some(surface) = surface.as_mut() else {
+            return Ok(());
+        };
+        let size = surface.size();
+        if size.0 == 0 || size.1 == 0 {
             return Ok(());
         }
 
         if let Some(loss) = device.take_device_loss() {
             tracing::warn!("device lost ({:?}): {}", loss.reason, loss.message);
             pollster::block_on(device.recover()).map_err(|error| failed(format!("{error:#}")))?;
+            surface.reconfigure(&device.context.device);
             return frame.recover(&device.context);
         }
 
         if let Some(enabled) = frame.app_mut().vsync.take() {
-            crate::frame_pacing::apply_present_mode(device, enabled);
+            surface.set_vsync(&device.context.device, enabled);
         }
 
-        let now = loop {
-            let now = Instant::now();
-            match frame.app_mut().pacer.decide(now) {
-                Pace::Run => break now,
-                Pace::Wait(deadline) => crate::frame_pacing::precise_sleep_until(deadline),
-            }
+        let now = Instant::now();
+        if let Pace::Wait(deadline) = frame.app_mut().pacer.decide(now) {
+            *redraw_deadline = Some(deadline);
+            elwt.set_control_flow(ControlFlow::WaitUntil(deadline));
+            return Ok(());
+        }
+        *redraw_deadline = frame.app_mut().pacer.deadline();
+        match *redraw_deadline {
+            Some(deadline) => elwt.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => elwt.set_control_flow(ControlFlow::Poll),
         };
 
-        let Ok((surface, swap_view)) = device.begin_frame() else {
-            return Ok(());
+        let (frame_surface, swap_view) = match surface.begin_frame() {
+            Ok(frame) => frame,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                surface.reconfigure(&device.context.device);
+                return Ok(());
+            }
+            Err(wgpu::SurfaceError::Timeout) => {
+                tracing::warn!("surface frame timed out");
+                return Ok(());
+            }
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                return Err(failed("surface ran out of memory"));
+            }
+            Err(wgpu::SurfaceError::Other) => {
+                tracing::warn!("surface frame failed");
+                return Ok(());
+            }
         };
         {
             let view = device
@@ -109,9 +159,9 @@ impl<A: Stores> Host<A> {
                 .unwrap_or(&swap_view);
             let target = Target {
                 view,
-                texture: &surface.texture,
-                format: device.surface_bundle.config.format,
-                size: (size.width, size.height),
+                texture: &frame_surface.texture,
+                format: surface.format(),
+                size,
             };
             frame.step(&device.context, &target, now, |encoder| {
                 if device.sample_count() > 1 {
@@ -122,8 +172,57 @@ impl<A: Stores> Host<A> {
                 }
             })?;
         }
-        surface.present();
+        Self::apply_cursor_request(frame, window.as_deref());
+        frame_surface.present();
         Ok(())
+    }
+
+    fn apply_cursor_request(frame: &mut Frame<A>, window: Option<&Window>) {
+        let Some(locked) = frame.take_cursor_request() else {
+            return;
+        };
+        let Some(window) = window else {
+            return;
+        };
+        let mode = if locked {
+            CursorGrabMode::Locked
+        } else {
+            CursorGrabMode::None
+        };
+        let applied = window.set_cursor_grab(mode).or_else(|locked_error| {
+            if !locked {
+                return Err(locked_error);
+            }
+            window
+                .set_cursor_grab(CursorGrabMode::Confined)
+                .map_err(|confined_error| {
+                    tracing::warn!(
+                        "locked cursor failed: {locked_error}; confined cursor failed: {confined_error}"
+                    );
+                    confined_error
+                })
+        });
+        match applied {
+            Ok(()) => {
+                window.set_cursor_visible(!locked);
+                frame.cursor_applied(locked);
+            }
+            Err(error) => {
+                tracing::warn!("cursor lock request failed: {error:?}");
+                if locked {
+                    frame.cursor_applied(false);
+                }
+            }
+        }
+    }
+
+    fn wake_frame(&mut self, elwt: &ActiveEventLoop) {
+        self.redraw_deadline = None;
+        self.frame.app_mut().pacer.reset();
+        elwt.set_control_flow(ControlFlow::Wait);
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
     }
 }
 
@@ -137,16 +236,23 @@ impl<A: Stores> ApplicationHandler for Host<A> {
             Ok(window) => Arc::new(window),
             Err(error) => return self.stop(elwt, failed(error)),
         };
-        let device = pollster::block_on(RenderDevice::new(
-            window.clone(),
+        let instance = wgpu::Instance::default();
+        let surface = match instance.create_surface(window.clone()) {
+            Ok(surface) => surface,
+            Err(error) => return self.stop(elwt, failed(error)),
+        };
+        let size = window.inner_size();
+        let attached = pollster::block_on(SurfaceHost::new(
+            instance,
+            surface,
+            (size.width, size.height),
             FeatureRequest::default(),
             1,
         ));
-        let device = match device {
-            Ok(device) => device,
+        let (surface, device) = match attached {
+            Ok(attached) => attached,
             Err(error) => return self.stop(elwt, failed(format!("{error:#}"))),
         };
-        let size = device.surface_bundle.size;
         let attached = self.frame.attach(
             &device.context,
             device.target_format(),
@@ -158,16 +264,29 @@ impl<A: Stores> ApplicationHandler for Host<A> {
         if let Err(error) = attached {
             return self.stop(elwt, error);
         }
+        self.surface = Some(surface);
         self.device = Some(device);
         self.window = Some(window);
         self.frame.reset_clock(Instant::now());
     }
 
     fn window_event(&mut self, elwt: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let consumed = self
-            .frame
-            .layer()
-            .is_some_and(|layer| layer.on_window_event(&event));
+        let wakes_frame = !matches!(
+            &event,
+            WindowEvent::RedrawRequested | WindowEvent::CloseRequested
+        );
+        let hidden_pointer = self.frame.cursor_locked()
+            && matches!(
+                &event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+            );
+        let consumed = hidden_pointer
+            || self
+                .frame
+                .layer()
+                .is_some_and(|layer| layer.on_window_event(&event));
         let scale = self
             .window
             .as_ref()
@@ -175,7 +294,10 @@ impl<A: Stores> ApplicationHandler for Host<A> {
         match event {
             WindowEvent::CloseRequested => elwt.exit(),
             WindowEvent::Resized(size) => {
-                if let Some(device) = self.device.as_mut() {
+                if let (Some(surface), Some(device)) = (self.surface.as_mut(), self.device.as_mut())
+                {
+                    let size = (size.width, size.height);
+                    surface.resize(&device.context.device, size);
                     device.resize(size);
                 }
                 self.frame.resize(size.width, size.height, scale);
@@ -184,32 +306,69 @@ impl<A: Stores> ApplicationHandler for Host<A> {
                 let (width, height) = self.frame.input_mut().size();
                 self.frame.resize(width, height, scale);
             }
-            WindowEvent::KeyboardInput { event, .. } if !consumed => {
-                let Some(key) = winit_key(&event) else {
-                    return;
-                };
-                self.frame.action(key, event.state.is_pressed());
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let Some(index) = winit_alt(&event) {
+                    self.frame.alt(index, event.state.is_pressed());
+                }
+                if let Some(key) = winit_key(&event) {
+                    self.frame.action(key, event.state.is_pressed(), consumed);
+                }
             }
             WindowEvent::CursorMoved { position, .. } if !consumed => {
                 let input = self.frame.input_mut();
                 let ndc = input.ndc(position.x, position.y);
                 input.moved(ndc);
             }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } if !consumed => {
-                let input = self.frame.input_mut();
-                let cursor = input.cursor();
-                input.button(cursor, state.is_pressed());
+            WindowEvent::MouseInput { state, button, .. } => {
+                let button = match button {
+                    MouseButton::Left => Some(PointerButton::Primary),
+                    MouseButton::Right => Some(PointerButton::Secondary),
+                    MouseButton::Middle => Some(PointerButton::Middle),
+                    _ => None,
+                };
+                if let Some(button) = button {
+                    let input = self.frame.input_mut();
+                    let cursor = input.cursor();
+                    input.host_button(cursor, button, state.is_pressed(), consumed);
+                }
+            }
+            WindowEvent::Focused(focused) => self.frame.focus(focused),
+            WindowEvent::MouseWheel { delta, .. } if !consumed => {
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => [x, y],
+                    MouseScrollDelta::PixelDelta(position) => [
+                        position.x as f32 / crate::wasm::input_queue::SCROLL_PIXELS_PER_LINE,
+                        position.y as f32 / crate::wasm::input_queue::SCROLL_PIXELS_PER_LINE,
+                    ],
+                };
+                self.frame.input_mut().wheel(delta);
             }
             WindowEvent::RedrawRequested => self.redraw(elwt),
             _ => {}
         }
+        Self::apply_cursor_request(&mut self.frame, self.window.as_deref());
+        if wakes_frame {
+            self.wake_frame(elwt);
+        }
     }
 
-    fn about_to_wait(&mut self, _elwt: &ActiveEventLoop) {
+    fn device_event(&mut self, elwt: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.frame
+                .input_mut()
+                .raw_motion(delta.0 as f32, delta.1 as f32);
+            self.wake_frame(elwt);
+        }
+    }
+
+    fn about_to_wait(&mut self, elwt: &ActiveEventLoop) {
+        if let Some(deadline) = self.redraw_deadline {
+            if Instant::now() < deadline {
+                elwt.set_control_flow(ControlFlow::WaitUntil(deadline));
+                return;
+            }
+            self.redraw_deadline = None;
+        }
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }

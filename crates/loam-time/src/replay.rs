@@ -186,7 +186,6 @@ impl Tape {
         if magic != TAPE_MAGIC {
             return Err(TapeError::BadMagic { found: magic });
         }
-        // Version before length: another version has another layout.
         let version = reader.u32().ok_or(TapeError::LengthMismatch {
             expected: HEADER_LEN as u64,
             found: bytes.len(),

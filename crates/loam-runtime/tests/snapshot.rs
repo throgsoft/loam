@@ -3,11 +3,12 @@ use std::collections::BTreeMap;
 
 use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
-    Access, AppCommand, Command, Ctx, DepthEnvelope, Dispatch, DomainBuilder, DomainError,
-    DomainHandle, DomainRay, Entity, Facility, Field, FieldKind, FieldOp, Growth, ImageRay, Input,
-    Instance, LogCapacity, Material, Outcome, Phase, Pose, PreparedGeometry, Projection4,
-    Publication, Publish, PublishError, RecordBuffer, Records, Rejection, Reservation,
-    RestoreError, Session, SimConfig, SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec,
+    AppCommand, Command, Ctx, DepthEnvelope, Dispatch, Domain, DomainBuilder, DomainError,
+    DomainHandle, DomainRay, Entity, Eye, Facility, Field, FieldKind, FieldOp, Growth, ImageRay,
+    Input, Instance, LogCapacity, Material, Outcome, Phase, PhaseError, Pose, PreparedGeometry,
+    Projection4, Publication, Publish, PublishError, RecordBuffer, Records, Rejection, Reservation,
+    RestoreError, Section4, Session, SimConfig, SpawnBundle, Step, Store, Tick, ViewMapping,
+    ViewSpec, DOMAIN_STEP,
 };
 
 type Vec4 = <EuclideanR4 as Space>::Point;
@@ -183,12 +184,7 @@ fn reset_rewinds_external_identity_or_resolves_an_old_handle() {
         (session.scene(), kept.key(), Tag(1))
     );
     assert_eq!(session.entities().resolve(live), Some(kept.key()));
-    assert!(session
-        .domains_mut()
-        .typed(r4)
-        .unwrap()
-        .poses
-        .contains(live));
+    assert!(session.domains().read(r4).unwrap().poses().contains(live));
 
     session.reset().unwrap();
     assert_eq!(session.scene().epoch, epoch.advance().advance());
@@ -199,18 +195,13 @@ fn reset_rewinds_external_identity_or_resolves_an_old_handle() {
 fn pending_commands_or_reservations_survive_cancellation_into_the_restored_state() {
     let (mut session, r4) = session();
     session.set_initial().unwrap();
-    session.system(
-        Phase::Simulation,
-        "queue",
-        Access::new().commands(),
-        move |ctx: Ctx<'_, Probe>| {
-            if ctx.step.tick.0 == 0 {
-                let reservation = ctx.commands.spawn(placed(r4, Tag(1))).unwrap();
-                ctx.app.reserved.get_mut().push(reservation);
-                ctx.commands.app(Mark(1));
-            }
-        },
-    );
+    session.system(Phase::Simulation, "queue", move |ctx: Ctx<'_, Probe>| {
+        if ctx.step.tick.0 == 0 {
+            let reservation = ctx.commands.spawn(placed(r4, Tag(1))).unwrap();
+            ctx.app.reserved.get_mut().push(reservation);
+            ctx.commands.app(Mark(1));
+        }
+    });
     session.tick().unwrap();
     let reservation = session.app.reserved.get()[0];
     assert!(session.entities().is_reserved(reservation.entity));
@@ -240,7 +231,7 @@ fn restored_relations_domain_poses_or_the_tick_differ_from_the_snapshot() {
     let (a, b) = session.dispatch(|d| {
         let a = d.spawn(placed(r4, Tag(1))).unwrap();
         let b = d.spawn(placed(r4, Tag(2))).unwrap();
-        d.app.pairs.link(a, b, 7).unwrap();
+        d.link(a, b, 7).unwrap();
         (a, b)
     });
     let dt = session.config().dt().unwrap();
@@ -254,59 +245,105 @@ fn restored_relations_domain_poses_or_the_tick_differ_from_the_snapshot() {
     }
     let ab = session.app.pairs.outgoing(a).next().unwrap();
     session.app.pairs.unlink(ab).unwrap();
-    session.app.pairs.link(b, a, 9).unwrap();
+    session.dispatch(|d| d.link(b, a, 9)).unwrap();
     session.restore(&snapshot).unwrap();
 
     assert_eq!(session.current_tick(), Tick(3));
     let [link] = session.app.pairs.links() else {
         panic!("{} links after restore", session.app.pairs.len());
     };
-    let (from, to) = (link.from, link.to);
+    let (from, to) = (link.from(), link.to());
     assert_eq!((from.key(), to.key(), link.data), (a.key(), b.key(), 7));
     assert_eq!(from.scene(), session.scene());
     assert_eq!(session.app.pairs.outgoing(from).count(), 1);
     assert_eq!(session.app.pairs.incoming(to).count(), 1);
     session.tick().unwrap();
-    let poses = &session.domains_mut().typed(r4).unwrap().poses;
+    let poses = session.domains().read(r4).unwrap().poses();
     let position = |entity| poses.get(entity).map(|pose| (pose.point.x, pose.point.y));
     assert_eq!(position(from), Some((dt + dt + dt + dt, 4.0)));
     assert_eq!(position(a), None);
 }
 
 #[test]
-fn a_refused_restore_still_advances_the_epoch_and_cancels_the_pending_commands() {
+fn reset_restores_the_captured_view_configuration_and_rebases_its_entities() {
     let (mut session, r4) = session();
-    let kept = session.dispatch(|d| d.spawn(placed(r4, Tag(1)))).unwrap();
-    let snapshot = session.snapshot().unwrap();
     let root = session.views().root();
-    session.dispatch(|d| {
+    let root_eye = Eye::looking_at([2.0, 3.0, 4.0], [0.0; 3], [0.0, 1.0, 0.0]);
+    session.views_mut().root_mut().eye = root_eye;
+    let (eye, view) = session.dispatch(|d| {
         let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
-        d.domains
-            .typed(r4)
-            .unwrap()
-            .add_view(ViewSpec::new(root, eye, DropW));
+        let domain = d.domains.typed(r4).unwrap();
+        let view = domain.add_view(ViewSpec::new(root, eye, DropW).subject(eye));
+        let spec = domain.view_mut(view).unwrap();
+        spec.enabled = false;
+        spec.edges = false;
+        spec.section_edges = false;
+        spec.section_faces = false;
+        (eye, view)
     });
-    session.system(
-        Phase::Simulation,
-        "queue",
-        Access::new().commands(),
-        |ctx: Ctx<'_, Probe>| {
-            if ctx.step.tick.0 == 0 {
-                ctx.commands.app(Mark(1));
-            }
-        },
-    );
-    session.tick().unwrap();
-    let epoch = session.scene().epoch;
+    session.set_initial().unwrap();
 
-    assert_eq!(
-        session.restore(&snapshot),
-        Err(RestoreError::Domain(r4.id()))
-    );
-    assert_eq!(session.scene().epoch, epoch);
-    assert_eq!(session.entities().resolve(kept), Some(kept.key()));
-    assert_eq!(session.snapshot().err(), Some(RestoreError::Pending));
-    assert!(session.results().is_empty());
+    let later_view = session.dispatch(|d| {
+        let later_eye = d
+            .spawn(SpawnBundle::new().at(r4, at([5.0, 0.0, 0.0, 0.0])))
+            .unwrap();
+        let domain = d.domains.typed(r4).unwrap();
+        domain.set_view_eye(view, later_eye).unwrap();
+        domain.set_view_subject(view, None).unwrap();
+        let spec = domain.view_mut(view).unwrap();
+        spec.enabled = true;
+        spec.edges = true;
+        spec.section_edges = true;
+        spec.section_faces = true;
+        spec.set_mapping(Section4 { w: 1.0 });
+        domain.add_view(ViewSpec::new(root, later_eye, Section4 { w: 2.0 }))
+    });
+    session.views_mut().root_mut().eye = Eye::default();
+
+    session.reset().unwrap();
+    assert_eq!(session.views().get(root).unwrap().eye, root_eye);
+    let scene = session.scene();
+    let domain = session.domains().read(r4).unwrap();
+    let restored = domain.view(view).unwrap();
+    assert_eq!(restored.mapping().name(), "drop w");
+    assert_eq!(restored.eye().key(), eye.key());
+    assert_eq!(restored.eye().scene(), scene);
+    assert!(!restored.enabled);
+    assert!(!restored.edges);
+    assert!(!restored.section_edges);
+    assert!(!restored.section_faces);
+    assert_eq!(restored.subject().map(Entity::key), Some(eye.key()));
+    assert_eq!(restored.subject().map(Entity::scene), Some(scene));
+    assert!(domain.view(later_view).is_none());
+
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    assert_eq!(publication.views.len(), 1);
+    assert!(publication.views[0].records.instances.rows().is_empty());
+}
+
+struct RejectStep;
+
+impl Facility<EuclideanR4> for RejectStep {
+    fn name(&self) -> &'static str {
+        "reject step"
+    }
+
+    fn step(
+        &mut self,
+        _poses: &mut Store<Pose<EuclideanR4>>,
+        _step: Step,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::ChartBoundary)
+    }
+
+    fn snapshot(&self) -> Box<dyn Any + Send> {
+        Box::new(())
+    }
+
+    fn restore(&mut self, _from: &(dyn Any + Send)) -> Result<(), RestoreError> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -318,34 +355,33 @@ fn a_restored_composed_field_names_its_own_operands_as_stale() {
         let left = d.spawn(ball(-1.0)).unwrap();
         let right = d.spawn(ball(1.0)).unwrap();
         let union = d.spawn(ball(0.0)).unwrap();
-        let fields = d.domains.typed(r4).unwrap().fields_mut().unwrap();
         for operand in [left, right] {
-            fields
-                .insert(
-                    operand,
-                    Field {
-                        kind: FieldKind::ExactDistance,
-                        op: FieldOp::HyperSphere { radius: 1.0 },
-                        operands: Vec::new(),
-                    },
-                )
-                .unwrap();
-        }
-        fields
-            .insert(
-                union,
+            d.attach_field(
+                r4,
+                operand,
                 Field {
                     kind: FieldKind::ExactDistance,
-                    op: FieldOp::Union,
-                    operands: vec![left, right],
+                    op: FieldOp::HyperSphere { radius: 1.0 },
+                    operands: Vec::new(),
                 },
             )
             .unwrap();
+        }
+        d.attach_field(
+            r4,
+            union,
+            Field {
+                kind: FieldKind::ExactDistance,
+                op: FieldOp::Union,
+                operands: vec![left, right],
+            },
+        )
+        .unwrap();
     });
     let compile = |session: &mut Session<Probe>| {
         session
             .domains_mut()
-            .facade(r4.id())
+            .typed(r4)
             .unwrap()
             .compile_fields()
             .map(|_| ())
@@ -358,18 +394,95 @@ fn a_restored_composed_field_names_its_own_operands_as_stale() {
 }
 
 #[test]
+fn restore_does_not_launder_foreign_or_old_epoch_references_into_live_entities() {
+    let mut owner = Session::new(Probe::default(), SimConfig::default());
+    let r4 = owner.register_domain(DomainBuilder::new("r4", EuclideanR4).fields());
+    let old = owner
+        .dispatch(|dispatch| dispatch.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))))
+        .unwrap();
+    let first = owner.snapshot().unwrap();
+    owner.restore(&first).unwrap();
+    let current = owner
+        .domains()
+        .read(r4)
+        .unwrap()
+        .poses()
+        .iter()
+        .next()
+        .unwrap()
+        .0;
+
+    let mut other = Session::new(Probe::default(), SimConfig::default());
+    let other_r4 = other.register_domain(DomainBuilder::new("r4", EuclideanR4));
+    let foreign = other
+        .dispatch(|dispatch| dispatch.spawn(SpawnBundle::new().at(other_r4, at([0.0; 4]))))
+        .unwrap();
+    assert_eq!(foreign.key(), current.key());
+
+    let root = owner.views().root();
+    owner.dispatch(|dispatch| {
+        let operator = dispatch
+            .spawn(SpawnBundle::new().at(r4, at([1.0, 0.0, 0.0, 0.0])))
+            .unwrap();
+        dispatch
+            .attach_field(
+                r4,
+                current,
+                Field {
+                    kind: FieldKind::ExactDistance,
+                    op: FieldOp::HyperSphere { radius: 1.0 },
+                    operands: Vec::new(),
+                },
+            )
+            .unwrap();
+        dispatch
+            .attach_field(
+                r4,
+                operator,
+                Field {
+                    kind: FieldKind::ExactDistance,
+                    op: FieldOp::Union,
+                    operands: vec![old, old],
+                },
+            )
+            .unwrap();
+        dispatch
+            .domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, foreign, DropW));
+    });
+    let snapshot = owner.snapshot().unwrap();
+    owner.restore(&snapshot).unwrap();
+
+    assert_eq!(
+        owner
+            .domains_mut()
+            .typed(r4)
+            .unwrap()
+            .compile_fields()
+            .map(|_| ()),
+        Err(DomainError::Stale(old))
+    );
+    let mut publication = Publication::default();
+    assert_eq!(
+        owner.publish(&mut publication),
+        Err(PhaseError {
+            phase: Phase::Publication,
+            system: None,
+            cause: DomainError::Stale(foreign),
+        })
+    );
+}
+
+#[test]
 fn snapshot_is_taken_while_commands_are_pending_instead_of_being_refused() {
     let (mut session, _) = session();
-    session.system(
-        Phase::Simulation,
-        "mark",
-        Access::new().commands(),
-        |ctx: Ctx<'_, Probe>| {
-            if ctx.step.tick.0 == 0 {
-                ctx.commands.app(Mark(1));
-            }
-        },
-    );
+    session.system(Phase::Simulation, "mark", |ctx: Ctx<'_, Probe>| {
+        if ctx.step.tick.0 == 0 {
+            ctx.commands.app(Mark(1));
+        }
+    });
     session.tick().unwrap();
     assert_eq!(session.snapshot().err(), Some(RestoreError::Pending));
     session.boundary(Input::default()).unwrap();
@@ -377,21 +490,158 @@ fn snapshot_is_taken_while_commands_are_pending_instead_of_being_refused() {
 }
 
 #[test]
+fn a_foreign_snapshot_cannot_cancel_pending_work_or_alias_library_ids() {
+    let (mut owner, owner_r4) = session();
+    let geometry = owner.prepare(PreparedGeometry::Lines4 {
+        segments: Vec::new(),
+    });
+    let material_value = Material::flat([0.1, 0.2, 0.3, 1.0]);
+    let material = owner.add_material(material_value);
+    let entity = owner
+        .dispatch(|d| d.spawn(placed(owner_r4, Tag(1)).instance(Instance::new(geometry, material))))
+        .unwrap();
+    owner.app.log.get_mut().push(1);
+    let owned = owner.snapshot().unwrap();
+    let scene = owner.scene();
+
+    let (mut foreign, foreign_r4) = session();
+    let foreign_geometry = foreign.prepare(PreparedGeometry::Lines3 {
+        segments: Vec::new(),
+    });
+    let foreign_material = foreign.add_material(Material::flat([0.9, 0.8, 0.7, 1.0]));
+    foreign
+        .dispatch(|d| {
+            d.spawn(
+                placed(foreign_r4, Tag(9))
+                    .instance(Instance::new(foreign_geometry, foreign_material)),
+            )
+        })
+        .unwrap();
+    foreign.app.log.get_mut().push(9);
+    let foreign = foreign.snapshot().unwrap();
+
+    owner.submit(Command::App(Box::new(Mark(2))));
+    assert_eq!(owner.restore(&foreign), Err(RestoreError::ForeignRuntime));
+    assert_eq!(owner.scene(), scene);
+    assert_eq!(*owner.app.log.get(), [1]);
+    assert_eq!(owner.app.tags.get(entity), Some(&Tag(1)));
+    assert!(matches!(
+        owner.prepared(geometry),
+        Some(PreparedGeometry::Lines4 { segments }) if segments.is_empty()
+    ));
+    assert_eq!(owner.material(material), Some(&material_value));
+    assert_eq!(owner.snapshot().err(), Some(RestoreError::Pending));
+
+    owner.boundary(Input::default()).unwrap();
+    assert_eq!(*owner.app.log.get(), [1, 2]);
+    owner.restore(&owned).unwrap();
+    assert_eq!(owner.scene().runtime, scene.runtime);
+    assert_eq!(owner.scene().epoch, scene.epoch.advance());
+    assert_eq!(*owner.app.log.get(), [1]);
+    assert_eq!(owner.material(material), Some(&material_value));
+}
+
+#[test]
+fn a_failed_cpu_phase_cannot_advance_or_publish_until_recovery() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    session.register_domain(DomainBuilder::new("r4", EuclideanR4).facility(RejectStep));
+    let captured = session.snapshot().unwrap();
+    session.set_initial().unwrap();
+
+    let failure = PhaseError {
+        phase: Phase::Simulation,
+        system: Some(DOMAIN_STEP),
+        cause: DomainError::ChartBoundary,
+    };
+    assert_eq!(session.tick(), Err(failure));
+    assert_eq!(session.current_tick(), Tick(0));
+    assert_eq!(
+        session.snapshot().err(),
+        Some(RestoreError::Unfinished(Phase::Simulation))
+    );
+    let blocked_input = Input {
+        scroll: [1.0, -2.0],
+        ..Input::default()
+    };
+    assert_eq!(session.boundary(blocked_input), Err(failure));
+    assert_eq!(session.take_input().scroll, [1.0, -2.0]);
+    assert_eq!(
+        session.snapshot().err(),
+        Some(RestoreError::Unfinished(Phase::Simulation))
+    );
+    let mut publication = Publication::default();
+    assert_eq!(session.publish(&mut publication), Err(failure));
+    assert_eq!(publication.stamp, Default::default());
+
+    session.reset().unwrap();
+    assert!(session.snapshot().is_ok());
+    assert_eq!(session.tick(), Err(failure));
+    session.restore(&captured).unwrap();
+    assert!(session.snapshot().is_ok());
+}
+
+#[test]
+fn failed_extraction_clears_partial_publication() {
+    let (mut session, r4) = session();
+    let geometry = session.prepare(PreparedGeometry::Lines4 {
+        segments: Vec::new(),
+    });
+    let material = session.add_material(Material::flat([1.0; 4]));
+    let root = session.views().root();
+    let eye = session.dispatch(|d| {
+        let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
+        d.spawn(
+            SpawnBundle::new()
+                .at(r4, at([1.0, 2.0, 3.0, 4.0]))
+                .instance(Instance::new(geometry, material)),
+        )
+        .unwrap();
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, DropW));
+        eye
+    });
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    let complete = publication.stamp;
+    assert_eq!(
+        publication.views[0].records.instances.rows()[0].image_point,
+        [1.0, 2.0, 3.0]
+    );
+    let snapshot = session.snapshot().unwrap();
+
+    session.dispatch(|d| d.despawn(eye)).unwrap();
+    let failure = PhaseError {
+        phase: Phase::Publication,
+        system: None,
+        cause: DomainError::Stale(eye),
+    };
+    assert_eq!(session.publish(&mut publication), Err(failure));
+    assert_eq!(publication.stamp, Default::default());
+    assert!(publication.views.is_empty());
+    assert_eq!(session.publish(&mut publication), Err(failure));
+
+    session.restore(&snapshot).unwrap();
+    session.publish(&mut publication).unwrap();
+    assert_eq!(publication.stamp.sequence, complete.sequence + 1);
+    assert_eq!(
+        publication.views[0].records.instances.rows()[0].image_point,
+        [1.0, 2.0, 3.0]
+    );
+}
+
+#[test]
 fn request_queued_after_a_reset_in_the_same_batch_applies_to_the_restored_state() {
     let (mut session, _) = session();
     session.set_initial().unwrap();
-    session.system(
-        Phase::Simulation,
-        "reset",
-        Access::new().commands(),
-        |ctx: Ctx<'_, Probe>| {
-            if ctx.step.tick.0 == 0 {
-                ctx.commands.app(Mark(1));
-                ctx.commands.submit(Command::Reset);
-                ctx.commands.app(Mark(2));
-            }
-        },
-    );
+    session.system(Phase::Simulation, "reset", |ctx: Ctx<'_, Probe>| {
+        if ctx.step.tick.0 == 0 {
+            ctx.commands.app(Mark(1));
+            ctx.commands.submit(Command::Reset);
+            ctx.commands.app(Mark(2));
+        }
+    });
     session.tick().unwrap();
     session.boundary(Input::default()).unwrap();
     let outcomes: Vec<_> = session
@@ -512,24 +762,14 @@ fn domain_view_publishes_the_wrong_image_space_position_for_a_known_pose() {
 fn cancelled_request_and_a_fresh_request_after_a_reset_share_an_id() {
     let (mut session, _) = session();
     session.set_initial().unwrap();
-    session.system(
-        Phase::Simulation,
-        "deferred",
-        Access::new().commands(),
-        |ctx: Ctx<'_, Probe>| {
-            if ctx.step.tick.0 == 0 {
-                ctx.commands.app(Mark(1));
-            }
-        },
-    );
-    session.system(
-        Phase::Dispatch,
-        "fresh",
-        Access::new().commands(),
-        |ctx: Ctx<'_, Probe>| {
-            ctx.commands.app(Mark(2));
-        },
-    );
+    session.system(Phase::Simulation, "deferred", |ctx: Ctx<'_, Probe>| {
+        if ctx.step.tick.0 == 0 {
+            ctx.commands.app(Mark(1));
+        }
+    });
+    session.system(Phase::Dispatch, "fresh", |ctx: Ctx<'_, Probe>| {
+        ctx.commands.app(Mark(2));
+    });
     session.tick().unwrap();
     session.reset().unwrap();
     let [cancelled] = session.results() else {
@@ -576,13 +816,12 @@ fn publish_rebuilds_a_view_whose_rows_did_not_change_or_misses_one_that_did() {
     session.publish(&mut publication).unwrap();
     assert_eq!(publication.views[0].records.built(), first);
 
-    *session
+    session
         .domains_mut()
         .typed(r4)
         .unwrap()
-        .poses
-        .get_mut(drawn)
-        .unwrap() = at([5.0, 6.0, 7.0, 8.0]);
+        .set_pose(drawn, at([5.0, 6.0, 7.0, 8.0]))
+        .unwrap();
     session.publish(&mut publication).unwrap();
     let records = &publication.views[0].records;
     assert!(records.built().sequence > first.sequence);
@@ -688,9 +927,8 @@ fn a_view_change_alone_republishes_the_old_segments() {
         .domains_mut()
         .typed(r4)
         .unwrap()
-        .view_mut(view)
-        .unwrap()
-        .eye = far;
+        .set_view_eye(view, far)
+        .unwrap();
     session.publish(&mut publication).unwrap();
     let [second] = publication.views[0].records.segments() else {
         panic!("one segment expected");

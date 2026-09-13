@@ -43,9 +43,11 @@ fn hull_of(letter: &GlyphSolid) -> (Vec4, Vec<Vec4>) {
 fn floor_world() -> World<EuclideanR4> {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
-    world.gravity = Some(Vec4::new(0.0, GRAVITY, 0.0, 0.0));
+    world
+        .set_gravity(Some(Vec4::new(0.0, GRAVITY, 0.0, 0.0)))
+        .expect("valid gravity");
     let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
-    world.bodies[floor].restitution = 0.0;
+    world.set_restitution(floor, 0.0).unwrap();
     world
 }
 
@@ -54,12 +56,12 @@ fn drop_letter(world: &mut World<EuclideanR4>, letter: &GlyphSolid) -> (BodyId, 
     let lowest = vertices.iter().fold(f32::INFINITY, |m, v| m.min(v.y));
     let spawn = Vec4::new(centre.x, DROP_CLEARANCE - lowest, centre.z, centre.w);
     let id = world.push_body(polytope_body_r4(spawn, Vec4::ZERO, vertices, 1.0).unwrap());
-    world.bodies[id].restitution = 0.0;
+    world.set_restitution(id, 0.0).unwrap();
     (id, spawn)
 }
 
 fn deepest_y(world: &World<EuclideanR4>, id: BodyId) -> f32 {
-    let body = &world.bodies[id];
+    let body = world.body(id).unwrap();
     let Some(Shape::ConvexPolytope4D { vertices }) = world.collider(body) else {
         unreachable!("spawned as a 4D polytope")
     };
@@ -140,14 +142,14 @@ fn a_whole_word_dropped_together_settles_in_its_own_line() {
         .iter()
         .map(|letter| drop_letter(&mut world, letter))
         .collect();
-    assert_eq!(world.bodies.iter().count(), letters.len() + 1);
+    assert_eq!(world.bodies().iter().count(), letters.len() + 1);
 
     let mut rest: Vec<Vec<Vec4>> = vec![Vec::with_capacity(REST_WINDOW); letters.len()];
     for step in 0..SETTLE_STEPS {
-        world.step(DT);
+        world.step(DT).expect("valid timestep");
         if step >= SETTLE_STEPS - REST_WINDOW {
             for (samples, (id, _)) in rest.iter_mut().zip(&dropped) {
-                samples.push(world.bodies[*id].position);
+                samples.push(world.body(*id).unwrap().position);
             }
         }
     }
@@ -163,7 +165,7 @@ fn a_whole_word_dropped_together_settles_in_its_own_line() {
             letter.ch()
         );
         assert_resting_on_the_floor(letter.ch(), deepest_y(&world, *id));
-        let settled = world.bodies[*id].position;
+        let settled = world.body(*id).unwrap().position;
         assert!(settled.y < spawn.y - 0.5 * DROP_CLEARANCE);
         assert!(
             (settled.x - spawn.x).abs() < LANDING_SLIDE,
@@ -175,6 +177,8 @@ fn a_whole_word_dropped_together_settles_in_its_own_line() {
     }
 
     for pair in dropped.windows(2) {
-        assert!(world.bodies[pair[1].0].position.x > world.bodies[pair[0].0].position.x);
+        assert!(
+            world.body(pair[1].0).unwrap().position.x > world.body(pair[0].0).unwrap().position.x
+        );
     }
 }

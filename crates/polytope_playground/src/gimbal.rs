@@ -1,9 +1,9 @@
 use glam::Vec3;
-use loam_math::{Rotor, Rotor4};
-use loam_render::gizmo::{Handle, HandleDrag, HandleId};
-use loam_render::hypergimbal::{Hypergimbal, RingStyle};
-use loam_runtime::{ImageRay, SegmentRecord};
-use loam_shape::LineMesh;
+use loam::math::{Rotor, Rotor4};
+use loam::render::gizmo::{Handle, HandleDrag, HandleId};
+use loam::render::hypergimbal::{Hypergimbal, RingStyle};
+use loam::runtime::{ImageRay, SegmentRecord};
+use loam::shape::LineMesh;
 
 const SCALE: f32 = 0.55;
 
@@ -13,12 +13,16 @@ const HIGHLIGHT: [f32; 4] = [1.0, 0.94, 0.55, 1.0];
 
 const RING_WIDTH_PX: f32 = 1.8;
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Gimbal {
     pub(crate) enabled: bool,
     drag: Option<HandleDrag>,
     applied: Rotor4,
     hover: Option<HandleId>,
+}
+
+#[derive(Default)]
+pub(crate) struct GimbalRenderer {
     mesh: LineMesh<3>,
     segments: Vec<SegmentRecord>,
 }
@@ -74,14 +78,16 @@ impl Gimbal {
                 .map(|ring| HandleId::Rotate(ring.plane))
         });
     }
+}
 
-    pub(crate) fn rings(&mut self, center: Vec3) -> &[SegmentRecord] {
+impl GimbalRenderer {
+    pub(crate) fn rings(&mut self, gimbal: &Gimbal, center: Vec3) -> &[SegmentRecord] {
         self.segments.clear();
-        if !self.enabled {
+        if !gimbal.enabled {
             return &self.segments;
         }
         let mut style = RingStyle::default();
-        if let Some(HandleId::Rotate(plane)) = self.hover {
+        if let Some(HandleId::Rotate(plane)) = gimbal.hover {
             style.colors[plane as usize] = HIGHLIGHT;
         }
         style.width_px = RING_WIDTH_PX;

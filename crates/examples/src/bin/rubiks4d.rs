@@ -1,14 +1,14 @@
 use std::f32::consts::FRAC_PI_2;
 
 use glam::Vec4;
-use loam_app::session::run;
-use loam_math::{Bivector, EuclideanR4, Iso4Flat, IsometryGroup, Plane4, Rotor, Rotor4};
-use loam_runtime::host::{HostConfig, HostError};
-use loam_runtime::{
-    Access, ActionId, AppCommand, Bindings, Command, Commands, Ctx, Dispatch, DomainBuilder,
-    DomainHandle, Domains, Entity, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId,
-    Outcome, Phase, Pose, PreparedGeometry, Projection4, Rejection, Session, SimConfig,
-    SpawnBundle, TypedDomain, Value, ViewSpec,
+use loam::app::session::{launch, SessionApp};
+use loam::math::{Bivector, EuclideanR4, Iso4Flat, IsometryGroup, Plane4, Rotor, Rotor4};
+use loam::runtime::host::{HostConfig, HostError};
+use loam::runtime::{
+    ActionId, AppCommand, Bindings, Command, Commands, Ctx, Dispatch, DomainBuilder, DomainError,
+    DomainHandle, Eye, Input, Instance, Key, LogCapacity, Material, MaterialId, Outcome, Phase,
+    Pose, PreparedGeometry, Projection4, Rejection, Session, SimConfig, SpawnBundle, TypedDomain,
+    Value, ViewSpec,
 };
 
 const TWIST: ActionId = ActionId(0);
@@ -31,7 +31,7 @@ const CELL_COLORS: [[f32; 4]; 8] = [
     [0.2, 0.8, 0.8, 1.0],
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Cell {
     axis: usize,
     sign: i8,
@@ -98,6 +98,7 @@ impl Piece {
 #[derive(Clone, Copy)]
 struct Sticker {
     cell: Cell,
+    selected: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -142,7 +143,7 @@ struct Turning {
     ticks_left: u32,
 }
 
-loam_runtime::stores! {
+loam::runtime::stores! {
     #[derive(Default)]
     pub struct CubeStores {
         pieces: Store<Piece>,
@@ -150,7 +151,6 @@ loam_runtime::stores! {
         slots: Relation<Slot>,
         history: Value<Vec<Twist>>,
         turning: Value<Option<Turning>>,
-        selected: Value<Option<Entity>>,
         rng: Value<u64>,
     }
 }
@@ -162,27 +162,34 @@ struct Puzzle {
     cell_materials: [MaterialId; 8],
 }
 
-fn place_cell(app: &CubeStores, r4: &mut TypedDomain<EuclideanR4>, rotor: Rotor4, cell: Cell) {
+fn place_cell(
+    app: &CubeStores,
+    r4: &mut TypedDomain<EuclideanR4>,
+    rotor: Rotor4,
+    cell: Cell,
+) -> Result<(), DomainError> {
     for (piece_entity, piece) in app.pieces.iter() {
         if !piece.in_cell(cell) {
             continue;
         }
         let iso = EuclideanR4.iso_compose(Iso4Flat::from_rotation(rotor), piece.iso());
-        if let Some(pose) = r4.poses.get_mut(piece_entity) {
-            *pose = Pose::from(iso);
-        }
+        r4.set_pose(piece_entity, Pose::from(iso))?;
         for id in app.slots.outgoing(piece_entity) {
             let Some(link) = app.slots.get(id) else {
                 continue;
             };
-            if let Some(pose) = r4.poses.get_mut(link.to) {
-                *pose = Pose::from(EuclideanR4.iso_compose(iso, link.data.iso()));
-            }
+            let pose = Pose::from(EuclideanR4.iso_compose(iso, link.data.iso()));
+            r4.set_pose(link.to(), pose)?;
         }
     }
+    Ok(())
 }
 
-fn commit(app: &mut CubeStores, r4: &mut TypedDomain<EuclideanR4>, twist: Twist) {
+fn commit(
+    app: &mut CubeStores,
+    r4: &mut TypedDomain<EuclideanR4>,
+    twist: Twist,
+) -> Result<(), DomainError> {
     let rotor = twist.rotor(1.0);
     for (_, piece) in app.pieces.iter_mut() {
         if !piece.in_cell(twist.cell) {
@@ -197,7 +204,7 @@ fn commit(app: &mut CubeStores, r4: &mut TypedDomain<EuclideanR4>, twist: Twist)
         ];
         piece.orientation = (rotor * piece.orientation).normalize();
     }
-    place_cell(app, r4, Rotor4::IDENTITY, twist.cell);
+    place_cell(app, r4, Rotor4::IDENTITY, twist.cell)
 }
 
 // Knuth, TAOCP vol. 2, 3.3.4, the MMIX linear congruential constants.
@@ -249,10 +256,13 @@ impl AppCommand<CubeStores> for Scramble {
     }
 
     fn apply(&mut self, dispatch: &mut Dispatch<'_, CubeStores>) -> Result<Outcome, Rejection> {
+        if dispatch.app.turning.get().is_some() {
+            return Err(Rejection::Unsupported("a twist is in progress"));
+        }
         let r4 = dispatch.domains.typed(self.puzzle.domain)?;
         for _ in 0..SCRAMBLE_TWISTS {
             let twist = random_twist(dispatch.app.rng.get_mut());
-            commit(dispatch.app, r4, twist);
+            commit(dispatch.app, r4, twist)?;
             dispatch.app.history.get_mut().push(twist);
         }
         Ok(Outcome::Done)
@@ -269,11 +279,14 @@ impl AppCommand<CubeStores> for Undo {
     }
 
     fn apply(&mut self, dispatch: &mut Dispatch<'_, CubeStores>) -> Result<Outcome, Rejection> {
+        if dispatch.app.turning.get().is_some() {
+            return Err(Rejection::Unsupported("a twist is in progress"));
+        }
         let Some(twist) = dispatch.app.history.get_mut().pop() else {
             return Ok(Outcome::Done);
         };
         let r4 = dispatch.domains.typed(self.puzzle.domain)?;
-        commit(dispatch.app, r4, twist.inverse());
+        commit(dispatch.app, r4, twist.inverse())?;
         Ok(Outcome::Done)
     }
 }
@@ -314,8 +327,7 @@ fn grid_points() -> impl Iterator<Item = [i8; 4]> {
 }
 
 fn selected_twist(app: &CubeStores) -> Option<Twist> {
-    let selected = (*app.selected.get())?;
-    let sticker = app.stickers.get(selected)?;
+    let (_, sticker) = app.stickers.iter().find(|(_, sticker)| sticker.selected)?;
     Some(Twist {
         cell: sticker.cell,
         plane: sticker.cell.twist_plane(),
@@ -323,7 +335,9 @@ fn selected_twist(app: &CubeStores) -> Option<Twist> {
     })
 }
 
-fn main() -> Result<(), HostError> {
+fn build(
+    args: loam::app::args::Args,
+) -> Result<(Session<CubeStores>, SessionApp<CubeStores>), HostError> {
     let config = SimConfig::default();
     let stores = CubeStores {
         rng: Value::new(config.seed),
@@ -369,9 +383,12 @@ fn main() -> Result<(), HostError> {
                             sticker_geometry,
                             cell_materials[cell.color()],
                         ))
-                        .row(Sticker { cell }),
+                        .row(Sticker {
+                            cell,
+                            selected: false,
+                        }),
                 )?;
-                d.app.slots.link(piece_entity, sticker, slot)?;
+                d.link(piece_entity, sticker, slot)?;
             }
         }
         let eye = Pose::at(Vec4::W * FOCAL_DISTANCE);
@@ -387,42 +404,58 @@ fn main() -> Result<(), HostError> {
     session.views_mut().root_mut().eye =
         Eye::looking_at([0.0, 2.0, 6.0], [0.0; 3], [0.0, 1.0, 0.0]);
 
-    session.system(
+    session.fallible_system(
         Phase::Dispatch,
         "select",
-        Access::new().writes::<Option<Entity>>().domain(r4.id()),
-        move |ctx: Ctx<'_, CubeStores>| {
+        move |ctx: Ctx<'_, CubeStores>| -> Result<(), DomainError> {
             let Some(pointer) = ctx.input.began() else {
-                return;
+                return Ok(());
             };
             let Some(pick) = ctx.pick(pointer.ndc) else {
-                return;
+                return Ok(());
             };
             if !ctx.app.stickers.contains(pick.entity) {
-                return;
+                return Ok(());
             }
-            let Ok(r4) = ctx.domains.typed(puzzle.domain) else {
-                return;
+            let previous = ctx
+                .app
+                .stickers
+                .iter()
+                .find_map(|(entity, sticker)| sticker.selected.then_some(entity));
+            if previous == Some(pick.entity) {
+                return Ok(());
             };
-            if let Some(previous) = *ctx.app.selected.get() {
-                if let (Some(instance), Some(sticker)) = (
-                    r4.instances.get_mut(previous),
-                    ctx.app.stickers.get(previous),
-                ) {
-                    instance.material = puzzle.cell_materials[sticker.cell.color()];
-                }
+            let r4 = ctx.domains.typed(puzzle.domain)?;
+            if let Some(previous) = previous {
+                let sticker = ctx
+                    .app
+                    .stickers
+                    .get_mut(previous)
+                    .ok_or(DomainError::Stale(previous))?;
+                let material = puzzle.cell_materials[sticker.cell.color()];
+                sticker.selected = false;
+                let instance = r4
+                    .instance_mut(previous)
+                    .ok_or(DomainError::Stale(previous))?;
+                instance.material = material;
             }
-            if let Some(instance) = r4.instances.get_mut(pick.entity) {
-                instance.material = puzzle.highlight;
-            }
-            ctx.app.selected.set(Some(pick.entity));
+            let sticker = ctx
+                .app
+                .stickers
+                .get_mut(pick.entity)
+                .ok_or(DomainError::Stale(pick.entity))?;
+            sticker.selected = true;
+            let instance = r4
+                .instance_mut(pick.entity)
+                .ok_or(DomainError::Stale(pick.entity))?;
+            instance.material = puzzle.highlight;
+            Ok(())
         },
     );
 
     session.system(
         Phase::Dispatch,
         "actions",
-        Access::new().reads::<Sticker>().commands(),
         move |app: &mut CubeStores, input: &Input, commands: &mut Commands<CubeStores>| {
             if input.pressed(TWIST) {
                 if let Some(twist) = selected_twist(app) {
@@ -441,26 +474,29 @@ fn main() -> Result<(), HostError> {
         },
     );
 
-    session.system(
+    session.fallible_system(
         Phase::Simulation,
         "turn",
-        Access::new().writes::<Piece>().domain(r4.id()),
-        move |app: &mut CubeStores, domains: &mut Domains| {
-            let Some(mut turning) = *app.turning.get() else {
-                return;
+        move |ctx: Ctx<'_, CubeStores>| -> Result<(), DomainError> {
+            let Some(mut turning) = *ctx.app.turning.get() else {
+                return Ok(());
             };
-            let Ok(r4) = domains.typed(puzzle.domain) else {
-                return;
-            };
+            let r4 = ctx.domains.typed(puzzle.domain)?;
             turning.ticks_left = turning.ticks_left.saturating_sub(1);
             let fraction = 1.0 - turning.ticks_left as f32 / TWIST_TICKS as f32;
-            place_cell(app, r4, turning.twist.rotor(fraction), turning.twist.cell);
+            place_cell(
+                ctx.app,
+                r4,
+                turning.twist.rotor(fraction),
+                turning.twist.cell,
+            )?;
             if turning.ticks_left == 0 {
-                commit(app, r4, turning.twist);
-                app.turning.set(None);
+                commit(ctx.app, r4, turning.twist)?;
+                ctx.app.turning.set(None);
             } else {
-                app.turning.set(Some(turning));
+                ctx.app.turning.set(Some(turning));
             }
+            Ok(())
         },
     );
 
@@ -470,5 +506,214 @@ fn main() -> Result<(), HostError> {
         .key(Key::Letter('s'), SCRAMBLE)
         .key(Key::Letter('u'), UNDO)
         .key(Key::Letter('r'), RESET);
-    run(session, HostConfig::new("rubiks4d", bindings))
+    let app =
+        SessionApp::with_args(HostConfig::new("rubiks4d", bindings), args).recover_on_fault(RESET);
+    Ok((session, app))
+}
+
+fn main() -> Result<(), HostError> {
+    launch(build)
+}
+
+#[cfg(test)]
+mod tests {
+    use loam::app::args::Args;
+    use loam::runtime::{ActionEvent, Pointer, PointerButton, PointerPhase, Publication};
+
+    use super::*;
+
+    #[test]
+    fn restored_selection_keeps_its_highlight_and_drives_a_twist() {
+        let (mut session, _) = build(Args::default()).unwrap();
+        let mut publication = Publication::default();
+        session.publish(&mut publication).unwrap();
+
+        let (ndc, picked) = publication
+            .views
+            .iter()
+            .flat_map(|view| {
+                view.records
+                    .instances
+                    .rows()
+                    .iter()
+                    .map(|record| (view.placement.apply(record.image_point), record.entity))
+            })
+            .filter_map(|(point, entity)| {
+                session
+                    .views()
+                    .ndc(point)
+                    .and_then(|ndc| session.pick(ndc).map(|pick| (ndc, entity, pick)))
+            })
+            .find_map(|(ndc, entity, pick)| (entity == pick.entity).then_some((ndc, pick)))
+            .expect("a published sticker was visible to the root view");
+        let selected_cell = session
+            .app
+            .stickers
+            .get(picked.entity)
+            .expect("the pick was a sticker")
+            .cell;
+        session
+            .boundary(Input {
+                pointers: vec![Pointer {
+                    id: 0,
+                    button: Some(PointerButton::Primary),
+                    ndc,
+                    delta: [0.0; 2],
+                    phase: PointerPhase::Began,
+                    time: 0.0,
+                }],
+                ..Input::default()
+            })
+            .unwrap();
+        assert_eq!(
+            session
+                .app
+                .stickers
+                .get(picked.entity)
+                .map(|sticker| (sticker.cell, sticker.selected)),
+            Some((selected_cell, true))
+        );
+        session.publish(&mut publication).unwrap();
+        let highlight = publication
+            .views
+            .iter()
+            .flat_map(|view| view.records.instances.rows())
+            .find(|record| record.entity == picked.entity)
+            .map(|record| record.material)
+            .expect("the selected sticker was published");
+
+        let snapshot = session.snapshot().unwrap();
+        session.restore(&snapshot).unwrap();
+        let (restored, sticker) = session
+            .app
+            .stickers
+            .iter()
+            .find(|(_, sticker)| sticker.selected)
+            .expect("restore kept the selected sticker");
+        assert_ne!(restored, picked.entity);
+        assert_eq!(sticker.cell, selected_cell);
+        session.publish(&mut publication).unwrap();
+        let restored_highlight = publication
+            .views
+            .iter()
+            .flat_map(|view| view.records.instances.rows())
+            .find(|record| record.entity == restored)
+            .map(|record| record.material)
+            .expect("the restored selected sticker was published");
+        assert_eq!(restored_highlight, highlight);
+        session
+            .boundary(Input {
+                actions: vec![ActionEvent {
+                    action: TWIST,
+                    pressed: true,
+                }],
+                ..Input::default()
+            })
+            .unwrap();
+        assert_eq!(
+            (*session.app.turning.get()).map(|turning| turning.twist.cell),
+            Some(selected_cell)
+        );
+    }
+
+    #[test]
+    fn busy_history_commands_leave_state_unchanged_until_twist_finishes() {
+        let (mut session, _) = build(Args::default()).unwrap();
+        let grids = |session: &Session<CubeStores>| {
+            let mut grids: Vec<_> = session
+                .app
+                .pieces
+                .iter()
+                .map(|(entity, piece)| (entity.key(), piece.grid))
+                .collect();
+            grids.sort_unstable_by_key(|(key, _)| *key);
+            grids
+        };
+        let history = |session: &Session<CubeStores>| {
+            session
+                .app
+                .history
+                .get()
+                .iter()
+                .map(|twist| (twist.cell, twist.plane, twist.quarter_turns))
+                .collect::<Vec<_>>()
+        };
+        let (cubie, initial_grid) = session
+            .app
+            .pieces
+            .iter()
+            .find(|(_, piece)| piece.grid == [1, 1, 0, 1])
+            .map(|(entity, piece)| (entity, piece.grid))
+            .expect("the known cubie exists");
+        let initial_grids = grids(&session);
+        let initial_history = history(&session);
+        let twist = Twist {
+            cell: Cell { axis: 3, sign: 1 },
+            plane: Plane4::Xy,
+            quarter_turns: 1,
+        };
+
+        session
+            .dispatch(|dispatch| TwistCommand { twist }.apply(dispatch))
+            .unwrap();
+        let busy_grids = grids(&session);
+        let busy_history = history(&session);
+        let busy_rng = *session.app.rng.get();
+        session
+            .boundary(Input {
+                actions: vec![
+                    ActionEvent {
+                        action: SCRAMBLE,
+                        pressed: true,
+                    },
+                    ActionEvent {
+                        action: UNDO,
+                        pressed: true,
+                    },
+                ],
+                ..Input::default()
+            })
+            .unwrap();
+        assert_eq!(session.results().len(), 2);
+        assert!(session.results().iter().all(|result| {
+            result.outcome == Err(Rejection::Unsupported("a twist is in progress"))
+        }));
+        assert_eq!(grids(&session), busy_grids);
+        assert_eq!(history(&session), busy_history);
+        assert_eq!(*session.app.rng.get(), busy_rng);
+
+        for _ in 0..TWIST_TICKS {
+            session.tick().unwrap();
+        }
+        assert_eq!(
+            session
+                .app
+                .pieces
+                .get(cubie)
+                .expect("the cubie exists")
+                .grid,
+            [-1, 1, 0, 1]
+        );
+
+        session
+            .boundary(Input {
+                actions: vec![ActionEvent {
+                    action: UNDO,
+                    pressed: true,
+                }],
+                ..Input::default()
+            })
+            .unwrap();
+        assert_eq!(grids(&session), initial_grids);
+        assert_eq!(history(&session), initial_history);
+        assert_eq!(
+            session
+                .app
+                .pieces
+                .get(cubie)
+                .expect("the cubie exists")
+                .grid,
+            initial_grid
+        );
+    }
 }

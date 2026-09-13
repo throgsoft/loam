@@ -2,13 +2,14 @@ use std::any::type_name;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::entity::{Entity, EntityKey, SceneId};
+use crate::entity::{Entities, Entity, EntityKey, SceneId};
 use crate::relation::LinkId;
 use crate::session::Stamp;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoreError {
     Foreign(Entity),
+    Stale(Entity),
     Occupied(Entity),
     Missing(Entity),
     Unlinked(LinkId),
@@ -263,6 +264,14 @@ impl<R> RecordBuffer<R> {
         self.stamp = stamp;
     }
 
+    pub(crate) fn update(&mut self, entity: Entity, record: R) -> bool {
+        let Some(position) = self.position(entity) else {
+            return false;
+        };
+        self.rows[position] = record;
+        true
+    }
+
     pub(crate) fn replace(&mut self, records: impl Iterator<Item = (Entity, R)>, stamp: Stamp) {
         self.clear();
         for (entity, record) in records {
@@ -310,7 +319,7 @@ pub trait ErasedStore: Send {
     fn is_tracked(&self) -> bool;
 }
 
-/// What every field of a `stores!` struct implements.
+/// A storage-field contract; only `Stores` implementations call its lifetime hooks.
 pub trait StoreField: Send + 'static {
     type Snapshot: Send + 'static;
 
@@ -499,7 +508,7 @@ impl<T> Store<T> {
         }
     }
 
-    pub fn bind(&mut self, scene: SceneId) {
+    pub(crate) fn bind(&mut self, scene: SceneId) {
         self.scene = scene;
     }
 
@@ -604,7 +613,25 @@ impl<T> Store<T> {
             .map(move |(&key, row)| (Entity::new(scene, key), row))
     }
 
-    pub fn insert(&mut self, entity: Entity, row: T) -> Result<(), StoreError> {
+    pub fn insert(
+        &mut self,
+        entities: &Entities,
+        entity: Entity,
+        row: T,
+    ) -> Result<(), StoreError> {
+        if entity.scene() != entities.scene() {
+            return Err(StoreError::Foreign(entity));
+        }
+        if entities.resolve(entity).is_none() {
+            return Err(StoreError::Stale(entity));
+        }
+        if self.scene == SceneId::UNBOUND {
+            self.scene = entities.scene();
+        }
+        self.insert_raw(entity, row)
+    }
+
+    pub(crate) fn insert_raw(&mut self, entity: Entity, row: T) -> Result<(), StoreError> {
         if entity.scene() != self.scene {
             return Err(StoreError::Foreign(entity));
         }
@@ -912,7 +939,7 @@ pub(crate) mod tests {
         let spawned: Vec<Entity> = (0..count)
             .map(|value| {
                 let entity = entities.spawn();
-                store.insert(entity, value).unwrap();
+                store.insert(&entities, entity, value).unwrap();
                 entity
             })
             .collect();
@@ -1046,7 +1073,7 @@ pub(crate) mod tests {
 
         for value in 0..SMALL.dirty as u32 + 1 {
             let entity = entities.spawn();
-            store.insert(entity, 100 + value).unwrap();
+            store.insert(&entities, entity, 100 + value).unwrap();
         }
         store.remove(e[0]).unwrap();
         assert!(mirror.sync(&store).0);
@@ -1076,7 +1103,7 @@ pub(crate) mod tests {
         entities.despawn(e[0]).unwrap();
         let reused = entities.spawn();
         assert_eq!(reused.key().slot(), e[0].key().slot());
-        store.insert(reused, 7).unwrap();
+        store.insert(&entities, reused, 7).unwrap();
 
         let mut cursor = mirror.cursor;
         let removals: Vec<Removal> = store
@@ -1171,13 +1198,13 @@ pub(crate) mod tests {
         let (mut entities, mut store, e) = filled(2, Some(SMALL));
         let mut relation = Relation::<u8>::new();
         relation.bind(entities.scene());
-        let link = relation.link(e[0], e[1], 5).unwrap();
+        let link = relation.link(&entities, e[0], e[1], 5).unwrap();
         let mut mirror = Mirror::default();
         mirror.sync(&store);
         let (snapshot, rows, links) = (entities.snapshot(), store.snapshot(), relation.snapshot());
 
         let extra = entities.spawn();
-        store.insert(extra, 9).unwrap();
+        store.insert(&entities, extra, 9).unwrap();
         relation.unlink(link).unwrap();
         *store.get_mut(e[0]).unwrap() = 8;
 
@@ -1202,10 +1229,10 @@ pub(crate) mod tests {
         let survivor = relation.outgoing(rebased[0]).next().unwrap();
         let survivor = relation.get(survivor).unwrap();
         assert_eq!(
-            (survivor.from, survivor.to, survivor.data),
+            (survivor.from(), survivor.to(), survivor.data),
             (rebased[0], rebased[1], 5)
         );
-        assert_eq!(store.get(survivor.to), Some(&1));
+        assert_eq!(store.get(survivor.to()), Some(&1));
         assert!(mirror.sync(&store).0);
         assert_eq!(mirror.rows, live(&store));
     }

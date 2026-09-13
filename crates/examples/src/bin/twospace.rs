@@ -1,23 +1,24 @@
 use std::ops::Range;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use glam::{Vec3, Vec4};
-use loam_app::session::run;
-use loam_math::blended::{BlendedSpace, LinearBlendX};
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Mat3};
-use loam_physics::euclidean_r4::{
+use loam::app::session::{launch, SessionApp};
+use loam::math::blended::{BlendedSpace, LinearBlendX};
+use loam::math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Mat3};
+use loam::physics::euclidean_r4::{
     halfspace4_body_r4, register_default_narrowphase, sphere_body_r4,
 };
-use loam_runtime::host::{self, HostConfig, HostError};
-use loam_runtime::{
-    Access, ActionEvent, ActionId, Bindings, BridgeSpec, Ctx, DepthEnvelope, DomainBuilder,
-    DomainError, DomainHandle, DomainRay, DomainSpace, Domains, Entity, ImageRay, Input, Instance,
-    Key, Klein, LogCapacity, Material, Phase, PhysicsConfig, Pick, Placement, Pose,
-    PreparedGeometry, Projection4, Publication, Rejection, Rigid, Section4, Session, SimConfig,
-    SpawnBundle, Step, ViewId, ViewMapping, ViewSpec,
+use loam::runtime::host::{self, HostConfig, HostError};
+use loam::runtime::{
+    ActionEvent, ActionId, Bindings, BridgeSpec, Ctx, DepthEnvelope, DomainBuilder, DomainError,
+    DomainHandle, DomainRay, DomainSpace, Entity, ImageRay, Input, Instance, Key, Klein,
+    LogCapacity, Material, Phase, PhysicsConfig, Placement, Pose, PreparedGeometry, Projection4,
+    Publication, Rejection, Rigid, Section4, Session, SimConfig, SpawnBundle, ViewId, ViewMapping,
+    ViewSpec,
 };
-use loam_shape::polytope::Polytope4;
+use loam::shape::polytope::Polytope4;
+use web_time::Instant;
 
 const FORWARD: ActionId = ActionId(0);
 const BACK: ActionId = ActionId(1);
@@ -56,17 +57,20 @@ struct Player {
     speed: f32,
 }
 
+#[derive(Clone, Copy)]
+struct Landmark;
+
 #[derive(Clone, Copy, Default)]
 struct Edit {
     step: u32,
     submitted: Option<Instant>,
 }
 
-loam_runtime::stores! {
+loam::runtime::stores! {
     #[derive(Default)]
     pub struct TwoSpaceStores {
         players: Store<Player>,
-        last_pick: Value<Option<Pick>>,
+        landmarks: Store<Landmark>,
         edits: Value<Edit>,
     }
 }
@@ -160,21 +164,22 @@ fn bindings() -> Bindings {
 fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
     let mut session = Session::new(TwoSpaceStores::default(), SimConfig::default());
     let flat = DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default());
-    let r4 = session.register_domain(if physics {
+    let flat = if physics {
         flat.physics(
             PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::NEG_Y * GRAVITY),
         )
+        .map_err(|error| HostError::Setup(Rejection::Edit(error)))?
     } else {
         flat
-    });
+    };
+    let r4 = session.register_domain(flat);
     let h3 = session
         .register_domain(DomainBuilder::new("h3", HyperbolicH3).tracked(LogCapacity::default()));
     let missing = || HostError::Host("the blend zone has no width".into());
     let blend = session.register_domain(
         DomainBuilder::new("blend", blend_space().ok_or_else(missing)?)
             .tracked(LogCapacity::default())
-            .fields()
-            .marched(),
+            .fields(),
     );
     let space = blend_space().ok_or_else(missing)?;
     let topology = Polytope4::Tesseract.topology();
@@ -200,6 +205,7 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
             let landmark4 = d.spawn(
                 SpawnBundle::new()
                     .at(r4, Pose::at(LANDMARK_R4))
+                    .row(Landmark)
                     .instance(Instance::new(edges4, white)),
             )?;
             let landmark3 = d.spawn(
@@ -240,17 +246,14 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
                 false => None,
                 true => {
                     let ball = d.spawn(SpawnBundle::new().at(r4, Pose::at(BALL_SPAWN)))?;
-                    let world = d
-                        .domains
-                        .typed(r4)?
-                        .physics_mut()
-                        .ok_or(Rejection::Unsupported("physics on r4"))?;
+                    let floor_entity = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
                     let floor = halfspace4_body_r4(Vec4::Y, FLOOR_HEIGHT)
                         .ok_or(Rejection::Unsupported("half-space floor"))?;
-                    world.world_mut().push_body(floor);
                     let sphere = sphere_body_r4(BALL_SPAWN, Vec4::ZERO, BALL_RADIUS, BALL_MASS)
                         .ok_or(Rejection::Unsupported("hypersphere body"))?;
-                    world.spawn(ball, sphere);
+                    let domain = d.domains.typed(r4)?;
+                    domain.spawn_body(floor_entity, floor)?;
+                    domain.spawn_body(ball, sphere)?;
                     Some(ball)
                 }
             };
@@ -259,69 +262,50 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
             ))
         })?;
 
-    session.system(
+    session.fallible_system(
         Phase::Simulation,
         "walk",
-        Access::new()
-            .reads::<Player>()
-            .domain(r4.id())
-            .domain(h3.id()),
-        move |app: &mut TwoSpaceStores, domains: &mut Domains, input: &Input, step: Step| {
-            let [strafe, advance] = heading(input);
+        move |ctx: Ctx<'_, TwoSpaceStores>| -> Result<(), DomainError> {
+            let [strafe, advance] = heading(ctx.input);
             if strafe == 0.0 && advance == 0.0 {
-                return;
+                return Ok(());
             }
-            for (entity, player) in app.players.iter() {
-                if let Ok(r4) = domains.typed(r4) {
-                    if r4.poses.contains(entity) {
-                        let velocity = Vec4::new(strafe, 0.0, -advance, 0.0) * player.speed;
-                        let _ = r4.walk(entity, velocity, step.dt);
-                        continue;
-                    }
+            for (entity, player) in ctx.app.players.iter() {
+                if ctx.domains.read(r4)?.poses().contains(entity) {
+                    let velocity = Vec4::new(strafe, 0.0, -advance, 0.0) * player.speed;
+                    ctx.domains.typed(r4)?.walk(entity, velocity, ctx.step.dt)?;
+                    continue;
                 }
-                if let Ok(h3) = domains.typed(h3) {
-                    if h3.poses.contains(entity) {
-                        let velocity = Vec3::new(strafe, 0.0, -advance) * player.speed;
-                        let _ = h3.walk(entity, velocity, step.dt);
-                    }
+                if ctx.domains.read(h3)?.poses().contains(entity) {
+                    let velocity = Vec3::new(strafe, 0.0, -advance) * player.speed;
+                    ctx.domains.typed(h3)?.walk(entity, velocity, ctx.step.dt)?;
                 }
             }
+            Ok(())
         },
     );
 
-    session.system(
-        Phase::Dispatch,
-        "pick",
-        Access::new().writes::<Option<Pick>>(),
-        |ctx: Ctx<'_, TwoSpaceStores>| {
-            let Some(pointer) = ctx.input.began() else {
-                return;
-            };
-            let pick = ctx.pick(pointer.ndc);
-            ctx.app.last_pick.set(pick);
-        },
-    );
-
-    session.system(
+    session.fallible_system(
         Phase::Dispatch,
         "edit",
-        Access::new().writes::<Edit>().commands().domain(r4.id()),
-        move |ctx: Ctx<'_, TwoSpaceStores>| {
+        move |ctx: Ctx<'_, TwoSpaceStores>| -> Result<(), DomainError> {
             if !ctx.input.is_held(EDIT) {
-                return;
+                return Ok(());
             }
+            let (landmark4, _) = ctx
+                .app
+                .landmarks
+                .iter()
+                .next()
+                .ok_or(DomainError::Unsupported("landmark row"))?;
             let step = ctx.app.edits.get().step + 1;
-            ctx.commands.app_fn("place-landmark", move |dispatch| {
-                if let Ok(domain) = dispatch.domains.typed(r4) {
-                    if let Some(pose) = domain.poses.get_mut(landmark4) {
-                        pose.point = LANDMARK_R4 + Vec4::X * (step as f32 * EDIT_STEP);
-                    }
-                }
-            });
+            let point = LANDMARK_R4 + Vec4::X * (step as f32 * EDIT_STEP);
+            ctx.domains.typed(r4)?.set_point(landmark4, point)?;
             ctx.app.edits.set(Edit {
                 step,
                 submitted: Some(Instant::now()),
             });
+            Ok(())
         },
     );
 
@@ -341,10 +325,10 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
     Ok((session, scene))
 }
 
-fn ball_height(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Option<f32> {
+fn ball_height(session: &Session<TwoSpaceStores>, scene: &Scene) -> Option<f32> {
     let ball = scene.ball?;
-    let domain = session.domains_mut().typed(scene.r4).ok()?;
-    Some(domain.poses.get(ball)?.point.y)
+    let domain = session.domains().read(scene.r4).ok()?;
+    Some(domain.poses().get(ball)?.point.y)
 }
 
 fn blended(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool, HostError> {
@@ -374,13 +358,6 @@ fn blended(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool,
         apart
     );
 
-    let compiled = session
-        .domains_mut()
-        .facade(scene.blend.id())
-        .ok_or_else(|| lost("the blended domain went missing"))?
-        .compile_fields();
-    println!("blend compile_fields: {compiled:?}");
-
     let walked = session.domains_mut().typed(scene.blend)?.walk(
         scene.blend_eye,
         Vec3::NEG_X * BLEND_STEP,
@@ -393,19 +370,29 @@ fn blended(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool,
     let mut still = Vec::with_capacity(PUBLISH_SAMPLES);
     let (mark, landmark4) = (scene.blend_mark, scene.landmark4);
     for _ in 0..PUBLISH_SAMPLES {
-        let _ = session
+        let pose = *session
+            .domains()
+            .read(scene.blend)?
+            .poses()
+            .get(mark)
+            .ok_or_else(|| HostError::Host("the blended mark lost its pose".into()))?;
+        session
             .domains_mut()
             .typed(scene.blend)?
-            .poses
-            .get_mut(mark);
+            .set_pose(mark, pose)?;
         let start = Instant::now();
         session.publish(&mut publication)?;
         moved_blend.push(start.elapsed());
-        let _ = session
+        let pose = *session
+            .domains()
+            .read(scene.r4)?
+            .poses()
+            .get(landmark4)
+            .ok_or_else(|| HostError::Host("the r4 landmark lost its pose".into()))?;
+        session
             .domains_mut()
             .typed(scene.r4)?
-            .poses
-            .get_mut(landmark4);
+            .set_pose(landmark4, pose)?;
         let start = Instant::now();
         session.publish(&mut publication)?;
         moved_r4.push(start.elapsed());
@@ -424,10 +411,6 @@ fn blended(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool,
         && pick.domain == scene.blend.id()
         && placed.length() <= 1e-5
         && (apart - BLEND_SPAN).abs() <= 1e-4
-        && matches!(
-            compiled,
-            Err(DomainError::Unsupported("curved field chart"))
-        )
         && walked == Err(DomainError::ChartBoundary))
 }
 
@@ -498,9 +481,9 @@ fn bridged(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool,
         .map_err(|error| refused("drag", format!("{error:?}")))?;
     session.boundary(Input::default())?;
     let at = session
-        .domains_mut()
-        .typed(scene.r4)?
-        .poses
+        .domains()
+        .read(scene.r4)?
+        .poses()
         .get(scene.landmark4)
         .map(|pose| pose.point)
         .ok_or_else(|| HostError::Host("the landmark lost its pose".into()))?;
@@ -641,9 +624,12 @@ fn main() -> ExitCode {
         Some(Some(steps)) => {
             build(true).and_then(|(mut session, scene)| headless(&mut session, &scene, steps))
         }
-        None => build(false).and_then(|(session, _)| {
-            run(session, HostConfig::new("twospace", bindings())).map(|()| true)
-        }),
+        None => launch(|args| {
+            let (session, _) = build(false)?;
+            let app = SessionApp::with_args(HostConfig::new("twospace", bindings()), args);
+            Ok((session, app))
+        })
+        .map(|()| true),
     };
     match outcome {
         Ok(true) => ExitCode::SUCCESS,
@@ -671,7 +657,7 @@ mod tests {
         let config = HostConfig::new("twospace", bindings());
         let holds = [(Key::Letter('w'), HEADLESS_WALK)];
         host::run_headless(&mut session, &config, SETTLE_TICKS, &holds).unwrap();
-        let y = ball_height(&mut session, &scene).unwrap();
+        let y = ball_height(&session, &scene).unwrap();
         assert!(
             (y - HAND_REST_Y).abs() < 1e-5,
             "the ball rested at {y}, not {HAND_REST_Y}"
@@ -692,36 +678,55 @@ mod tests {
                 .map(|(entity, _)| entity)
                 .collect()
         };
-        let walked = |session: &mut Session<TwoSpaceStores>| {
+        let walked = |session: &Session<TwoSpaceStores>| {
             let players = players(session);
-            let domains = session.domains_mut();
-            let r4 = domains.typed(scene.r4).unwrap();
+            let domains = session.domains();
+            let r4 = domains.read(scene.r4).unwrap();
             let moved4 = players
                 .iter()
-                .filter_map(|player| r4.poses.get(*player))
+                .filter_map(|player| r4.poses().get(*player))
                 .any(|pose| pose.point != Vec4::ZERO);
-            let h3 = domains.typed(scene.h3).unwrap();
+            let h3 = domains.read(scene.h3).unwrap();
             let moved3 = players
                 .iter()
-                .filter_map(|player| h3.poses.get(*player))
+                .filter_map(|player| h3.poses().get(*player))
                 .any(|pose| pose.point != Vec3::ZERO);
             moved4 || moved3
         };
-        assert!(walked(&mut session));
+        assert!(walked(&session));
 
         session.reset().unwrap();
         assert_eq!(session.entities().resolve(scene.landmark4), None);
         assert_eq!(session.entities().resolve(scene.landmark3), None);
-        assert!(!walked(&mut session));
+        assert!(!walked(&session));
         let players = players(&session);
         assert_eq!(players.len(), 2);
         for player in players {
             assert_eq!(session.entities().resolve(player), Some(player.key()));
-            let domains = session.domains_mut();
-            let placed = domains.typed(scene.r4).unwrap().poses.contains(player)
-                || domains.typed(scene.h3).unwrap().poses.contains(player);
+            let domains = session.domains();
+            let placed = domains.read(scene.r4).unwrap().poses().contains(player)
+                || domains.read(scene.h3).unwrap().poses().contains(player);
             assert!(placed, "{player:?} lost its pose");
         }
+        assert_eq!(session.app.edits.get().step, 0);
+        session.boundary(edit_input()).unwrap();
+        let (landmark4, _) = session
+            .app
+            .landmarks
+            .iter()
+            .next()
+            .expect("the reset restored the landmark row");
+        let point = session
+            .domains()
+            .read(scene.r4)
+            .unwrap()
+            .poses()
+            .get(landmark4)
+            .expect("the reset restored the landmark pose")
+            .point;
+        assert_eq!(point, LANDMARK_R4 + Vec4::X * EDIT_STEP);
+        assert_eq!(session.app.edits.get().step, 1);
+        assert!(session.app.edits.get().submitted.is_some());
         let mut publication = Publication::default();
         session.publish(&mut publication).unwrap();
         let landmarks: Vec<_> = publication

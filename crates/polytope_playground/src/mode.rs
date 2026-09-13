@@ -1,33 +1,28 @@
-use loam_math::{Bivector, Bivector4, EuclideanR4, Plane4, Rotor, Rotor4};
-use loam_runtime::{
-    AppCommand, Dispatch, DomainHandle, EdgeShading, Instance, MaterialId, Outcome, Pose,
-    PreparedId, Rejection, SpawnBundle,
+use loam::math::{Bivector4, EuclideanR4, Plane4, Rotor4};
+use loam::runtime::{
+    Dispatch, DomainHandle, Domains, EdgeShading, Entity, Instance, MaterialId, Pose, Rejection,
+    SpawnBundle,
 };
 
 use crate::catalog::ShapeEntry;
-use crate::color::{ColorMode, Shades};
-use crate::composer::Term;
-use crate::consts::{BASE_ROTATION_RATE, MAX_RATE, W_RANGE};
-use crate::projection::Family;
+use crate::consts::BASE_ROTATION_RATE;
 use crate::strip::{Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
 use crate::toy;
-use crate::Playground;
+use crate::{Card, Playground, Toy};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Mode {
     #[default]
     Rotate,
-    Compose,
     Toybox,
 }
 
 impl Mode {
-    pub(crate) const ALL: [Mode; 3] = [Mode::Rotate, Mode::Compose, Mode::Toybox];
+    pub(crate) const ALL: [Mode; 2] = [Mode::Rotate, Mode::Toybox];
 
     pub(crate) fn name(self) -> &'static str {
         match self {
             Mode::Rotate => "rotate",
-            Mode::Compose => "compose",
             Mode::Toybox => "toybox",
         }
     }
@@ -47,18 +42,15 @@ pub(crate) struct Spin {
 impl Default for Spin {
     fn default() -> Self {
         Self {
-            planes: [false, false, false, false, false, true],
+            planes: [false, false, true, false, false, false],
             rate: 1.0,
-            running: true,
+            running: false,
         }
     }
 }
 
 impl Spin {
     pub(crate) fn omega(&self) -> Bivector4 {
-        if !self.running {
-            return Bivector4::ZERO;
-        }
         Plane4::ALL
             .into_iter()
             .enumerate()
@@ -69,422 +61,204 @@ impl Spin {
     }
 }
 
-pub(crate) struct SetMode {
-    pub(crate) mode: Mode,
-    pub(crate) domain: DomainHandle<EuclideanR4>,
+pub(crate) fn set_mode(
+    dispatch: &mut Dispatch<'_, Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    assets: &[Option<Instance>],
+    mode: Mode,
+) -> Result<(), Rejection> {
+    let held = *dispatch.app.mode.get();
+    if held == mode {
+        return Ok(());
+    }
+    match (held, mode) {
+        (_, Mode::Toybox) => toy::populate(dispatch, domain, assets)?,
+        (Mode::Toybox, _) => toy::clear(dispatch, domain)?,
+        _ => {}
+    }
+    dispatch.app.strip.get_mut().on = false;
+    dispatch.app.display.get_mut().single = false;
+    dispatch.app.active.set(0);
+    dispatch.app.mode.set(mode);
+    dispatch.app.spin.get_mut().running = false;
+    Ok(())
 }
 
-impl AppCommand<Playground> for SetMode {
-    fn name(&self) -> &'static str {
-        self.mode.name()
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let held = *dispatch.app.mode.get();
-        if held == self.mode {
-            return Ok(Outcome::Done);
-        }
-        match (held, self.mode) {
-            (_, Mode::Toybox) => toy::populate(dispatch, self.domain)?,
-            (Mode::Toybox, _) => toy::clear(dispatch, self.domain)?,
-            _ => {}
-        }
-        dispatch.app.mode.set(self.mode);
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct SetActive {
-    pub(crate) slot: usize,
-}
-
-impl AppCommand<Playground> for SetActive {
-    fn name(&self) -> &'static str {
-        "active"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        if self.slot >= dispatch.app.slots.len() {
-            return Err(Rejection::Unsupported("no such slot"));
-        }
-        dispatch.app.active.set(self.slot);
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct SetSlice {
-    pub(crate) w: f32,
-}
-
-impl AppCommand<Playground> for SetSlice {
-    fn name(&self) -> &'static str {
-        "slice"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        if !self.w.is_finite() {
-            return Err(Rejection::Unsupported("slice is not finite"));
-        }
-        dispatch.app.slice.set(self.w.clamp(-W_RANGE, W_RANGE));
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct TogglePlane {
-    pub(crate) plane: usize,
-}
-
-impl AppCommand<Playground> for TogglePlane {
-    fn name(&self) -> &'static str {
-        "plane"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let spin = dispatch.app.spin.get_mut();
-        let held = spin
-            .planes
-            .get_mut(self.plane)
-            .ok_or(Rejection::Unsupported("no such plane"))?;
-        *held = !*held;
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct SetRunning {
-    pub(crate) running: bool,
-}
-
-impl AppCommand<Playground> for SetRunning {
-    fn name(&self) -> &'static str {
-        "spin"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        dispatch.app.spin.get_mut().running = self.running;
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct SetProjection {
-    pub(crate) family: Family,
-}
-
-impl AppCommand<Playground> for SetProjection {
-    fn name(&self) -> &'static str {
-        self.family.name()
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        dispatch.app.projection.set(self.family);
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct PushTerm {
-    pub(crate) term: Term,
-}
-
-impl AppCommand<Playground> for PushTerm {
-    fn name(&self) -> &'static str {
-        "term"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        if dispatch.app.composer.get_mut().push(self.term) {
-            Ok(Outcome::Done)
-        } else {
-            Err(Rejection::Unsupported("the sequence is empty or full"))
-        }
-    }
-}
-
-pub(crate) struct DropTerm {
-    pub(crate) index: usize,
-}
-
-impl AppCommand<Playground> for DropTerm {
-    fn name(&self) -> &'static str {
-        "drop term"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        if dispatch.app.composer.get_mut().remove(self.index) {
-            Ok(Outcome::Done)
-        } else {
-            Err(Rejection::Unsupported("no such term"))
-        }
-    }
-}
-
-pub(crate) struct DraftPlane {
-    pub(crate) plane: usize,
-}
-
-impl AppCommand<Playground> for DraftPlane {
-    fn name(&self) -> &'static str {
-        "draft"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let composer = dispatch.app.composer.get_mut();
-        let slot = composer
-            .draft
-            .get_mut(self.plane)
-            .ok_or(Rejection::Unsupported("no such plane"))?;
-        *slot = slot.saturating_add(1);
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct ClearDraft;
-
-impl AppCommand<Playground> for ClearDraft {
-    fn name(&self) -> &'static str {
-        "clear draft"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        dispatch.app.composer.get_mut().draft = [0; 6];
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct CommitDraft;
-
-impl AppCommand<Playground> for CommitDraft {
-    fn name(&self) -> &'static str {
-        "commit"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        if dispatch.app.composer.get_mut().commit_draft() {
-            Ok(Outcome::Done)
-        } else {
-            Err(Rejection::Unsupported(
-                "the draft is empty or the sequence is full",
-            ))
-        }
-    }
-}
-
-pub(crate) struct ClearComposer;
-
-impl AppCommand<Playground> for ClearComposer {
-    fn name(&self) -> &'static str {
-        "clear"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        dispatch.app.composer.get_mut().clear();
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct SetScrub {
-    pub(crate) scrub: f32,
-    pub(crate) domain: DomainHandle<EuclideanR4>,
-}
-
-impl AppCommand<Playground> for SetScrub {
-    fn name(&self) -> &'static str {
-        "scrub"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        if !self.scrub.is_finite() {
-            return Err(Rejection::Unsupported("scrub is not finite"));
-        }
-        let axis = dispatch
-            .app
-            .composer
-            .get()
-            .axis()
-            .ok_or(Rejection::Unsupported("the sequence names no bivector"))?;
-        dispatch.app.composer.get_mut().scrub = self.scrub;
-        let entities = dispatch.app.slots.iter().map(|(entity, _)| entity);
-        let r4 = dispatch.domains.typed(self.domain)?;
-        for entity in entities {
-            if let Some(pose) = r4.poses.get_mut(entity) {
-                let held = pose.frame.log();
-                let turned = held + axis * (self.scrub - held.dot(axis));
-                pose.frame = turned.exp().normalize();
+pub(crate) fn reset(
+    dispatch: &mut Dispatch<'_, Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    assets: &[Option<Instance>],
+) -> Result<(), Rejection> {
+    if *dispatch.app.mode.get() == Mode::Toybox {
+        toy::reset(dispatch, domain, assets)?;
+    } else {
+        let r4 = dispatch.domains.typed(domain)?;
+        for (entity, slot) in dispatch.app.slots.iter() {
+            if r4.poses().contains(entity) {
+                r4.set_pose(entity, Pose::at(slot.rest))?;
             }
         }
-        Ok(Outcome::Done)
     }
+    dispatch.app.time.set(0.0);
+    dispatch.app.angles.set([0.0; 6]);
+    dispatch.app.spin.set(Spin::default());
+    dispatch.app.slice.set(0.0);
+    Ok(())
 }
 
-pub(crate) struct TurnRow {
-    pub(crate) rotor: Rotor4,
-    pub(crate) domain: DomainHandle<EuclideanR4>,
+pub(crate) fn throw_toy(
+    dispatch: &mut Dispatch<'_, Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    entity: Entity,
+    velocity: [f32; 3],
+) -> Result<(), Rejection> {
+    if !dispatch.app.toys.contains(entity) {
+        return Ok(());
+    }
+    let physics = dispatch
+        .domains
+        .typed(domain)?
+        .physics_mut()
+        .ok_or(Rejection::Unsupported("the domain has no physics"))?;
+    toy::release(physics, entity, velocity).map_err(Rejection::Edit)
 }
 
-impl AppCommand<Playground> for TurnRow {
-    fn name(&self) -> &'static str {
-        "turn"
-    }
+pub(crate) fn toggle_plane(
+    dispatch: &mut Dispatch<'_, Playground>,
+    plane: usize,
+) -> Result<(), Rejection> {
+    let held = *dispatch
+        .app
+        .spin
+        .get()
+        .planes
+        .get(plane)
+        .ok_or(Rejection::Unsupported("no such plane"))?;
+    let elapsed = *dispatch.app.time.get() * BASE_ROTATION_RATE;
+    let angle = dispatch
+        .app
+        .angles
+        .get_mut()
+        .get_mut(plane)
+        .ok_or(Rejection::Unsupported("no such plane"))?;
+    *angle += if held { elapsed } else { -elapsed };
+    dispatch.app.spin.get_mut().planes[plane] = !held;
+    Ok(())
+}
 
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let entities = dispatch.app.slots.iter().map(|(entity, _)| entity);
-        let r4 = dispatch.domains.typed(self.domain)?;
-        for entity in entities {
-            if let Some(pose) = r4.poses.get_mut(entity) {
-                pose.frame = (self.rotor * pose.frame).normalize();
-            }
+pub(crate) fn turn_row(
+    app: &Playground,
+    domains: &mut Domains,
+    domain: DomainHandle<EuclideanR4>,
+    rotor: Rotor4,
+) -> Result<(), Rejection> {
+    if *app.mode.get() != Mode::Rotate {
+        return Err(Rejection::Unsupported("rotation handles belong to Rotate"));
+    }
+    let entities = app.slots.iter().map(|(entity, _)| entity);
+    let r4 = domains.typed(domain)?;
+    for entity in entities {
+        if let Some(mut pose) = r4.poses().get(entity).copied() {
+            pose.frame = (rotor * pose.frame).normalize();
+            r4.set_pose(entity, pose)?;
         }
-        Ok(Outcome::Done)
     }
+    Ok(())
 }
 
-pub(crate) struct ToggleGimbal;
-
-impl AppCommand<Playground> for ToggleGimbal {
-    fn name(&self) -> &'static str {
-        "gimbal"
+pub(crate) fn set_shape(
+    dispatch: &mut Dispatch<'_, Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    slot: usize,
+    entry: ShapeEntry,
+    card: Card,
+    cut: MaterialId,
+) -> Result<(), Rejection> {
+    let held = dispatch
+        .app
+        .slots
+        .iter()
+        .find(|(_, held)| held.index == slot)
+        .map(|(entity, held)| (entity, *held))
+        .ok_or(Rejection::Unsupported("no such slot"))?;
+    let (entity, mut row) = held;
+    if row.entry == entry {
+        return Ok(());
     }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let shown = *dispatch.app.gimbal.get();
-        dispatch.app.gimbal.set(!shown);
-        Ok(Outcome::Done)
+    let is_toy = dispatch.app.toys.contains(entity);
+    let polytope = if is_toy {
+        Some(
+            entry
+                .collider_polytope()
+                .ok_or(Rejection::Unsupported("the toy has no collider"))?,
+        )
+    } else {
+        None
+    };
+    let geometry = if is_toy {
+        Some(
+            card.toy_geometry
+                .ok_or(Rejection::Unsupported("the toy has no prepared geometry"))?,
+        )
+    } else {
+        card.geometry
+    };
+    let frame = dispatch
+        .domains
+        .typed(domain)?
+        .poses()
+        .get(entity)
+        .map_or(Rotor4::IDENTITY, |pose| pose.frame);
+    let pose = polytope.map_or_else(
+        || Pose {
+            point: row.rest,
+            frame,
+        },
+        |polytope| toy::pose_at(polytope, row.rest.x),
+    );
+    row.entry = entry;
+    row.rest = pose.point;
+    dispatch.despawn(entity)?;
+    let mut bundle = SpawnBundle::new().at(domain, pose).row(row);
+    if is_toy {
+        bundle = bundle.row(Toy {
+            rest_anchor: pose.point,
+            rest_time: 0.0,
+        });
     }
+    if let Some(geometry) = geometry {
+        let display = *dispatch.app.display.get();
+        let mode = *dispatch.app.color.get();
+        let shading = card
+            .shades
+            .map_or(EdgeShading::Material, |shades| shades.of(mode));
+        bundle = bundle.instance(
+            Instance::new(geometry, card.material)
+                .shaded(shading)
+                .sectioned(cut)
+                .line_style(display.wireframe_width_px, display.wireframe_opacity),
+        );
+    }
+    let spawned = dispatch.spawn(bundle)?;
+    if let Some(polytope) = polytope {
+        toy::add_body(dispatch, domain, spawned, polytope, pose)?;
+    }
+    Ok(())
 }
 
-pub(crate) struct SetColorMode {
-    pub(crate) mode: ColorMode,
-}
-
-impl AppCommand<Playground> for SetColorMode {
-    fn name(&self) -> &'static str {
-        self.mode.name()
+pub(crate) fn set_strip(app: &mut Playground, mut strip: Strip) -> Result<(), Rejection> {
+    if strip.on && *app.mode.get() == Mode::Toybox {
+        return Err(Rejection::Unsupported("filmstrip belongs to Rotate"));
     }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        dispatch.app.color.set(self.mode);
-        Ok(Outcome::Done)
+    if !strip.t_extent.is_finite() {
+        return Err(Rejection::Unsupported("the t extent is not finite"));
     }
-}
-
-pub(crate) struct TogglePoints;
-
-impl AppCommand<Playground> for TogglePoints {
-    fn name(&self) -> &'static str {
-        "points"
+    if !strip.w && !strip.t {
+        return Err(Rejection::Unsupported("the strip needs one axis"));
     }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let shown = *dispatch.app.points.get();
-        dispatch.app.points.set(!shown);
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct SetShape {
-    pub(crate) slot: usize,
-    pub(crate) entry: ShapeEntry,
-    pub(crate) geometry: Option<PreparedId>,
-    pub(crate) material: MaterialId,
-    pub(crate) shades: Option<Shades>,
-    pub(crate) cut: MaterialId,
-    pub(crate) domain: DomainHandle<EuclideanR4>,
-}
-
-impl AppCommand<Playground> for SetShape {
-    fn name(&self) -> &'static str {
-        self.entry.label
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let held = dispatch
-            .app
-            .slots
-            .iter()
-            .find(|(_, slot)| slot.index == self.slot)
-            .map(|(entity, slot)| (entity, *slot))
-            .ok_or(Rejection::Unsupported("no such slot"))?;
-        let (entity, mut row) = held;
-        if row.entry == self.entry {
-            return Ok(Outcome::Done);
-        }
-        row.entry = self.entry;
-        dispatch.despawn(entity)?;
-        let mut bundle = SpawnBundle::new()
-            .at(self.domain, Pose::at(row.rest))
-            .row(row);
-        if let Some(geometry) = self.geometry {
-            let mode = *dispatch.app.color.get();
-            let shading = self
-                .shades
-                .map_or(EdgeShading::Material, |shades| shades.of(mode));
-            bundle = bundle.instance(
-                Instance::new(geometry, self.material)
-                    .shaded(shading)
-                    .sectioned(self.cut),
-            );
-        }
-        let spawned = dispatch.spawn(bundle)?;
-        if *dispatch.app.mode.get() == Mode::Toybox {
-            if let Some(polytope) = self.entry.collider_polytope() {
-                toy::add_body(dispatch, self.domain, spawned, polytope, row.rest)?;
-            }
-        }
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct SetStrip {
-    pub(crate) strip: Strip,
-}
-
-impl AppCommand<Playground> for SetStrip {
-    fn name(&self) -> &'static str {
-        "strip"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        if !self.strip.t_extent.is_finite() {
-            return Err(Rejection::Unsupported("the t extent is not finite"));
-        }
-        if !self.strip.w && !self.strip.t {
-            return Err(Rejection::Unsupported("the strip needs one axis"));
-        }
-        let mut held = self.strip;
-        held.count_w = held.count_w.clamp(MIN_CELLS, MAX_CELLS);
-        held.count_t = held.count_t.clamp(MIN_CELLS, MAX_CELLS);
-        held.t_extent = held.t_extent.clamp(MIN_T_EXTENT, MAX_T_EXTENT);
-        dispatch.app.strip.set(held);
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct SetRate {
-    pub(crate) rate: f32,
-}
-
-impl AppCommand<Playground> for SetRate {
-    fn name(&self) -> &'static str {
-        "rate"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        if !self.rate.is_finite() {
-            return Err(Rejection::Unsupported("the rate is not finite"));
-        }
-        dispatch.app.spin.get_mut().rate = self.rate.clamp(0.0, MAX_RATE);
-        Ok(Outcome::Done)
-    }
-}
-
-pub(crate) struct ToggleHud;
-
-impl AppCommand<Playground> for ToggleHud {
-    fn name(&self) -> &'static str {
-        "hud"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let shown = *dispatch.app.hud.get();
-        dispatch.app.hud.set(!shown);
-        Ok(Outcome::Done)
-    }
+    strip.count_w = strip.count_w.clamp(MIN_CELLS, MAX_CELLS);
+    strip.count_t = strip.count_t.clamp(MIN_CELLS, MAX_CELLS);
+    strip.t_extent = strip.t_extent.clamp(MIN_T_EXTENT, MAX_T_EXTENT);
+    app.strip.set(strip);
+    Ok(())
 }

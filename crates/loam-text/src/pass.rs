@@ -1,15 +1,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use loam_render::device::{GpuContext, MissingGpuCapability};
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR};
+use loam_render::device::GpuContext;
+use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR};
 
-use wgpu::{CommandEncoder, Device, Queue, TextureFormat};
+use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::TextRenderer;
 
-// The last consumer of the composited colour; nothing reads what it paints, so it declares no write.
 const READS: [ResourceId; 1] = [SCENE_COLOR];
+const WRITES: [ResourceId; 1] = [SCENE_COLOR];
 
 /// One placement of the published text, in physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -22,8 +22,6 @@ pub struct TextDraw {
 struct State {
     font: Vec<u8>,
     bake_size_px: f32,
-    format: TextureFormat,
-    sample_count: u32,
     text: String,
     draws: Vec<TextDraw>,
     renderer: Option<TextRenderer>,
@@ -31,7 +29,7 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A `TextRenderer` after the scene that blends into scene colour with no depth test; clones share one state.
+/// A shared text overlay pass without a depth test.
 #[derive(Clone)]
 pub struct TextPass {
     name: &'static str,
@@ -45,8 +43,6 @@ impl TextPass {
             shared: Rc::new(RefCell::new(State {
                 font,
                 bake_size_px,
-                format: TextureFormat::Rgba8UnormSrgb,
-                sample_count: 1,
                 text: String::new(),
                 draws: Vec::new(),
                 renderer: None,
@@ -80,14 +76,18 @@ impl FramePass for TextPass {
         &READS
     }
 
-    fn order(&self) -> PassOrder {
-        PassOrder::AfterScene
+    fn writes(&self) -> &[ResourceId] {
+        &WRITES
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+    fn stage(&self) -> PassStage {
+        PassStage::Overlay
+    }
+
+    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         if state.text.is_empty() || state.draws.is_empty() {
-            return;
+            return Ok(());
         }
         let State {
             text,
@@ -100,7 +100,7 @@ impl FramePass for TextPass {
         let (Some(renderer), Some(device), Some(queue)) =
             (renderer.as_mut(), device.as_ref(), queue.as_ref())
         else {
-            return;
+            return Ok(());
         };
         for draw in draws.iter() {
             renderer.queue(text, draw.origin_px, draw.size_px, draw.color);
@@ -112,28 +112,19 @@ impl FramePass for TextPass {
             target.color,
             [target.size.0 as f32, target.size.1 as f32],
         );
+        Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
-        {
-            let mut state = self.shared.borrow_mut();
-            state.format = frame.color;
-            state.sample_count = frame.sample_count;
-        }
-        self.rebuild(gpu)
-    }
-
-    fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
-        state.renderer = TextRenderer::new(
+        state.renderer = Some(TextRenderer::new(
             &gpu.device,
             &gpu.queue,
-            state.format,
+            frame.color,
             &state.font,
             state.bake_size_px,
-            state.sample_count,
-        )
-        .ok();
+            frame.sample_count,
+        )?);
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());
         Ok(())

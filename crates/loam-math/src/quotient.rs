@@ -11,16 +11,36 @@ use crate::space::{IsometryGroup, Space, WgslSpace};
 use crate::spherical::Iso4;
 use crate::spherical_embedded::SphericalS3Embedded;
 
-/// Isometries act on the cover; [`Self::face_pairings`] generate the deck group.
-pub trait QuotientSpace: IsometryGroup {
+/// A distance-preserving action on a quotient's covering space.
+pub trait CoveringSpace: Space {
+    type CoverIso: Copy + Send + Sync + 'static;
+
+    fn cover_identity(&self) -> Self::CoverIso;
+
+    fn cover_compose(&self, a: Self::CoverIso, b: Self::CoverIso) -> Self::CoverIso;
+
+    fn cover_inverse(&self, a: Self::CoverIso) -> Self::CoverIso;
+
+    fn cover_apply(&self, iso: Self::CoverIso, p: Self::Point) -> Self::Point;
+
+    fn cover_transport(
+        &self,
+        iso: Self::CoverIso,
+        at: Self::Point,
+        v: Self::Vector,
+    ) -> Self::Vector;
+}
+
+/// Cover actions select representatives; [`Self::face_pairings`] generate the deck group.
+pub trait QuotientSpace: CoveringSpace {
     /// Iteration order is part of the contract.
-    fn face_pairings(&self) -> impl Iterator<Item = Self::Iso>;
+    fn face_pairings(&self) -> impl Iterator<Item = Self::CoverIso>;
 
     /// Tests membership in the implementation's fundamental domain.
     fn in_fundamental_domain(&self, p: Self::Point) -> bool;
 
     /// Returns a domain representative and the deck element that maps `p` to it.
-    fn wrap_to_domain(&self, p: Self::Point) -> (Self::Point, Self::Iso);
+    fn wrap_to_domain(&self, p: Self::Point) -> (Self::Point, Self::CoverIso);
 }
 
 // Conway and Sloane, Sphere Packings, Lattices and Groups, 1988, ch. 4 §1.
@@ -107,21 +127,21 @@ impl Space for FlatTorus3 {
     }
 }
 
-impl IsometryGroup for FlatTorus3 {
-    type Iso = Iso3;
+impl CoveringSpace for FlatTorus3 {
+    type CoverIso = Iso3;
 
-    fn iso_identity(&self) -> Iso3 {
+    fn cover_identity(&self) -> Iso3 {
         Iso3::IDENTITY
     }
 
-    fn iso_compose(&self, a: Iso3, b: Iso3) -> Iso3 {
+    fn cover_compose(&self, a: Iso3, b: Iso3) -> Iso3 {
         Iso3 {
             rotation: a.rotation * b.rotation,
             translation: a.rotation * b.translation + a.translation,
         }
     }
 
-    fn iso_inverse(&self, a: Iso3) -> Iso3 {
+    fn cover_inverse(&self, a: Iso3) -> Iso3 {
         let inverse_rotation = a.rotation.inverse();
         Iso3 {
             rotation: inverse_rotation,
@@ -129,11 +149,11 @@ impl IsometryGroup for FlatTorus3 {
         }
     }
 
-    fn iso_apply(&self, iso: Iso3, p: Vec3) -> Vec3 {
+    fn cover_apply(&self, iso: Iso3, p: Vec3) -> Vec3 {
         iso.rotation * p + iso.translation
     }
 
-    fn iso_transport(&self, iso: Iso3, _at: Vec3, v: Vec3) -> Vec3 {
+    fn cover_transport(&self, iso: Iso3, _at: Vec3, v: Vec3) -> Vec3 {
         iso.rotation * v
     }
 }
@@ -265,11 +285,11 @@ impl LensSpace {
     }
 
     fn nearest_lift(&self, from: Vec4, to: Vec4) -> (i32, Vec4, f32) {
-        let mut best_lift = self.iso_apply(self.deck(0), to);
+        let mut best_lift = self.cover_apply(self.deck(0), to);
         let mut best_power = 0;
         let mut best_distance = COVER.distance(from, best_lift);
         for power in 1..self.p as i32 {
-            let lift = self.iso_apply(self.deck(power), to);
+            let lift = self.cover_apply(self.deck(power), to);
             let distance = COVER.distance(from, lift);
             if distance < best_distance {
                 best_lift = lift;
@@ -389,7 +409,7 @@ impl Space for LensSpace {
         let (power, lift, _) = self.nearest_lift(from, to);
         let carried = COVER.parallel_transport(from, lift, v);
 
-        self.iso_transport(self.deck(-power), lift, carried)
+        self.cover_transport(self.deck(-power), lift, carried)
     }
 
     fn chart_envelope(&self) -> f32 {
@@ -401,26 +421,26 @@ impl Space for LensSpace {
     }
 }
 
-impl IsometryGroup for LensSpace {
-    type Iso = Iso4;
+impl CoveringSpace for LensSpace {
+    type CoverIso = Iso4;
 
-    fn iso_identity(&self) -> Iso4 {
+    fn cover_identity(&self) -> Iso4 {
         COVER.iso_identity()
     }
 
-    fn iso_compose(&self, a: Iso4, b: Iso4) -> Iso4 {
+    fn cover_compose(&self, a: Iso4, b: Iso4) -> Iso4 {
         COVER.iso_compose(a, b)
     }
 
-    fn iso_inverse(&self, a: Iso4) -> Iso4 {
+    fn cover_inverse(&self, a: Iso4) -> Iso4 {
         COVER.iso_inverse(a)
     }
 
-    fn iso_apply(&self, iso: Iso4, p: Vec4) -> Vec4 {
+    fn cover_apply(&self, iso: Iso4, p: Vec4) -> Vec4 {
         COVER.iso_apply(iso, p)
     }
 
-    fn iso_transport(&self, iso: Iso4, at: Vec4, v: Vec4) -> Vec4 {
+    fn cover_transport(&self, iso: Iso4, at: Vec4, v: Vec4) -> Vec4 {
         COVER.iso_transport(iso, at, v)
     }
 }
@@ -437,13 +457,13 @@ impl QuotientSpace for LensSpace {
     fn wrap_to_domain(&self, p: Vec4) -> (Vec4, Iso4) {
         let mut power = self.wedge_offset(p);
         let mut deck = self.deck(power);
-        let mut wrapped = self.iso_apply(deck, p);
+        let mut wrapped = self.cover_apply(deck, p);
 
         let correction = self.wedge_offset(wrapped);
         if correction != 0 {
             power += correction;
             deck = self.deck(power);
-            wrapped = self.iso_apply(deck, p);
+            wrapped = self.cover_apply(deck, p);
         }
         (wrapped, deck)
     }
@@ -540,7 +560,7 @@ mod tests {
         }
         for p in lifts {
             let (q, g) = t.wrap_to_domain(p);
-            assert_eq!(t.iso_apply(g, p), q, "deck element disagreed at {p:?}");
+            assert_eq!(t.cover_apply(g, p), q, "deck element disagreed at {p:?}");
         }
     }
 
@@ -558,7 +578,7 @@ mod tests {
         let t = torus();
         let generators: Vec<Iso3> = t
             .face_pairings()
-            .flat_map(|g| [g, t.iso_inverse(g)])
+            .flat_map(|g| [g, t.cover_inverse(g)])
             .collect();
         let mut rng = Xorshift(0xfeed_face);
 
@@ -567,15 +587,15 @@ mod tests {
             let b = word(&t, &generators, &mut rng);
             let p = rng.point(8.0);
 
-            let sequential = t.iso_apply(a, t.iso_apply(b, p));
-            let composed = t.iso_apply(t.iso_compose(a, b), p);
+            let sequential = t.cover_apply(a, t.cover_apply(b, p));
+            let composed = t.cover_apply(t.cover_compose(a, b), p);
             assert_relative_eq!(sequential.x, composed.x, epsilon = 1e-5);
             assert_relative_eq!(sequential.y, composed.y, epsilon = 1e-5);
             assert_relative_eq!(sequential.z, composed.z, epsilon = 1e-5);
 
-            assert_eq!(t.iso_apply(t.iso_identity(), p), p);
+            assert_eq!(t.cover_apply(t.cover_identity(), p), p);
 
-            let round_trip = t.iso_apply(t.iso_inverse(a), t.iso_apply(a, p));
+            let round_trip = t.cover_apply(t.cover_inverse(a), t.cover_apply(a, p));
             assert_relative_eq!(round_trip.x, p.x, epsilon = 1e-5);
             assert_relative_eq!(round_trip.y, p.y, epsilon = 1e-5);
             assert_relative_eq!(round_trip.z, p.z, epsilon = 1e-5);
@@ -584,9 +604,9 @@ mod tests {
 
     fn word(t: &FlatTorus3, generators: &[Iso3], rng: &mut Xorshift) -> Iso3 {
         let length = (rng.next_u32() % 5) as usize;
-        (0..length).fold(t.iso_identity(), |accumulated, _| {
+        (0..length).fold(t.cover_identity(), |accumulated, _| {
             let pick = generators[(rng.next_u32() as usize) % generators.len()];
-            t.iso_compose(accumulated, pick)
+            t.cover_compose(accumulated, pick)
         })
     }
 
@@ -595,14 +615,14 @@ mod tests {
         let t = torus();
         let generators: Vec<Iso3> = t
             .face_pairings()
-            .flat_map(|g| [g, t.iso_inverse(g)])
+            .flat_map(|g| [g, t.cover_inverse(g)])
             .collect();
         let mut rng = Xorshift(0x00c0_ffee);
         for _ in 0..20_000 {
             let p = rng.point(5.0);
             let (q, _) = t.wrap_to_domain(p);
             let g = word(&t, &generators, &mut rng);
-            let (q_translated, _) = t.wrap_to_domain(t.iso_apply(g, p));
+            let (q_translated, _) = t.wrap_to_domain(t.cover_apply(g, p));
             assert_relative_eq!(q_translated.x, q.x, epsilon = 1e-4);
             assert_relative_eq!(q_translated.y, q.y, epsilon = 1e-4);
             assert_relative_eq!(q_translated.z, q.z, epsilon = 1e-4);
@@ -635,7 +655,7 @@ mod tests {
         let t = torus();
         let generators: Vec<Iso3> = t
             .face_pairings()
-            .flat_map(|g| [g, t.iso_inverse(g)])
+            .flat_map(|g| [g, t.cover_inverse(g)])
             .collect();
         let mut rng = Xorshift(0x9e37_79b9);
         for _ in 0..20_000 {
@@ -645,11 +665,11 @@ mod tests {
 
             assert_relative_eq!(t.distance(a, b), t.distance(b, a));
             assert_relative_eq!(
-                t.distance(t.iso_apply(g, a), b),
+                t.distance(t.cover_apply(g, a), b),
                 t.distance(a, b),
                 epsilon = 1e-4
             );
-            assert_relative_eq!(t.distance(a, t.iso_apply(g, a)), 0.0, epsilon = 1e-4);
+            assert_relative_eq!(t.distance(a, t.cover_apply(g, a)), 0.0, epsilon = 1e-4);
         }
     }
 
@@ -680,9 +700,9 @@ mod tests {
             let uncorrected = start + step;
             let (arrived, deck) = t.wrap_to_domain(uncorrected);
 
-            let expected = t.iso_inverse(*pairing);
+            let expected = t.cover_inverse(*pairing);
             assert_eq!(deck.translation, expected.translation, "axis {axis}");
-            assert_eq!(t.iso_apply(expected, uncorrected), arrived);
+            assert_eq!(t.cover_apply(expected, uncorrected), arrived);
             assert_eq!(t.exp(start, step), arrived);
         }
     }
@@ -733,6 +753,25 @@ mod tests {
         assert_relative_eq!(short.x, 0.0);
         assert_relative_eq!(short.y, -1.0);
         assert_relative_eq!(short.z, 0.0);
+    }
+
+    #[test]
+    fn a_cover_rotation_does_not_claim_quotient_distance_invariance() {
+        let t = FlatTorus3::cube(2.0);
+        let a = Vec3::new(0.9, 0.0, 0.0);
+        let b = Vec3::new(-0.9, 0.0, 0.0);
+        let rotation = Iso3::from_rotation(Quat::from_rotation_z(PI / 4.0));
+        let moved = t.distance(t.cover_apply(rotation, a), t.cover_apply(rotation, b));
+        let deck = t.face_pairings().next().unwrap();
+
+        assert_relative_eq!(t.distance(a, b), 0.2, epsilon = 1e-6);
+        assert!(moved > 1.0);
+        assert_relative_eq!(t.distance(a, t.cover_apply(deck, a)), 0.0, epsilon = 1e-6);
+        assert_relative_eq!(
+            t.distance(t.cover_apply(deck, a), t.cover_apply(deck, b)),
+            t.distance(a, b),
+            epsilon = 1e-6
+        );
     }
 
     #[test]
@@ -826,12 +865,12 @@ mod lens_tests {
             let generator = lens.face_pairings().next().expect("one face pairing");
             let samples: Vec<Vec4> = (0..32).map(|_| unit4(&mut rng)).collect();
 
-            let mut accumulated = lens.iso_identity();
+            let mut accumulated = lens.cover_identity();
             for step in 1..=p {
-                accumulated = lens.iso_compose(accumulated, generator);
+                accumulated = lens.cover_compose(accumulated, generator);
                 let moved = samples
                     .iter()
-                    .map(|&x| SphericalS3Embedded.distance(lens.iso_apply(accumulated, x), x))
+                    .map(|&x| SphericalS3Embedded.distance(lens.cover_apply(accumulated, x), x))
                     .fold(0.0f32, f32::max);
                 if step == p {
                     assert!(
@@ -864,7 +903,7 @@ mod lens_tests {
                 for _ in 0..4 {
                     let x = unit4(&mut rng);
                     let want = (composed * x).normalize();
-                    let got = lens.iso_apply(lens.deck(power), x);
+                    let got = lens.cover_apply(lens.deck(power), x);
                     assert!(
                         SphericalS3Embedded.distance(got, want) < 1e-4,
                         "L({p}, {q}): deck({power}) disagrees with the composed \
@@ -940,7 +979,7 @@ mod lens_tests {
                     let (sin, cos) = angle.sin_cos();
                     let x = Vec4::new(cos * 0.8, sin * 0.8, 0.5, 0.331_662_5).normalize();
                     let (wrapped, deck) = lens.wrap_to_domain(x);
-                    assert_eq!(lens.iso_apply(deck, x), wrapped, "L({p}, {q}) at {angle}");
+                    assert_eq!(lens.cover_apply(deck, x), wrapped, "L({p}, {q}) at {angle}");
                     assert!(
                         (wrapped.y.atan2(wrapped.x).abs() - half).abs() < 1e-5,
                         "L({p}, {q}): a wall lift came back at {} rad, not on a wall \
@@ -962,7 +1001,7 @@ mod lens_tests {
             for x in lifts {
                 let (wrapped, deck) = lens.wrap_to_domain(x);
                 assert_eq!(
-                    lens.iso_apply(deck, x),
+                    lens.cover_apply(deck, x),
                     wrapped,
                     "L({p}, {q}): deck element disagreed at {x:?}"
                 );
@@ -979,7 +1018,7 @@ mod lens_tests {
                 let x = unit4(&mut rng);
                 let power = (rng.next_u32() % (4 * p)) as i32 - 2 * p as i32;
                 let (wrapped, _) = lens.wrap_to_domain(x);
-                let (translated, _) = lens.wrap_to_domain(lens.iso_apply(lens.deck(power), x));
+                let (translated, _) = lens.wrap_to_domain(lens.cover_apply(lens.deck(power), x));
                 assert!(
                     SphericalS3Embedded.distance(wrapped, translated) < 1e-3,
                     "L({p}, {q}): wrap of g^{power} x is a different lift at {x:?}"
@@ -1008,12 +1047,12 @@ mod lens_tests {
                 epsilon = 1e-5
             );
 
-            let inverse = lens.iso_inverse(pairing);
+            let inverse = lens.cover_inverse(pairing);
             for _ in 0..64 {
                 let x = unit4(&mut rng);
                 assert!(
                     SphericalS3Embedded
-                        .distance(lens.iso_apply(inverse, x), lens.iso_apply(deck, x))
+                        .distance(lens.cover_apply(inverse, x), lens.cover_apply(deck, x))
                         < 1e-5,
                     "L({p}, {q}): the crossing's deck element is not the face pairing"
                 );
@@ -1050,7 +1089,7 @@ mod lens_tests {
                 let a = unit4(&mut rng);
                 let b = unit4(&mut rng);
                 let power = (rng.next_u32() % (2 * p)) as i32;
-                let moved = lens.iso_apply(lens.deck(power), a);
+                let moved = lens.cover_apply(lens.deck(power), a);
 
                 assert_relative_eq!(lens.distance(a, b), lens.distance(b, a), epsilon = 1e-5);
                 assert_relative_eq!(lens.distance(moved, b), lens.distance(a, b), epsilon = 1e-4);
@@ -1082,7 +1121,7 @@ mod lens_tests {
             for _ in 0..20_000 {
                 let x = unit4(&mut rng);
                 for power in 1..p as i32 {
-                    let moved = lens.iso_apply(lens.deck(power), x);
+                    let moved = lens.cover_apply(lens.deck(power), x);
                     shortest = shortest.min(SphericalS3Embedded.distance(x, moved));
                 }
             }

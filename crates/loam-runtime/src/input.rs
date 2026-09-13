@@ -15,10 +15,18 @@ pub enum PointerPhase {
     Cancelled,
 }
 
-/// One value for mouse and touch; `ndc` is y-up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerButton {
+    Primary,
+    Secondary,
+    Middle,
+}
+
+/// Positions use NDC; deltas use logical pixels; both are y-up.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pointer {
     pub id: u32,
+    pub button: Option<PointerButton>,
     pub ndc: [f32; 2],
     pub delta: [f32; 2],
     pub phase: PointerPhase,
@@ -31,6 +39,10 @@ pub struct Input {
     pub pointers: Vec<Pointer>,
     pub actions: Vec<ActionEvent>,
     pub held: Vec<ActionId>,
+    pub scroll: [f32; 2],
+    /// Captured mouse motion in logical pixels, y-up.
+    pub look: [f32; 2],
+    pub cursor_locked: bool,
 }
 
 impl Input {
@@ -50,10 +62,12 @@ impl Input {
             .find(|pointer| pointer.phase == PointerPhase::Began)
     }
 
-    pub fn drag(&self) -> [f32; 2] {
+    pub fn drag(&self, button: PointerButton) -> [f32; 2] {
         self.pointers
             .iter()
-            .filter(|pointer| pointer.phase == PointerPhase::Moved)
+            .filter(|pointer| {
+                pointer.phase == PointerPhase::Moved && pointer.button == Some(button)
+            })
             .fold([0.0; 2], |sum, pointer| {
                 [sum[0] + pointer.delta[0], sum[1] + pointer.delta[1]]
             })

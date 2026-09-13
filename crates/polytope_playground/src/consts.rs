@@ -14,8 +14,6 @@ pub(crate) const BASE_ROTATION_RATE: f32 = TAU * 0.3;
 
 pub(crate) const FLOOR_Y: f32 = 0.0;
 
-pub(crate) const ARENA_HALF: f32 = 3.0;
-
 pub(crate) const GRAVITY: f32 = 9.8;
 
 pub(crate) const MAX_RATE: f32 = 4.0;

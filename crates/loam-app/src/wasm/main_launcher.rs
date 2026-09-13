@@ -1,23 +1,23 @@
 use anyhow::{anyhow, Context, Result};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlCanvasElement, MessageEvent, Worker, WorkerOptions, WorkerType};
 
-use crate::SimConfig;
+#[derive(Clone, Copy)]
+struct CanvasMetrics {
+    width: u32,
+    height: u32,
+    scale: f32,
+}
 
 /// `host_id` is the `data-mode="manual"` container, `button_id` the overlay,
 /// `canvas_id` the `<canvas>` transferred via `transferControlToOffscreen`.
-pub fn launch_on_click(
-    host_id: &str,
-    button_id: &str,
-    canvas_id: &str,
-    sim: SimConfig,
-) -> Result<()> {
+pub fn launch_on_click(host_id: &str, button_id: &str, canvas_id: &str) -> Result<()> {
     super::install_logging_idempotent();
 
-    spawn_worker_for_preview(canvas_id, host_id, button_id, sim)?;
+    spawn_worker_for_preview(canvas_id, host_id, button_id)?;
     Ok(())
 }
 
@@ -30,12 +30,7 @@ fn read_wasm_bundle_url() -> Result<String> {
         .ok_or_else(|| anyhow!("__loam_wasm_url is not a string; demo's index.html must set it"))
 }
 
-fn spawn_worker_for_preview(
-    canvas_id: &str,
-    host_id: &str,
-    button_id: &str,
-    sim: SimConfig,
-) -> Result<()> {
+fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> Result<()> {
     let document = web_sys::window()
         .and_then(|w| w.document())
         .ok_or_else(|| anyhow!("no document on global window"))?;
@@ -50,8 +45,12 @@ fn spawn_worker_for_preview(
     let dpr = window.device_pixel_ratio() as f32;
     let css_w = canvas.client_width().max(1) as f32;
     let css_h = canvas.client_height().max(1) as f32;
-    let width = (css_w * dpr).round() as u32;
-    let height = (css_h * dpr).round() as u32;
+    let max_pixels = crate::args::Args::current()
+        .parse::<u32>("max-pixels")
+        .filter(|pixels| *pixels > 0);
+    let metrics = canvas_metrics(&canvas, dpr, max_pixels);
+    let width = metrics.width;
+    let height = metrics.height;
     if width == 0 || height == 0 {
         return Err(anyhow!(
             "canvas '{canvas_id}' has zero displayed dimensions ({css_w}x{css_h}); \
@@ -61,7 +60,8 @@ fn spawn_worker_for_preview(
     canvas.set_width(width);
     canvas.set_height(height);
     tracing::info!(
-        "loam_app::wasm::worker: canvas sized to {width}x{height} (CSS {css_w}x{css_h} × DPR {dpr})"
+        "loam_app::wasm::worker: canvas sized to {width}x{height} (scale {})",
+        metrics.scale
     );
 
     let offscreen = canvas
@@ -95,6 +95,7 @@ fn spawn_worker_for_preview(
 
     let worker_for_ready = worker.clone();
     let offscreen_for_ready = offscreen.clone();
+    let button_for_ready = button_id.to_string();
     let bootstrap_url = blob_url;
     let on_ready = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
@@ -122,7 +123,7 @@ fn spawn_worker_for_preview(
         let _ = js_sys::Reflect::set(
             &msg,
             &JsValue::from_str("dpr"),
-            &JsValue::from_f64(dpr as f64),
+            &JsValue::from_f64(metrics.scale as f64),
         );
         let (search, hash) = web_sys::window()
             .map(|w| {
@@ -139,13 +140,14 @@ fn spawn_worker_for_preview(
             &JsValue::from_str(&search),
         );
         let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("hash"), &JsValue::from_str(&hash));
-        sim.encode(|key, value| set_msg_f64(&msg, key, value));
-
         let transfer = js_sys::Array::new();
         transfer.push(&offscreen_for_ready);
 
         if let Err(e) = worker_for_ready.post_message_with_transfer(&msg, &transfer) {
-            tracing::error!("loam_app::wasm::worker: postMessage init failed: {e:?}");
+            show_worker_failure(
+                &format!("worker initialization message failed: {e:?}"),
+                &button_for_ready,
+            );
             return;
         }
     }) as Box<dyn FnMut(MessageEvent)>);
@@ -154,10 +156,13 @@ fn spawn_worker_for_preview(
         .map_err(|e| anyhow!("worker.addEventListener('message'): {e:?}"))?;
     on_ready.forget();
 
-    install_dom_input_forwarders(&worker, &canvas).context("install_dom_input_forwarders")?;
+    install_cursor_control(&worker, &canvas).context("install_cursor_control")?;
+    install_dom_input_forwarders(&worker, &canvas, max_pixels)
+        .context("install_dom_input_forwarders")?;
 
     install_preview_ready_handler(&worker, button_id)?;
     install_worker_failure_handler(&worker, button_id)?;
+    install_measurement_result_handler(&worker, host_id)?;
 
     install_embed_lifecycle(&worker, host_id, button_id).context("install_embed_lifecycle")?;
 
@@ -197,6 +202,48 @@ fn spawn_worker_for_preview(
     }
 
     Ok(())
+}
+
+fn canvas_metrics(
+    canvas: &HtmlCanvasElement,
+    device_scale: f32,
+    max_pixels: Option<u32>,
+) -> CanvasMetrics {
+    let css_width = canvas.client_width().max(1) as u32;
+    let css_height = canvas.client_height().max(1) as u32;
+    let native_width = (css_width as f64 * f64::from(device_scale)).round() as u32;
+    let native_height = (css_height as f64 * f64::from(device_scale)).round() as u32;
+    let Some(max_pixels) = max_pixels else {
+        return CanvasMetrics {
+            width: native_width,
+            height: native_height,
+            scale: device_scale,
+        };
+    };
+    if u64::from(native_width) * u64::from(native_height) <= u64::from(max_pixels) {
+        return CanvasMetrics {
+            width: native_width,
+            height: native_height,
+            scale: device_scale,
+        };
+    }
+
+    let css_area = f64::from(css_width) * f64::from(css_height);
+    let scale = device_scale.min((f64::from(max_pixels) / css_area).sqrt() as f32);
+    let mut width = (css_width as f64 * f64::from(scale)).floor().max(1.0) as u32;
+    let mut height = (css_height as f64 * f64::from(scale)).floor().max(1.0) as u32;
+    if u64::from(width) * u64::from(height) > u64::from(max_pixels) {
+        if width >= height {
+            width = (max_pixels / height).max(1);
+        } else {
+            height = (max_pixels / width).max(1);
+        }
+    }
+    CanvasMetrics {
+        width,
+        height,
+        scale,
+    }
 }
 
 // Dispatched on `document` when an embed activates; detail = host id.
@@ -318,7 +365,147 @@ fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> R
     Ok(())
 }
 
-fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
+fn install_cursor_control(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
+    let document = web_sys::window()
+        .and_then(|window| window.document())
+        .ok_or_else(|| anyhow!("no document on global window"))?;
+    let wanted = Rc::new(Cell::new(false));
+
+    {
+        let worker = worker.clone();
+        let worker_for_callback = worker.clone();
+        let canvas = canvas.clone();
+        let document = document.clone();
+        let wanted = wanted.clone();
+        let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
+            let data: JsValue = event.data();
+            let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
+                .ok()
+                .and_then(|value| value.as_string());
+            if kind.as_deref() != Some("cursor_lock") {
+                return;
+            }
+            let locked = js_sys::Reflect::get(&data, &JsValue::from_str("locked"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            wanted.set(locked);
+            if locked {
+                request_pointer_lock(&canvas);
+            } else if document
+                .pointer_lock_element()
+                .as_ref()
+                .is_some_and(|element| element == canvas.as_ref())
+            {
+                document.exit_pointer_lock();
+            } else {
+                let message = build_msg("pointer_lock_changed");
+                set_msg_bool(&message, "locked", false);
+                set_msg_bool(&message, "released", false);
+                let _ = worker_for_callback.post_message(&message);
+            }
+        }) as Box<dyn FnMut(MessageEvent)>);
+        worker
+            .add_event_listener_with_callback("message", callback.as_ref().unchecked_ref())
+            .map_err(|error| anyhow!("cursor lock message listener: {error:?}"))?;
+        callback.forget();
+    }
+
+    for event_name in ["pointerlockchange", "pointerlockerror"] {
+        let release_event = event_name == "pointerlockchange";
+        let worker = worker.clone();
+        let canvas = canvas.clone();
+        let document_for_event = document.clone();
+        let wanted = wanted.clone();
+        let callback = Closure::wrap(Box::new(move || {
+            let locked = document_for_event
+                .pointer_lock_element()
+                .as_ref()
+                .is_some_and(|element| element == canvas.as_ref());
+            let released = release_event && !locked && wanted.replace(false);
+            if locked && !wanted.get() {
+                document_for_event.exit_pointer_lock();
+            }
+            let message = build_msg("pointer_lock_changed");
+            set_msg_bool(&message, "locked", locked);
+            set_msg_bool(&message, "released", released);
+            let _ = worker.post_message(&message);
+        }) as Box<dyn FnMut()>);
+        document
+            .add_event_listener_with_callback(event_name, callback.as_ref().unchecked_ref())
+            .map_err(|error| anyhow!("{event_name} listener: {error:?}"))?;
+        callback.forget();
+    }
+
+    {
+        let canvas = canvas.clone();
+        let canvas_for_callback = canvas.clone();
+        let document = document.clone();
+        let wanted = wanted.clone();
+        let callback = Closure::wrap(Box::new(move || {
+            let locked = document
+                .pointer_lock_element()
+                .as_ref()
+                .is_some_and(|element| element == canvas_for_callback.as_ref());
+            if wanted.get() && !locked {
+                request_pointer_lock(&canvas_for_callback);
+            }
+        }) as Box<dyn FnMut()>);
+        canvas
+            .add_event_listener_with_callback("mousedown", callback.as_ref().unchecked_ref())
+            .map_err(|error| anyhow!("cursor lock mousedown listener: {error:?}"))?;
+        callback.forget();
+    }
+
+    {
+        let canvas = canvas.clone();
+        let document_for_event = document.clone();
+        let wanted = wanted.clone();
+        let callback = Closure::wrap(Box::new(move || {
+            let locked = document_for_event
+                .pointer_lock_element()
+                .as_ref()
+                .is_some_and(|element| element == canvas.as_ref());
+            if wanted.get() && !locked {
+                request_pointer_lock(&canvas);
+            }
+        }) as Box<dyn FnMut()>);
+        document
+            .add_event_listener_with_callback("keydown", callback.as_ref().unchecked_ref())
+            .map_err(|error| anyhow!("cursor lock keydown listener: {error:?}"))?;
+        callback.forget();
+    }
+
+    Ok(())
+}
+
+fn request_pointer_lock(canvas: &HtmlCanvasElement) {
+    let Ok(method) =
+        js_sys::Reflect::get(canvas.as_ref(), &JsValue::from_str("requestPointerLock"))
+            .and_then(|value| value.dyn_into::<js_sys::Function>())
+    else {
+        tracing::warn!("loam_app::wasm::worker: requestPointerLock is unavailable");
+        return;
+    };
+    let Ok(result) = method.call0(canvas.as_ref()) else {
+        tracing::warn!("loam_app::wasm::worker: requestPointerLock failed");
+        return;
+    };
+    let Ok(promise) = result.dyn_into::<js_sys::Promise>() else {
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await {
+            tracing::warn!("loam_app::wasm::worker: requestPointerLock rejected: {error:?}");
+        }
+    });
+}
+
+fn install_dom_input_forwarders(
+    worker: &Worker,
+    canvas: &HtmlCanvasElement,
+    max_pixels: Option<u32>,
+) -> Result<()> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
     let document = window
         .document()
@@ -331,10 +518,13 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         let canvas_for_listener = canvas.clone();
         let window_for_listener = window.clone();
         let cb = Closure::wrap(Box::new(move || {
-            let dpr = window_for_listener.device_pixel_ratio() as f32;
-            let w = (canvas_for_listener.client_width() as f32 * dpr).max(1.0) as u32;
-            let h = (canvas_for_listener.client_height() as f32 * dpr).max(1.0) as u32;
-            *pending_for_listener.borrow_mut() = Some((w, h, dpr, 0));
+            let metrics = canvas_metrics(
+                &canvas_for_listener,
+                window_for_listener.device_pixel_ratio() as f32,
+                max_pixels,
+            );
+            *pending_for_listener.borrow_mut() =
+                Some((metrics.width, metrics.height, metrics.scale, 0));
         }) as Box<dyn FnMut()>);
         window
             .add_event_listener_with_callback("resize", cb.as_ref().unchecked_ref())
@@ -384,12 +574,13 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
     }
 
     {
-        let pending: Rc<RefCell<Option<(f32, f32, u32, f32, f32)>>> = Rc::new(RefCell::new(None));
+        let pending: Rc<RefCell<Option<(f32, f32, u32, f32, f32, f64)>>> =
+            Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
         let cb = Closure::wrap(Box::new(move |ev: web_sys::MouseEvent| {
             let mut p = pending_for_listener.borrow_mut();
             let (sum_dx, sum_dy) = match *p {
-                Some((_, _, _, dx, dy)) => (dx, dy),
+                Some((_, _, _, dx, dy, _)) => (dx, dy),
                 None => (0.0, 0.0),
             };
             *p = Some((
@@ -398,6 +589,7 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
                 ev.buttons() as u32,
                 sum_dx + ev.movement_x() as f32,
                 sum_dy + ev.movement_y() as f32,
+                ev.time_stamp(),
             ));
         }) as Box<dyn FnMut(web_sys::MouseEvent)>);
         canvas
@@ -411,13 +603,14 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         let raf_cb: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
         let raf_cb_for_closure = raf_cb.clone();
         *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move || {
-            if let Some((x, y, buttons, dx, dy)) = pending_for_raf.borrow_mut().take() {
+            if let Some((x, y, buttons, dx, dy, time)) = pending_for_raf.borrow_mut().take() {
                 let msg = build_msg("mouse_move");
                 set_msg_f32(&msg, "x", x);
                 set_msg_f32(&msg, "y", y);
                 set_msg_u32(&msg, "buttons", buttons);
                 set_msg_f32(&msg, "dx", dx);
                 set_msg_f32(&msg, "dy", dy);
+                set_msg_f64(&msg, "time", time);
                 let _ = worker_for_raf.post_message(&msg);
             }
             let cb_ref = raf_cb_for_closure.borrow();
@@ -446,6 +639,7 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
             set_msg_f32(&msg, "y", ev.offset_y() as f32);
             set_msg_u32(&msg, "button", ev.button() as u32);
             set_msg_bool(&msg, "pressed", pressed);
+            set_msg_f64(&msg, "time", ev.time_stamp());
             let _ = worker.post_message(&msg);
         }) as Box<dyn FnMut(web_sys::MouseEvent)>);
         canvas
@@ -461,6 +655,9 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         let cb = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
             if event_name == "pointerdown" {
                 let _ = canvas_for_capture.set_pointer_capture(ev.pointer_id());
+            }
+            if ev.pointer_type() == "mouse" {
+                return;
             }
             let msg = build_msg("pointer");
             set_msg_f64(&msg, "id", f64::from(ev.pointer_id()));
@@ -486,7 +683,6 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         cb.forget();
     }
 
-    // Normalize WheelEvent's per-mode delta to lines, the loam-input convention.
     {
         let worker = worker.clone();
         let cb = Closure::wrap(Box::new(move |ev: web_sys::WheelEvent| {
@@ -544,7 +740,6 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         cb.forget();
     }
 
-    // Focus / blur on window for loam-input's release-on-focus-loss.
     for (event_name, focused) in [("focus", true), ("blur", false)] {
         let worker = worker.clone();
         let cb = Closure::wrap(Box::new(move || {
@@ -629,6 +824,47 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
     Ok(())
 }
 
+fn install_measurement_result_handler(worker: &Worker, host_id: &str) -> Result<()> {
+    let host_id = host_id.to_owned();
+    let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
+        let data: JsValue = event.data();
+        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
+            .ok()
+            .and_then(|value| value.as_string());
+        if kind.as_deref() != Some("measurement") {
+            return;
+        }
+        let Some(result) = js_sys::Reflect::get(&data, &JsValue::from_str("result"))
+            .ok()
+            .and_then(|value| value.as_string())
+        else {
+            return;
+        };
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        let Some(host) = document.get_element_by_id(&host_id) else {
+            return;
+        };
+        let Ok(panel) = document.create_element("pre") else {
+            return;
+        };
+        panel.set_text_content(Some(&result));
+        let _ = panel.set_attribute("tabindex", "0");
+        let _ = panel.set_attribute("role", "status");
+        let _ = panel.set_attribute(
+            "style",
+            "position:fixed;inset:1rem;z-index:2147483647;margin:0;padding:1rem;overflow:auto;white-space:pre-wrap;background:#111;color:#eee;font:14px/1.45 monospace;user-select:text;-webkit-user-select:text;touch-action:auto",
+        );
+        let _ = host.append_child(&panel);
+    }) as Box<dyn FnMut(MessageEvent)>);
+    worker
+        .add_event_listener_with_callback("message", callback.as_ref().unchecked_ref())
+        .map_err(|error| anyhow!("measurement result listener: {error:?}"))?;
+    callback.forget();
+    Ok(())
+}
+
 fn install_worker_failure_handler(worker: &Worker, button_id: &str) -> Result<()> {
     let button_for_message = button_id.to_string();
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
@@ -652,12 +888,14 @@ fn install_worker_failure_handler(worker: &Worker, button_id: &str) -> Result<()
 
     // A panic traps the worker; the trap arrives here without the panic text.
     let button_for_error = button_id.to_string();
-    let on_error = Closure::wrap(Box::new(move |event: web_sys::ErrorEvent| {
-        show_worker_failure(
-            &format!("worker error: {}", event.message()),
-            &button_for_error,
-        );
-    }) as Box<dyn FnMut(web_sys::ErrorEvent)>);
+    let on_error = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let message = js_sys::Reflect::get(event.as_ref(), &JsValue::from_str("message"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| "worker stopped without an error message".to_owned());
+        show_worker_failure(&format!("worker error: {message}"), &button_for_error);
+    }) as Box<dyn FnMut(web_sys::Event)>);
     worker
         .add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref())
         .map_err(|e| anyhow!("worker.addEventListener('error'): {e:?}"))?;

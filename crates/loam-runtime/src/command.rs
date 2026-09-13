@@ -1,13 +1,13 @@
 use crate::bridge::Bridge;
 use crate::domain::{
-    ChartCommand, ChartPose, DomainError, DomainHandle, DomainId, DomainSpace, Domains, Instance,
-    Pose,
+    ChartCommand, ChartPose, DomainError, DomainHandle, DomainId, DomainSpace, Domains, Field,
+    Instance, Pose,
 };
 use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
 use crate::relation::Relation;
 use crate::session::RestoreError;
 use crate::store::StoreError;
-use crate::stores::{HasStore, Stores};
+use crate::stores::{HasRelation, HasStore, Stores};
 use crate::view::Views;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -46,6 +46,13 @@ impl From<StoreError> for Rejection {
     }
 }
 
+#[cfg(feature = "physics")]
+impl From<loam_physics::EditError> for Rejection {
+    fn from(error: loam_physics::EditError) -> Self {
+        Self::Edit(error)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandResult {
     pub request: RequestId,
@@ -72,6 +79,25 @@ pub enum Command<A> {
     Chart(DomainId, ChartCommand),
     App(Box<dyn AppCommand<A>>),
     Reset,
+}
+
+impl<A> Command<A> {
+    pub fn app_fn(
+        name: &'static str,
+        mut apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
+    ) -> Self {
+        Self::try_app_fn(name, move |dispatch| {
+            apply(dispatch);
+            Ok(Outcome::Done)
+        })
+    }
+
+    pub fn try_app_fn(
+        name: &'static str,
+        apply: impl FnMut(&mut Dispatch<'_, A>) -> Result<Outcome, Rejection> + Send + 'static,
+    ) -> Self {
+        Self::App(Box::new(FnCommand { name, apply }))
+    }
 }
 
 pub struct Request<A> {
@@ -127,12 +153,6 @@ impl<A: Stores> Commands<A> {
         RequestId(self.next)
     }
 
-    pub(crate) fn reserve_request(&mut self) -> RequestId {
-        let id = RequestId(self.next);
-        self.next += 1;
-        id
-    }
-
     pub(crate) fn restore(&mut self, entities: &EntitiesSnapshot, next: RequestId) {
         self.entities.restore(entities);
         self.next = self.next.max(next.0);
@@ -155,7 +175,15 @@ impl<A: Stores> Commands<A> {
         name: &'static str,
         apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
     ) -> RequestId {
-        self.app(FnCommand { name, apply })
+        self.submit(Command::app_fn(name, apply))
+    }
+
+    pub fn try_app_fn(
+        &mut self,
+        name: &'static str,
+        apply: impl FnMut(&mut Dispatch<'_, A>) -> Result<Outcome, Rejection> + Send + 'static,
+    ) -> RequestId {
+        self.submit(Command::try_app_fn(name, apply))
     }
 
     pub fn spawn(&mut self, mut bundle: SpawnBundle<A>) -> Result<Reservation, Rejection> {
@@ -185,15 +213,14 @@ struct FnCommand<F> {
 
 impl<A, F> AppCommand<A> for FnCommand<F>
 where
-    F: FnMut(&mut Dispatch<'_, A>) + Send + 'static,
+    F: FnMut(&mut Dispatch<'_, A>) -> Result<Outcome, Rejection> + Send + 'static,
 {
     fn name(&self) -> &'static str {
         self.name
     }
 
     fn apply(&mut self, dispatch: &mut Dispatch<'_, A>) -> Result<Outcome, Rejection> {
-        (self.apply)(dispatch);
-        Ok(Outcome::Done)
+        (self.apply)(dispatch)
     }
 }
 
@@ -219,9 +246,9 @@ impl<S: DomainSpace> Place for TypedPlace<S> {
         instance: Option<Instance>,
     ) -> Result<DomainId, Rejection> {
         let domain = domains.typed(self.domain)?;
-        domain.poses.insert(entity, self.pose)?;
+        domain.attach_pose(entity, self.pose)?;
         if let Some(instance) = instance {
-            domain.instances.insert(entity, instance)?;
+            domain.attach_instance(entity, instance)?;
         }
         Ok(self.domain.id())
     }
@@ -261,7 +288,7 @@ struct Row<T>(T);
 
 impl<A: HasStore<T>, T: Send + 'static> Attach<A> for Row<T> {
     fn attach(self: Box<Self>, app: &mut A, entity: Entity) -> Result<(), StoreError> {
-        app.store_mut().insert(entity, self.0)
+        app.store_mut().insert_raw(entity, self.0)
     }
 }
 
@@ -345,7 +372,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
             Some(entity) => return Err(Rejection::Stale(entity)),
             None => self.entities.reserve(),
         };
-        match self.attach(entity, bundle) {
+        match self.attach_bundle(entity, bundle) {
             Ok(()) => {
                 self.entities.commit(entity);
                 Ok(entity)
@@ -358,7 +385,54 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         }
     }
 
-    fn attach(&mut self, entity: Entity, bundle: SpawnBundle<A>) -> Result<(), Rejection> {
+    pub fn attach<T: Send + 'static>(&mut self, entity: Entity, row: T) -> Result<(), Rejection>
+    where
+        A: HasStore<T>,
+    {
+        self.require_live(entity)?;
+        self.app.store_mut().insert_raw(entity, row)?;
+        Ok(())
+    }
+
+    pub fn link<T: Send + 'static>(
+        &mut self,
+        from: Entity,
+        to: Entity,
+        data: T,
+    ) -> Result<crate::relation::LinkId, Rejection>
+    where
+        A: HasRelation<T>,
+    {
+        self.require_live(from)?;
+        self.require_live(to)?;
+        Ok(self.app.relation_mut().link_raw(from, to, data)?)
+    }
+
+    pub fn attach_instance<S: DomainSpace>(
+        &mut self,
+        domain: DomainHandle<S>,
+        entity: Entity,
+        instance: Instance,
+    ) -> Result<(), Rejection> {
+        self.require_live(entity)?;
+        self.domains
+            .typed(domain)?
+            .attach_instance(entity, instance)?;
+        Ok(())
+    }
+
+    pub fn attach_field<S: DomainSpace>(
+        &mut self,
+        domain: DomainHandle<S>,
+        entity: Entity,
+        field: Field,
+    ) -> Result<(), Rejection> {
+        self.require_live(entity)?;
+        self.domains.typed(domain)?.attach_field(entity, field)?;
+        Ok(())
+    }
+
+    fn attach_bundle(&mut self, entity: Entity, bundle: SpawnBundle<A>) -> Result<(), Rejection> {
         if let Some(placement) = &bundle.placement {
             placement.place(self.domains, entity, bundle.instance)?;
         }
@@ -398,15 +472,27 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         Ok(())
     }
 
+    fn require_live(&self, entity: Entity) -> Result<(), Rejection> {
+        self.entities
+            .resolve(entity)
+            .map(|_| ())
+            .ok_or(Rejection::Stale(entity))
+    }
+
     pub fn apply(&mut self, command: Command<A>) -> Result<Outcome, Rejection> {
         match command {
             Command::Spawn(bundle) => self.spawn(bundle).map(Outcome::Spawned),
             Command::Despawn(entity) => self.despawn(entity).map(|()| Outcome::Done),
-            Command::Chart(domain, command) => self
-                .domains
-                .facade(domain)
-                .ok_or(DomainError::UnknownDomain(domain))?
-                .apply(&command),
+            Command::Chart(domain, command) => {
+                let entity = command.entity();
+                if self.entities.resolve(entity).is_none() {
+                    return Err(Rejection::Stale(entity));
+                }
+                self.domains
+                    .facade(domain)
+                    .ok_or(DomainError::UnknownDomain(domain))?
+                    .apply(&command)
+            }
             Command::App(mut command) => command.apply(self),
             Command::Reset => Err(Rejection::Unsupported(
                 "reset applies at a session boundary",

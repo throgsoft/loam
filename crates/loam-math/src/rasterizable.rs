@@ -526,7 +526,7 @@ mod tests {
         for p in [
             Vec4::new(0.5, 0.5, 0.5, 0.5),
             Vec4::new(-0.5, 0.5, 0.5, -0.5),
-            Vec4::new(-0.6, 0.0, 0.8, 0.0), // unit, w = 0
+            Vec4::new(-0.6, 0.0, 0.8, 0.0),
         ] {
             let got = stereographic_to_r3(p, Vec4::W);
             let want = Vec3::new(p.x, p.y, p.z) / (1.0 - p.w);
@@ -535,20 +535,6 @@ mod tests {
                 "fast path must match canonical formula for {p:?}"
             );
         }
-
-        let general = {
-            let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
-            let dot = p.dot(Vec4::W).clamp(-1.0, 1.0);
-            let denom = (1.0 - dot).max(STEREOGRAPHIC_POLE_EPSILON);
-            let perp = p - dot * Vec4::W;
-            let scaled = perp / denom;
-            let (e1, e2, e3) = perp_frame(Vec4::W);
-            Vec3::new(scaled.dot(e1), scaled.dot(e2), scaled.dot(e3))
-        };
-        assert_eq!(
-            general,
-            stereographic_to_r3(Vec4::new(0.5, 0.5, 0.5, 0.5), Vec4::W)
-        );
     }
 
     #[test]

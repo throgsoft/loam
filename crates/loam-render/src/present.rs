@@ -1,55 +1,161 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use glam::Vec2;
-use loam_runtime::{DomainId, Eye, PublishedView, Rigid, Stamp, ViewTarget};
+use loam_runtime::{DomainId, Eye, PublishedView, Rigid, SegmentRecord, Stamp, ViewTarget};
 use wgpu::{
     Color, CommandEncoder, Device, LoadOp, Operations, Queue, RenderPassColorAttachment,
     RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureFormat, TextureView,
 };
 
 use crate::depth::DepthBuffer;
-use crate::device::{GpuContext, MissingGpuCapability};
+use crate::device::GpuContext;
 use crate::pass::{
-    FrameFormat, FramePass, FrameTarget, PassError, PassOrder, PassSchedule, Section,
+    FrameFormat, FramePass, FrameTarget, PassError, PassExecutionError, PassSchedule, PassStage,
+    ResourceId, Section, SCENE_COLOR, SCENE_DEPTH,
 };
 use crate::triangle_pass::TriangleFeed;
 use crate::view::{DEPTH_CLEAR, DEPTH_FORMAT};
 use crate::{DepthConvention, DepthMode, FragmentShading, LineRasterNode};
 
 struct ViewLines {
-    node: LineRasterNode,
+    opaque: LineRasterNode,
+    translucent: LineRasterNode,
+    scratch: Vec<SegmentRecord>,
     uploaded: Option<(DomainId, ViewTarget, Stamp)>,
+}
+
+impl ViewLines {
+    fn new(device: &Device, format: TextureFormat, sample_count: u32) -> Self {
+        Self {
+            opaque: LineRasterNode::new(
+                device,
+                format,
+                DepthMode::ReadWrite {
+                    format: DEPTH_FORMAT,
+                },
+                DepthConvention::ReversedZ,
+                sample_count,
+            ),
+            translucent: LineRasterNode::new(
+                device,
+                format,
+                DepthMode::ReadOnly {
+                    format: DEPTH_FORMAT,
+                },
+                DepthConvention::ReversedZ,
+                sample_count,
+            ),
+            scratch: Vec::new(),
+            uploaded: None,
+        }
+    }
+
+    fn set_camera(&self, queue: &Queue, camera: glam::Mat4, viewport: Vec2) {
+        self.opaque.set_camera(queue, camera, viewport);
+        self.translucent.set_camera(queue, camera, viewport);
+    }
+
+    fn upload_segments(&mut self, device: &Device, queue: &Queue, segments: &[SegmentRecord]) {
+        self.scratch.clear();
+        self.scratch
+            .extend(segments.iter().copied().filter(segment_is_opaque));
+        self.opaque.upload_segments(device, queue, &self.scratch);
+        self.scratch.clear();
+        self.scratch.extend(
+            segments
+                .iter()
+                .copied()
+                .filter(|segment| !segment_is_opaque(segment)),
+        );
+        self.translucent
+            .upload_segments(device, queue, &self.scratch);
+    }
+}
+
+const VIEW_READS: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
+const VIEW_WRITES: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
+
+struct PublishedLines {
+    views: Rc<RefCell<Vec<ViewLines>>>,
+}
+
+impl FramePass for PublishedLines {
+    fn name(&self) -> &'static str {
+        "present-draw"
+    }
+
+    fn reads(&self) -> &[ResourceId] {
+        &VIEW_READS
+    }
+
+    fn writes(&self) -> &[ResourceId] {
+        &VIEW_WRITES
+    }
+
+    fn stage(&self) -> PassStage {
+        PassStage::Scene
+    }
+
+    fn depth_convention(&self) -> Option<DepthConvention> {
+        Some(DepthConvention::ReversedZ)
+    }
+
+    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+        let Some(depth) = target.depth else {
+            return Ok(());
+        };
+        let views = self.views.borrow();
+        for slot in views.iter() {
+            slot.opaque.record(encoder, target.color, Some(depth), None);
+        }
+        for slot in views.iter() {
+            slot.translucent
+                .record(encoder, target.color, Some(depth), None);
+        }
+        Ok(())
+    }
+
+    fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 pub struct Presenter {
     format: TextureFormat,
     sample_count: u32,
     depth: Option<DepthBuffer>,
-    views: Vec<ViewLines>,
+    views: Rc<RefCell<Vec<ViewLines>>>,
     fills: TriangleFeed,
     filled: Vec<(DomainId, ViewTarget)>,
     schedule: PassSchedule,
 }
 
 impl Presenter {
-    pub fn new(format: TextureFormat, sample_count: u32) -> Self {
+    pub fn new(format: TextureFormat, sample_count: u32) -> Result<Self, PassError> {
         let fills = TriangleFeed::default();
+        let views = Rc::new(RefCell::new(Vec::new()));
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        let _ = schedule.register(fills.pass(FragmentShading::FaceNormalLambert));
-        Self {
+        schedule.register(fills.pass(FragmentShading::FaceNormalLambert))?;
+        schedule.register(Box::new(PublishedLines {
+            views: views.clone(),
+        }))?;
+        Ok(Self {
             format,
             sample_count,
             depth: None,
-            views: Vec::new(),
+            views,
             fills,
             filled: Vec::new(),
             schedule,
-        }
+        })
     }
 
-    /// Call at startup and after a device loss; it drops device objects, installs the timer, and attaches every pass with the frame's colour, depth, and sample count.
-    pub fn attach(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+    /// Builds pass device resources at startup and after device loss.
+    pub fn attach(&mut self, gpu: &GpuContext) -> Result<(), PassExecutionError> {
         self.depth = None;
-        self.views.clear();
-        self.schedule.rebuild(
+        self.views.borrow_mut().clear();
+        self.schedule.attach(
             gpu,
             FrameFormat {
                 color: self.format,
@@ -80,39 +186,25 @@ impl Presenter {
         viewport: Vec2,
         views: &[PublishedView],
     ) {
-        self.schedule.begin_frame();
         let _scope = loam_time::frame_trace::scope("present-upload");
-        while self.views.len() < views.len() {
-            self.views.push(ViewLines {
-                node: LineRasterNode::new(
-                    device,
-                    self.format,
-                    DepthMode::ReadWrite {
-                        format: DEPTH_FORMAT,
-                    },
-                    DepthConvention::ReversedZ,
-                    self.sample_count,
-                ),
-                uploaded: None,
-            });
+        let mut line_views = self.views.borrow_mut();
+        while line_views.len() < views.len() {
+            line_views.push(ViewLines::new(device, self.format, self.sample_count));
         }
-        self.views.truncate(views.len());
+        line_views.truncate(views.len());
         let mut rebuilt = false;
-        for (slot, view) in self.views.iter_mut().zip(views) {
-            slot.node.set_camera(
-                queue,
-                crate::view::placed_view_projection(eye, view.placement),
-                viewport,
-            );
+        for (slot, view) in line_views.iter_mut().zip(views) {
+            let camera = crate::view::placed_view_projection(eye, view.placement);
+            slot.set_camera(queue, camera, viewport);
             let published = (view.domain, view.target, view.records.built());
             if slot.uploaded == Some(published) {
                 continue;
             }
             slot.uploaded = Some(published);
             rebuilt = true;
-            slot.node
-                .upload_segments(device, queue, view.records.segments());
+            slot.upload_segments(device, queue, view.records.segments());
         }
+        drop(line_views);
         self.fills.set_view(eye, Rigid::IDENTITY);
         let listed = self.filled.len() == views.len()
             && (self.filled.iter().zip(views))
@@ -139,15 +231,15 @@ impl Presenter {
         }
     }
 
-    /// Clears colour and depth in `present-clear`, records the passes before the scene, draws the views in `present-draw`, then records the passes after the scene, its own section-fill pass among them.
-    pub fn record(
+    pub fn record_scene(
         &mut self,
         device: &Device,
         encoder: &mut CommandEncoder,
         target: &TextureView,
         size: (u32, u32),
         background: Color,
-    ) {
+    ) -> Result<(), PassExecutionError> {
+        self.schedule.begin_frame();
         DepthBuffer::ensure(
             &mut self.depth,
             device,
@@ -156,7 +248,7 @@ impl Presenter {
             self.sample_count,
         );
         let Some(depth) = self.depth.as_ref() else {
-            return;
+            return Ok(());
         };
         let frame = FrameTarget {
             color: target,
@@ -187,17 +279,44 @@ impl Presenter {
                 occlusion_query_set: None,
             });
         });
-        self.schedule
-            .record(PassOrder::BeforeScene, encoder, &frame);
-        let views = &self.views;
-        self.schedule.section("present-draw", encoder, |encoder| {
-            for slot in views {
-                slot.node.record(encoder, target, Some(&depth.view), None);
-            }
-        });
-        self.schedule.record(PassOrder::AfterScene, encoder, &frame);
-        self.schedule.end_frame(encoder);
+        self.schedule.record(PassStage::Scene, encoder, &frame)
     }
+
+    /// Call after `record_scene` with the same target and encoder.
+    pub fn record_overlays(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &TextureView,
+        size: (u32, u32),
+    ) -> Result<(), PassExecutionError> {
+        let Some(depth) = self.depth.as_ref() else {
+            return Ok(());
+        };
+        let frame = FrameTarget {
+            color: target,
+            depth: Some(&depth.view),
+            size,
+        };
+        self.schedule.record(PassStage::Overlay, encoder, &frame)?;
+        self.schedule.end_frame(encoder);
+        Ok(())
+    }
+
+    pub fn record(
+        &mut self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        target: &TextureView,
+        size: (u32, u32),
+        background: Color,
+    ) -> Result<(), PassExecutionError> {
+        self.record_scene(device, encoder, target, size, background)?;
+        self.record_overlays(encoder, target, size)
+    }
+}
+
+fn segment_is_opaque(segment: &SegmentRecord) -> bool {
+    segment.start_color[3] >= 1.0 && segment.end_color[3] >= 1.0
 }
 
 #[cfg(test)]
@@ -326,13 +445,15 @@ mod tests {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1);
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
         let mut records = Records::<Spun>::default();
         let eye = Eye::default();
         let spin = |session: &mut Session<Spun>| {
             if let Ok(domain) = session.domains_mut().typed(r4) {
-                if let Some(pose) = domain.poses.get_mut(spun) {
-                    pose.point.x += 0.01;
+                if let Some(pose) = domain.poses().get(spun) {
+                    let mut point = pose.point;
+                    point.x += 0.01;
+                    domain.set_point(spun, point).unwrap();
                 }
             }
         };
@@ -344,7 +465,9 @@ mod tests {
             let published = records.lend().unwrap();
             presenter.upload(&device, &queue, &eye, Vec2::splat(64.0), &published.views);
             records.release(published);
-            presenter.record(&device, encoder, &target, (64, 64), Color::BLACK);
+            presenter
+                .record(&device, encoder, &target, (64, 64), Color::BLACK)
+                .expect("recorded");
         };
 
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -412,7 +535,7 @@ mod tests {
         });
 
         let (device, queue) = noop_device();
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1);
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
         let mut records = Records::<Spun>::default();
         let eye = Eye::default();
         records.publish(&mut session).expect("published");
@@ -476,7 +599,7 @@ mod tests {
         }
 
         let (device, queue) = noop_device();
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1);
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
         let mut records = Records::<Spun>::default();
         let eye = Eye::default();
         records.publish(&mut session).expect("published");
@@ -497,8 +620,9 @@ mod tests {
             Vec2::splat(64.0),
             &published.views[1..],
         );
+        let line_views = presenter.views.borrow();
         assert_eq!(
-            presenter.views[0].node.segment_count(),
+            line_views[0].opaque.segment_count() + line_views[0].translucent.segment_count(),
             survivor,
             "the first slot still holds the dropped view's lines"
         );
@@ -520,11 +644,19 @@ mod tests {
             "paint"
         }
 
-        fn order(&self) -> PassOrder {
-            PassOrder::BeforeScene
+        fn writes(&self) -> &[ResourceId] {
+            &[crate::pass::SCENE_BASE]
         }
 
-        fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+        fn stage(&self) -> PassStage {
+            PassStage::Scene
+        }
+
+        fn record(
+            &self,
+            encoder: &mut CommandEncoder,
+            target: &FrameTarget<'_>,
+        ) -> anyhow::Result<()> {
             encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("paint"),
                 color_attachments: &[Some(RenderPassColorAttachment {
@@ -540,14 +672,15 @@ mod tests {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            Ok(())
         }
 
-        fn rebuild(&mut self, _gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
             Ok(())
         }
     }
 
-    fn first_pixel(gpu: &GpuContext, texture: &wgpu::Texture) -> [u8; 4] {
+    fn pixel_at(gpu: &GpuContext, texture: &wgpu::Texture, at: [u32; 2]) -> [u8; 4] {
         let row = PROBE_SIZE * 4;
         let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -594,7 +727,13 @@ mod tests {
             .expect("the map callback ran")
             .expect("the staging buffer mapped");
         let data = slice.get_mapped_range();
-        let pixel = [data[0], data[1], data[2], data[3]];
+        let offset = ((at[1] * PROBE_SIZE + at[0]) * 4) as usize;
+        let pixel = [
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ];
         drop(data);
         staging.unmap();
         pixel
@@ -624,25 +763,117 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1);
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
         presenter
             .register_pass(Box::new(Paint))
             .expect("registered");
         presenter.attach(&gpu).expect("attached");
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
-        presenter.record(
-            &gpu.device,
-            &mut encoder,
-            &view,
-            (PROBE_SIZE, PROBE_SIZE),
-            Color::BLACK,
-        );
+        presenter
+            .record(
+                &gpu.device,
+                &mut encoder,
+                &view,
+                (PROBE_SIZE, PROBE_SIZE),
+                Color::BLACK,
+            )
+            .expect("recorded");
         gpu.queue.submit(Some(encoder.finish()));
 
         assert_eq!(
-            first_pixel(&gpu, &texture),
+            pixel_at(&gpu, &texture, [0, 0]),
             [255, 0, 0, 255],
             "the presenter cleared the frame after the pass that runs before the scene"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn published_translucency_follows_all_opaque_geometry_gpu_probe() {
+        let gpu = pollster::block_on(GpuContext::new(
+            wgpu::Instance::default(),
+            crate::device::FeatureRequest::default(),
+            None,
+        ))
+        .expect("a wgpu adapter");
+        let texture = gpu.device.create_texture(&TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: PROBE_SIZE,
+                height: PROBE_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target = texture.create_view(&Default::default());
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        presenter.attach(&gpu).expect("attached");
+        let eye = Eye::default();
+        let camera = crate::view::placed_view_projection(&eye, Rigid::IDENTITY);
+        presenter.fills.set_view(&eye, Rigid::IDENTITY);
+        presenter.fills.edit(|mesh| {
+            mesh.vertices
+                .extend([[-2.0, -1.5, -4.0], [2.0, -1.5, -4.0], [0.0, 2.0, -4.0]]);
+            mesh.colors.extend([[0.0, 1.0, 0.0, 1.0]; 3]);
+            mesh.indices.push([0, 1, 2]);
+        });
+
+        let mut translucent = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm, 1);
+        translucent.set_camera(&gpu.queue, camera, Vec2::splat(PROBE_SIZE as f32));
+        translucent.upload_segments(
+            &gpu.device,
+            &gpu.queue,
+            &[SegmentRecord {
+                start: [-1.0, 0.0, -3.0],
+                end: [1.0, 0.0, -3.0],
+                start_color: [1.0, 0.0, 0.0, 0.01],
+                end_color: [1.0, 0.0, 0.0, 0.01],
+                width_px: 12.0,
+                ..Default::default()
+            }],
+        );
+        let mut opaque = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm, 1);
+        opaque.set_camera(&gpu.queue, camera, Vec2::splat(PROBE_SIZE as f32));
+        opaque.upload_segments(
+            &gpu.device,
+            &gpu.queue,
+            &[SegmentRecord {
+                start: [0.0, -0.75, -3.5],
+                end: [0.0, 0.75, -3.5],
+                start_color: [0.0, 0.0, 1.0, 1.0],
+                end_color: [0.0, 0.0, 1.0, 1.0],
+                width_px: 8.0,
+                ..Default::default()
+            }],
+        );
+        presenter.views.borrow_mut().extend([translucent, opaque]);
+
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        presenter
+            .record(
+                &gpu.device,
+                &mut encoder,
+                &target,
+                (PROBE_SIZE, PROBE_SIZE),
+                Color::BLACK,
+            )
+            .expect("recorded");
+        gpu.queue.submit(Some(encoder.finish()));
+
+        let surface = pixel_at(&gpu, &texture, [42, 32]);
+        assert!(
+            surface[0] > 0 && surface[1] > 80,
+            "the translucent line exposed the background through the fill: {surface:?}"
+        );
+        let crossing = pixel_at(&gpu, &texture, [32, 32]);
+        assert!(
+            crossing[0] > 0 && crossing[2] > 200,
+            "a later view drew its opaque line after the translucent batch: {crossing:?}"
         );
     }
 }

@@ -30,7 +30,7 @@ fn extract() -> Isovolume<3> {
 fn torus_world(volume: &Isovolume<3>, x: f32) -> (World<EuclideanR3>, BodyId) {
     let mut world = World::new(EuclideanR3);
     register_default_narrowphase(&mut world.narrowphase);
-    world.gravity = Some(Vec3::new(0.0, -9.8, 0.0));
+    world.set_gravity(Some(Vec3::new(0.0, -9.8, 0.0))).unwrap();
 
     for (centre, shape) in volume.colliders() {
         world.push_body(BodyDef::fixed(centre, shape, 1.0, &EuclideanR3).unwrap());
@@ -54,12 +54,12 @@ fn a_body_dropped_on_an_sdf_extracted_torus_rests_on_its_surface() {
 
     let mut lowest = f32::INFINITY;
     for _ in 0..600 {
-        world.step(DT);
-        let y = world.bodies.get(sphere).unwrap().position.y;
+        world.step(DT).unwrap();
+        let y = world.body(sphere).unwrap().position.y;
         assert!(y.is_finite(), "simulation diverged");
         lowest = lowest.min(y);
     }
-    let body = world.bodies.get(sphere).unwrap();
+    let body = world.body(sphere).unwrap();
 
     assert!(
         body.position.y < DROP_HEIGHT - 0.25,
@@ -91,9 +91,9 @@ fn a_body_dropped_down_the_torus_axis_passes_through_the_hole() {
     let volume = extract();
     let (mut world, sphere) = torus_world(&volume, 0.0);
     for _ in 0..600 {
-        world.step(DT);
+        world.step(DT).unwrap();
     }
-    let y = world.bodies.get(sphere).unwrap().position.y;
+    let y = world.body(sphere).unwrap().position.y;
     assert!(
         y < -1.0,
         "sphere stopped at y = {y} instead of falling through the hole"

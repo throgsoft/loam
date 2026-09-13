@@ -18,9 +18,11 @@ const BATCHES: usize = 15;
 fn columns(count: usize) -> World<EuclideanR3> {
     let mut world = World::new(EuclideanR3);
     register_default_narrowphase(&mut world.narrowphase);
-    world.gravity = Some(Vec3::new(0.0, -9.8, 0.0));
+    world
+        .set_gravity(Some(Vec3::new(0.0, -9.8, 0.0)))
+        .expect("valid gravity");
     let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0).unwrap());
-    world.bodies[floor].restitution = 0.0;
+    world.set_restitution(floor, 0.0).unwrap();
     for column in 0..count {
         let x = (column % 16) as f32 * 4.0;
         let z = (column / 16) as f32 * 4.0;
@@ -28,11 +30,11 @@ fn columns(count: usize) -> World<EuclideanR3> {
             let y = RADIUS + level as f32 * 2.0 * RADIUS;
             let id = world
                 .push_body(sphere_body_r3(Vec3::new(x, y, z), Vec3::ZERO, RADIUS, 1.0).unwrap());
-            world.bodies[id].restitution = 0.0;
+            world.set_restitution(id, 0.0).unwrap();
         }
     }
     for _ in 0..SETTLE_STEPS {
-        world.step(DT);
+        world.step(DT).expect("step");
     }
     world
 }
@@ -61,15 +63,15 @@ fn main() {
     for count in COLUMN_COUNTS {
         let mut world = columns(count);
         let islands = world.islands().len();
-        let bodies = world.bodies.len();
+        let bodies = world.bodies().len();
         for iters in SOLVER_ITERS {
-            world.pgs_iters = iters;
+            world.set_solver_iterations(iters);
             for _ in 0..8 {
-                world.step(DT);
+                world.step(DT).expect("step");
             }
             let step_ns = median_nanos(|| {
-                world.step(DT);
-                black_box(&world.time);
+                world.step(DT).expect("step");
+                black_box(&world.time());
             });
             println!("{mode} {threads} {islands} {bodies} {iters} {step_ns:.0}");
         }

@@ -26,7 +26,9 @@ fn word() -> Vec<GlyphSolid> {
 fn word_world(letters: &[GlyphSolid]) -> World<EuclideanR4> {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
-    world.gravity = Some(Vec4::new(0.0, 0.0, -9.8, 0.0));
+    world
+        .set_gravity(Some(Vec4::new(0.0, 0.0, -9.8, 0.0)))
+        .expect("valid gravity");
     for letter in letters {
         for (centre, hull) in letter.colliders_4d() {
             world.push_body(BodyDef::fixed(centre, hull, 1.0, &EuclideanR4).unwrap());
@@ -98,12 +100,12 @@ fn a_body_dropped_on_a_letter_is_held_up_by_its_front_face() {
         .map(|letter| drop_ball(&mut world, widest_stroke(letter)))
         .collect();
     for step in 0..IMPACT_STEPS * 2 {
-        world.step(DT);
+        world.step(DT).expect("valid timestep");
         if step < IMPACT_STEPS {
             continue;
         }
         for (letter, &ball) in letters.iter().zip(&balls) {
-            let z = world.bodies.get(ball).unwrap().position.z;
+            let z = world.body(ball).unwrap().position.z;
             assert!(
                 z > front,
                 "{:?}: ball sank to z = {z}, past the front face at {front}",
@@ -117,7 +119,7 @@ fn a_body_dropped_on_a_letter_is_held_up_by_its_front_face() {
         }
     }
     for (letter, &ball) in letters.iter().zip(&balls) {
-        let body = world.bodies.get(ball).unwrap();
+        let body = world.body(ball).unwrap();
         assert!(
             body.velocity.z.abs() < 0.5,
             "{:?}: ball is still moving vertically at {}",
@@ -144,11 +146,11 @@ fn a_body_dropped_down_the_counter_of_o_falls_through() {
     let mut world = word_world(&letters);
     let ball = drop_ball(&mut world, counter);
     for _ in 0..120 {
-        world.step(DT);
-        if world.bodies[ball].position.z < -DROP_Z {
+        world.step(DT).expect("valid timestep");
+        if world.body(ball).unwrap().position.z < -DROP_Z {
             break;
         }
     }
-    let z = world.bodies.get(ball).unwrap().position.z;
+    let z = world.body(ball).unwrap().position.z;
     assert!(z < -DROP_Z, "ball stopped at z = {z} instead of falling");
 }

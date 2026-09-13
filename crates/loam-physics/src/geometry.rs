@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::hash::Hasher;
 
 use crate::collider::{Collider, ColliderKind};
+use crate::edit::EditError;
 
 #[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -191,6 +192,78 @@ impl GeometryStore {
             .filter(|entry| entry.shape.is_some())
             .count()
     }
+
+    pub(crate) fn validate(
+        &self,
+        colliders: impl Iterator<Item = ColliderRef>,
+    ) -> Result<(), EditError> {
+        if self.released.len() > RELEASED_BUFFERS
+            || self.buckets.iter().any(|bucket| !bucket.is_empty())
+        {
+            return Err(EditError::InvalidGeometry);
+        }
+        let mut free = vec![false; self.entries.len()];
+        for &slot in &self.free {
+            let Some(entry) = self.entries.get(slot as usize) else {
+                return Err(EditError::InvalidGeometry);
+            };
+            if free[slot as usize] || entry.shape.is_some() || entry.uses != 0 {
+                return Err(EditError::InvalidGeometry);
+            }
+            free[slot as usize] = true;
+        }
+        let mut indexed = vec![false; self.entries.len()];
+        for (&hash, bucket) in &self.index {
+            if bucket.is_empty() {
+                return Err(EditError::InvalidGeometry);
+            }
+            for &id in bucket {
+                let Some(entry) = self.entries.get(id.0 as usize) else {
+                    return Err(EditError::InvalidGeometry);
+                };
+                if indexed[id.0 as usize]
+                    || entry.hash != hash
+                    || entry.shape.is_none()
+                    || entry
+                        .shape
+                        .as_ref()
+                        .is_some_and(|shape| shape_hash(shape) != hash)
+                {
+                    return Err(EditError::InvalidGeometry);
+                }
+                indexed[id.0 as usize] = true;
+            }
+        }
+        let mut uses = vec![0_u32; self.entries.len()];
+        for collider in colliders {
+            let Some(entry) = self.entries.get(collider.geometry.id.0 as usize) else {
+                return Err(EditError::InvalidGeometry);
+            };
+            if entry.version != collider.geometry.version
+                || entry.shape.as_ref().map(Collider::kind) != Some(collider.kind)
+            {
+                return Err(EditError::InvalidGeometry);
+            }
+            let Some(count) = uses[collider.geometry.id.0 as usize].checked_add(1) else {
+                return Err(EditError::InvalidGeometry);
+            };
+            uses[collider.geometry.id.0 as usize] = count;
+        }
+        for (slot, entry) in self.entries.iter().enumerate() {
+            if entry.shape.is_some() {
+                if free[slot] || !indexed[slot] || entry.uses == 0 || uses[slot] != entry.uses {
+                    return Err(EditError::InvalidGeometry);
+                }
+            } else if entry.uses != 0
+                || indexed[slot]
+                || uses[slot] != 0
+                || (entry.version != u32::MAX && !free[slot])
+            {
+                return Err(EditError::InvalidGeometry);
+            }
+        }
+        Ok(())
+    }
 }
 
 fn shape_hash(shape: &Collider) -> u64 {
@@ -305,5 +378,47 @@ fn same_shape(a: &Collider, b: &Collider) -> bool {
             Collider::ConvexPolytope4D { vertices: b },
         ) => a == b,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoded_geometry_with_a_wrong_reference_count_is_rejected() {
+        let mut store = GeometryStore::default();
+        let collider = store.prepare(Collider::sphere_at_origin(1.0));
+        assert!(store.validate(std::iter::once(collider)).is_ok());
+
+        store.entries[0].uses = 2;
+        assert_eq!(
+            store.validate(std::iter::once(collider)),
+            Err(EditError::InvalidGeometry)
+        );
+    }
+
+    #[test]
+    fn a_maximum_version_entry_is_reused_once_then_retired() {
+        let mut store = GeometryStore::default();
+        let first = store.prepare(Collider::sphere_at_origin(1.0));
+        store.entries[0].version = u32::MAX - 1;
+        let first = ColliderRef {
+            kind: first.kind,
+            geometry: GeometryRef {
+                id: first.geometry.id,
+                version: u32::MAX - 1,
+            },
+        };
+
+        store.release(first);
+        assert!(store.validate(std::iter::empty()).is_ok());
+        let last = store.prepare(Collider::sphere_at_origin(2.0));
+        assert_eq!(last.geometry.version, u32::MAX);
+        store.release(last);
+        assert!(store.validate(std::iter::empty()).is_ok());
+
+        let fresh = store.prepare(Collider::sphere_at_origin(3.0));
+        assert_ne!(fresh.geometry.id, last.geometry.id);
     }
 }

@@ -32,6 +32,10 @@ impl Pacer {
         self.anchor = None;
     }
 
+    pub fn deadline(&self) -> Option<Instant> {
+        Some(self.anchor? + self.period?)
+    }
+
     /// `Wait` until the deadline; a late wake anchors the next period on the deadline, not on itself.
     pub fn decide(&mut self, now: Instant) -> Pace {
         let Some(period) = self.period else {

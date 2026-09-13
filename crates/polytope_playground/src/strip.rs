@@ -1,4 +1,4 @@
-use loam_render::Viewport;
+use loam::render::Viewport;
 
 use crate::catalog::SHAPE_CATALOG;
 

@@ -214,7 +214,10 @@ mod session_tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use loam_runtime::{Bindings, HostConfig};
+
     use super::*;
+    use crate::session::SessionApp;
 
     loam_runtime::stores! {
         #[derive(Default)]
@@ -223,29 +226,31 @@ mod session_tests {
         }
     }
 
-    fn console_marking(seen: &Rc<RefCell<Vec<Vec<String>>>>) -> SessionConsole<Marked> {
+    fn host_marking(seen: &Rc<RefCell<Vec<Vec<String>>>>) -> SessionApp<Marked> {
         let recorded = seen.clone();
-        let mut console = SessionConsole::<Marked>::default();
-        console.register("mark", "record a marker", move |args, _submit, _out| {
-            recorded
-                .borrow_mut()
-                .push(args.iter().map(|arg| (*arg).to_string()).collect());
-            Ok(())
-        });
-        console
+        SessionApp::with_args(HostConfig::new("script", Bindings::new()), Args::default()).command(
+            "mark",
+            "record a marker",
+            move |args, _submit, _out| {
+                recorded
+                    .borrow_mut()
+                    .push(args.iter().map(|arg| (*arg).to_string()).collect());
+                Ok(())
+            },
+        )
     }
 
     #[test]
     fn a_scripted_line_reaches_its_verb_at_its_own_frame() {
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let mut console = console_marking(&seen);
+        let mut app = host_marking(&seen);
         let mut driver =
             ScriptDriver::new(Script::parse("0 mark boot\n2 mark second").expect("script"));
 
         let mut dispatched = Vec::new();
         for _ in 0..3 {
-            driver.advance_console(&mut console);
-            console.dispatch_pending();
+            driver.advance_console(app.console_mut());
+            app.console_mut().dispatch_pending();
             dispatched.push(seen.borrow().len());
         }
 
@@ -256,12 +261,12 @@ mod session_tests {
     #[test]
     fn a_quoted_scripted_argument_stays_one_argument() {
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let mut console = console_marking(&seen);
+        let mut app = host_marking(&seen);
         let mut driver =
             ScriptDriver::new(Script::parse("0 mark \"a b\" #ff8800").expect("script"));
 
-        driver.advance_console(&mut console);
-        console.dispatch_pending();
+        driver.advance_console(app.console_mut());
+        app.console_mut().dispatch_pending();
 
         assert_eq!(*seen.borrow(), [vec!["a b", "#ff8800"]]);
     }

@@ -1,4 +1,4 @@
-use crate::entity::{Entity, SceneId};
+use crate::entity::{Entities, Entity, SceneId};
 use crate::store::{ErasedStore, SchemaId, StoreError, StoreField};
 
 /// Resolves to its original link or fails: after unlink, after a restore, in another session.
@@ -12,9 +12,19 @@ pub struct LinkId {
 /// A typed pair of entities with data; endpoints resolve through the sparse index.
 #[derive(Clone, Copy, Debug)]
 pub struct Link<T> {
-    pub from: Entity,
-    pub to: Entity,
+    pub(crate) from: Entity,
+    pub(crate) to: Entity,
     pub data: T,
+}
+
+impl<T> Link<T> {
+    pub fn from(&self) -> Entity {
+        self.from
+    }
+
+    pub fn to(&self) -> Entity {
+        self.to
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -86,7 +96,33 @@ impl<T> Relation<T> {
     }
 
     /// `Occupied` when the endpoint's slot still lists links of an older generation.
-    pub fn link(&mut self, from: Entity, to: Entity, data: T) -> Result<LinkId, StoreError> {
+    pub fn link(
+        &mut self,
+        entities: &Entities,
+        from: Entity,
+        to: Entity,
+        data: T,
+    ) -> Result<LinkId, StoreError> {
+        for endpoint in [from, to] {
+            if endpoint.scene() != entities.scene() {
+                return Err(StoreError::Foreign(endpoint));
+            }
+            if entities.resolve(endpoint).is_none() {
+                return Err(StoreError::Stale(endpoint));
+            }
+        }
+        if self.scene == SceneId::UNBOUND {
+            self.scene = entities.scene();
+        }
+        self.link_raw(from, to, data)
+    }
+
+    pub(crate) fn link_raw(
+        &mut self,
+        from: Entity,
+        to: Entity,
+        data: T,
+    ) -> Result<LinkId, StoreError> {
         for endpoint in [from, to] {
             if endpoint.scene() != self.scene {
                 return Err(StoreError::Foreign(endpoint));
@@ -187,9 +223,9 @@ impl<T> Relation<T> {
         self.dense_index(id).map(|dense| &self.links[dense])
     }
 
-    pub fn get_mut(&mut self, id: LinkId) -> Option<&mut Link<T>> {
+    pub fn get_mut(&mut self, id: LinkId) -> Option<&mut T> {
         let dense = self.dense_index(id)?;
-        Some(&mut self.links[dense])
+        Some(&mut self.links[dense].data)
     }
 
     /// O(1) to the first link; no rescan after a swap-remove.
@@ -266,7 +302,7 @@ impl<T: Clone + Send + 'static> StoreField for Relation<T> {
         for link in &from.links {
             let from = Entity::new(scene, link.from.key());
             let to = Entity::new(scene, link.to.key());
-            let _ = self.link(from, to, link.data.clone());
+            let _ = self.link_raw(from, to, link.data.clone());
         }
     }
 
@@ -321,9 +357,9 @@ mod tests {
         let mut relation = Relation::new();
         relation.bind(entities.scene());
         let [a, b, c] = [(); 3].map(|()| entities.spawn());
-        let ab = relation.link(a, b, "ab").unwrap();
-        let ac = relation.link(a, c, "ac").unwrap();
-        let bc = relation.link(b, c, "bc").unwrap();
+        let ab = relation.link(&entities, a, b, "ab").unwrap();
+        let ac = relation.link(&entities, a, c, "ac").unwrap();
+        let bc = relation.link(&entities, b, c, "bc").unwrap();
 
         assert_eq!(relation.unlink(ab).map(|link| link.data), Ok("ab"));
         assert_eq!(
@@ -339,10 +375,30 @@ mod tests {
 
         assert_eq!(relation.unlink(bc).map(|link| link.data), Ok("bc"));
         assert_eq!(data(&relation, relation.incoming(c)), ["ac"]);
-        assert_eq!(relation.get(ac).map(|link| link.to), Some(c));
-        let relinked = relation.link(b, c, "bc2").unwrap();
+        assert_eq!(relation.get(ac).map(Link::to), Some(c));
+        let relinked = relation.link(&entities, b, c, "bc2").unwrap();
         assert_ne!(relinked, bc);
         assert!(relation.get(bc).is_none());
         assert_eq!(data(&relation, relation.incoming(c)), ["ac", "bc2"]);
+    }
+
+    #[test]
+    fn mutable_link_data_keeps_adjacency_endpoints_sealed() {
+        let mut entities = Entities::new(SceneId {
+            runtime: RuntimeId::allocate(),
+            epoch: Epoch::default(),
+        });
+        let mut relation = Relation::new();
+        relation.bind(entities.scene());
+        let [a, b, c] = [(); 3].map(|()| entities.spawn());
+        let ab = relation.link(&entities, a, b, "before").unwrap();
+
+        *relation.get_mut(ab).unwrap() = "after";
+
+        assert_eq!(relation.get(ab).map(Link::from), Some(a));
+        assert_eq!(relation.get(ab).map(Link::to), Some(b));
+        assert_eq!(data(&relation, relation.outgoing(a)), ["after"]);
+        assert_eq!(data(&relation, relation.incoming(b)), ["after"]);
+        assert!(relation.incoming(c).next().is_none());
     }
 }

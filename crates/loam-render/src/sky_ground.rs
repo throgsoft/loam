@@ -1,5 +1,5 @@
 //! The analytic background: sky, checkerboard on `y = Ground::y` with analytic
-//! depth, and the frame's colour and depth clear. Rays unproject through the
+//! depth, and the frame's color and depth clear. Rays unproject through the
 //! caller's `view_proj`, so the ground's depth agrees with raster content.
 
 use bytemuck::{Pod, Zeroable};
@@ -165,7 +165,7 @@ pub struct SkyGroundNode {
 }
 
 impl SkyGroundNode {
-    /// `depth_format` and `sample_count` must match the attachments passed to [`Self::record`], which owns the frame's colour and depth clear.
+    /// `depth_format` and `sample_count` must match the attachments passed to [`Self::record`], which owns the frame's color and depth clear.
     pub fn new(
         device: &Device,
         target_format: TextureFormat,

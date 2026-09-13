@@ -63,7 +63,9 @@ impl PhysicsSpace for EuclideanR3 {
     }
 
     fn valid_orientation(&self, orientation: Iso3) -> bool {
-        orientation.rotation.is_finite() && orientation.translation.is_finite()
+        orientation.rotation.is_finite()
+            && (orientation.rotation.length_squared() - 1.0).abs() <= 1e-4
+            && orientation.translation.is_finite()
     }
 
     fn valid_angular_velocity(&self, angular_velocity: Bivector3) -> bool {
@@ -192,6 +194,8 @@ fn sphere_halfspace_r3(
     let Some(&Collider::HalfSpace { normal, offset }) = geometry.get(b.collider()) else {
         return None;
     };
+    let normal = b.orientation.rotation * normal;
+    let offset = offset + normal.dot(b.position);
     let signed = a.position.dot(normal) - offset;
     let penetration = radius - signed;
     if penetration <= 0.0 {
@@ -335,6 +339,8 @@ fn polytope_halfspace_r3(
     else {
         return None;
     };
+    let plane_n = b.orientation.rotation * plane_n;
+    let offset = offset + plane_n.dot(b.position);
 
     let mut deepest = Vec3::ZERO;
     let mut deepest_depth = 0.0_f32;
@@ -596,7 +602,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 120.0);
+            world.step(1.0 / 120.0).unwrap();
         }
         let a = &world.bodies[0];
         let b = &world.bodies[1];
@@ -623,7 +629,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 240.0);
+            world.step(1.0 / 240.0).unwrap();
         }
 
         let target_omega = world.bodies[target_id].angular_velocity.magnitude();

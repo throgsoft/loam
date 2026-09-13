@@ -3,13 +3,14 @@ use std::rc::Rc;
 
 use glam::Mat4;
 use loam_math::{EuclideanR3, Projection};
-use loam_runtime::{Eye, Rigid};
+use loam_runtime::{Eye, Rigid, Version};
 use loam_shape::TriangleMesh;
 use wgpu::{CommandEncoder, Device, Queue};
 
-use crate::device::{GpuContext, MissingGpuCapability};
+use crate::device::GpuContext;
 use crate::pass::{
-    FrameFormat, FramePass, FrameTarget, PassOrder, ResourceId, SCENE_COLOR, SCENE_DEPTH,
+    FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_BASE, SCENE_COLOR,
+    SCENE_DEPTH,
 };
 use crate::view::placed_view_projection;
 use crate::{
@@ -18,10 +19,12 @@ use crate::{
 };
 
 const WRITES: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
+const READS: [ResourceId; 1] = [SCENE_BASE];
 
 #[derive(Default)]
 struct Input {
     mesh: TriangleMesh<3>,
+    source_version: Option<Version>,
     revision: u64,
     view_projection: Mat4,
     ground: Option<Ground>,
@@ -39,7 +42,6 @@ impl TriangleFeed {
         Box::new(TrianglePass {
             input: self.input.clone(),
             shading,
-            frame: None,
             built: RefCell::new(None),
         })
     }
@@ -56,6 +58,20 @@ impl TriangleFeed {
     pub fn edit(&self, build: impl FnOnce(&mut TriangleMesh<3>)) {
         let mut input = self.input.borrow_mut();
         build(&mut input.mesh);
+        input.source_version = None;
+        input.revision += 1;
+    }
+
+    /// Tracks one source by version; switching sources requires a distinct version.
+    pub fn set_mesh(&self, version: Version, mesh: &TriangleMesh<3>) {
+        let mut input = self.input.borrow_mut();
+        if input.source_version == Some(version) {
+            return;
+        }
+        input.source_version = Some(version);
+        input.mesh.vertices.clone_from(&mesh.vertices);
+        input.mesh.indices.clone_from(&mesh.indices);
+        input.mesh.colors.clone_from(&mesh.colors);
         input.revision += 1;
     }
 
@@ -79,7 +95,6 @@ struct Built {
 struct TrianglePass {
     input: Rc<RefCell<Input>>,
     shading: FragmentShading,
-    frame: Option<FrameFormat>,
     built: RefCell<Option<Built>>,
 }
 
@@ -92,21 +107,25 @@ impl FramePass for TrianglePass {
         &WRITES
     }
 
-    fn order(&self) -> PassOrder {
-        PassOrder::AfterScene
+    fn reads(&self) -> &[ResourceId] {
+        &READS
+    }
+
+    fn stage(&self) -> PassStage {
+        PassStage::Scene
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) {
+    fn record(&self, encoder: &mut CommandEncoder, target: &FrameTarget<'_>) -> anyhow::Result<()> {
         let Some(depth) = target.depth else {
-            return;
+            return Ok(());
         };
         let mut built = self.built.borrow_mut();
         let Some(built) = built.as_mut() else {
-            return;
+            return Ok(());
         };
         let mut input = self.input.borrow_mut();
         if built.uploaded != Some(input.revision) {
@@ -136,17 +155,10 @@ impl FramePass for TrianglePass {
         built
             .triangles
             .record(encoder, target.color, Some(depth), None);
+        Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), MissingGpuCapability> {
-        self.frame = Some(frame);
-        self.rebuild(gpu)
-    }
-
-    fn rebuild(&mut self, gpu: &GpuContext) -> Result<(), MissingGpuCapability> {
-        let Some(frame) = self.frame else {
-            return Ok(());
-        };
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let triangles = TriangleRasterNode::new(
             gpu,
             frame.color,
@@ -264,7 +276,8 @@ mod tests {
                 depth: Some(depth),
                 size: SIZE,
             },
-        );
+        )
+        .expect("record");
         gpu.queue.submit(Some(encoder.finish()));
     }
 
@@ -280,7 +293,12 @@ mod tests {
     fn an_unchanged_mesh_is_not_uploaded_again_on_the_next_frame() {
         let gpu = noop_context();
         let feed = TriangleFeed::default();
-        triangle(&feed, -2.0, [1.0; 4]);
+        let mut source = loam_runtime::Value::new(TriangleMesh {
+            vertices: vec![[-0.4, -0.4, -2.0], [0.4, -0.4, -2.0], [0.0, 0.4, -2.0]],
+            colors: vec![[1.0; 4]; 3],
+            indices: vec![[0, 1, 2]],
+        });
+        feed.set_mesh(source.version(), source.get());
         let mut pass = feed.pass(FragmentShading::FaceNormalLambert);
         pass.attach(&gpu, frame_format()).expect("attach");
         let color =
@@ -289,14 +307,16 @@ mod tests {
             attachment(&gpu, DEPTH_FORMAT, TextureUsages::empty()).create_view(&Default::default());
 
         one_frame(&gpu, pass.as_ref(), &color, &depth);
+        feed.set_mesh(source.version(), source.get());
         one_frame(&gpu, pass.as_ref(), &color, &depth);
-        triangle(&feed, -3.0, [1.0; 4]);
+        source.get_mut().vertices[2][2] = -3.0;
+        feed.set_mesh(source.version(), source.get());
         one_frame(&gpu, pass.as_ref(), &color, &depth);
 
         assert_eq!(
             feed.uploads(),
             2,
-            "three frames with one edit uploaded {} times",
+            "three frames with one source change uploaded {} times",
             feed.uploads()
         );
     }

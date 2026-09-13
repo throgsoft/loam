@@ -22,7 +22,7 @@ pub const MAX_PROGRAM_WORDS: usize = 1 << 20;
 
 pub const FIELD_FAR: f32 = 1e9;
 
-/// The error a compiled program states when read through `DistanceField`.
+/// The minimum error a compiled program states when read through `DistanceField`.
 pub const FIELD_PROGRAM_ERROR: f32 = 1e-4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,22 +70,21 @@ impl FieldOp {
         }
     }
 
-    /// The weakest operand kind, dropped to `ConservativeBound` by intersection, subtraction, and smooth union; a union stays exact outside the solid and under-reports penetration inside it, never inventing separation.
     pub fn result_kind(self, operands: &[FieldKind]) -> FieldKind {
         let weakest = operands
             .iter()
             .copied()
             .fold(FieldKind::ExactDistance, FieldKind::weaker);
         match self {
-            FieldOp::Intersection | FieldOp::Subtraction | FieldOp::SmoothUnion { .. } => {
-                weakest.weaker(FieldKind::ConservativeBound)
-            }
+            FieldOp::Union
+            | FieldOp::Intersection
+            | FieldOp::Subtraction
+            | FieldOp::SmoothUnion { .. } => weakest.weaker(FieldKind::ConservativeBound),
             _ => weakest,
         }
     }
 }
 
-/// Matches `LoamFieldPrimitive` in field_common.wgsl; a half-space's offset is folded into `translation` at compile time.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct FieldPrimitive {
@@ -127,12 +126,202 @@ impl FieldCost {
     }
 }
 
-/// A ball-tree node matching `LoamFieldNode` in field_common.wgsl: a leaf when `end` is not zero, unbounded when `radius` is negative, `escape` the index after its subtree, and the subtree's value at any point is at least `lower_bound`.
+// Moore, Kearfott, and Cloud 2009, Introduction to Interval Analysis, §2.1.
+#[derive(Clone, Copy)]
+struct FieldInterval {
+    lo: f64,
+    hi: f64,
+}
+
+impl FieldInterval {
+    const WHOLE: Self = Self {
+        lo: f64::NEG_INFINITY,
+        hi: f64::INFINITY,
+    };
+
+    fn exact(value: f32) -> Self {
+        if value.is_finite() {
+            Self {
+                lo: value as f64,
+                hi: value as f64,
+            }
+        } else {
+            Self::WHOLE
+        }
+    }
+
+    fn exact_f64(value: f64) -> Self {
+        if value.is_finite() {
+            Self {
+                lo: value,
+                hi: value,
+            }
+        } else {
+            Self::WHOLE
+        }
+    }
+
+    fn rounded(lo: f64, hi: f64) -> Self {
+        if lo.is_nan() || hi.is_nan() || lo > hi || !lo.is_finite() || !hi.is_finite() {
+            Self::WHOLE
+        } else {
+            Self {
+                lo: lo.next_down(),
+                hi: hi.next_up(),
+            }
+        }
+    }
+
+    fn add(self, other: Self) -> Self {
+        Self::rounded(self.lo + other.lo, self.hi + other.hi)
+    }
+
+    fn sub(self, other: Self) -> Self {
+        Self::rounded(self.lo - other.hi, self.hi - other.lo)
+    }
+
+    fn mul(self, other: Self) -> Self {
+        let products = [
+            self.lo * other.lo,
+            self.lo * other.hi,
+            self.hi * other.lo,
+            self.hi * other.hi,
+        ];
+        if products.iter().any(|value| value.is_nan()) {
+            return Self::WHOLE;
+        }
+        let lo = products.into_iter().fold(f64::INFINITY, f64::min);
+        let hi = products.into_iter().fold(f64::NEG_INFINITY, f64::max);
+        Self::rounded(lo, hi)
+    }
+
+    fn div(self, other: Self) -> Self {
+        if other.lo <= 0.0 && other.hi >= 0.0 {
+            return Self::WHOLE;
+        }
+        self.mul(Self::rounded(1.0 / other.hi, 1.0 / other.lo))
+    }
+
+    fn neg(self) -> Self {
+        Self {
+            lo: -self.hi,
+            hi: -self.lo,
+        }
+    }
+
+    fn abs(self) -> Self {
+        if self.lo >= 0.0 {
+            self
+        } else if self.hi <= 0.0 {
+            self.neg()
+        } else {
+            Self {
+                lo: 0.0,
+                hi: (-self.lo).max(self.hi),
+            }
+        }
+    }
+
+    fn min(self, other: Self) -> Self {
+        Self {
+            lo: self.lo.min(other.lo),
+            hi: self.hi.min(other.hi),
+        }
+    }
+
+    fn max(self, other: Self) -> Self {
+        Self {
+            lo: self.lo.max(other.lo),
+            hi: self.hi.max(other.hi),
+        }
+    }
+
+    fn clamp(self, lo: f64, hi: f64) -> Self {
+        Self {
+            lo: self.lo.clamp(lo, hi),
+            hi: self.hi.clamp(lo, hi),
+        }
+    }
+
+    fn sqrt(self) -> Self {
+        if self.hi < 0.0 {
+            return Self::WHOLE;
+        }
+        Self::rounded(self.lo.max(0.0).sqrt(), self.hi.sqrt())
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FrameBounds {
+    deviation: f64,
+    singular_min: f64,
+    singular_max: f64,
+    inverse_max: f64,
+}
+
+#[derive(Clone, Copy)]
+struct MetricBounds {
+    min: f64,
+    max: f64,
+}
+
+impl MetricBounds {
+    const IDENTITY: Self = Self { min: 1.0, max: 1.0 };
+
+    fn through(self, frame: [[f32; 4]; 4]) -> Option<Self> {
+        let frame = frame_bounds(frame)?;
+        let min = FieldInterval::exact_f64(self.min)
+            .mul(FieldInterval::exact_f64(frame.singular_min))
+            .lo;
+        let max = FieldInterval::exact_f64(self.max)
+            .mul(FieldInterval::exact_f64(frame.singular_max))
+            .hi;
+        (min > 0.0 && min.is_finite() && max.is_finite()).then_some(Self { min, max })
+    }
+
+    fn scaled(self, scale: FieldInterval) -> Option<Self> {
+        let min = FieldInterval::exact_f64(self.min).mul(scale).lo;
+        let max = FieldInterval::exact_f64(self.max).mul(scale).hi;
+        (min > 0.0 && min.is_finite() && max.is_finite()).then_some(Self { min, max })
+    }
+}
+
+fn upper_f32(value: f64) -> f32 {
+    if value.is_nan() || value > f32::MAX as f64 {
+        return f32::INFINITY;
+    }
+    if value < -(f32::MAX as f64) {
+        return -f32::MAX;
+    }
+    let rounded = value as f32;
+    if rounded as f64 >= value {
+        rounded
+    } else {
+        rounded.next_up()
+    }
+}
+
+fn lower_f32(value: f64) -> f32 {
+    if value.is_nan() || value < -(f32::MAX as f64) {
+        return f32::NEG_INFINITY;
+    }
+    if value > f32::MAX as f64 {
+        return f32::MAX;
+    }
+    let rounded = value as f32;
+    if rounded as f64 <= value {
+        rounded
+    } else {
+        rounded.next_down()
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct FieldNode {
     pub center: [f32; 4],
     pub radius: f32,
+    pub scale: f32,
     pub start: u32,
     pub end: u32,
     pub escape: u32,
@@ -140,7 +329,7 @@ pub struct FieldNode {
 
 impl FieldNode {
     pub fn is_bounded(self) -> bool {
-        self.radius >= 0.0
+        self.radius >= 0.0 && self.scale > 0.0
     }
 
     pub fn is_leaf(self) -> bool {
@@ -148,12 +337,17 @@ impl FieldNode {
     }
 
     pub fn lower_bound(self, point: [f32; 4]) -> f32 {
-        let mut sum = 0.0;
+        let mut sum = FieldInterval::exact(0.0);
         for (at, center) in point.iter().zip(self.center) {
-            let d = at - center;
-            sum += d * d;
+            let d = FieldInterval::exact(*at).sub(FieldInterval::exact(center));
+            sum = sum.add(d.mul(d));
         }
-        sum.sqrt() - self.radius
+        let gap = sum.sqrt().sub(FieldInterval::exact(self.radius));
+        if gap.lo <= 0.0 {
+            f32::NEG_INFINITY
+        } else {
+            lower_f32(FieldInterval::exact(self.scale).mul(gap).lo)
+        }
     }
 }
 
@@ -161,25 +355,33 @@ impl FieldNode {
 struct Ball {
     center: [f32; 4],
     radius: f32,
+    scale: f32,
 }
 
 const UNBOUNDED: Ball = Ball {
     center: [0.0; 4],
     radius: -1.0,
+    scale: 0.0,
 };
 
 impl Ball {
     fn bounded(self) -> bool {
-        self.radius >= 0.0
+        self.radius >= 0.0 && self.scale > 0.0
     }
 
     fn expanded(self, by: f32) -> Self {
         if !self.bounded() {
             return UNBOUNDED;
         }
+        let expansion = FieldInterval::exact(by.abs()).div(FieldInterval::exact(self.scale));
+        let radius = upper_f32(FieldInterval::exact(self.radius).add(expansion).hi);
+        if !radius.is_finite() {
+            return UNBOUNDED;
+        }
         Ball {
             center: self.center,
-            radius: self.radius + by.abs(),
+            radius,
+            scale: self.scale,
         }
     }
 
@@ -196,62 +398,158 @@ impl Ball {
         if !self.bounded() || !other.bounded() {
             return UNBOUNDED;
         }
-        let mut delta = [0.0f32; 4];
-        let mut sum = 0.0;
-        for ((slot, to), from) in delta.iter_mut().zip(other.center).zip(self.center) {
-            *slot = to - from;
-            sum += *slot * *slot;
+        let mut center = [0.0; 4];
+        for (axis, component) in center.iter_mut().enumerate() {
+            *component = ((self.center[axis] as f64 + other.center[axis] as f64) * 0.5) as f32;
         }
-        let gap = sum.sqrt();
-        if gap + other.radius <= self.radius {
-            return self;
+        let radius_for = |ball: Self| {
+            ball.center
+                .into_iter()
+                .zip(center)
+                .fold(FieldInterval::exact(0.0), |sum, (from, to)| {
+                    let delta = FieldInterval::exact(from).sub(FieldInterval::exact(to));
+                    sum.add(delta.mul(delta))
+                })
+                .sqrt()
+                .add(FieldInterval::exact(ball.radius))
+        };
+        let radius = upper_f32(radius_for(self).max(radius_for(other)).hi);
+        if !radius.is_finite() || center.iter().any(|component| !component.is_finite()) {
+            UNBOUNDED
+        } else {
+            Ball {
+                center,
+                radius,
+                scale: self.scale.min(other.scale),
+            }
         }
-        if gap + self.radius <= other.radius {
-            return other;
-        }
-        let radius = 0.5 * (gap + self.radius + other.radius);
-        let along = (radius - self.radius) / gap;
-        let mut center = self.center;
-        for (slot, step) in center.iter_mut().zip(delta) {
-            *slot += step * along;
-        }
-        Ball { center, radius }
     }
 
     fn through(self, prim: &FieldPrimitive) -> Self {
+        let Some(frame) = frame_bounds(prim.frame) else {
+            return UNBOUNDED;
+        };
         if !self.bounded() {
             return UNBOUNDED;
         }
-        let mut center = prim.translation;
-        for (axis, slot) in center.iter_mut().enumerate() {
-            for (component, column) in self.center.iter().zip(prim.frame) {
-                *slot += column[axis] * component;
+        let mut center = [0.0; 4];
+        let mut center_error_sq = FieldInterval::exact(0.0);
+        for (axis, component) in center.iter_mut().enumerate() {
+            let mut exact = FieldInterval::exact(prim.translation[axis]);
+            for (component, row) in self.center.into_iter().zip(prim.frame) {
+                exact =
+                    exact.add(FieldInterval::exact(row[axis]).mul(FieldInterval::exact(component)));
             }
+            *component = ((exact.lo + exact.hi) * 0.5) as f32;
+            let error = FieldInterval::exact(*component).sub(exact).abs();
+            center_error_sq = center_error_sq.add(error.mul(error));
         }
-        Ball {
-            center,
-            radius: self.radius,
+        let center_norm = self
+            .center
+            .into_iter()
+            .fold(FieldInterval::exact(0.0), |sum, component| {
+                let component = FieldInterval::exact(component);
+                sum.add(component.mul(component))
+            })
+            .sqrt();
+        let inverse_norm = FieldInterval::exact_f64(frame.inverse_max);
+        let delta = FieldInterval::exact_f64(frame.deviation);
+        let radius = inverse_norm
+            .mul(FieldInterval::exact(self.radius))
+            .add(inverse_norm.mul(delta).mul(center_norm))
+            .add(center_error_sq.sqrt());
+        let radius = upper_f32(radius.hi);
+        let scale = lower_f32(
+            FieldInterval::exact(self.scale)
+                .mul(FieldInterval::exact_f64(frame.singular_min))
+                .lo,
+        );
+        if !radius.is_finite()
+            || !scale.is_finite()
+            || scale <= 0.0
+            || center.iter().any(|component| !component.is_finite())
+        {
+            UNBOUNDED
+        } else {
+            Ball {
+                center,
+                radius,
+                scale,
+            }
         }
     }
 }
 
+// Horn and Johnson 2013, Matrix Analysis, §§5.6, 7.3.
+fn frame_bounds(frame: [[f32; 4]; 4]) -> Option<FrameBounds> {
+    let mut delta = 0.0f64;
+    for (left_index, left_column) in frame.iter().enumerate() {
+        let mut row_sum = FieldInterval::exact(0.0);
+        for (right_index, right_column) in frame.iter().enumerate() {
+            let mut gram = FieldInterval::exact(0.0);
+            for (&left, &right) in left_column.iter().zip(right_column) {
+                gram = gram.add(FieldInterval::exact(left).mul(FieldInterval::exact(right)));
+            }
+            row_sum = row_sum.add(
+                FieldInterval::exact(if left_index == right_index { 1.0 } else { 0.0 })
+                    .sub(gram)
+                    .abs(),
+            );
+        }
+        delta = delta.max(row_sum.hi);
+    }
+    if !delta.is_finite() || delta >= 1.0 {
+        return None;
+    }
+    let remaining = FieldInterval::exact_f64(1.0)
+        .sub(FieldInterval::exact_f64(delta))
+        .sqrt();
+    let inverse_norm = FieldInterval::exact_f64(1.0).div(remaining).hi;
+    let singular_min = remaining.lo;
+    let singular_max = FieldInterval::exact_f64(1.0)
+        .add(FieldInterval::exact_f64(delta))
+        .sqrt()
+        .hi;
+    (inverse_norm.is_finite() && singular_min > 0.0 && singular_max.is_finite()).then_some(
+        FrameBounds {
+            deviation: delta,
+            singular_min,
+            singular_max,
+            inverse_max: inverse_norm,
+        },
+    )
+}
+
 fn primitive_ball(op: u32, prim: &FieldPrimitive, extruded_w: bool) -> Ball {
     let r = prim.params;
-    match op {
+    let local = match op {
         OP_HYPERSPHERE => Ball {
-            center: prim.translation,
+            center: [0.0; 4],
             radius: r[0].abs(),
+            scale: 1.0,
         },
         OP_SPHERE if !extruded_w => Ball {
-            center: prim.translation,
+            center: [0.0; 4],
             radius: r[0].abs(),
+            scale: 1.0,
         },
         OP_BOX if !extruded_w => Ball {
-            center: prim.translation,
-            radius: (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt(),
+            center: [0.0; 4],
+            radius: upper_f32(
+                r[..3]
+                    .iter()
+                    .fold(FieldInterval::exact(0.0), |sum, &component| {
+                        let component = FieldInterval::exact(component);
+                        sum.add(component.mul(component))
+                    })
+                    .sqrt()
+                    .hi,
+            ),
+            scale: 1.0,
         },
         _ => UNBOUNDED,
-    }
+    };
+    local.through(prim)
 }
 
 fn subtree_ball(primitives: &[FieldPrimitive], range: &[u32], extruded_w: bool) -> Ball {
@@ -318,6 +616,7 @@ fn subtree_ball(primitives: &[FieldPrimitive], range: &[u32], extruded_w: bool) 
 
 #[derive(Clone, Copy, Debug)]
 struct Cut {
+    node: u32,
     start: u32,
     end: u32,
     implicit: bool,
@@ -348,6 +647,7 @@ fn build_tree(leaves: &mut [Cut], out: &mut Vec<FieldNode>) {
         out.push(FieldNode {
             center: leaf.ball.center,
             radius: leaf.ball.radius,
+            scale: leaf.ball.scale,
             start: leaf.start,
             end: leaf.end,
             escape: 0,
@@ -373,6 +673,7 @@ fn build_tree(leaves: &mut [Cut], out: &mut Vec<FieldNode>) {
     out[at] = FieldNode {
         center: ball.center,
         radius: ball.radius,
+        scale: ball.scale,
         start: 0,
         end: 0,
         escape: out.len() as u32,
@@ -383,6 +684,7 @@ fn ball_of(node: FieldNode) -> Ball {
     Ball {
         center: node.center,
         radius: node.radius,
+        scale: node.scale,
     }
 }
 
@@ -396,6 +698,24 @@ fn local(prim: &FieldPrimitive, p: [f32; 4]) -> [f32; 4] {
     let mut out = [0.0; 4];
     for (slot, column) in out.iter_mut().zip(prim.frame) {
         *slot = column[0] * d[0] + column[1] * d[1] + column[2] * d[2] + column[3] * d[3];
+    }
+    out
+}
+
+fn local_interval(prim: &FieldPrimitive, p: [FieldInterval; 4]) -> [FieldInterval; 4] {
+    let d = [
+        p[0].sub(FieldInterval::exact(prim.translation[0])),
+        p[1].sub(FieldInterval::exact(prim.translation[1])),
+        p[2].sub(FieldInterval::exact(prim.translation[2])),
+        p[3].sub(FieldInterval::exact(prim.translation[3])),
+    ];
+    let mut out = [FieldInterval::exact(0.0); 4];
+    for (slot, column) in out.iter_mut().zip(prim.frame) {
+        *slot = FieldInterval::exact(column[0])
+            .mul(d[0])
+            .add(FieldInterval::exact(column[1]).mul(d[1]))
+            .add(FieldInterval::exact(column[2]).mul(d[2]))
+            .add(FieldInterval::exact(column[3]).mul(d[3]));
     }
     out
 }
@@ -418,10 +738,93 @@ fn primitive_distance(op: u32, prim: &FieldPrimitive, p: [f32; 4]) -> f32 {
     }
 }
 
+fn primitive_interval(op: u32, prim: &FieldPrimitive, p: [FieldInterval; 4]) -> FieldInterval {
+    let q = local_interval(prim, p);
+    let r = prim.params.map(FieldInterval::exact);
+    match op {
+        OP_SPHERE => q[..3]
+            .iter()
+            .fold(FieldInterval::exact(0.0), |sum, &component| {
+                sum.add(component.mul(component))
+            })
+            .sqrt()
+            .sub(r[0]),
+        OP_BOX => {
+            let d = [
+                q[0].abs().sub(r[0]),
+                q[1].abs().sub(r[1]),
+                q[2].abs().sub(r[2]),
+            ];
+            let zero = FieldInterval::exact(0.0);
+            let outside = d
+                .iter()
+                .fold(zero, |sum, &component| {
+                    let positive = component.max(zero);
+                    sum.add(positive.mul(positive))
+                })
+                .sqrt();
+            outside.add(d[0].max(d[1]).max(d[2]).min(zero))
+        }
+        OP_HALFSPACE => q[0].mul(r[0]).add(q[1].mul(r[1])).add(q[2].mul(r[2])),
+        OP_HYPERSPHERE => q
+            .iter()
+            .fold(FieldInterval::exact(0.0), |sum, &component| {
+                sum.add(component.mul(component))
+            })
+            .sqrt()
+            .sub(r[0]),
+        OP_HALFSPACE4 => q[0]
+            .mul(r[0])
+            .add(q[1].mul(r[1]))
+            .add(q[2].mul(r[2]))
+            .add(q[3].mul(r[3])),
+        _ => FieldInterval::exact(FIELD_FAR),
+    }
+}
+
+fn primitive_metric_interval(
+    op: u32,
+    prim: &FieldPrimitive,
+    p: [FieldInterval; 4],
+    metric: MetricBounds,
+) -> FieldInterval {
+    let value = primitive_interval(op, prim, p);
+    let Some(mut metric) = metric.through(prim.frame) else {
+        return FieldInterval::WHOLE;
+    };
+    if matches!(op, OP_HALFSPACE | OP_HALFSPACE4) {
+        let dimensions = if op == OP_HALFSPACE { 3 } else { 4 };
+        let normal = prim.params[..dimensions]
+            .iter()
+            .fold(FieldInterval::exact(0.0), |sum, &component| {
+                let component = FieldInterval::exact(component);
+                sum.add(component.mul(component))
+            })
+            .sqrt();
+        let Some(scaled) = metric.scaled(normal) else {
+            return FieldInterval::WHOLE;
+        };
+        metric = scaled;
+    }
+    value.div(FieldInterval {
+        lo: metric.min,
+        hi: metric.max,
+    })
+}
+
 // Quilez, "Smooth minimum", iquilezles.org/articles/smin, polynomial form.
 fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
     let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
     (b * (1.0 - h) + a * h) - k * h * (1.0 - h)
+}
+
+fn smooth_min_interval(a: FieldInterval, b: FieldInterval, k: FieldInterval) -> FieldInterval {
+    let one = FieldInterval::exact(1.0);
+    let half = FieldInterval::exact(0.5);
+    let h = half.add(half.mul(b.sub(a)).div(k)).clamp(0.0, 1.0);
+    b.mul(one.sub(h))
+        .add(a.mul(h))
+        .sub(k.mul(h).mul(one.sub(h)))
 }
 
 fn run<const COUNT: bool>(
@@ -501,6 +904,107 @@ fn run<const COUNT: bool>(
     Ok(stack[0])
 }
 
+fn run_interval(
+    program: &[u32],
+    primitives: &[FieldPrimitive],
+    point: [f32; 4],
+    exact_distance: bool,
+) -> Result<FieldInterval, FieldError> {
+    if program.is_empty() {
+        return Ok(FieldInterval::exact(FIELD_FAR));
+    }
+    if !program.len().is_multiple_of(2) {
+        return Err(FieldError::Truncated);
+    }
+    let mut stack = [FieldInterval::exact(0.0); MAX_STACK];
+    let mut points = [[FieldInterval::exact(0.0); 4]; MAX_POSE_DEPTH];
+    let mut metrics = [Some(MetricBounds::IDENTITY); MAX_POSE_DEPTH];
+    let mut sp = 0usize;
+    let mut pp = 0usize;
+    let mut p = point.map(FieldInterval::exact);
+    let mut metric = Some(MetricBounds::IDENTITY);
+    for word in program.chunks_exact(2) {
+        let (op, arg) = (word[0], word[1]);
+        match op {
+            OP_SPHERE | OP_BOX | OP_HALFSPACE | OP_HYPERSPHERE | OP_HALFSPACE4 => {
+                let prim = primitives
+                    .get(arg as usize)
+                    .ok_or(FieldError::Primitive(arg))?;
+                if sp == MAX_STACK {
+                    return Err(FieldError::StackOverflow);
+                }
+                stack[sp] = if exact_distance {
+                    match metric {
+                        Some(metric) => primitive_metric_interval(op, prim, p, metric),
+                        None => FieldInterval::WHOLE,
+                    }
+                } else {
+                    primitive_interval(op, prim, p)
+                };
+                sp += 1;
+            }
+            OP_UNION | OP_INTERSECTION | OP_SUBTRACTION | OP_SMOOTH_UNION => {
+                if sp < 2 {
+                    return Err(FieldError::StackUnderflow);
+                }
+                let b = stack[sp - 1];
+                let a = stack[sp - 2];
+                sp -= 1;
+                stack[sp - 1] = match (exact_distance, op) {
+                    (true, _) => FieldInterval::WHOLE,
+                    (false, OP_UNION) => a.min(b),
+                    (false, OP_INTERSECTION) => a.max(b),
+                    (false, OP_SUBTRACTION) => a.max(b.neg()),
+                    (false, _) => {
+                        smooth_min_interval(a, b, FieldInterval::exact(f32::from_bits(arg)))
+                    }
+                };
+            }
+            OP_PUSH_POSE => {
+                let prim = primitives
+                    .get(arg as usize)
+                    .ok_or(FieldError::Primitive(arg))?;
+                if pp == MAX_POSE_DEPTH {
+                    return Err(FieldError::PoseDepth);
+                }
+                points[pp] = p;
+                metrics[pp] = metric;
+                pp += 1;
+                p = local_interval(prim, p);
+                metric = metric.and_then(|metric| metric.through(prim.frame));
+            }
+            OP_POP_POSE => {
+                if pp == 0 {
+                    return Err(FieldError::PoseDepth);
+                }
+                pp -= 1;
+                p = points[pp];
+                metric = metrics[pp];
+            }
+            other => return Err(FieldError::Opcode(other)),
+        }
+    }
+    if sp != 1 {
+        return Err(FieldError::StackUnderflow);
+    }
+    Ok(stack[0])
+}
+
+fn forward_error(
+    program: &[u32],
+    primitives: &[FieldPrimitive],
+    point: [f32; 4],
+    value: f32,
+    kind: FieldKind,
+) -> Result<f32, FieldError> {
+    let interval = run_interval(program, primitives, point, kind == FieldKind::ExactDistance)?;
+    if !value.is_finite() || !interval.lo.is_finite() || !interval.hi.is_finite() {
+        return Ok(f32::INFINITY);
+    }
+    let error = FieldInterval::exact(value).sub(interval).abs().hi;
+    Ok(upper_f32(error).max(FIELD_PROGRAM_ERROR))
+}
+
 fn traverse<const COUNT: bool>(
     program: &[u32],
     primitives: &[FieldPrimitive],
@@ -512,7 +1016,7 @@ fn traverse<const COUNT: bool>(
     if nodes.is_empty() {
         return run::<COUNT>(program, primitives, point, counts);
     }
-    let mut best = FIELD_FAR;
+    let mut best = f32::INFINITY;
     let mut index = 0usize;
     while index < nodes.len() {
         let node = nodes[index];
@@ -583,7 +1087,26 @@ pub fn evaluate_bounded_counted(
     traverse::<true>(program, primitives, nodes, point, tolerance, counts)
 }
 
+pub(crate) fn evaluate_error(
+    program: &[u32],
+    primitives: &[FieldPrimitive],
+    nodes: &[FieldNode],
+    point: [f32; 4],
+    kind: FieldKind,
+) -> Result<f32, FieldError> {
+    let value = traverse::<false>(
+        program,
+        primitives,
+        nodes,
+        point,
+        0.0,
+        &mut FieldCounts::default(),
+    )?;
+    forward_error(program, primitives, point, value, kind)
+}
+
 const NONE: u32 = u32::MAX;
+const MAX_OPERANDS: usize = 2;
 
 #[derive(Clone, Copy)]
 struct Node {
@@ -614,8 +1137,16 @@ struct Edge {
     live: bool,
 }
 
-pub struct FieldCompiler {
+const EMPTY_EDGE: Edge = Edge {
+    operand: NONE,
+    operator: NONE,
+    next: NONE,
+    live: false,
+};
+
+pub(crate) struct FieldCompiler {
     program: FieldProgram,
+    staged: FieldProgram,
     nodes: Vec<Node>,
     edges: Vec<Edge>,
     slots: Vec<u32>,
@@ -626,6 +1157,7 @@ pub struct FieldCompiler {
     kinds: Vec<FieldKind>,
     work: Vec<u32>,
     touched: Vec<u32>,
+    patches: Vec<(usize, FieldPrimitive)>,
     fields_cursor: Cursor,
     poses_cursor: Cursor,
     dirty_stamp: u32,
@@ -639,9 +1171,10 @@ impl Default for FieldCompiler {
 }
 
 impl FieldCompiler {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             program: FieldProgram::default(),
+            staged: FieldProgram::default(),
             nodes: Vec::new(),
             edges: Vec::new(),
             slots: Vec::new(),
@@ -652,6 +1185,7 @@ impl FieldCompiler {
             kinds: Vec::new(),
             work: Vec::new(),
             touched: Vec::new(),
+            patches: Vec::new(),
             fields_cursor: Cursor::default(),
             poses_cursor: Cursor::default(),
             dirty_stamp: 0,
@@ -659,11 +1193,11 @@ impl FieldCompiler {
         }
     }
 
-    pub fn program(&self) -> &FieldProgram {
+    pub(crate) fn program(&self) -> &FieldProgram {
         &self.program
     }
 
-    pub fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         self.compiled = false;
         self.fields_cursor = Cursor::default();
         self.poses_cursor = Cursor::default();
@@ -683,15 +1217,7 @@ impl FieldCompiler {
     }
 
     fn has_live_parent(&self, node: u32) -> bool {
-        let mut edge = self.nodes[node as usize].first_parent;
-        while edge != NONE {
-            let e = self.edges[edge as usize];
-            if e.live {
-                return true;
-            }
-            edge = e.next;
-        }
-        false
+        self.nodes[node as usize].first_parent != NONE
     }
 
     fn link(&mut self, operator: u32, operands: &[Entity]) -> Result<(), DomainError> {
@@ -699,26 +1225,47 @@ impl FieldCompiler {
         if operands.len() != self.nodes[operator as usize].op.operands() {
             return Err(DomainError::FieldArity(entity));
         }
-        self.nodes[operator as usize].edge_start = self.edges.len() as u32;
+        let edge_start = operator as usize * MAX_OPERANDS;
+        self.nodes[operator as usize].edge_start = edge_start as u32;
         self.nodes[operator as usize].edge_len = operands.len() as u32;
-        for &operand in operands {
+        for (offset, &operand) in operands.iter().enumerate() {
             let target = self.node_of(operand).ok_or(DomainError::Stale(operand))?;
-            let edge = self.edges.len() as u32;
-            self.edges.push(Edge {
+            let edge = (edge_start + offset) as u32;
+            self.edges[edge as usize] = Edge {
                 operand: target,
                 operator,
                 next: self.nodes[target as usize].first_parent,
                 live: true,
-            });
+            };
             self.nodes[target as usize].first_parent = edge;
         }
         Ok(())
     }
 
+    fn detach_parent(&mut self, operand: u32, remove: u32) {
+        let mut previous = NONE;
+        let mut edge = self.nodes[operand as usize].first_parent;
+        while edge != NONE {
+            let next = self.edges[edge as usize].next;
+            if edge == remove {
+                if previous == NONE {
+                    self.nodes[operand as usize].first_parent = next;
+                } else {
+                    self.edges[previous as usize].next = next;
+                }
+                return;
+            }
+            previous = edge;
+            edge = next;
+        }
+    }
+
     fn unlink(&mut self, operator: u32) {
         let node = self.nodes[operator as usize];
         for edge in node.edge_start..node.edge_start + node.edge_len {
-            self.edges[edge as usize].live = false;
+            let operand = self.edges[edge as usize].operand;
+            self.detach_parent(operand, edge);
+            self.edges[edge as usize] = EMPTY_EDGE;
         }
         self.nodes[operator as usize].edge_len = 0;
     }
@@ -739,6 +1286,7 @@ impl FieldCompiler {
         self.edges.clear();
         self.slots.clear();
         for (entity, field) in fields.iter() {
+            validate_op(field.op)?;
             let node = self.nodes.len() as u32;
             self.nodes.push(Node {
                 entity,
@@ -753,6 +1301,8 @@ impl FieldCompiler {
             });
             self.set_slot(entity, node);
         }
+        self.edges
+            .resize(self.nodes.len() * MAX_OPERANDS, EMPTY_EDGE);
         let mut work = 0;
         for index in 0..self.nodes.len() as u32 {
             let entity = self.nodes[index as usize].entity;
@@ -764,7 +1314,15 @@ impl FieldCompiler {
     }
 
     fn mark_ancestors(&mut self) -> u32 {
-        self.dirty_stamp = self.dirty_stamp.wrapping_add(1);
+        self.dirty_stamp = match self.dirty_stamp.checked_add(1) {
+            Some(stamp) => stamp,
+            None => {
+                for node in &mut self.nodes {
+                    node.marked = 0;
+                }
+                1
+            }
+        };
         let stamp = self.dirty_stamp;
         self.work.clear();
         for i in 0..self.touched.len() {
@@ -819,20 +1377,37 @@ impl FieldCompiler {
         space: &S,
         poses: &Store<Pose<S>>,
     ) -> Result<u32, DomainError> {
-        let mut work = 0;
+        self.patches.clear();
         for i in 0..self.touched.len() {
             let node = self.nodes[self.touched[i] as usize];
             if node.record == NONE {
                 continue;
             }
-            self.program.primitives[node.record as usize] =
-                primitive_record(space, poses, node.entity, node.op)?;
-            work += 1;
+            self.patches.push((
+                node.record as usize,
+                primitive_record(space, poses, node.entity, node.op)?,
+            ));
         }
-        Ok(work)
+        for &(record, primitive) in &self.patches {
+            self.program.primitives[record] = primitive;
+        }
+        Ok(self.patches.len() as u32)
     }
 
     fn emit<S: DomainSpace>(
+        &mut self,
+        space: &S,
+        poses: &Store<Pose<S>>,
+    ) -> Result<u32, DomainError> {
+        std::mem::swap(&mut self.program, &mut self.staged);
+        let result = self.emit_staged(space, poses);
+        if result.is_err() {
+            std::mem::swap(&mut self.program, &mut self.staged);
+        }
+        result
+    }
+
+    fn emit_staged<S: DomainSpace>(
         &mut self,
         space: &S,
         poses: &Store<Pose<S>>,
@@ -919,6 +1494,7 @@ impl FieldCompiler {
                 }
                 if frame.cullable && !matches!(op, FieldOp::Union) {
                     self.cuts.push(Cut {
+                        node,
                         start: frame.start,
                         end: self.program.program.len() as u32,
                         implicit: self.kinds.last().copied() == Some(FieldKind::Implicit),
@@ -939,12 +1515,15 @@ impl FieldCompiler {
             return Err(DomainError::Unsupported("field stack depth"));
         }
         self.program.stack = peak;
-        self.program.kind = self.kinds.pop().unwrap_or(FieldKind::ExactDistance);
+        self.program.kind = self.kinds.pop().unwrap_or(FieldKind::ConservativeBound);
         Ok((self.program.program.len() / 2) as u32 + self.program.primitives.len() as u32)
     }
 
-    fn rebuild_bounds(&mut self, extruded_w: bool) -> u32 {
+    fn rebuild_bounds(&mut self, extruded_w: bool, changed_only: bool) -> u32 {
         for cut in &mut self.cuts {
+            if changed_only && self.nodes[cut.node as usize].marked != self.dirty_stamp {
+                continue;
+            }
             cut.ball = if cut.implicit {
                 UNBOUNDED
             } else {
@@ -971,6 +1550,7 @@ impl FieldCompiler {
                 self.program.nodes.push(FieldNode {
                     center: [0.0; 4],
                     radius: UNBOUNDED.radius,
+                    scale: UNBOUNDED.scale,
                     start: cut.start,
                     end: cut.end,
                     escape,
@@ -1020,24 +1600,37 @@ impl FieldCompiler {
         Ok(())
     }
 
-    /// Refuses a curved chart; then a pose change patches records and marks ancestors, an operand edit repairs that operator's edges, only an insert, a removal, a resync, or the first compile rebuilds everything, and every compile rebuilds the ball tree, counted in `index_maintenance`.
-    pub fn compile<S: DomainSpace>(
+    pub(crate) fn compile<S: DomainSpace>(
         &mut self,
         space: &S,
         fields: &Store<Field>,
         poses: &Store<Pose<S>>,
     ) -> Result<FieldCost, DomainError> {
         if !space.is_chart_flat() {
+            self.compiled = false;
             return Err(DomainError::Unsupported("curved field chart"));
         }
+        let dimension = space.chart_dimension();
         let structural = fields.changed_since(&mut self.fields_cursor);
         let placed = poses.changed_since(&mut self.poses_cursor);
         if self.compiled && !structural && !placed {
             return Ok(FieldCost::default());
         }
+        if dimension < 4
+            && (!self.compiled || structural)
+            && fields.iter().any(|(_, field)| {
+                matches!(
+                    field.op,
+                    FieldOp::HyperSphere { .. } | FieldOp::HalfSpace4 { .. }
+                )
+            })
+        {
+            return Err(DomainError::Unsupported("field primitive dimension"));
+        }
 
         let mut cost = FieldCost::default();
         let mut rebuild = !self.compiled;
+        self.compiled = false;
         self.touched.clear();
         if structural {
             let changes = fields.changes(&mut self.fields_cursor);
@@ -1065,10 +1658,18 @@ impl FieldCompiler {
         if placed {
             let changes = poses.changes(&mut self.poses_cursor);
             for change in changes {
-                if let Change::Row(entity, _) = change {
-                    if let Some(node) = self.node_of(entity) {
-                        self.touched.push(node);
-                        cost.changed_inputs += 1;
+                match change {
+                    Change::Row(entity, _) => {
+                        if let Some(node) = self.node_of(entity) {
+                            self.touched.push(node);
+                            cost.changed_inputs += 1;
+                        }
+                    }
+                    Change::Removed(removal) => {
+                        if let Some(node) = self.node_of(removal.entity) {
+                            self.touched.push(node);
+                            cost.changed_inputs += 1;
+                        }
                     }
                 }
             }
@@ -1083,6 +1684,7 @@ impl FieldCompiler {
                 let node = self.touched[i];
                 let entity = self.nodes[node as usize].entity;
                 let field = fields.get(entity).ok_or(DomainError::Stale(entity))?;
+                validate_op(field.op)?;
                 self.nodes[node as usize].op = field.op;
                 self.nodes[node as usize].declared = field.kind;
                 if !self.operands_match(node, &field.operands) {
@@ -1100,7 +1702,8 @@ impl FieldCompiler {
         } else {
             self.patch(space, poses)?
         };
-        cost.index_maintenance += self.rebuild_bounds(space.chart_dimension() > 3);
+        cost.index_maintenance += self.rebuild_bounds(dimension > 3, !rebuild && edited == 0);
+        self.program.dimension = dimension;
         self.compiled = true;
         Ok(cost)
     }
@@ -1112,6 +1715,7 @@ fn primitive_record<S: DomainSpace>(
     entity: Entity,
     op: FieldOp,
 ) -> Result<FieldPrimitive, DomainError> {
+    validate_op(op)?;
     let pose = poses.get(entity).ok_or(DomainError::Stale(entity))?;
     let chart = space.chart_pose(pose);
     let mut record = FieldPrimitive {
@@ -1137,7 +1741,43 @@ fn primitive_record<S: DomainSpace>(
         FieldOp::Transform => {}
         _ => return Err(DomainError::FieldArity(entity)),
     }
+    if record
+        .frame
+        .iter()
+        .flatten()
+        .chain(&record.translation)
+        .chain(&record.params)
+        .any(|component| !component.is_finite())
+    {
+        return Err(DomainError::InvalidCoordinate("field primitive"));
+    }
     Ok(record)
+}
+
+fn validate_op(op: FieldOp) -> Result<(), DomainError> {
+    match op {
+        FieldOp::Sphere { radius } | FieldOp::HyperSphere { radius }
+            if !radius.is_finite() || radius <= 0.0 =>
+        {
+            Err(DomainError::InvalidCoordinate("field radius"))
+        }
+        FieldOp::Box { half_extents }
+            if half_extents
+                .into_iter()
+                .any(|extent| !extent.is_finite() || extent <= 0.0) =>
+        {
+            Err(DomainError::InvalidCoordinate("field half extent"))
+        }
+        FieldOp::HalfSpace { offset, .. } | FieldOp::HalfSpace4 { offset, .. }
+            if !offset.is_finite() =>
+        {
+            Err(DomainError::InvalidCoordinate("field offset"))
+        }
+        FieldOp::SmoothUnion { radius } if !radius.is_finite() || radius <= 0.0 => {
+            Err(DomainError::InvalidCoordinate("field smoothing radius"))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn unit_plane(normal: [f32; 4], offset: f32) -> Result<([f32; 4], f32), DomainError> {
@@ -1146,7 +1786,7 @@ fn unit_plane(normal: [f32; 4], offset: f32) -> Result<([f32; 4], f32), DomainEr
         .map(|component| component * component)
         .sum::<f32>()
         .sqrt();
-    if !length.is_finite() || length < 1e-6 {
+    if !length.is_finite() || length < 1e-6 || !offset.is_finite() {
         return Err(DomainError::InvalidCoordinate("field normal"));
     }
     Ok((normal.map(|component| component / length), offset / length))
@@ -1198,13 +1838,10 @@ mod tests {
         fn spawn(&mut self, at: Vec3, kind: FieldKind, op: FieldOp, operands: &[Entity]) -> Entity {
             let entity = self.entities.spawn();
             self.domain
-                .poses
-                .insert(entity, Pose::at(at))
+                .attach_pose(entity, Pose::at(at))
                 .expect("pose row");
             self.domain
-                .fields_mut()
-                .expect("field store")
-                .insert(
+                .attach_field(
                     entity,
                     Field {
                         kind,
@@ -1220,8 +1857,16 @@ mod tests {
             self.domain.compile_fields()
         }
 
+        fn compile_with(&self, compiler: &mut FieldCompiler) -> Result<FieldCost, DomainError> {
+            compiler.compile(
+                &EuclideanR3,
+                self.domain.fields().expect("field store"),
+                self.domain.poses(),
+            )
+        }
+
         fn move_to(&mut self, entity: Entity, to: Vec3) {
-            self.domain.poses.get_mut(entity).expect("pose row").point = to;
+            self.domain.set_point(entity, to).expect("pose row");
         }
     }
 
@@ -1245,32 +1890,71 @@ mod tests {
     }
 
     #[test]
-    fn a_cycle_is_refused_and_names_an_entity_on_it() {
+    fn a_failed_compile_repeats_then_recovers_without_replacing_the_valid_program() {
         let mut fixture = Fixture::new();
         let leaf = fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, sphere(1.0), &[]);
-        let up = fixture.entities.spawn();
-        let down = fixture.entities.spawn();
-        for (entity, operand) in [(up, down), (down, up)] {
-            fixture
-                .domain
-                .poses
-                .insert(entity, Pose::at(Vec3::ZERO))
-                .expect("pose row");
-            fixture
-                .domain
-                .fields_mut()
-                .expect("field store")
-                .insert(
-                    entity,
-                    Field {
-                        kind: FieldKind::ExactDistance,
-                        op: FieldOp::Union,
-                        operands: vec![operand, leaf],
-                    },
-                )
-                .expect("field row");
-        }
+        let up = fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Union,
+            &[leaf, leaf],
+        );
+        let down = fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Union,
+            &[up, leaf],
+        );
+        fixture.compile().expect("valid compile");
+        let point = [3.0, 0.0, 0.0, 0.0];
+        let valid = fixture.domain.field_program().evaluate(point).unwrap();
+
+        fixture.domain.field_mut(up).unwrap().operands = vec![down, leaf];
         assert_eq!(fixture.compile(), Err(DomainError::FieldCycle(up)));
+        assert_eq!(fixture.compile(), Err(DomainError::FieldCycle(up)));
+        assert_eq!(
+            fixture.domain.field_program().evaluate(point).unwrap(),
+            valid
+        );
+
+        fixture.domain.field_mut(up).unwrap().operands = vec![leaf, leaf];
+        assert!(fixture.compile().expect("repaired compile").full_rebuild);
+        assert_eq!(
+            fixture.domain.field_program().evaluate(point).unwrap(),
+            valid
+        );
+
+        let mut fields = Store::tracked(DEFAULT_LOG_CAPACITY);
+        let mut poses = Store::tracked(DEFAULT_LOG_CAPACITY);
+        fields.bind(fixture.entities.scene());
+        poses.bind(fixture.entities.scene());
+        fields
+            .insert(
+                &fixture.entities,
+                leaf,
+                Field {
+                    kind: FieldKind::ExactDistance,
+                    op: sphere(1.0),
+                    operands: Vec::new(),
+                },
+            )
+            .unwrap();
+        poses
+            .insert(&fixture.entities, leaf, Pose::at(Vec3::ZERO))
+            .unwrap();
+        let mut compiler = FieldCompiler::new();
+        compiler.compile(&EuclideanR3, &fields, &poses).unwrap();
+        let pose_valid = compiler.program().evaluate(point).unwrap();
+        poses.remove(leaf).unwrap();
+        assert_eq!(
+            compiler.compile(&EuclideanR3, &fields, &poses),
+            Err(DomainError::Stale(leaf))
+        );
+        assert_eq!(
+            compiler.compile(&EuclideanR3, &fields, &poses),
+            Err(DomainError::Stale(leaf))
+        );
+        assert_eq!(compiler.program().evaluate(point).unwrap(), pose_valid);
     }
 
     #[test]
@@ -1331,8 +2015,9 @@ mod tests {
     }
 
     #[test]
-    fn an_operand_list_edit_repairs_the_index_without_a_full_rebuild() {
+    fn repeated_operand_edits_keep_index_storage_and_work_bounded() {
         let mut fixture = Fixture::new();
+        let mut compiler = FieldCompiler::new();
         let left = fixture.spawn(-Vec3::X, FieldKind::ExactDistance, sphere(0.5), &[]);
         let right = fixture.spawn(Vec3::X, FieldKind::ExactDistance, sphere(0.5), &[]);
         let root = fixture.spawn(
@@ -1341,20 +2026,31 @@ mod tests {
             FieldOp::Union,
             &[left, right],
         );
-        fixture.compile().expect("first compile");
-        fixture.compile().expect("settle");
+        fixture.compile_with(&mut compiler).expect("first compile");
+        fixture.compile_with(&mut compiler).expect("settle");
 
-        fixture
-            .domain
-            .fields_mut()
-            .expect("field store")
-            .get_mut(root)
-            .expect("root row")
-            .operands = vec![right, left];
-        let cost = fixture.compile().expect("operand edit");
-        assert!(!cost.full_rebuild);
-        assert_eq!(cost.index_maintenance, 7);
-        assert!(cost.program_layout > 0);
+        let edge_slots = compiler.edges.len();
+        for step in 0..128 {
+            fixture.domain.field_mut(root).expect("root row").operands = if step % 2 == 0 {
+                vec![right, left]
+            } else {
+                vec![left, right]
+            };
+            let cost = fixture.compile_with(&mut compiler).expect("operand edit");
+            assert!(!cost.full_rebuild);
+            assert_eq!(cost.index_maintenance, 7);
+            assert!(cost.program_layout > 0);
+            assert_eq!(compiler.edges.len(), edge_slots);
+        }
+
+        fixture.move_to(left, -Vec3::Y);
+        assert_eq!(
+            fixture
+                .compile_with(&mut compiler)
+                .unwrap()
+                .affected_dependencies,
+            1
+        );
     }
 
     #[test]
@@ -1396,6 +2092,42 @@ mod tests {
     }
 
     #[test]
+    fn invalid_field_dimensions_and_zero_smoothing_are_refused() {
+        for op in [
+            sphere(0.0),
+            sphere(f32::INFINITY),
+            FieldOp::Box {
+                half_extents: [1.0, -1.0, 1.0],
+            },
+            FieldOp::HalfSpace {
+                normal: Vec3::Y.to_array(),
+                offset: f32::NAN,
+            },
+        ] {
+            let mut fixture = Fixture::new();
+            fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, op, &[]);
+            assert!(matches!(
+                fixture.compile(),
+                Err(DomainError::InvalidCoordinate(_))
+            ));
+        }
+
+        let mut fixture = Fixture::new();
+        let left = fixture.spawn(-Vec3::X, FieldKind::ExactDistance, sphere(1.0), &[]);
+        let right = fixture.spawn(Vec3::X, FieldKind::ExactDistance, sphere(1.0), &[]);
+        fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::SmoothUnion { radius: 0.0 },
+            &[left, right],
+        );
+        assert_eq!(
+            fixture.compile(),
+            Err(DomainError::InvalidCoordinate("field smoothing radius"))
+        );
+    }
+
+    #[test]
     fn a_pose_transform_places_its_whole_subtree() {
         let mut fixture = Fixture::new();
         let leaf = fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, sphere(0.5), &[]);
@@ -1434,13 +2166,10 @@ mod tests {
             .build(DomainId::new(0), entities.scene());
         let entity = entities.spawn();
         domain
-            .poses
-            .insert(entity, Pose::from(pose))
+            .attach_pose(entity, Pose::from(pose))
             .expect("pose row");
         domain
-            .fields_mut()
-            .expect("field store")
-            .insert(
+            .attach_field(
                 entity,
                 Field {
                     kind: FieldKind::ExactDistance,
@@ -1588,6 +2317,73 @@ mod tests {
     }
 
     #[test]
+    fn moving_a_shared_leaf_after_stamp_rollover_refreshes_each_dependent_cut_bound() {
+        let mut fixture = Fixture::new();
+        let mut compiler = FieldCompiler::new();
+        let leaf = fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, sphere(0.5), &[]);
+        let left = fixture.spawn(
+            Vec3::new(-100.0, 0.0, 0.0),
+            FieldKind::ExactDistance,
+            FieldOp::Transform,
+            &[leaf],
+        );
+        let right = fixture.spawn(
+            Vec3::new(100.0, 0.0, 0.0),
+            FieldKind::ExactDistance,
+            FieldOp::Transform,
+            &[leaf],
+        );
+        let left_decoy = fixture.spawn(
+            Vec3::new(-120.0, 0.0, 0.0),
+            FieldKind::ExactDistance,
+            sphere(28.0),
+            &[],
+        );
+        let right_decoy = fixture.spawn(
+            Vec3::new(80.0, 0.0, 0.0),
+            FieldKind::ExactDistance,
+            sphere(28.0),
+            &[],
+        );
+        let west = fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Union,
+            &[left_decoy, left],
+        );
+        let east = fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Union,
+            &[right_decoy, right],
+        );
+        fixture.spawn(
+            Vec3::ZERO,
+            FieldKind::ExactDistance,
+            FieldOp::Union,
+            &[west, east],
+        );
+        fixture
+            .compile_with(&mut compiler)
+            .expect("initial compile");
+        fixture.move_to(left, Vec3::new(-99.0, 0.0, 0.0));
+        fixture
+            .compile_with(&mut compiler)
+            .expect("prime parent stamp");
+        compiler.dirty_stamp = u32::MAX;
+        fixture.move_to(leaf, Vec3::X * 10.0);
+        fixture
+            .compile_with(&mut compiler)
+            .expect("move shared leaf");
+
+        let program = compiler.program();
+        for point in [[-89.0, 0.0, 0.0, 0.0], [110.0, 0.0, 0.0, 0.0]] {
+            let value = program.evaluate_bounded(point, 0.0).expect("eval").0;
+            assert!((value + 0.5).abs() < 1e-6, "{point:?} reads {value}");
+        }
+    }
+
+    #[test]
     fn an_unbounded_subtree_stays_in_the_traversal_and_still_contributes() {
         let mut fixture = Fixture::new();
         let ball = fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, sphere(0.5), &[]);
@@ -1710,56 +2506,93 @@ mod tests {
     }
 
     #[test]
-    fn a_compiled_program_read_through_the_trait_gives_the_evaluators_separation() {
+    fn distance_past_the_old_sentinel_matches_a_f64_oracle_with_reported_error() {
         use loam_shape::field::DistanceField;
 
         let mut fixture = Fixture::new();
-        let mut level: Vec<Entity> = (0..8)
-            .map(|i| {
-                let t = i as f32;
-                fixture.spawn(
-                    Vec3::new((t * 0.9).sin() * 3.0, (t * 1.3).cos() * 3.0, t * 0.6),
-                    FieldKind::ExactDistance,
-                    sphere(0.5),
-                    &[],
-                )
-            })
-            .collect();
-        while level.len() > 1 {
-            level = level
-                .chunks(2)
-                .map(|pair| {
-                    fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, FieldOp::Union, pair)
-                })
-                .collect();
-        }
+        fixture.compile().expect("empty compile");
+        let empty = fixture.domain.field_program();
+        assert_eq!(empty.field_kind(), FieldKind::ConservativeBound);
+        assert_eq!(empty.evaluate([0.0; 4]).unwrap().0, FIELD_FAR);
+
+        fixture.spawn(Vec3::ZERO, FieldKind::ExactDistance, sphere(1.0), &[]);
         fixture.compile().expect("compile");
         let program = fixture.domain.field_program();
-        assert_eq!(program.field_kind(), FieldKind::ExactDistance);
+        let point = [2.0e9, 0.0, 0.0, 0.0];
+        let unculled = program.evaluate(point).expect("eval").0;
+        let culled = program.evaluate_bounded(point, 0.0).expect("eval").0;
+        let oracle = 2_000_000_000.0f64 - 1.0;
 
-        let radius = 0.25f32;
-        for i in 0..16 {
-            let t = i as f32;
-            let probe = [(t * 0.41).cos() * 5.0, (t * 0.77).sin() * 5.0, t * 0.3, 0.0];
-            let predicted = program.evaluate(probe).expect("eval").0 - radius;
+        assert!(culled > FIELD_FAR);
+        assert_eq!(culled, unculled);
+        assert!((culled as f64 - oracle).abs() <= program.error_at(point) as f64);
+    }
+
+    #[test]
+    fn an_implicit_union_of_exact_spheres_refuses_an_interior_witness() {
+        use loam_shape::field::DistanceField;
+
+        let mut fixture = Fixture::new();
+        fixture.spawn(-Vec3::X * 0.5, FieldKind::ExactDistance, sphere(1.0), &[]);
+        fixture.spawn(Vec3::X * 0.5, FieldKind::ExactDistance, sphere(1.0), &[]);
+        fixture.compile().expect("compile");
+        let program = fixture.domain.field_program();
+        assert_eq!(program.field_kind(), FieldKind::ConservativeBound);
+
+        let probe = Vec3::new(0.0, 0.2, 0.0);
+        let bound = program.distance(probe.extend(0.0).to_array());
+        let distance = 0.2 - 0.75f32.sqrt();
+        assert!((bound + 0.461_483_5).abs() < 1e-6);
+        assert!((bound - distance).abs() > FIELD_PROGRAM_ERROR);
+        let gradient = program.gradient(probe.extend(0.0).to_array());
+        let normal = Vec3::from_slice(&gradient[..3]).normalize();
+        let witness = probe - normal * bound;
+        assert!(
+            program.distance(witness.extend(0.0).to_array()) < -FIELD_PROGRAM_ERROR,
+            "the projected witness {witness:?} reached the union boundary"
+        );
+
+        #[cfg(feature = "physics")]
+        {
+            use loam_physics::euclidean_r3::sphere_body_r3;
+            use loam_physics::field_contact::sphere_against_field;
+            use loam_physics::{FieldRefusal, World};
+
+            let mut world = World::new(EuclideanR3);
+            let body = world.push_body(sphere_body_r3(probe, Vec3::ZERO, 0.1, 1.0).expect("body"));
             assert_eq!(
-                program.distance(probe) - radius,
-                predicted,
-                "probe {probe:?} read through the trait"
-            );
-            let gradient = program.gradient(probe);
-            let norm = gradient.iter().take(3).map(|c| c * c).sum::<f32>().sqrt();
-            assert!(
-                (norm - 1.0).abs() < 1e-2,
-                "probe {probe:?}: gradient norm {norm} on an exact field"
+                sphere_against_field(
+                    &world.bodies()[body],
+                    world.geometry(),
+                    program,
+                    &EuclideanR3
+                )
+                .err(),
+                Some(FieldRefusal::Kind(FieldKind::ConservativeBound))
             );
         }
     }
 
     #[test]
-    fn a_sphere_off_the_w_slice_keeps_the_value_its_ball_would_cull() {
+    fn r4_fields_keep_off_slice_culling_and_refuse_r3_use() {
         use crate::view::Vec4;
         use loam_math::EuclideanR4;
+        use loam_shape::field::DistanceField;
+
+        for op in [
+            FieldOp::HyperSphere { radius: 1.0 },
+            FieldOp::HalfSpace4 {
+                normal: [1.0, 0.0, 0.0, 1.0],
+                offset: 0.0,
+            },
+        ] {
+            let mut r3 = Fixture::new();
+            r3.spawn(Vec3::ZERO, FieldKind::ExactDistance, op, &[]);
+            assert_eq!(
+                r3.compile(),
+                Err(DomainError::Unsupported("field primitive dimension"))
+            );
+        }
 
         let mut entities = test_entities();
         let mut domain = DomainBuilder::new("r4", EuclideanR4)
@@ -1768,11 +2601,9 @@ mod tests {
             .build(DomainId::new(0), entities.scene());
         let mut place = |at: Vec4, op: FieldOp, operands: &[Entity]| {
             let entity = entities.spawn();
-            domain.poses.insert(entity, Pose::at(at)).expect("pose row");
+            domain.attach_pose(entity, Pose::at(at)).expect("pose row");
             domain
-                .fields_mut()
-                .expect("field store")
-                .insert(
+                .attach_field(
                     entity,
                     Field {
                         kind: FieldKind::ExactDistance,
@@ -1786,10 +2617,10 @@ mod tests {
         let shell = place(Vec4::new(0.0, 0.0, 0.0, 10.0), sphere(1.0), &[]);
         let near = place(
             Vec4::new(5.0, 0.0, 0.0, 0.0),
-            FieldOp::HyperSphere { radius: 1.0 },
+            FieldOp::HyperSphere { radius: 2.0 },
             &[],
         );
-        place(Vec4::ZERO, FieldOp::Union, &[near, shell]);
+        let root = place(Vec4::ZERO, FieldOp::Union, &[near, shell]);
         domain.compile_fields().expect("compile");
 
         let program = domain.field_program();
@@ -1804,6 +2635,42 @@ mod tests {
             culled, unculled,
             "the hierarchy culled a surface the program evaluates"
         );
+
+        domain.remove_field(root).expect("root field");
+        domain.remove_field(shell).expect("shell field");
+        domain
+            .set_point(near, Vec4::new(0.0, 0.0, 0.0, 1.0))
+            .expect("hypersphere pose");
+        domain.compile_fields().expect("compile hypersphere");
+
+        let program = domain.field_program();
+        let point = [1.0, 0.0, 0.0, 0.0];
+        let r4_distance = program.distance(point);
+        let r3_slice_distance = 1.0 - 3.0f32.sqrt();
+        assert_eq!(program.dimension(), 4);
+        assert_eq!(program.field_kind(), FieldKind::ExactDistance);
+        assert!((r4_distance - r3_slice_distance).abs() > program.error_at(point));
+
+        #[cfg(feature = "physics")]
+        {
+            use loam_physics::euclidean_r3::sphere_body_r3;
+            use loam_physics::field_contact::sphere_against_field;
+            use loam_physics::{FieldRefusal, World};
+
+            let mut world = World::new(EuclideanR3);
+            let body = world
+                .push_body(sphere_body_r3(Vec3::X, Vec3::ZERO, 0.1, 1.0).expect("sphere body"));
+            assert_eq!(
+                sphere_against_field(
+                    &world.bodies()[body],
+                    world.geometry(),
+                    program,
+                    &EuclideanR3
+                )
+                .err(),
+                Some(FieldRefusal::Dimension(4))
+            );
+        }
     }
 
     #[test]
@@ -1860,8 +2727,13 @@ mod tests {
                 sphere_body_r3(Vec3::new(-1.0, -1.0, 0.0), Vec3::ZERO, 1.2, 1.0).expect("body"),
             );
             assert_eq!(
-                sphere_against_field(&world.bodies[body], world.geometry(), program, &EuclideanR3)
-                    .err(),
+                sphere_against_field(
+                    &world.bodies()[body],
+                    world.geometry(),
+                    program,
+                    &EuclideanR3
+                )
+                .err(),
                 Some(FieldRefusal::Kind(FieldKind::ConservativeBound)),
                 "the contact query read a bound as separation"
             );

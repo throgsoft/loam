@@ -11,12 +11,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context as _, Result};
 use wgpu::{
-    BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Device, Extent3d, MapMode, Origin3d,
-    PollType, Queue, TexelCopyBufferInfo, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture,
+    Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Extent3d, MapMode, Origin3d,
+    PollType, TexelCopyBufferInfo, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture,
     TextureAspect, TextureFormat,
 };
 
-pub use crate::capture_types::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
+pub use crate::capture_types::{
+    CaptureFormat, CaptureRequest, CaptureStage, CaptureUnavailable, PaletteMode,
+};
 
 impl CaptureStage {
     fn wants_pre(self) -> bool {
@@ -919,15 +921,23 @@ pub(crate) struct RawImage {
     pub rgba: Vec<u8>,
 }
 
-// Synchronous: it poll-waits on the map, so a capture frame may stutter.
-pub(crate) fn read_texture_rgba(
+pub(crate) struct TextureReadback {
+    buffer: Buffer,
+    width: u32,
+    height: u32,
+    unpadded_bpr: u32,
+    padded_bpr: u32,
+    format: TextureFormat,
+}
+
+pub(crate) fn record_texture_rgba(
     device: &Device,
-    queue: &Queue,
+    encoder: &mut CommandEncoder,
     texture: &Texture,
     width: u32,
     height: u32,
     format: TextureFormat,
-) -> Result<RawImage> {
+) -> Result<TextureReadback> {
     let unpadded_bpr = width.checked_mul(4).context("width * 4 overflows u32")?;
     let padded_bpr = unpadded_bpr.next_multiple_of(256);
     let buffer_size = (padded_bpr as u64) * (height as u64);
@@ -939,9 +949,6 @@ pub(crate) fn read_texture_rgba(
         mapped_at_creation: false,
     });
 
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("loam-app::capture-copy"),
-    });
     encoder.copy_texture_to_buffer(
         TexelCopyTextureInfo {
             texture,
@@ -963,45 +970,65 @@ pub(crate) fn read_texture_rgba(
             depth_or_array_layers: 1,
         },
     );
-    queue.submit(Some(encoder.finish()));
-
-    let slice = buffer.slice(..);
-    let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
-    slice.map_async(MapMode::Read, move |result| {
-        let _ = mapped_tx.send(result);
-    });
-    device
-        .poll(PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })
-        .context("device.poll on capture readback failed")?;
-
-    mapped_rx
-        .recv()
-        .context("capture map callback dropped")?
-        .context("capture buffer mapping failed")?;
-    let data = slice.get_mapped_range();
-    let mut rgba = Vec::with_capacity((unpadded_bpr * height) as usize);
-    for row in 0..height as usize {
-        let start = row * padded_bpr as usize;
-        let end = start + unpadded_bpr as usize;
-        rgba.extend_from_slice(&data[start..end]);
-    }
-    drop(data);
-    buffer.unmap();
-
-    if format_is_bgra(format) {
-        for px in rgba.chunks_exact_mut(4) {
-            px.swap(0, 2);
-        }
-    }
-
-    Ok(RawImage {
+    Ok(TextureReadback {
+        buffer,
         width,
         height,
-        rgba,
+        unpadded_bpr,
+        padded_bpr,
+        format,
     })
+}
+
+impl TextureReadback {
+    pub(crate) fn read(self, device: &Device) -> Result<RawImage> {
+        let Self {
+            buffer,
+            width,
+            height,
+            unpadded_bpr,
+            padded_bpr,
+            format,
+        } = self;
+
+        let slice = buffer.slice(..);
+        let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
+        slice.map_async(MapMode::Read, move |result| {
+            let _ = mapped_tx.send(result);
+        });
+        device
+            .poll(PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .context("device.poll on capture readback failed")?;
+
+        mapped_rx
+            .recv()
+            .context("capture map callback dropped")?
+            .context("capture buffer mapping failed")?;
+        let data = slice.get_mapped_range();
+        let mut rgba = Vec::with_capacity((unpadded_bpr * height) as usize);
+        for row in 0..height as usize {
+            let start = row * padded_bpr as usize;
+            let end = start + unpadded_bpr as usize;
+            rgba.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        buffer.unmap();
+
+        if format_is_bgra(format) {
+            for px in rgba.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        }
+
+        Ok(RawImage {
+            width,
+            height,
+            rgba,
+        })
+    }
 }
 
 fn format_is_bgra(format: TextureFormat) -> bool {

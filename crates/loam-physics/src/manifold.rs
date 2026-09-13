@@ -4,6 +4,7 @@ use crate::body::{BodyId, RigidBody};
 use crate::collision::VectorOps;
 use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
+use crate::response::FRICTION_COEFF;
 
 pub const MAX_POINTS: usize = 4;
 
@@ -76,6 +77,13 @@ impl<S: PhysicsSpace> Clone for Manifold<S> {
             points: self.points.clone(),
         }
     }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.body_a = source.body_a;
+        self.body_b = source.body_b;
+        self.restitution = source.restitution;
+        self.points.clone_from(&source.points);
+    }
 }
 
 impl<S: PhysicsSpace> Manifold<S>
@@ -90,6 +98,77 @@ where
             restitution,
             points: Vec::with_capacity(MAX_POINTS),
         }
+    }
+
+    pub(crate) fn reset(&mut self, body_a: BodyId, body_b: BodyId, restitution: f32) {
+        debug_assert!(body_a < body_b);
+        self.body_a = body_a;
+        self.body_b = body_b;
+        self.restitution = restitution;
+        self.points.clear();
+    }
+
+    pub(crate) fn is_valid(&self, space: &S, body_a: &RigidBody<S>, body_b: &RigidBody<S>) -> bool
+    where
+        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+    {
+        if !self.restitution.is_finite()
+            || self.restitution < 0.0
+            || self.points.is_empty()
+            || self.points.len() > MAX_POINTS
+        {
+            return false;
+        }
+        self.points.iter().all(|point| {
+            let normal_length = VectorOps::length_squared(point.normal);
+            let tangent_length = VectorOps::length_squared(point.tangent_dir);
+            if !space.valid_point(point.world_point)
+                || !space.valid_vector(point.anchor_a)
+                || !space.valid_vector(point.anchor_b)
+                || !space.valid_vector(point.normal)
+                || !space.valid_vector(point.tangent_dir)
+                || (normal_length - 1.0).abs() > 1.0e-4
+                || !point.penetration.is_finite()
+                || !point.normal_impulse.is_finite()
+                || point.normal_impulse < 0.0
+                || !point.tangent_impulse.is_finite()
+                || point.tangent_impulse < 0.0
+                || !point.velocity_bias.is_finite()
+            {
+                return false;
+            }
+            if point.tangent_impulse == 0.0 {
+                if tangent_length != 0.0 {
+                    return false;
+                }
+            } else {
+                let limit = point.normal_impulse * FRICTION_COEFF;
+                let slack = f32::EPSILON * limit.abs().max(1.0);
+                if (tangent_length - 1.0).abs() > 1.0e-4
+                    || VectorOps::dot(point.normal, point.tangent_dir).abs() > 1.0e-4
+                    || point.tangent_impulse > limit + slack
+                {
+                    return false;
+                }
+            }
+            let anchor_a = anchor_world_point(space, body_a, point.anchor_a);
+            let anchor_b = anchor_world_point(space, body_b, point.anchor_b);
+            if !space.valid_point(anchor_a) || !space.valid_point(anchor_b) {
+                return false;
+            }
+            let gap = space.log(anchor_a, anchor_b);
+            if !space.valid_vector(gap) {
+                return false;
+            }
+            let midpoint = space.exp(anchor_a, gap * 0.5);
+            let midpoint_error = space.log(midpoint, point.world_point);
+            let penetration_error = point.penetration + VectorOps::dot(gap, point.normal);
+            space.valid_point(midpoint)
+                && space.valid_vector(midpoint_error)
+                && VectorOps::length(midpoint_error) <= CONTACT_BREAK_DISTANCE
+                && penetration_error.is_finite()
+                && penetration_error.abs() <= CONTACT_BREAK_DISTANCE
+        })
     }
 
     /// Retains anchors within [`CONTACT_BREAK_DISTANCE`]; bodies must match the manifold key.

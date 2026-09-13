@@ -16,8 +16,14 @@ fn the_session_host_installs_the_native_executor_before_it_opens_a_window() {
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let entered = std::panic::catch_unwind(|| {
-        let session = loam_runtime::Session::new(Ticks::default(), SimConfig::default());
-        loam_app::session::run(session, HostConfig::new("ticks", Bindings::new()))
+        loam_app::session::launch(|args| {
+            let session = loam_runtime::Session::new(Ticks::default(), SimConfig::default());
+            let app = loam_app::session::SessionApp::with_args(
+                HostConfig::new("ticks", Bindings::new()),
+                args,
+            );
+            Ok((session, app))
+        })
     });
     std::panic::set_hook(hook);
     assert!(

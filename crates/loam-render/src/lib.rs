@@ -18,7 +18,6 @@ pub mod sky_ground;
 pub mod triangle_pass;
 pub mod triangle_raster;
 pub mod view;
-pub mod work;
 
 pub use depth::DepthBuffer;
 pub use lattice::Viewport;
@@ -26,19 +25,18 @@ pub use line_raster::{LineRasterNode, LineRasterUniforms};
 pub use line_raster_static_r4::{LineRasterStaticR4Node, LineRasterStaticR4Uniforms};
 pub use material::{MaterialPipeline, MaterialSpec};
 pub use pass::{
-    FrameFormat, FramePass, FrameTarget, GpuTime, PassError, PassOrder, PassSchedule, ResourceId,
-    Section,
+    FrameFormat, FramePass, FrameTarget, GpuTime, PassError, PassExecutionError, PassPhase,
+    PassSchedule, PassStage, ResourceId, Section,
 };
-pub use passes::{FieldPass, HyperslicePass, LinePass, PointPass, RaymarchPass, SkyGroundPass};
+pub use passes::{HyperslicePass, LinePass, PointPass, RaymarchPass, SkyGroundPass};
 pub use point_raster::{PointInstance, PointRasterNode, PointRasterUniforms};
 pub use present::Presenter;
-pub use raymarch::{FieldMarchNode, FieldMarchUniforms, MarchMode, RayMarchNode, RayMarchUniforms};
+pub use raymarch::{RayMarchNode, RayMarchUniforms};
 pub use sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
 pub use triangle_pass::TriangleFeed;
 pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
 };
-pub use work::{BulkBuffers, ComputeWork, Readbacks};
 
 /// `ReversedZ` follows the [`view`] depth contract; `StandardZ` serves a standard perspective matrix.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

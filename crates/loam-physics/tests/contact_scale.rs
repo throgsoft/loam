@@ -17,10 +17,10 @@ fn sphere_hull_contacts_have_no_fixed_world_size_limit() {
         let contact = w3
             .narrowphase
             .test(
-                &w3.bodies[sphere],
-                &w3.bodies[hull],
+                &w3.bodies()[sphere],
+                &w3.bodies()[hull],
                 w3.geometry(),
-                &w3.space,
+                w3.space(),
             )
             .expect("overlapping sphere and box");
         assert!((contact.penetration / scale - 0.5).abs() < 0.01);
@@ -43,10 +43,10 @@ fn sphere_hull_contacts_have_no_fixed_world_size_limit() {
         let contact = w4
             .narrowphase
             .test(
-                &w4.bodies[sphere],
-                &w4.bodies[hull],
+                &w4.bodies()[sphere],
+                &w4.bodies()[hull],
                 w4.geometry(),
-                &w4.space,
+                w4.space(),
             )
             .expect("overlapping ball and tesseract");
         assert!((contact.penetration / scale - 0.5).abs() < 0.02);

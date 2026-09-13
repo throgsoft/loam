@@ -1,9 +1,9 @@
 use loam_math::{EuclideanR3, EuclideanR4, Iso3, Space};
 use loam_runtime::{
-    Access, BridgeError, BridgeSpec, ChartId, ChartPose, Command, Ctx, DomainBuilder, DomainHandle,
-    DomainSpace, DragError, Entity, Eye, Field, FieldKind, FieldOp, ImageSpaceId, Input, Instance,
-    LogCapacity, Material, Phase, Placement, Pose, PreparedGeometry, Projection4, Rigid, Section4,
-    Session, SimConfig, SpawnBundle, ViewId, ViewMapping, ViewSpec,
+    BridgeError, BridgeSpec, ChartId, ChartPose, Command, Ctx, DomainBuilder, DomainHandle,
+    DomainSpace, DragError, Entity, Eye, ImageSpaceId, Input, Instance, LogCapacity, Material,
+    Phase, Placement, Pose, PreparedGeometry, Projection4, Publication, Rigid, Section4, Session,
+    SimConfig, SpawnBundle, ViewId, ViewMapping, ViewSpec,
 };
 
 type Vec3 = <EuclideanR3 as Space>::Point;
@@ -38,17 +38,10 @@ struct Stage {
 }
 
 fn stage(fields: bool) -> Stage {
-    marched_stage(fields, fields)
-}
-
-fn marched_stage(fields: bool, marched: bool) -> Stage {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let mut builder = DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default());
     if fields {
         builder = builder.fields();
-    }
-    if marched {
-        builder = builder.marched();
     }
     let r4 = session.register_domain(builder);
     let stub = session.prepare(PreparedGeometry::Lines4 {
@@ -110,10 +103,10 @@ impl Stage {
 
     fn at(&mut self) -> Vec4 {
         self.session
-            .domains_mut()
-            .typed(self.r4)
+            .domains()
+            .read(self.r4)
             .unwrap()
-            .poses
+            .poses()
             .get(self.object)
             .unwrap()
             .point
@@ -173,6 +166,25 @@ fn a_nonlinear_placement_bridges_a_raster_view() {
 }
 
 #[test]
+fn a_stale_bridge_eye_changes_no_view_or_link() {
+    let mut stage = stage(false);
+    let section = stage.view(Section4 { w: 0.0 });
+    let eye = stage.eye;
+    stage
+        .session
+        .dispatch(|dispatch| dispatch.despawn(eye))
+        .unwrap();
+    let root = stage.root;
+
+    assert_eq!(
+        stage.bridge(root, section, shrunk()),
+        Err(BridgeError::Stale(eye))
+    );
+    assert!(stage.session.bridges().is_empty());
+    assert_eq!(targets(&stage, section), (stage.root, stage.root));
+}
+
+#[test]
 fn two_hops_compose_to_a_different_depth_or_ndc_than_the_single_placement() {
     let mut stage = stage(false);
     let outer = Rigid {
@@ -215,19 +227,36 @@ fn two_hops_compose_to_a_different_depth_or_ndc_than_the_single_placement() {
 }
 
 #[test]
-fn a_bridged_pick_reports_the_child_image_point_or_loses_to_the_farther_native_record() {
+fn retargeted_view_publishes_and_picks_the_same_image() {
     let mut stage = stage(false);
     let projection = stage.view(Projection4 { focal: 2.0 });
     let section = stage.view(Section4 { w: 0.0 });
     let root = stage.root;
+    let r4 = stage.r4;
+    stage.session.dispatch(|d| {
+        let settings = d.domains.typed(r4).unwrap().view_mut(section).unwrap();
+        settings.set_mapping(Section4 { w: 0.0 });
+    });
+    assert_eq!(targets(&stage, section), (root, root));
+
     let image = stage.bridge(root, section, shrunk()).unwrap();
+    assert_eq!(targets(&stage, section), (image, image));
+
+    let mut publication = Publication::default();
+    stage.session.publish(&mut publication).unwrap();
+    let published = publication
+        .views
+        .iter()
+        .find(|published| published.target.view == section)
+        .unwrap();
+    assert_eq!(published.target.image, image);
 
     let pick = stage.session.pick([GRAB_NDC, 0.0]).unwrap();
+    assert_ne!(pick.view, projection);
     assert_eq!(
         (pick.entity, pick.domain, pick.view, pick.image),
         (stage.object, stage.r4.id(), section, image)
     );
-    assert_ne!(pick.view, projection);
     close(pick.image_point, ROOT_POINT, 1e-5);
     assert!((pick.depth - DEPTH).abs() <= 1e-5, "depth {}", pick.depth);
 }
@@ -306,69 +335,6 @@ fn a_drag_through_a_section_lands_off_the_analytic_point() {
     );
 }
 
-fn field_stage(kind: FieldKind) -> Stage {
-    field_stage_of(stage(true), kind)
-}
-
-fn field_stage_of(stage: Stage, kind: FieldKind) -> Stage {
-    let mut stage = stage;
-    let (object, r4) = (stage.object, stage.r4);
-    stage
-        .session
-        .domains_mut()
-        .typed(r4)
-        .unwrap()
-        .fields_mut()
-        .unwrap()
-        .insert(
-            object,
-            Field {
-                kind,
-                op: FieldOp::HyperSphere { radius: RADIUS },
-                operands: Vec::new(),
-            },
-        )
-        .unwrap();
-    stage
-}
-
-#[test]
-fn a_field_bridge_without_a_ray_lift_is_accepted() {
-    let mut stage = field_stage(FieldKind::ExactDistance);
-    let projection = stage.view(Projection4 { focal: 2.0 });
-    let root = stage.root;
-    assert_eq!(
-        stage.bridge(root, projection, shrunk()),
-        Err(BridgeError::NoRayLift("projection4"))
-    );
-    let section = stage.view(Section4 { w: 0.0 });
-    assert!(stage.bridge(root, section, shrunk()).is_ok());
-}
-
-#[test]
-fn a_field_bridge_into_a_domain_with_no_shader_prelude_is_accepted() {
-    let mut stage = field_stage_of(marched_stage(true, false), FieldKind::ExactDistance);
-    let section = stage.view(Section4 { w: 0.0 });
-    let root = stage.root;
-    assert_eq!(
-        stage.bridge(root, section, shrunk()),
-        Err(BridgeError::NoPrelude("r4"))
-    );
-    assert!(stage.session.bridges().is_empty());
-}
-
-#[test]
-fn a_field_bridge_without_a_step_bound_is_accepted() {
-    let mut stage = field_stage(FieldKind::Implicit);
-    let section = stage.view(Section4 { w: 0.0 });
-    let root = stage.root;
-    assert_eq!(
-        stage.bridge(root, section, shrunk()),
-        Err(BridgeError::NoStepBound("section4", FieldKind::Implicit))
-    );
-    assert!(stage.session.bridges().is_empty());
-}
-
 #[test]
 fn restore_keeps_a_bridge_made_after_the_snapshot() {
     let mut stage = stage(false);
@@ -401,14 +367,11 @@ fn a_bridge_survives_its_anchor_despawned_by_a_deferred_command() {
     let root = stage.root;
     let image = stage.bridge(root, section, shrunk()).unwrap();
     let anchor = stage.anchor;
-    stage.session.system(
-        Phase::Dispatch,
-        "retire",
-        Access::new().commands(),
-        move |ctx: Ctx<'_, Probe>| {
+    stage
+        .session
+        .system(Phase::Dispatch, "retire", move |ctx: Ctx<'_, Probe>| {
             ctx.commands.submit(Command::Despawn(anchor));
-        },
-    );
+        });
     stage.session.boundary(Input::default()).unwrap();
     assert!(stage.session.bridges().is_empty());
     assert!(!stage.session.views().placed(image));

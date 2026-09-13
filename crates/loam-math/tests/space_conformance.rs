@@ -1,6 +1,6 @@
 //! Residuals use the fixture metric; point residuals use Space::distance.
 
-use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+use glam::{Quat, Vec2, Vec3, Vec4};
 use loam_math::{
     Bivector, Bivector2, Bivector4, BlendedSpace, ConformallyFlat, EuclideanR2, EuclideanR3,
     EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat, IsometryGroup, LensSpace,
@@ -1396,32 +1396,6 @@ impl SpaceFixture for BlendedSpaceFixture {
 
 struct LensSpaceFixture(LensSpace);
 
-impl LensSpaceFixture {
-    fn plane_rotations(xy: f32, zw: f32) -> Iso4 {
-        let (sin_xy, cos_xy) = xy.sin_cos();
-        let (sin_zw, cos_zw) = zw.sin_cos();
-        Iso4 {
-            matrix: Mat4::from_cols(
-                Vec4::new(cos_xy, sin_xy, 0.0, 0.0),
-                Vec4::new(-sin_xy, cos_xy, 0.0, 0.0),
-                Vec4::new(0.0, 0.0, cos_zw, sin_zw),
-                Vec4::new(0.0, 0.0, -sin_zw, cos_zw),
-            ),
-        }
-    }
-
-    fn conjugation() -> Iso4 {
-        Iso4 {
-            matrix: Mat4::from_cols(
-                Vec4::X,
-                Vec4::new(0.0, -1.0, 0.0, 0.0),
-                Vec4::Z,
-                Vec4::new(0.0, 0.0, 0.0, -1.0),
-            ),
-        }
-    }
-}
-
 impl SpaceFixture for LensSpaceFixture {
     type Point = Vec4;
     type Vector = Vec4;
@@ -1509,22 +1483,6 @@ impl SpaceFixture for LensSpaceFixture {
     }
 }
 
-impl IsometryFixture for LensSpaceFixture {
-    type Iso = Iso4;
-
-    fn isos(&self) -> Vec<Iso4> {
-        let space = self.space();
-        vec![
-            LensSpaceFixture::plane_rotations(0.4, -0.7),
-            LensSpaceFixture::conjugation(),
-            space.iso_compose(
-                LensSpaceFixture::plane_rotations(-0.3, 0.9),
-                LensSpaceFixture::conjugation(),
-            ),
-        ]
-    }
-}
-
 conformance_suite!(euclidean_r2, EuclideanR2Fixture);
 conformance_suite!(euclidean_r3, EuclideanR3Fixture);
 conformance_suite!(euclidean_r4, EuclideanR4Fixture);
@@ -1542,11 +1500,3 @@ isometry_conformance_suite!(euclidean_r4_isometries, EuclideanR4Fixture);
 isometry_conformance_suite!(hyperbolic_h3_isometries, HyperbolicH3Fixture);
 isometry_conformance_suite!(spherical_s3_isometries, SphericalS3Fixture);
 isometry_conformance_suite!(spherical_s3_embedded_isometries, SphericalS3EmbeddedFixture);
-isometry_conformance_suite!(
-    lens_space_l5_2_isometries,
-    LensSpaceFixture(LensSpace::new(5, 2))
-);
-isometry_conformance_suite!(
-    lens_space_rp3_isometries,
-    LensSpaceFixture(LensSpace::new(2, 1))
-);

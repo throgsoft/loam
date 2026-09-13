@@ -1,12 +1,4 @@
-use loam_render::shader::validate_wgsl;
-
-fn assemble_source(space: &str, user: &str) -> String {
-    assemble_source_with_scene(space, None, user)
-}
-
-fn assemble_source_with_scene(space: &str, scene: Option<&str>, user: &str) -> String {
-    format!("{space}\n{}\n{user}", scene.unwrap_or_default())
-}
+use loam_render::shader::{assemble_wgsl, validate_wgsl, GEODESIC_MARCH_KERNEL};
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec3, Vec4};
@@ -47,25 +39,29 @@ fn main() {
 
 #[test]
 fn euclidean_space_prelude_validates_against_abi_probe() {
-    let src = assemble_source(&EuclideanR3.wgsl_impl(), ABI_PROBE);
+    let prelude = EuclideanR3.wgsl_impl();
+    let src = assemble_wgsl(&[prelude.as_ref(), ABI_PROBE]);
     validate_wgsl(&src).expect("EuclideanR3 WGSL prelude should validate");
 }
 
 #[test]
 fn hyperbolic_space_prelude_validates_against_abi_probe() {
-    let src = assemble_source(&HyperbolicH3.wgsl_impl(), ABI_PROBE);
+    let prelude = HyperbolicH3.wgsl_impl();
+    let src = assemble_wgsl(&[prelude.as_ref(), ABI_PROBE]);
     validate_wgsl(&src).expect("HyperbolicH3 WGSL prelude should validate");
 }
 
 #[test]
 fn spherical_space_prelude_validates_against_abi_probe() {
-    let src = assemble_source(&SphericalS3.wgsl_impl(), ABI_PROBE);
+    let prelude = SphericalS3.wgsl_impl();
+    let src = assemble_wgsl(&[prelude.as_ref(), ABI_PROBE]);
     validate_wgsl(&src).expect("SphericalS3 WGSL prelude should validate");
 }
 
 #[test]
 fn euclidean_r4_space_prelude_validates_against_abi_probe() {
-    let src = assemble_source(&EuclideanR4.wgsl_impl(), ABI_PROBE_VEC4);
+    let prelude = EuclideanR4.wgsl_impl();
+    let src = assemble_wgsl(&[prelude.as_ref(), ABI_PROBE_VEC4]);
     validate_wgsl(&src).expect("EuclideanR4 WGSL prelude should validate");
 }
 
@@ -87,14 +83,12 @@ fn main() {
 "#;
 
 fn assemble_geodesic_probe(space_wgsl: &str) -> String {
-    assemble_source_with_scene(
+    assemble_wgsl(&[
         space_wgsl,
-        Some(&format!(
-            "{KERNEL_SCENE}{}",
-            loam_render::shader::GEODESIC_MARCH_KERNEL
-        )),
+        KERNEL_SCENE,
+        GEODESIC_MARCH_KERNEL,
         KERNEL_PROBE,
-    )
+    ])
 }
 
 #[test]
@@ -122,7 +116,8 @@ fn blended_e3_h3_prelude_validates_against_abi_probe() {
         HyperbolicH3,
         LinearBlendX::new(-2.0, 2.0).unwrap(),
     );
-    let src = assemble_source(&bs.wgsl_impl(), ABI_PROBE);
+    let prelude = bs.wgsl_impl();
+    let src = assemble_wgsl(&[prelude.as_ref(), ABI_PROBE]);
     validate_wgsl(&src).expect("BlendedSpace<E3,H3,LinearBlendX> WGSL prelude should validate");
 }
 
@@ -376,12 +371,10 @@ async fn run_probe_body<S: WgslSpace>(
     body: &str,
     cases: &[GpuCase],
 ) -> Result<Vec<GpuOut>, String> {
-    run_compute_probe(
-        &assemble_source(&space.wgsl_impl(), &format!("{PROBE_IO}{body}")),
-        "loam-space-gpu-probe",
-        cases,
-    )
-    .await
+    let prelude = space.wgsl_impl();
+    let probe = format!("{PROBE_IO}{body}");
+    let source = assemble_wgsl(&[prelude.as_ref(), probe.as_str()]);
+    run_compute_probe(&source, "loam-space-gpu-probe", cases).await
 }
 
 #[test]
@@ -914,13 +907,11 @@ where
     S: WgslSpace + Space<Point = Vec3, Vector = Vec3>,
 {
     let points = scene_probe_points(extent);
+    let prelude = space.wgsl_impl();
     let mut worst = 0.0_f32;
     for (name, scene) in probe_scenes() {
-        let source = assemble_source_with_scene(
-            &space.wgsl_impl(),
-            Some(&scene.to_wgsl(space)),
-            SCENE_SDF_PROBE,
-        );
+        let scene_source = scene.to_wgsl(space);
+        let source = assemble_wgsl(&[prelude.as_ref(), scene_source.as_str(), SCENE_SDF_PROBE]);
         let rows: Vec<[f32; 4]> =
             pollster::block_on(run_compute_probe(&source, "loam-scene-gpu-probe", &points))
                 .expect("scene GPU probe");
@@ -986,11 +977,9 @@ fn scene4_hyperslice_gpu_probe_matches_cpu() {
             .subtract(SceneNode4::hypersphere(Vec4::new(0.3, 0.1, 0.0, 0.1), 0.2))
             .intersect(SceneNode4::hypersphere(Vec4::ZERO, 1.2)),
     );
-    let source = assemble_source_with_scene(
-        &EuclideanR3.wgsl_impl(),
-        Some(&scene.to_hyperslice_wgsl(&format!("{W_SLICE}"))),
-        SCENE4_HIT_PROBE,
-    );
+    let prelude = EuclideanR3.wgsl_impl();
+    let scene_source = scene.to_hyperslice_wgsl(&format!("{W_SLICE}"));
+    let source = assemble_wgsl(&[prelude.as_ref(), scene_source.as_str(), SCENE4_HIT_PROBE]);
     let points = scene_probe_points(0.9);
     let rows: Vec<[f32; 4]> =
         pollster::block_on(run_compute_probe(&source, "loam-scene4-gpu-probe", &points))
@@ -1083,11 +1072,9 @@ fn tiny_scene_constants_survive_shader_execution_gpu_probe() {
     use loam_scene::{Scene, SceneNode};
     let centre = Vec3::new(3.7e-7, -1.25e-7, 0.0);
     let sphere = Scene::new(SceneNode::sphere(centre, 1e-7));
-    let source = assemble_source_with_scene(
-        &EuclideanR3.wgsl_impl(),
-        Some(&sphere.to_wgsl(&EuclideanR3)),
-        SCENE_SDF_PROBE,
-    );
+    let prelude = EuclideanR3.wgsl_impl();
+    let sphere = sphere.to_wgsl(&EuclideanR3);
+    let source = assemble_wgsl(&[prelude.as_ref(), sphere.as_str(), SCENE_SDF_PROBE]);
     let points = [
         centre.extend(0.0).to_array(),
         (centre + Vec3::X * 3e-7).extend(0.0).to_array(),
@@ -1101,11 +1088,8 @@ fn tiny_scene_constants_survive_shader_execution_gpu_probe() {
     let smooth = Scene::new(
         SceneNode::sphere(Vec3::ZERO, 0.0).smooth_union(SceneNode::sphere(Vec3::ZERO, 0.0), k),
     );
-    let source = assemble_source_with_scene(
-        &EuclideanR3.wgsl_impl(),
-        Some(&smooth.to_wgsl(&EuclideanR3)),
-        SCENE_SDF_PROBE,
-    );
+    let smooth = smooth.to_wgsl(&EuclideanR3);
+    let source = assemble_wgsl(&[prelude.as_ref(), smooth.as_str(), SCENE_SDF_PROBE]);
     let rows: Vec<[f32; 4]> =
         pollster::block_on(run_compute_probe(&source, "tiny-blend", &[[0.0_f32; 4]]))
             .expect("GPU probe");

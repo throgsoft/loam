@@ -504,10 +504,10 @@ mod tests {
             )
             .unwrap(),
         );
-        world.gravity = Some(Vec2::new(0.0, -9.8));
+        world.set_gravity(Some(Vec2::new(0.0, -9.8))).unwrap();
 
         for _ in 0..10 {
-            world.step(1.0 / 60.0);
+            world.step(1.0 / 60.0).unwrap();
         }
 
         let body = &world.bodies[id];
@@ -843,7 +843,7 @@ mod tests {
             .push_body(sphere_body(Vec2::new(0.6, 3.0), Vec2::new(0.0, -10.0), 0.3, 1.0).unwrap());
 
         for _ in 0..60 {
-            world.step(1.0 / 120.0);
+            world.step(1.0 / 120.0).unwrap();
         }
 
         let omega = world.bodies[square_id].angular_velocity.0;
@@ -868,10 +868,10 @@ mod tests {
             );
         }
 
-        world.gravity = Some(Vec2::new(0.0, -9.8));
+        world.set_gravity(Some(Vec2::new(0.0, -9.8))).unwrap();
 
         for _ in 0..240 {
-            world.step(1.0 / 60.0);
+            world.step(1.0 / 60.0).unwrap();
         }
 
         for (idx, body) in world.bodies.iter().enumerate().skip(1) {
@@ -898,7 +898,7 @@ mod tests {
         world.push_body(sphere_body(Vec2::new(1.0, 0.0), Vec2::new(-2.0, 0.0), 0.5, 1.0).unwrap());
 
         for _ in 0..30 {
-            world.step(1.0 / 60.0);
+            world.step(1.0 / 60.0).unwrap();
         }
 
         for body in world.bodies.iter() {
@@ -929,12 +929,12 @@ mod tests {
             let id = world.push_body(aa_box(Vec2::new(0.0, y), Vec2::splat(HALF), 1.0));
             world.bodies[id].restitution = 0.0;
         }
-        world.pgs_iters = 16;
+        world.set_solver_iterations(16);
 
-        world.gravity = Some(Vec2::new(0.0, -9.8));
+        world.set_gravity(Some(Vec2::new(0.0, -9.8))).unwrap();
 
         for _ in 0..300 {
-            world.step(1.0 / 60.0);
+            world.step(1.0 / 60.0).unwrap();
         }
 
         for (idx, body) in world.bodies.iter().enumerate().skip(1) {

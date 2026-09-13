@@ -13,15 +13,9 @@ publish = false
 ab_glyph = "0.2"
 glam.workspace = true
 tracing.workspace = true
+web-time.workspace = true
 
-loam-app     = { path = "../loam-app",     version = "0.1.0" }
-loam-math    = { path = "../loam-math",    version = "0.1.0" }
-loam-physics = { path = "../loam-physics", version = "0.1.0", default-features = false, features = ["r4"] }
-loam-render  = { path = "../loam-render",  version = "0.1.0" }
-loam-runtime = { path = "../loam-runtime", version = "0.1.0", features = ["physics"] }
-loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
-loam-text    = { path = "../loam-text",    version = "0.1.0" }
-loam-time    = { path = "../loam-time",    version = "0.1.0" }
+loam = { path = "../..", features = ["app", "capture", "physics", "text"] }
 
 [lints]
 workspace = true

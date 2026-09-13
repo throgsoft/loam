@@ -1,4 +1,4 @@
-//! Ground colours, fog density and floor visibility shared by every scene that
+//! Ground colors, fog density and floor visibility shared by every scene that
 //! records [`loam_render::SkyGroundNode`], with the verbs that edit them live.
 
 use anyhow::{anyhow, Result};
@@ -145,7 +145,7 @@ pub fn register_ground_command<Ctx: 'static>(
     console.register(
         loam_egui::cmd::<Ctx, _>(
             "ground",
-            "background checker colours and fog density (bare reads all three)",
+            "background checker colors and fog density (bare reads all three)",
             move |args, ctx, out| {
                 let line = reach(ctx).apply(args)?;
                 out.line(line);
@@ -155,9 +155,9 @@ pub fn register_ground_command<Ctx: 'static>(
         .with_args(&[&["dark", "light", "fog", "reset"]])
         .with_long_help(
             "ground                     read all three\n\
-             ground dark                read the dark checker colour\n\
+             ground dark                read the dark checker color\n\
              ground dark <r> <g> <b>    set it, each channel in [0, 1]\n\
-             ground light <r> <g> <b>   the light checker colour\n\
+             ground light <r> <g> <b>   the light checker color\n\
              ground fog                 read the density\n\
              ground fog <density>       sky blended per world unit, in [0, 1];\n\
              \x20                          half the sky is mixed in at ln2/density\n\

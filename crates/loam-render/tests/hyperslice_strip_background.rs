@@ -213,7 +213,7 @@ fn a_published_strip_records_a_pipeline_its_attachments_accept_gpu_probe() {
     let color = probe_attachment(
         &gpu.device,
         TextureFormat::Rgba8Unorm,
-        "hyperslice strip validation colour",
+        "hyperslice strip validation color",
     );
     let depth = probe_attachment(
         &gpu.device,
@@ -243,7 +243,8 @@ fn a_published_strip_records_a_pipeline_its_attachments_accept_gpu_probe() {
             depth: Some(&depth),
             size: (SIZE[0], SIZE[1]),
         },
-    );
+    )
+    .expect("record strip");
     gpu.queue.submit(Some(encoder.finish()));
     let error = pollster::block_on(gpu.device.pop_error_scope());
     assert!(

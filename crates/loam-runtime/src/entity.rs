@@ -9,7 +9,12 @@ static NEXT_RUNTIME: AtomicU32 = AtomicU32::new(1);
 
 impl RuntimeId {
     pub(crate) fn allocate() -> Self {
-        Self(NEXT_RUNTIME.fetch_add(1, Ordering::Relaxed))
+        match NEXT_RUNTIME
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        {
+            Ok(id) => Self(id),
+            Err(_) => panic!("runtime id space exhausted"),
+        }
     }
 }
 
@@ -19,7 +24,10 @@ pub struct Epoch(u32);
 
 impl Epoch {
     pub fn advance(self) -> Self {
-        Self(self.0.wrapping_add(1))
+        match self.0.checked_add(1) {
+            Some(epoch) => Self(epoch),
+            None => panic!("epoch space exhausted"),
+        }
     }
 }
 

@@ -15,18 +15,12 @@ categories = ["game-development", "graphics", "visualization"]
 anyhow.workspace = true
 glam.workspace = true
 
-loam-app     = { path = "../loam-app",     version = "0.1.0", default-features = false }
-loam-math    = { path = "../loam-math",    version = "0.1.0" }
-loam-physics = { path = "../loam-physics", version = "0.1.0", default-features = false, features = ["r4"] }
-loam-render  = { path = "../loam-render",  version = "0.1.0" }
-loam-runtime = { path = "../loam-runtime", version = "0.1.0", features = ["physics"] }
-loam-scene   = { path = "../loam-scene",   version = "0.1.0" }
-loam-shape   = { path = "../loam-shape",   version = "0.1.0" }
-loam-text    = { path = "../loam-text",    version = "0.1.0" }
+loam = { path = "../..", version = "0.1.0", default-features = false, features = ["app", "physics", "render", "text"] }
+loam-egui = { path = "../loam-egui", version = "0.1.0" }
 
 [features]
 default = ["capture"]
-capture = ["loam-app/capture"]
+capture = ["loam/capture"]
 
 [lints]
 workspace = true
