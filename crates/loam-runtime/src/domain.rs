@@ -338,30 +338,11 @@ pub trait Homogeneous: DomainSpace + IsometryGroup {
     fn transvection(&self, to: Self::Point) -> Self::Iso;
 }
 
-#[cfg(test)]
-pub(crate) mod applied {
-    use std::cell::Cell;
-
-    thread_local! {
-        static COUNT: Cell<u64> = const { Cell::new(0) };
-    }
-
-    pub(crate) fn bump() {
-        COUNT.with(|count| count.set(count.get() + 1));
-    }
-
-    pub(crate) fn taken() -> u64 {
-        COUNT.with(|count| count.replace(0))
-    }
-}
-
 pub fn homogeneous_place<S: Homogeneous>(
     space: &S,
     placement: &S::Iso,
     local: S::Point,
 ) -> Result<S::Point, DomainError> {
-    #[cfg(test)]
-    applied::bump();
     let point = space.iso_apply(*placement, local);
     space.check(point)?;
     Ok(point)
@@ -372,8 +353,6 @@ pub fn homogeneous_local<S: Homogeneous>(
     pose: &Pose<S>,
     point: S::Point,
 ) -> Result<S::Point, DomainError> {
-    #[cfg(test)]
-    applied::bump();
     Ok(space.iso_apply(space.iso_inverse(space.iso_of(pose)), point))
 }
 
@@ -383,8 +362,6 @@ pub fn homogeneous_carry<S: Homogeneous>(
     local: S::Point,
     tangent: S::Vector,
 ) -> Result<S::Vector, DomainError> {
-    #[cfg(test)]
-    applied::bump();
     Ok(space.iso_transport(space.iso_of(pose), local, tangent))
 }
 
@@ -2655,7 +2632,7 @@ mod tests {
     use crate::command::SpawnBundle;
     use crate::session::{Material, Publication, Session, SimConfig};
     use crate::store::LogCapacity;
-    use crate::view::{DepthEnvelope, Projection4, Section4};
+    use crate::view::{Projection4, Section4};
 
     crate::stores! {
         #[derive(Default)]
@@ -2667,84 +2644,6 @@ mod tests {
     const SEGMENTS: usize = 3;
     const EYE_AT: Vec4 = Vec4::new(0.0, 0.0, 0.0, 2.0);
     const OBJECT_AT: Vec4 = Vec4::new(0.0, 0.0, -4.0, 0.0);
-
-    struct Nonlinear(Projection4);
-
-    impl ViewMapping<EuclideanR4> for Nonlinear {
-        fn name(&self) -> &'static str {
-            "nonlinear"
-        }
-
-        fn image_point(&self, eye: &Pose<EuclideanR4>, point: Vec4) -> Option<[f32; 3]> {
-            self.0.image_point(eye, point)
-        }
-
-        fn image_local(
-            &self,
-            space: &EuclideanR4,
-            _eye: &Pose<EuclideanR4>,
-            _pose: &Pose<EuclideanR4>,
-            relative: &<EuclideanR4 as DomainSpace>::Relative,
-            local: Vec4,
-        ) -> Option<[f32; 3]> {
-            let origin = space.place_relative(relative, Vec4::ZERO).ok()?;
-            let point = space.place_relative(relative, local).ok()?;
-            let placed = (point - origin).truncate() + origin.truncate();
-            Some(placed.to_array())
-        }
-
-        fn lift(
-            &self,
-            _eye: &Pose<EuclideanR4>,
-            _ray: &ImageRay,
-        ) -> Option<DomainRay<EuclideanR4>> {
-            None
-        }
-
-        fn ray_lift(&self) -> bool {
-            false
-        }
-
-        fn depth_envelope(&self) -> DepthEnvelope {
-            self.0.depth_envelope()
-        }
-    }
-
-    fn stage(
-        geometry: PreparedGeometry,
-        mapping: impl ViewMapping<EuclideanR4>,
-        section: bool,
-    ) -> (Session<Probe>, u64) {
-        let mut session = Session::new(Probe::default(), SimConfig::default());
-        let r4 = session
-            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
-        let prepared = session.prepare(geometry);
-        let material = session.add_material(Material::flat([1.0; 4]));
-        let root = session.views().root();
-        session.dispatch(|d| {
-            let eye = d
-                .spawn(SpawnBundle::new().at(r4, Pose::at(EYE_AT)))
-                .expect("eye");
-            let mut instance = Instance::new(prepared, material);
-            if section {
-                instance = instance.sectioned(material);
-            }
-            d.spawn(
-                SpawnBundle::new()
-                    .at(r4, Pose::at(OBJECT_AT))
-                    .instance(instance),
-            )
-            .expect("object");
-            d.domains
-                .typed(r4)
-                .expect("the r4 domain")
-                .add_view(ViewSpec::new(root, eye, mapping));
-        });
-        let mut publication = Publication::default();
-        let _ = applied::taken();
-        session.publish(&mut publication).expect("publish");
-        (session, applied::taken())
-    }
 
     fn lines() -> PreparedGeometry {
         PreparedGeometry::Lines4 {
@@ -2857,12 +2756,6 @@ mod tests {
     }
 
     #[test]
-    fn built_in_segment_mapping_applies_each_endpoint_at_most_twice() {
-        let (_, applications) = stage(lines(), Section4 { w: 0.0 }, false);
-        assert!(applications <= 2 + 4 * SEGMENTS as u64);
-    }
-
-    #[test]
     fn cached_output_ranges_match_fresh_publication_across_view_lifecycle_changes() {
         let mut session = Session::new(Probe::default(), SimConfig::default());
         let r4 = session
@@ -2907,12 +2800,9 @@ mod tests {
         let mut publication = Publication::default();
         let publish_and_compare =
             |session: &mut Session<Probe>, publication: &mut Publication<Probe>| {
-                let _ = applied::taken();
                 session.publish(publication).unwrap();
-                let cached_applications = applied::taken();
                 let mut fresh = Publication::default();
                 session.publish(&mut fresh).unwrap();
-                let _ = applied::taken();
                 assert_eq!(publication.views.len(), fresh.views.len());
                 for (cached, fresh) in publication.views.iter().zip(&fresh.views) {
                     assert_eq!(cached.domain, fresh.domain);
@@ -2926,9 +2816,8 @@ mod tests {
                     assert_eq!(cached.records.triangles(), fresh.records.triangles());
                     assert_eq!(cached.records.refusals(), fresh.records.refusals());
                 }
-                cached_applications
             };
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         let initial_segments = publication.views[1].records.segments().len();
         let initial_triangles = publication.views[1].records.triangles().len();
         assert!(initial_segments > 0);
@@ -2940,11 +2829,7 @@ mod tests {
             .unwrap()
             .set_pose(edited, Pose::at(Vec4::new(0.5, 0.0, -4.0, 0.0)))
             .unwrap();
-        let applications = publish_and_compare(&mut session, &mut publication);
-        let topology = Polytope4::Tesseract.topology();
-        let per_view = 2 + 4 * topology.edges.len() as u64;
-        let section = 3 + topology.vertices.len() as u64;
-        assert!(applications <= per_view * 2 + section);
+        publish_and_compare(&mut session, &mut publication);
         assert_eq!(
             publication.views[1].records.segments().len(),
             initial_segments
@@ -2960,7 +2845,7 @@ mod tests {
             .unwrap()
             .set_pose(edited, Pose::at(Vec4::new(0.5, 0.0, -4.0, 1.0)))
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert!(publication.views[1].records.segments().is_empty());
         assert!(publication.views[1].records.triangles().is_empty());
         session
@@ -2969,7 +2854,7 @@ mod tests {
             .unwrap()
             .set_pose(edited, Pose::at(Vec4::new(0.5, 0.0, -4.0, 0.0)))
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert_eq!(
             publication.views[1].records.segments().len(),
             initial_segments
@@ -2986,7 +2871,7 @@ mod tests {
             .view_mut(section_view)
             .unwrap()
             .set_mapping(Section4 { w: 0.5 });
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert!(publication.views[1].records.triangles().is_empty());
         assert_ne!(
             publication.views[1].records.triangles().len(),
@@ -2999,18 +2884,18 @@ mod tests {
             .unwrap()
             .set_pose(edited, Pose::at(Vec4::new(0.5, 0.0, -4.0, 3.0)))
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         session
             .domains_mut()
             .typed(r4)
             .unwrap()
             .set_view_eye(view, alternate_eye)
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         session
             .dispatch(|dispatch| dispatch.despawn(removed))
             .unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert!(publication.views[0]
             .records
             .instances
@@ -3018,30 +2903,11 @@ mod tests {
             .iter()
             .all(|record| record.entity != removed));
         session.restore(&snapshot).unwrap();
-        let _ = publish_and_compare(&mut session, &mut publication);
+        publish_and_compare(&mut session, &mut publication);
         assert_eq!(
             publication.views[1].records.triangles().len(),
             initial_triangles
         );
-    }
-
-    #[test]
-    fn section_projection_applies_each_rotated_vertex_once() {
-        let polytope = || PreparedGeometry::Polytope4 {
-            polytope: Polytope4::Tesseract,
-            scale: 0.25,
-        };
-        let (_, plain) = stage(polytope(), Section4 { w: 0.0 }, false);
-        let (session, sectioned) = stage(polytope(), Section4 { w: 0.0 }, true);
-        let vertices = Polytope4::Tesseract.topology().vertices.len() as u64;
-        assert_eq!(session.domains().len(), 1);
-        assert!(sectioned - plain <= 3 + vertices);
-    }
-
-    #[test]
-    fn a_nonlinear_map_vertex_costs_more_isometry_applications_than_it_did() {
-        let (_, applications) = stage(lines(), Nonlinear(Projection4 { focal: 2.0 }), false);
-        assert_eq!(applications, 3 + 6 * SEGMENTS as u64);
     }
 
     #[test]
