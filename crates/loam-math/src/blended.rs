@@ -224,41 +224,48 @@ fn validate_geodesic_point<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
 }
 
 // Wald, General Relativity, 1984, App. D.
-fn geodesic_derivative<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
+fn transport_rhs(gradient: Vec3, tangent: Vec3, v: Vec3) -> Vec3 {
+    -(v * gradient.dot(tangent) + tangent * gradient.dot(v) - gradient * tangent.dot(v))
+}
+
+fn geodesic_fault<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
     state: GeodesicState,
-) -> Result<GeodesicDerivative, GeodesicError> {
-    validate_geodesic_point(space, state.point)?;
-    if !state.velocity.is_finite() || !state.frame.is_finite() {
-        return Err(GeodesicError::NonFinite);
+    gradient: Vec3,
+    derivative: GeodesicDerivative,
+) -> Option<GeodesicError> {
+    if let Err(fault) = validate_geodesic_point(space, state.point) {
+        return Some(fault);
     }
-    let gradient = space.conformal_log_half_gradient(state.point);
-    if !gradient.is_finite() {
-        return Err(GeodesicError::NonFinite);
-    }
-    let velocity_squared = state.velocity.length_squared();
-    let acceleration =
-        gradient * velocity_squared - state.velocity * (2.0 * gradient.dot(state.velocity));
-    let transport = |vector: Vec3| {
-        -(vector * gradient.dot(state.velocity) + state.velocity * gradient.dot(vector)
-            - gradient * state.velocity.dot(vector))
-    };
-    let derivative = GeodesicDerivative {
-        point: state.velocity,
-        velocity: acceleration,
-        frame: Mat3::from_cols(
-            transport(state.frame.x_axis),
-            transport(state.frame.y_axis),
-            transport(state.frame.z_axis),
-        ),
-    };
-    if !derivative.point.is_finite()
+    if !state.velocity.is_finite()
+        || !state.frame.is_finite()
+        || !gradient.is_finite()
         || !derivative.velocity.is_finite()
         || !derivative.frame.is_finite()
     {
-        return Err(GeodesicError::NonFinite);
+        return Some(GeodesicError::NonFinite);
     }
-    Ok(derivative)
+    None
+}
+
+fn geodesic_derivative<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
+    space: &S,
+    state: GeodesicState,
+) -> (GeodesicDerivative, Option<GeodesicError>) {
+    let gradient = space.conformal_log_half_gradient(state.point);
+    let velocity_squared = state.velocity.length_squared();
+    let derivative = GeodesicDerivative {
+        point: state.velocity,
+        velocity: gradient * velocity_squared
+            - state.velocity * (2.0 * gradient.dot(state.velocity)),
+        frame: Mat3::from_cols(
+            transport_rhs(gradient, state.velocity, state.frame.x_axis),
+            transport_rhs(gradient, state.velocity, state.frame.y_axis),
+            transport_rhs(gradient, state.velocity, state.frame.z_axis),
+        ),
+    };
+    let fault = geodesic_fault(space, state, gradient, derivative);
+    (derivative, fault)
 }
 
 fn advance_geodesic_state(
@@ -278,11 +285,11 @@ fn rk4_geodesic_frame_step<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
     state: GeodesicState,
     h: f32,
-) -> Result<GeodesicState, GeodesicError> {
-    let k1 = geodesic_derivative(space, state)?;
-    let k2 = geodesic_derivative(space, advance_geodesic_state(state, k1, h * 0.5))?;
-    let k3 = geodesic_derivative(space, advance_geodesic_state(state, k2, h * 0.5))?;
-    let k4 = geodesic_derivative(space, advance_geodesic_state(state, k3, h))?;
+) -> (GeodesicState, Option<GeodesicError>) {
+    let (k1, fault1) = geodesic_derivative(space, state);
+    let (k2, fault2) = geodesic_derivative(space, advance_geodesic_state(state, k1, h * 0.5));
+    let (k3, fault3) = geodesic_derivative(space, advance_geodesic_state(state, k2, h * 0.5));
+    let (k4, fault4) = geodesic_derivative(space, advance_geodesic_state(state, k3, h));
     let point = state.point + (k1.point + k2.point * 2.0 + k3.point * 2.0 + k4.point) * (h / 6.0);
     let velocity = state.velocity
         + (k1.velocity + k2.velocity * 2.0 + k3.velocity * 2.0 + k4.velocity) * (h / 6.0);
@@ -293,8 +300,8 @@ fn rk4_geodesic_frame_step<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
         frame,
         estimated_error: state.estimated_error,
     };
-    geodesic_derivative(space, next)?;
-    Ok(next)
+    let (_, fault5) = geodesic_derivative(space, next);
+    (next, fault1.or(fault2).or(fault3).or(fault4).or(fault5))
 }
 
 fn geodesic_state_error<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
@@ -321,6 +328,73 @@ fn geodesic_state_error<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     Ok(error)
 }
 
+fn integrate_geodesic_frame<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
+    space: &S,
+    at: Vec3,
+    velocity: Vec3,
+    frame: Mat3,
+    n_steps: u32,
+    error_budget: Option<f32>,
+) -> (GeodesicState, Option<GeodesicError>) {
+    let mut state = GeodesicState {
+        point: at,
+        velocity,
+        frame,
+        estimated_error: 0.0,
+    };
+    if let Some(budget) = error_budget {
+        if n_steps == 0 {
+            return (state, Some(GeodesicError::InvalidStepCount));
+        }
+        if !budget.is_finite() || budget <= 0.0 {
+            return (state, Some(GeodesicError::InvalidErrorBudget));
+        }
+    }
+    let h = 1.0 / n_steps as f32;
+    for _ in 0..n_steps {
+        let (coarse, fault) = rk4_geodesic_frame_step(space, state, h);
+        let Some(budget) = error_budget else {
+            if !coarse.point.is_finite() || !coarse.velocity.is_finite() {
+                tracing::warn!(
+                    "rk4_geodesic step produced non-finite state; clamping to previous step"
+                );
+                break;
+            }
+            state = coarse;
+            continue;
+        };
+        if let Some(fault) = fault {
+            return (state, Some(fault));
+        }
+        let (half, fault) = rk4_geodesic_frame_step(space, state, h * 0.5);
+        if let Some(fault) = fault {
+            return (state, Some(fault));
+        }
+        let (refined, fault) = rk4_geodesic_frame_step(space, half, h * 0.5);
+        if let Some(fault) = fault {
+            return (state, Some(fault));
+        }
+        let estimated_error = match geodesic_state_error(space, coarse, refined) {
+            Ok(error) => state.estimated_error + error,
+            Err(fault) => return (state, Some(fault)),
+        };
+        if estimated_error > budget {
+            return (
+                state,
+                Some(GeodesicError::ErrorBudget {
+                    estimated: estimated_error,
+                    budget,
+                }),
+            );
+        }
+        state = GeodesicState {
+            estimated_error,
+            ..refined
+        };
+    }
+    (state, None)
+}
+
 pub fn integrate_geodesic_frame_checked<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
     at: Vec3,
@@ -329,37 +403,114 @@ pub fn integrate_geodesic_frame_checked<S: ConformallyFlat<Point = Vec3, Vector 
     n_steps: u32,
     error_budget: f32,
 ) -> Result<GeodesicState, GeodesicError> {
-    if n_steps == 0 {
-        return Err(GeodesicError::InvalidStepCount);
+    match integrate_geodesic_frame(space, at, velocity, frame, n_steps, Some(error_budget)) {
+        (state, None) => Ok(state),
+        (_, Some(fault)) => Err(fault),
     }
-    if !error_budget.is_finite() || error_budget <= 0.0 {
-        return Err(GeodesicError::InvalidErrorBudget);
-    }
-    let mut state = GeodesicState {
-        point: at,
-        velocity,
-        frame,
+}
+
+fn gauss_newton_log_core<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
+    space: &S,
+    from: Vec3,
+    to: Vec3,
+    n_steps: u32,
+    max_iters: u32,
+    error_budget: Option<f32>,
+) -> (GeodesicLog, Option<GeodesicError>) {
+    let mut log = GeodesicLog {
+        vector: Vec3::ZERO,
         estimated_error: 0.0,
     };
-    geodesic_derivative(space, state)?;
-    let h = 1.0 / n_steps as f32;
-    for _ in 0..n_steps {
-        let coarse = rk4_geodesic_frame_step(space, state, h)?;
-        let half = rk4_geodesic_frame_step(space, state, h * 0.5)?;
-        let refined = rk4_geodesic_frame_step(space, half, h * 0.5)?;
-        let estimated_error = state.estimated_error + geodesic_state_error(space, coarse, refined)?;
-        if estimated_error > error_budget {
-            return Err(GeodesicError::ErrorBudget {
-                estimated: estimated_error,
-                budget: error_budget,
-            });
+    let mut target_scale = 0.0;
+    if let Some(budget) = error_budget {
+        if n_steps == 0 {
+            return (log, Some(GeodesicError::InvalidStepCount));
         }
-        state = GeodesicState {
-            estimated_error,
-            ..refined
-        };
+        if !budget.is_finite() || budget <= 0.0 {
+            return (log, Some(GeodesicError::InvalidErrorBudget));
+        }
+        if let Err(fault) = validate_geodesic_point(space, from) {
+            return (log, Some(fault));
+        }
+        if let Err(fault) = validate_geodesic_point(space, to) {
+            return (log, Some(fault));
+        }
+        if from == to {
+            return (log, None);
+        }
+        let target_factor = space.conformal_factor(to);
+        if !target_factor.is_finite() || target_factor <= 0.0 {
+            return (log, Some(GeodesicError::NonFinite));
+        }
+        target_scale = target_factor.sqrt();
+    } else if from == to {
+        return (log, None);
     }
-    Ok(state)
+    log.vector = to - from;
+    for _ in 0..max_iters {
+        let (state, fault) = integrate_geodesic_frame(
+            space,
+            from,
+            log.vector,
+            Mat3::IDENTITY,
+            n_steps,
+            error_budget,
+        );
+        if let Some(fault) = fault {
+            return (log, Some(fault));
+        }
+        let residual = to - state.point;
+        log.estimated_error = state.estimated_error + residual.length() * target_scale;
+        let converged = match error_budget {
+            Some(budget) => log.estimated_error <= budget,
+            None => residual.length() < LOG_RESIDUAL_TOL,
+        };
+        if converged {
+            return (log, None);
+        }
+        let two_eps = 2.0 * LOG_JACOBIAN_EPS;
+        let mut jacobian = Mat3::ZERO;
+        for axis in 0..3 {
+            let mut delta = Vec3::ZERO;
+            delta[axis] = LOG_JACOBIAN_EPS;
+            let (plus, fault) = integrate_geodesic_frame(
+                space,
+                from,
+                log.vector + delta,
+                Mat3::IDENTITY,
+                n_steps,
+                error_budget,
+            );
+            if let Some(fault) = fault {
+                return (log, Some(fault));
+            }
+            let (minus, fault) = integrate_geodesic_frame(
+                space,
+                from,
+                log.vector - delta,
+                Mat3::IDENTITY,
+                n_steps,
+                error_budget,
+            );
+            if let Some(fault) = fault {
+                return (log, Some(fault));
+            }
+            *jacobian.col_mut(axis) = (plus.point - minus.point) / two_eps;
+        }
+        let determinant = jacobian.determinant();
+        if !determinant.is_finite() {
+            return (log, Some(GeodesicError::NonFinite));
+        }
+        if determinant.abs() < 1.0e-8 {
+            return (log, Some(GeodesicError::Singular));
+        }
+        let next = log.vector + jacobian.inverse() * residual;
+        if !next.is_finite() {
+            return (log, Some(GeodesicError::NonFinite));
+        }
+        log.vector = next;
+    }
+    (log, Some(GeodesicError::NoConvergence))
 }
 
 pub fn geodesic_log_checked<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
@@ -370,80 +521,10 @@ pub fn geodesic_log_checked<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     max_iters: u32,
     error_budget: f32,
 ) -> Result<GeodesicLog, GeodesicError> {
-    if n_steps == 0 {
-        return Err(GeodesicError::InvalidStepCount);
+    match gauss_newton_log_core(space, from, to, n_steps, max_iters, Some(error_budget)) {
+        (log, None) => Ok(log),
+        (_, Some(fault)) => Err(fault),
     }
-    if !error_budget.is_finite() || error_budget <= 0.0 {
-        return Err(GeodesicError::InvalidErrorBudget);
-    }
-    validate_geodesic_point(space, from)?;
-    validate_geodesic_point(space, to)?;
-    if from == to {
-        return Ok(GeodesicLog {
-            vector: Vec3::ZERO,
-            estimated_error: 0.0,
-        });
-    }
-    let target_factor = space.conformal_factor(to);
-    if !target_factor.is_finite() || target_factor <= 0.0 {
-        return Err(GeodesicError::NonFinite);
-    }
-    let target_scale = target_factor.sqrt();
-    let mut vector = to - from;
-    for _ in 0..max_iters {
-        let state = integrate_geodesic_frame_checked(
-            space,
-            from,
-            vector,
-            Mat3::IDENTITY,
-            n_steps,
-            error_budget,
-        )?;
-        let residual = to - state.point;
-        let estimated_error = state.estimated_error + residual.length() * target_scale;
-        if estimated_error <= error_budget {
-            return Ok(GeodesicLog {
-                vector,
-                estimated_error,
-            });
-        }
-        let two_eps = 2.0 * LOG_JACOBIAN_EPS;
-        let mut jacobian = Mat3::ZERO;
-        for axis in 0..3 {
-            let mut delta = Vec3::ZERO;
-            delta[axis] = LOG_JACOBIAN_EPS;
-            let plus = integrate_geodesic_frame_checked(
-                space,
-                from,
-                vector + delta,
-                Mat3::IDENTITY,
-                n_steps,
-                error_budget,
-            )?;
-            let minus = integrate_geodesic_frame_checked(
-                space,
-                from,
-                vector - delta,
-                Mat3::IDENTITY,
-                n_steps,
-                error_budget,
-            )?;
-            *jacobian.col_mut(axis) = (plus.point - minus.point) / two_eps;
-        }
-        let determinant = jacobian.determinant();
-        if !determinant.is_finite() {
-            return Err(GeodesicError::NonFinite);
-        }
-        if determinant.abs() < 1.0e-8 {
-            return Err(GeodesicError::Singular);
-        }
-        let next = vector + jacobian.inverse() * residual;
-        if !next.is_finite() {
-            return Err(GeodesicError::NonFinite);
-        }
-        vector = next;
-    }
-    Err(GeodesicError::NoConvergence)
 }
 
 pub fn integrate_geodesic_frame_to_checked<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
@@ -468,47 +549,14 @@ pub fn integrate_geodesic_frame_to_checked<S: ConformallyFlat<Point = Vec3, Vect
     Ok(state)
 }
 
-// Wald, General Relativity, 1984, App. D.
-fn rk4_geodesic_step<S: ConformallyFlat>(space: &S, p: Vec3, v: Vec3, h: f32) -> (Vec3, Vec3) {
-    let rhs = |p: Vec3, v: Vec3| -> (Vec3, Vec3) {
-        let grad_phi = space.conformal_log_half_gradient(p);
-        let v_sq = v.length_squared();
-        let dot = grad_phi.dot(v);
-        (v, grad_phi * v_sq - v * (2.0 * dot))
-    };
-
-    let (k1_p, k1_v) = rhs(p, v);
-    let (k2_p, k2_v) = rhs(p + k1_p * (h * 0.5), v + k1_v * (h * 0.5));
-    let (k3_p, k3_v) = rhs(p + k2_p * (h * 0.5), v + k2_v * (h * 0.5));
-    let (k4_p, k4_v) = rhs(p + k3_p * h, v + k3_v * h);
-
-    let dp = (k1_p + 2.0 * k2_p + 2.0 * k3_p + k4_p) * (h / 6.0);
-    let dv = (k1_v + 2.0 * k2_v + 2.0 * k3_v + k4_v) * (h / 6.0);
-    (p + dp, v + dv)
-}
-
-pub fn rk4_geodesic<S: ConformallyFlat>(
+pub fn rk4_geodesic<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
     at: Vec3,
     v: Vec3,
     n_steps: u32,
 ) -> (Vec3, Vec3) {
-    let h = 1.0 / n_steps as f32;
-    let mut p = at;
-    let mut vel = v;
-    for _ in 0..n_steps {
-        let (np, nv) = rk4_geodesic_step(space, p, vel, h);
-        if np.is_finite() && nv.is_finite() {
-            p = np;
-            vel = nv;
-        } else {
-            tracing::warn!(
-                "rk4_geodesic step produced non-finite state; clamping to previous step"
-            );
-            break;
-        }
-    }
-    (p, vel)
+    let (state, _) = integrate_geodesic_frame(space, at, v, Mat3::IDENTITY, n_steps, None);
+    (state.point, state.velocity)
 }
 
 pub const PARALLEL_TRANSPORT_DEFAULT_STEPS: u32 = 8;
@@ -529,11 +577,7 @@ pub fn parallel_transport_segment_rk4<S: ConformallyFlat>(
     let h = 1.0 / n_steps as f32;
 
     let rhs = |gamma_pt: Vec3, v_at_t: Vec3| -> Vec3 {
-        let grad_phi = space.conformal_log_half_gradient(gamma_pt);
-        let term1 = v_at_t * grad_phi.dot(dgamma);
-        let term2 = dgamma * grad_phi.dot(v_at_t);
-        let term3 = grad_phi * dgamma.dot(v_at_t);
-        -(term1 + term2 - term3)
+        transport_rhs(space.conformal_log_half_gradient(gamma_pt), dgamma, v_at_t)
     };
 
     let mut v_curr = v;
@@ -572,7 +616,7 @@ const LOG_JACOBIAN_EPS: f32 = 1.0e-3;
 // Press et al., Numerical Recipes, 3rd ed., 2007, §18.1.
 // Nocedal and Wright, Numerical Optimization, 2nd ed., 2006, ch. 10.
 /// Solves `exp_from(v) ≈ to`; failure returns the last finite iterate.
-pub fn gauss_newton_log<S: ConformallyFlat>(
+pub fn gauss_newton_log<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
     from: Vec3,
     to: Vec3,
@@ -590,62 +634,31 @@ pub enum LogError {
 }
 
 /// `gauss_newton_log` with its failure reported instead of hidden; the vector is still the last finite iterate.
-pub fn gauss_newton_log_checked<S: ConformallyFlat>(
+pub fn gauss_newton_log_checked<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
     from: Vec3,
     to: Vec3,
     n_steps: u32,
     max_iters: u32,
 ) -> (Vec3, Option<LogError>) {
-    if from == to {
-        return (Vec3::ZERO, None);
-    }
-
-    let mut v = to - from;
-
-    for iter in 0..max_iters {
-        let endpoint = rk4_geodesic(space, from, v, n_steps).0;
-        let residual = to - endpoint;
-        if residual.length() < LOG_RESIDUAL_TOL {
-            return (v, None);
-        }
-
-        let two_eps = 2.0 * LOG_JACOBIAN_EPS;
-        let mut jac = Mat3::ZERO;
-        for j in 0..3 {
-            let mut e = Vec3::ZERO;
-            e[j] = LOG_JACOBIAN_EPS;
-            let plus = rk4_geodesic(space, from, v + e, n_steps).0;
-            let minus = rk4_geodesic(space, from, v - e, n_steps).0;
-            let col = (plus - minus) / two_eps;
-            *jac.col_mut(j) = col;
-        }
-
-        let det = jac.determinant();
-        if det.abs() < 1.0e-8 {
+    let (log, fault) = gauss_newton_log_core(space, from, to, n_steps, max_iters, None);
+    match fault {
+        None => (log.vector, None),
+        Some(GeodesicError::Singular) => {
             tracing::warn!(
-                "gauss_newton_log: singular Jacobian at iter {iter} (det = {det:e}); \
-                 returning best guess. `to` may be in the cut locus of `from`."
+                "gauss_newton_log: singular Jacobian; returning best guess. \
+                 `to` may be in the cut locus of `from`."
             );
-            return (v, Some(LogError::Singular));
+            (log.vector, Some(LogError::Singular))
         }
-
-        let next = v + jac.inverse() * residual;
-        if !next.is_finite() {
+        Some(_) => {
             tracing::warn!(
-                "gauss_newton_log: non-finite Newton update at iter {iter}; \
-                 returning best guess."
+                "gauss_newton_log: did not converge in {max_iters} iters; \
+                 residual remained > {LOG_RESIDUAL_TOL}. Returning best guess."
             );
-            return (v, Some(LogError::NoConvergence));
+            (log.vector, Some(LogError::NoConvergence))
         }
-        v = next;
     }
-
-    tracing::warn!(
-        "gauss_newton_log: did not converge in {max_iters} iters; \
-         residual remained > {LOG_RESIDUAL_TOL}. Returning best guess."
-    );
-    (v, Some(LogError::NoConvergence))
 }
 
 impl<A, B, F> ConformallyFlat for BlendedSpace<A, B, F>
