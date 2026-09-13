@@ -338,12 +338,11 @@ fn selected_twist(app: &CubeStores) -> Option<Twist> {
 fn build(
     args: loam::app::args::Args,
 ) -> Result<(Session<CubeStores>, SessionApp<CubeStores>), HostError> {
-    let config = SimConfig::default();
     let stores = CubeStores {
-        rng: Value::new(config.seed),
+        rng: Value::new(0),
         ..CubeStores::default()
     };
-    let mut session = Session::new(stores, config);
+    let mut session = Session::new(stores, SimConfig::default());
     let r4 = session
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
     let sticker_geometry = session.prepare(sticker_cube());

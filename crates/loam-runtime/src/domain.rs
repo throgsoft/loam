@@ -133,9 +133,6 @@ pub enum ChartCommand {
     Release {
         entity: Entity,
     },
-    Remove {
-        entity: Entity,
-    },
 }
 
 impl ChartCommand {
@@ -146,8 +143,7 @@ impl ChartCommand {
             | Self::Walk { entity, .. }
             | Self::Move { entity, .. }
             | Self::Grab { entity, .. }
-            | Self::Release { entity }
-            | Self::Remove { entity } => entity,
+            | Self::Release { entity } => entity,
         }
     }
 }
@@ -2477,7 +2473,6 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
                 Ok(Outcome::Done)
             }
             ChartCommand::Grab { .. } | ChartCommand::Release { .. } => Ok(Outcome::Done),
-            _ => Err(Rejection::Unsupported("chart command")),
         }
     }
 

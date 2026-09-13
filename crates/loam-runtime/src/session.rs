@@ -26,7 +26,6 @@ const RELEASE_STALE_SECONDS: f64 = 0.12;
 pub struct SimConfig {
     pub fixed_hz: u32,
     pub max_ticks_per_frame: u32,
-    pub seed: u64,
 }
 
 impl SimConfig {
@@ -41,7 +40,6 @@ impl Default for SimConfig {
         Self {
             fixed_hz: 60,
             max_ticks_per_frame: 4,
-            seed: 0,
         }
     }
 }
