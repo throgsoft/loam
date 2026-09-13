@@ -358,7 +358,7 @@ impl Manipulation {
             .ok_or(DomainError::UnknownDomain(drag.domain))?;
         let name = domain
             .view(drag.view)
-            .ok_or(DomainError::Unsupported("unknown view"))?
+            .ok_or(DomainError::UnknownView(drag.view))?
             .name;
         let ray = views
             .ray(drag.image, ndc)

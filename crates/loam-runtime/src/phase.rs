@@ -80,7 +80,6 @@ impl fmt::Display for PhaseError {
 
 impl std::error::Error for PhaseError {}
 
-/// The common callback every adapter targets.
 pub struct Ctx<'a, A> {
     pub app: &'a mut A,
     pub domains: &'a mut Domains,

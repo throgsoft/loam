@@ -194,7 +194,7 @@ pub enum PartitionError {
 
 const NO_RECORD: u32 = u32::MAX;
 
-/// One consumer's copy of a store's records, caught up through its own cursor.
+/// Stamped records keyed by entity, kept dense with a sparse position index.
 pub struct RecordBuffer<R> {
     rows: Vec<R>,
     entities: Vec<Entity>,

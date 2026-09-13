@@ -434,7 +434,7 @@ const UNBOUNDED: DepthEnvelope = DepthEnvelope {
     far: f32::INFINITY,
 };
 
-/// Results stay stable for the same inputs; configuration changes replace the map through `ViewSpec::set_mapping`.
+/// Results stay stable for the same inputs; configuration changes replace the map through `ViewStyle::set_mapping`.
 pub trait ViewMapping<S: DomainSpace>: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 

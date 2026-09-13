@@ -57,7 +57,7 @@ macro_rules! __stores_field {
     (Value, $name:ident, $field:ident, $row:ty) => {};
 }
 
-/// Declares the store struct and implements `Stores`; its records and snapshot types are `<A as Stores>::Records` and `::Snapshot`.
+/// Declares the store struct and implements `Stores`; its snapshot type is `<A as Stores>::Snapshot`.
 #[macro_export]
 macro_rules! stores {
     (
