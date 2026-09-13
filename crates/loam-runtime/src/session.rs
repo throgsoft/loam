@@ -880,7 +880,7 @@ impl<A: Stores> Session<A> {
         })
     }
 
-    /// Validates ownership and every domain before it cancels pending commands and advances the epoch.
+    /// Validates ownership and every domain before it cancels pending commands and advances the epoch; a failure after that faults the session until a later restore succeeds.
     pub fn restore(&mut self, from: &SessionSnapshot<A>) -> Result<(), RestoreError> {
         if from.runtime != self.scene().runtime {
             return Err(RestoreError::ForeignRuntime);

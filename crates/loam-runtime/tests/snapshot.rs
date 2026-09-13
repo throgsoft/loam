@@ -173,6 +173,10 @@ fn pending_commands_or_reservations_survive_cancellation_into_the_restored_state
 
     session.reset().unwrap();
     assert_eq!(session.results().len(), 2);
+    assert!(session
+        .results()
+        .iter()
+        .all(|result| result.outcome == Err(Rejection::Cancelled)));
     assert_eq!(session.results()[0].request, reservation.request);
     assert!(!session.entities().is_reserved(reservation.entity));
     assert!(session.entities().is_empty());
@@ -614,6 +618,16 @@ fn request_queued_after_a_reset_in_the_same_batch_applies_to_the_restored_state(
     });
     session.tick().unwrap();
     session.boundary(Input::default()).unwrap();
+    let outcomes: Vec<_> = session
+        .results()
+        .iter()
+        .map(|result| result.outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        [Ok(Outcome::Done), Ok(Outcome::Done), Ok(Outcome::Done)]
+    );
+    assert_eq!(*session.app.log.get(), [2]);
     assert_eq!(session.current_tick(), Tick(0));
 }
 
@@ -701,6 +715,7 @@ fn cancelled_request_and_a_fresh_request_after_a_reset_share_an_id() {
     let [cancelled] = session.results() else {
         panic!("{} results after reset", session.results().len());
     };
+    assert_eq!(cancelled.outcome, Err(Rejection::Cancelled));
     let cancelled = cancelled.request;
 
     session.boundary(Input::default()).unwrap();
@@ -897,4 +912,65 @@ fn an_idle_view_rebuilds_when_its_cursor_expires_at_a_boundary() {
             "boundary {step} rebuilt an idle view"
         );
     }
+}
+
+struct FailsRestoreOnce {
+    failed: bool,
+}
+
+impl Facility<EuclideanR4> for FailsRestoreOnce {
+    fn name(&self) -> &'static str {
+        "fails restore once"
+    }
+
+    fn step(
+        &mut self,
+        _poses: &mut Store<Pose<EuclideanR4>>,
+        _step: Step,
+        _owner: Owner,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
+        Box::new(())
+    }
+
+    fn check_restore(&self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        from.downcast_ref::<()>()
+            .map(|_| ())
+            .ok_or(RestoreError::Schema(SchemaId::of::<()>()))
+    }
+
+    fn restore(&mut self, _from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        if self.failed {
+            return Ok(());
+        }
+        self.failed = true;
+        Err(RestoreError::Schema(SchemaId::of::<FailsRestoreOnce>()))
+    }
+}
+
+#[test]
+fn a_restore_that_fails_after_validation_blocks_the_session_until_one_succeeds() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    session.register_domain(
+        DomainBuilder::new("r4", EuclideanR4).facility(FailsRestoreOnce { failed: false }),
+    );
+    session.set_initial().unwrap();
+    session.tick().unwrap();
+
+    assert!(session.reset().is_err());
+    let fault = session
+        .phase_error()
+        .expect("a failed restore records a fault");
+    assert_eq!(fault.phase, Phase::Dispatch);
+    assert_eq!(fault.system, Some("restore"));
+    assert!(session.tick().is_err());
+    let mut publication = Publication::default();
+    assert!(session.publish(&mut publication).is_err());
+
+    session.reset().unwrap();
+    assert!(session.phase_error().is_none());
+    session.tick().unwrap();
 }

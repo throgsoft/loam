@@ -1432,7 +1432,7 @@ pub trait Facility<S: DomainSpace>: Any + Send + 'static {
 
     fn snapshot(&self, owner: Owner) -> Box<dyn Any + Send>;
 
-    /// Refuses whatever `restore` would refuse, changing nothing; the default accepts, and the session calls it on every facility before the first one restores.
+    /// Refuses whatever `restore` would refuse, changing nothing; the session calls it on every facility before the first one restores.
     fn check_restore(&self, from: &(dyn Any + Send), owner: Owner) -> Result<(), RestoreError>;
 
     fn restore(&mut self, from: &(dyn Any + Send), owner: Owner) -> Result<(), RestoreError>;
@@ -1528,7 +1528,7 @@ struct TypedSnapshot<S: DomainSpace> {
     targets: Vec<ViewTarget>,
 }
 
-/// The session's domain contract; only `Session` calls its lifetime hooks.
+/// A domain read through the session; the lifetime hooks live on the crate-private owner trait.
 pub trait Domain: Send + 'static {
     fn id(&self) -> DomainId;
 

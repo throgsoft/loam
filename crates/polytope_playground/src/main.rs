@@ -1656,7 +1656,7 @@ mod tests {
             );
         }
 
-        let calls = loam_time::alloc::bytes_allocated_by(|| {
+        let bytes = loam_time::alloc::bytes_allocated_by(|| {
             for _ in 0..16 {
                 frame(
                     &mut booted,
@@ -1668,8 +1668,8 @@ mod tests {
             }
         });
         assert_eq!(
-            calls, 0,
-            "sixteen warmed frames of boundary, tick, publication, collection, strip, gimbal, and readout asked the allocator {calls} times"
+            bytes, 0,
+            "sixteen warmed frames of boundary, tick, publication, collection, strip, gimbal, and readout asked the allocator for {bytes} bytes"
         );
     }
 
