@@ -396,12 +396,66 @@ pub fn homogeneous_relative<S: Homogeneous>(
     Ok(space.iso_compose(space.iso_inverse(space.iso_of(eye)), space.iso_of(pose)))
 }
 
-pub fn homogeneous_place_relative<S: Homogeneous>(
-    space: &S,
-    relative: &S::Iso,
-    local: S::Point,
-) -> Result<S::Point, DomainError> {
-    homogeneous_place(space, relative, local)
+macro_rules! homogeneous_capabilities {
+    () => {
+        type Placement = <Self as IsometryGroup>::Iso;
+
+        type Relative = <Self as IsometryGroup>::Iso;
+
+        fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
+            self.iso_of(pose)
+        }
+
+        fn place(
+            &self,
+            placement: &Self::Placement,
+            local: Self::Point,
+        ) -> Result<Self::Point, DomainError> {
+            homogeneous_place(self, placement, local)
+        }
+
+        fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
+            homogeneous_local(self, pose, point)
+        }
+
+        fn relative(
+            &self,
+            eye: &Pose<Self>,
+            pose: &Pose<Self>,
+        ) -> Result<Self::Relative, DomainError> {
+            homogeneous_relative(self, eye, pose)
+        }
+
+        fn place_relative(
+            &self,
+            relative: &Self::Relative,
+            local: Self::Point,
+        ) -> Result<Self::Point, DomainError> {
+            homogeneous_place(self, relative, local)
+        }
+
+        fn carry(
+            &self,
+            pose: &Pose<Self>,
+            local: Self::Point,
+            tangent: Self::Vector,
+        ) -> Result<Self::Vector, DomainError> {
+            homogeneous_carry(self, pose, local, tangent)
+        }
+
+        fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
+            homogeneous_moved(self, pose, to)
+        }
+
+        fn walk(
+            &self,
+            pose: &Pose<Self>,
+            tangent: Self::Vector,
+            dt: f32,
+        ) -> Result<Pose<Self>, DomainError> {
+            homogeneous_walk(self, pose, tangent, dt)
+        }
+    };
 }
 
 pub fn homogeneous_moved<S: Homogeneous>(
@@ -505,9 +559,7 @@ fn lorentz(a: Vec4, b: Vec4) -> f32 {
 }
 
 impl DomainSpace for EuclideanR4 {
-    type Placement = Iso4Flat;
-
-    type Relative = Iso4Flat;
+    homogeneous_capabilities!();
 
     fn origin(&self) -> Self::Point {
         Vec4::ZERO
@@ -567,56 +619,6 @@ impl DomainSpace for EuclideanR4 {
             offset.length_squared() - radius * radius,
         )
     }
-
-    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
-        self.iso_of(pose)
-    }
-
-    fn place(
-        &self,
-        placement: &Self::Placement,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place(self, placement, local)
-    }
-
-    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
-        homogeneous_local(self, pose, point)
-    }
-
-    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
-        homogeneous_relative(self, eye, pose)
-    }
-
-    fn place_relative(
-        &self,
-        relative: &Self::Relative,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place_relative(self, relative, local)
-    }
-
-    fn carry(
-        &self,
-        pose: &Pose<Self>,
-        local: Self::Point,
-        tangent: Self::Vector,
-    ) -> Result<Self::Vector, DomainError> {
-        homogeneous_carry(self, pose, local, tangent)
-    }
-
-    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
-        homogeneous_moved(self, pose, to)
-    }
-
-    fn walk(
-        &self,
-        pose: &Pose<Self>,
-        tangent: Self::Vector,
-        dt: f32,
-    ) -> Result<Pose<Self>, DomainError> {
-        homogeneous_walk(self, pose, tangent, dt)
-    }
 }
 
 impl Homogeneous for EuclideanR4 {
@@ -646,9 +648,7 @@ impl From<Iso4Flat> for Pose<EuclideanR4> {
 }
 
 impl DomainSpace for HyperbolicH3 {
-    type Placement = Iso3H;
-
-    type Relative = Iso3H;
+    homogeneous_capabilities!();
 
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
@@ -741,56 +741,6 @@ impl DomainSpace for HyperbolicH3 {
         }
         Some(entry)
     }
-
-    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
-        self.iso_of(pose)
-    }
-
-    fn place(
-        &self,
-        placement: &Self::Placement,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place(self, placement, local)
-    }
-
-    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
-        homogeneous_local(self, pose, point)
-    }
-
-    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
-        homogeneous_relative(self, eye, pose)
-    }
-
-    fn place_relative(
-        &self,
-        relative: &Self::Relative,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place_relative(self, relative, local)
-    }
-
-    fn carry(
-        &self,
-        pose: &Pose<Self>,
-        local: Self::Point,
-        tangent: Self::Vector,
-    ) -> Result<Self::Vector, DomainError> {
-        homogeneous_carry(self, pose, local, tangent)
-    }
-
-    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
-        homogeneous_moved(self, pose, to)
-    }
-
-    fn walk(
-        &self,
-        pose: &Pose<Self>,
-        tangent: Self::Vector,
-        dt: f32,
-    ) -> Result<Pose<Self>, DomainError> {
-        homogeneous_walk(self, pose, tangent, dt)
-    }
 }
 
 impl Homogeneous for HyperbolicH3 {
@@ -817,9 +767,7 @@ impl From<Iso3H> for Pose<HyperbolicH3> {
 }
 
 impl DomainSpace for EuclideanR3 {
-    type Placement = Iso3;
-
-    type Relative = Iso3;
+    homogeneous_capabilities!();
 
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
@@ -878,56 +826,6 @@ impl DomainSpace for EuclideanR3 {
             offset.dot(ray.direction),
             offset.length_squared() - radius * radius,
         )
-    }
-
-    fn prepare(&self, pose: &Pose<Self>) -> Self::Placement {
-        self.iso_of(pose)
-    }
-
-    fn place(
-        &self,
-        placement: &Self::Placement,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place(self, placement, local)
-    }
-
-    fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
-        homogeneous_local(self, pose, point)
-    }
-
-    fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError> {
-        homogeneous_relative(self, eye, pose)
-    }
-
-    fn place_relative(
-        &self,
-        relative: &Self::Relative,
-        local: Self::Point,
-    ) -> Result<Self::Point, DomainError> {
-        homogeneous_place_relative(self, relative, local)
-    }
-
-    fn carry(
-        &self,
-        pose: &Pose<Self>,
-        local: Self::Point,
-        tangent: Self::Vector,
-    ) -> Result<Self::Vector, DomainError> {
-        homogeneous_carry(self, pose, local, tangent)
-    }
-
-    fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
-        homogeneous_moved(self, pose, to)
-    }
-
-    fn walk(
-        &self,
-        pose: &Pose<Self>,
-        tangent: Self::Vector,
-        dt: f32,
-    ) -> Result<Pose<Self>, DomainError> {
-        homogeneous_walk(self, pose, tangent, dt)
     }
 }
 
