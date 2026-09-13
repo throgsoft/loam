@@ -25,7 +25,7 @@ impl Space for SphericalS3Embedded {
     type Frame = Iso4;
 
     fn frame_at(&self, at: Vec4) -> Iso4 {
-        Iso4::from_translation(at.truncate())
+        Iso4::left_translation(at)
     }
 
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {

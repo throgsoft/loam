@@ -237,7 +237,7 @@ fn touching_under_the_quotient(world: &World<SeamR2>, ids: &[BodyId]) -> Vec<Pai
 
 #[test]
 fn an_unknown_bound_keeps_the_pair_a_flat_sweep_prunes_across_the_seam() {
-    let (unknown, ids) = seam_world(BroadphaseBound::Unknown);
+    let (mut unknown, ids) = seam_world(BroadphaseBound::Unknown);
     let seam = key(ids[0], ids[1]);
     let inside = key(ids[2], ids[3]);
 
@@ -249,15 +249,17 @@ fn an_unknown_bound_keeps_the_pair_a_flat_sweep_prunes_across_the_seam() {
         "the fixture must have one seam-crossing overlap and one ordinary one"
     );
 
-    let unpruned = unknown.broadphase();
+    let mut unpruned = Vec::new();
+    unknown.broadphase_into(&mut unpruned);
     assert_eq!(
         unpruned,
         every_pair(&ids),
         "an unknown bound must leave every pair a candidate"
     );
 
-    let (certified, _) = seam_world(BroadphaseBound::Certified);
-    let swept = certified.broadphase();
+    let (mut certified, _) = seam_world(BroadphaseBound::Certified);
+    let mut swept = Vec::new();
+    certified.broadphase_into(&mut swept);
     assert!(
         swept.binary_search(&inside).is_ok(),
         "the certified sweep dropped a pair that overlaps inside the chart"
