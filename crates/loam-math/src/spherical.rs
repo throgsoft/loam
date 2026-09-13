@@ -89,6 +89,18 @@ impl Iso4 {
             ),
         }
     }
+
+    pub fn left_translation(point: Vec4) -> Self {
+        let (x, y, z, w) = (point.x, point.y, point.z, point.w);
+        Self {
+            matrix: Mat4::from_cols(
+                Vec4::new(w, z, -y, -x),
+                Vec4::new(-z, w, x, -y),
+                Vec4::new(y, -x, w, -z),
+                point,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
