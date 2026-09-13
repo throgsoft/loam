@@ -18,6 +18,9 @@ glam.workspace = true
 loam = { path = "../..", version = "0.1.0", default-features = false, features = ["app", "physics", "render", "text"] }
 loam-egui = { path = "../loam-egui", version = "0.1.0" }
 
+[dev-dependencies]
+loam-time = { path = "../loam-time", version = "0.1.0", default-features = false }
+
 [features]
 default = ["capture"]
 capture = ["loam/capture"]

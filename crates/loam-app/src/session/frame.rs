@@ -885,7 +885,7 @@ struct Fragment {
             },
         );
         session.set_initial().expect("initial state");
-        let epoch = session.scene().epoch;
+        let epoch = session.scene().epoch();
         let mut frame = Frame::new(session, app);
         frame
             .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
@@ -955,7 +955,7 @@ struct Fragment {
         assert_eq!(filled.load(Ordering::Relaxed), 2);
 
         assert_eq!(frame.phase_error(), None);
-        assert_eq!(frame.inner.session.scene().epoch, epoch.advance());
+        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
         assert_eq!(frame.inner.session.current_tick(), Tick(0));
         assert_eq!(filled.load(Ordering::Relaxed), 2);
         assert_eq!(frame.take_cursor_request(), Some(true));
@@ -965,7 +965,7 @@ struct Fragment {
             &texture,
             start + Duration::from_secs(60) + Duration::from_millis(1),
         );
-        assert_eq!(frame.inner.session.scene().epoch, epoch.advance());
+        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
     }
 
     #[test]
