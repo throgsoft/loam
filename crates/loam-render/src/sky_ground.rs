@@ -165,7 +165,7 @@ pub struct SkyGroundNode {
 }
 
 impl SkyGroundNode {
-    /// `depth_format` and `sample_count` must match the attachments passed to [`Self::record`], which owns the frame's color and depth clear.
+    /// `depth_format` must match the attachments passed to [`Self::record`], which owns the frame's color and depth clear.
     pub fn new(
         device: &Device,
         target_format: TextureFormat,

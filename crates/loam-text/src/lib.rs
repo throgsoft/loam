@@ -117,7 +117,6 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
-    /// `sample_count` must match the render target [`record`](TextRenderer::record) draws into, MSAA included.
     pub fn new(
         device: &Device,
         queue: &Queue,
@@ -319,7 +318,7 @@ impl TextRenderer {
         );
     }
 
-    /// Draws and clears the text queue; record the MSAA resolve after this pass.
+    /// Draws and clears the text queue.
     pub fn record(
         &mut self,
         device: &Device,

@@ -1,6 +1,5 @@
 //! wgpu rejects `MAP_READ | QUERY_RESOLVE` on one buffer and locks a whole
-//! buffer while any slice is mapped, so one resolve buffer feeds a map buffer
-//! per slot.
+//! buffer while any slice is mapped, so the resolve buffer copies into a map buffer.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

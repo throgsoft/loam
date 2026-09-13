@@ -365,7 +365,7 @@ impl RenderDevice {
         }
     }
 
-    /// Rebuilds the device, timer, and presentation targets.
+    /// Rebuilds the device and the presentation targets.
     pub async fn recover(&mut self) -> Result<()> {
         self.context.recover().await?;
         self.presentation.rebuild(&self.context.device, self.size);
@@ -380,7 +380,7 @@ impl RenderDevice {
         self.presentation.resize(&self.context.device, new_size);
     }
 
-    /// Scene-pass target priority: `msaa_view`, then this, then the swapchain view.
+    /// Scene-pass target priority: this, then the swapchain view.
     pub fn scene_view(&self) -> Option<&TextureView> {
         self.presentation.scene_target.as_ref().map(|t| &t.view)
     }

@@ -130,6 +130,7 @@ impl FramePass for PublishedLines {
 }
 
 pub struct Presenter {
+    uploads: u64,
     format: TextureFormat,
     depth: Option<DepthBuffer>,
     views: Rc<RefCell<Vec<ViewLines>>>,
@@ -149,6 +150,7 @@ impl Presenter {
         }))?;
         Ok(Self {
             format,
+            uploads: 0,
             depth: None,
             views,
             fills,
@@ -172,6 +174,10 @@ impl Presenter {
 
     pub fn register_pass(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {
         self.schedule.register(pass)
+    }
+
+    pub fn uploads(&self) -> u64 {
+        self.uploads
     }
 
     pub fn sections(&self) -> &[Section] {
@@ -207,6 +213,7 @@ impl Presenter {
             }
             slot.uploaded = Some(published);
             rebuilt = true;
+            self.uploads += 1;
             slot.upload_segments(device, queue, view.records.segments());
         }
         drop(line_views);
@@ -441,16 +448,29 @@ mod tests {
             "16 warmed publications asked the allocator for {published} bytes"
         );
 
+        present(&mut session, &mut records, &mut presenter, &mut encoder);
+        let before = presenter.uploads();
         let idle = loam_time::alloc::bytes_allocated_by(|| {
             for _ in 0..16 {
                 present(&mut session, &mut records, &mut presenter, &mut encoder);
             }
+            assert_eq!(
+                presenter.uploads(),
+                before,
+                "an idle presenter uploaded a view"
+            );
         });
         let busy = loam_time::alloc::bytes_allocated_by(|| {
             for _ in 0..16 {
                 spin(&mut session);
                 present(&mut session, &mut records, &mut presenter, &mut encoder);
             }
+            assert_eq!(
+                presenter.uploads(),
+                before + 16,
+                "sixteen changed publications uploaded the view {} times",
+                presenter.uploads() - before
+            );
         });
         assert!(
             idle < busy,

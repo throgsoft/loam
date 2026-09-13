@@ -51,7 +51,7 @@ pub enum PassExecutionError {
     },
 }
 
-/// The color and depth formats and sample count the presenter negotiated, handed to every pass at attach.
+/// The color and depth formats the presenter negotiated, handed to every pass at attach.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FrameFormat {
     pub color: TextureFormat,
