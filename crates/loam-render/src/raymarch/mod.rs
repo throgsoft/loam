@@ -132,19 +132,8 @@ pub struct RayMarchNode {
 }
 
 impl RayMarchNode {
-    pub fn new(
-        device: &Device,
-        surface_format: TextureFormat,
-        shader: &ShaderModule,
-        sample_count: u32,
-    ) -> Self {
-        Self::with_depth(
-            device,
-            surface_format,
-            shader,
-            crate::DepthMode::Off,
-            sample_count,
-        )
+    pub fn new(device: &Device, surface_format: TextureFormat, shader: &ShaderModule) -> Self {
+        Self::with_depth(device, surface_format, shader, crate::DepthMode::Off)
     }
 
     /// The user's `fs_main` writes [`crate::view`]'s projective depth as `frag_depth`.
@@ -153,7 +142,6 @@ impl RayMarchNode {
         surface_format: TextureFormat,
         shader: &ShaderModule,
         depth: crate::DepthMode,
-        sample_count: u32,
     ) -> Self {
         let uniform_buf = device.create_buffer(&BufferDescriptor {
             label: Some("raymarch uniforms"),
@@ -222,7 +210,7 @@ impl RayMarchNode {
                 bias: DepthBiasState::default(),
             }),
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,

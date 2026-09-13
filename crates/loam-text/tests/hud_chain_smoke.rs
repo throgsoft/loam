@@ -13,7 +13,7 @@ fn draw_hud_frame(
     view: &TextureView,
     font_bytes: &[u8],
 ) -> anyhow::Result<()> {
-    let mut text = TextRenderer::new(device, queue, TARGET_FORMAT, font_bytes, 48.0, 1)?;
+    let mut text = TextRenderer::new(device, queue, TARGET_FORMAT, font_bytes, 48.0)?;
     text.queue("fps 240", [16.0, 16.0], 32.0, [1.0, 1.0, 1.0, 1.0]);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("hud-chain-smoke frame"),

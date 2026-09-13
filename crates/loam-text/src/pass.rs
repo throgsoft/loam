@@ -123,7 +123,6 @@ impl FramePass for TextPass {
             frame.color,
             &state.font,
             state.bake_size_px,
-            frame.sample_count,
         )?);
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());

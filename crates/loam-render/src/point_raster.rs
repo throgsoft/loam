@@ -64,7 +64,6 @@ impl PointRasterNode {
         surface_format: TextureFormat,
         depth: crate::DepthMode,
         convention: crate::DepthConvention,
-        sample_count: u32,
     ) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("point_raster shader"),
@@ -176,7 +175,7 @@ impl PointRasterNode {
             },
             depth_stencil: depth_state(depth, convention),
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,

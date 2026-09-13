@@ -136,7 +136,6 @@ impl FramePass for PointPass {
             frame.color,
             DepthMode::Off,
             DepthConvention::ReversedZ,
-            frame.sample_count,
         ));
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());

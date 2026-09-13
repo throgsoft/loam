@@ -152,7 +152,6 @@ impl FramePass for HyperslicePass {
             DepthMode::ReadWrite {
                 format: frame.depth,
             },
-            frame.sample_count,
         ));
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());

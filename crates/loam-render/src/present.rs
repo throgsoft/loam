@@ -26,7 +26,7 @@ struct ViewLines {
 }
 
 impl ViewLines {
-    fn new(device: &Device, format: TextureFormat, sample_count: u32) -> Self {
+    fn new(device: &Device, format: TextureFormat) -> Self {
         Self {
             opaque: LineRasterNode::new(
                 device,
@@ -35,7 +35,6 @@ impl ViewLines {
                     format: DEPTH_FORMAT,
                 },
                 DepthConvention::ReversedZ,
-                sample_count,
             ),
             translucent: LineRasterNode::new(
                 device,
@@ -44,7 +43,6 @@ impl ViewLines {
                     format: DEPTH_FORMAT,
                 },
                 DepthConvention::ReversedZ,
-                sample_count,
             ),
             scratch: Vec::new(),
             uploaded: None,
@@ -123,7 +121,6 @@ impl FramePass for PublishedLines {
 
 pub struct Presenter {
     format: TextureFormat,
-    sample_count: u32,
     depth: Option<DepthBuffer>,
     views: Rc<RefCell<Vec<ViewLines>>>,
     fills: TriangleFeed,
@@ -132,7 +129,7 @@ pub struct Presenter {
 }
 
 impl Presenter {
-    pub fn new(format: TextureFormat, sample_count: u32) -> Result<Self, PassError> {
+    pub fn new(format: TextureFormat) -> Result<Self, PassError> {
         let fills = TriangleFeed::default();
         let views = Rc::new(RefCell::new(Vec::new()));
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
@@ -142,7 +139,6 @@ impl Presenter {
         }))?;
         Ok(Self {
             format,
-            sample_count,
             depth: None,
             views,
             fills,
@@ -160,7 +156,6 @@ impl Presenter {
             FrameFormat {
                 color: self.format,
                 depth: DEPTH_FORMAT,
-                sample_count: self.sample_count,
             },
         )
     }
@@ -189,7 +184,7 @@ impl Presenter {
         let _scope = loam_time::frame_trace::scope("present-upload");
         let mut line_views = self.views.borrow_mut();
         while line_views.len() < views.len() {
-            line_views.push(ViewLines::new(device, self.format, self.sample_count));
+            line_views.push(ViewLines::new(device, self.format));
         }
         line_views.truncate(views.len());
         let mut rebuilt = false;
@@ -240,13 +235,7 @@ impl Presenter {
         background: Color,
     ) -> Result<(), PassExecutionError> {
         self.schedule.begin_frame();
-        DepthBuffer::ensure(
-            &mut self.depth,
-            device,
-            DEPTH_FORMAT,
-            size,
-            self.sample_count,
-        );
+        DepthBuffer::ensure(&mut self.depth, device, DEPTH_FORMAT, size);
         let Some(depth) = self.depth.as_ref() else {
             return Ok(());
         };
@@ -445,7 +434,7 @@ mod tests {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         let mut records = Records::<Spun>::default();
         let eye = Eye::default();
         let spin = |session: &mut Session<Spun>| {
@@ -535,7 +524,7 @@ mod tests {
         });
 
         let (device, queue) = noop_device();
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         let mut records = Records::<Spun>::default();
         let eye = Eye::default();
         records.publish(&mut session).expect("published");
@@ -599,7 +588,7 @@ mod tests {
         }
 
         let (device, queue) = noop_device();
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         let mut records = Records::<Spun>::default();
         let eye = Eye::default();
         records.publish(&mut session).expect("published");
@@ -763,7 +752,7 @@ mod tests {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         presenter
             .register_pass(Box::new(Paint))
             .expect("registered");
@@ -811,7 +800,7 @@ mod tests {
             view_formats: &[],
         });
         let target = texture.create_view(&Default::default());
-        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm, 1).expect("presenter");
+        let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         presenter.attach(&gpu).expect("attached");
         let eye = Eye::default();
         let camera = crate::view::placed_view_projection(&eye, Rigid::IDENTITY);
@@ -823,7 +812,7 @@ mod tests {
             mesh.indices.push([0, 1, 2]);
         });
 
-        let mut translucent = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm, 1);
+        let mut translucent = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm);
         translucent.set_camera(&gpu.queue, camera, Vec2::splat(PROBE_SIZE as f32));
         translucent.upload_segments(
             &gpu.device,
@@ -837,7 +826,7 @@ mod tests {
                 ..Default::default()
             }],
         );
-        let mut opaque = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm, 1);
+        let mut opaque = ViewLines::new(&gpu.device, TextureFormat::Rgba8Unorm);
         opaque.set_camera(&gpu.queue, camera, Vec2::splat(PROBE_SIZE as f32));
         opaque.upload_segments(
             &gpu.device,

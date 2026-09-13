@@ -153,10 +153,7 @@ impl<A: Stores> Host<A> {
             }
         };
         {
-            let view = device
-                .msaa_view()
-                .or(device.scene_view())
-                .unwrap_or(&swap_view);
+            let view = device.scene_view().unwrap_or(&swap_view);
             let target = Target {
                 view,
                 texture: &frame_surface.texture,
@@ -164,9 +161,6 @@ impl<A: Stores> Host<A> {
                 size,
             };
             frame.step(&device.context, &target, now, |encoder| {
-                if device.sample_count() > 1 {
-                    device.resolve_scene_to_swap(encoder, &swap_view);
-                }
                 if device.scene_view().is_some() {
                     device.composite_to_swap(encoder, &swap_view);
                 }
@@ -247,7 +241,6 @@ impl<A: Stores> ApplicationHandler for Host<A> {
             surface,
             (size.width, size.height),
             FeatureRequest::default(),
-            1,
         ));
         let (surface, device) = match attached {
             Ok(attached) => attached,
@@ -256,7 +249,7 @@ impl<A: Stores> ApplicationHandler for Host<A> {
         let attached = self.frame.attach(
             &device.context,
             device.target_format(),
-            device.sample_count(),
+            1,
             Some(window.clone()),
             (size.width, size.height),
             window.scale_factor() as f32,

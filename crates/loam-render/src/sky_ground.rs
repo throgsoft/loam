@@ -171,7 +171,6 @@ impl SkyGroundNode {
         target_format: TextureFormat,
         depth_format: TextureFormat,
         convention: crate::DepthConvention,
-        sample_count: u32,
     ) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("sky_ground shader"),
@@ -248,7 +247,7 @@ impl SkyGroundNode {
                 bias: DepthBiasState::default(),
             }),
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,

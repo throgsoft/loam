@@ -124,7 +124,6 @@ impl TextRenderer {
         surface_format: TextureFormat,
         font_bytes: &[u8],
         bake_size_px: f32,
-        sample_count: u32,
     ) -> Result<Self> {
         validate_bake_size(bake_size_px)?;
         let font = FontRef::try_from_slice(font_bytes)
@@ -277,7 +276,7 @@ impl TextRenderer {
             },
             depth_stencil: None,
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,

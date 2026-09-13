@@ -90,12 +90,7 @@ impl FramePass for RaymarchPass {
                 label: Some("loam-render::passes::raymarch"),
                 source: wgpu::ShaderSource::Wgsl(state.source.clone().into()),
             });
-        state.node = Some(RayMarchNode::new(
-            &gpu.device,
-            frame.color,
-            &module,
-            frame.sample_count,
-        ));
+        state.node = Some(RayMarchNode::new(&gpu.device, frame.color, &module));
         state.queue = Some(gpu.queue.clone());
         Ok(())
     }

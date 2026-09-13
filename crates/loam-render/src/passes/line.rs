@@ -117,7 +117,6 @@ impl FramePass for LinePass {
                 format: frame.depth,
             },
             DepthConvention::ReversedZ,
-            frame.sample_count,
         ));
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());

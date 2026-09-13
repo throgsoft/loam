@@ -88,7 +88,7 @@ fn build_geodesic_node(
         label: Some("geodesic raymarch"),
         source: ShaderSource::Wgsl(source.into()),
     });
-    Ok(RayMarchNode::new(device, surface_format, &module, 1))
+    Ok(RayMarchNode::new(device, surface_format, &module))
 }
 
 fn build_raymarch_node(
@@ -105,7 +105,7 @@ fn build_raymarch_node(
         label: Some("scene raymarch"),
         source: ShaderSource::Wgsl(source.into()),
     });
-    Ok(RayMarchNode::new(device, surface_format, &module, 1))
+    Ok(RayMarchNode::new(device, surface_format, &module))
 }
 
 fn frame_uniforms() -> RayMarchUniforms {

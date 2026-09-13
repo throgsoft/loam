@@ -94,7 +94,6 @@ impl TriangleRasterNode {
         depth: crate::DepthMode,
         convention: crate::DepthConvention,
         shading: FragmentShading,
-        sample_count: u32,
     ) -> Result<Self, MissingGpuCapability> {
         let device = &gpu.device;
         let vertex_attrs = [
@@ -142,7 +141,7 @@ impl TriangleRasterNode {
             convention,
             standard_z_compare: CompareFunction::Less,
         };
-        let built = material.build(gpu, surface_format, sample_count)?;
+        let built = material.build(gpu, surface_format)?;
 
         let uniform_buf = device.create_buffer(&BufferDescriptor {
             label: Some("triangle_raster uniforms"),

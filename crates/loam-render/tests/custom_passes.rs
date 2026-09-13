@@ -144,7 +144,7 @@ fn target(device: &Device) -> TextureView {
 }
 
 fn presenter_on(gpu: &GpuContext) -> Presenter {
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
+    let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
     presenter.attach(gpu).expect("attach");
     presenter
 }
@@ -201,7 +201,7 @@ fn a_consumer_registered_first_is_recorded_after_the_pass_that_writes_its_input(
 fn without_a_timer_a_recorded_pass_reports_its_gpu_time_unavailable() {
     let gpu = noop_context();
     let view = target(&gpu.device);
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
+    let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
     presenter
         .register_pass(Box::new(Recorder {
             name: "overlay",
@@ -236,7 +236,7 @@ fn a_timed_pass_reports_a_positive_gpu_duration_gpu_probe() {
         .features()
         .contains(loam_render::device::GPU_TIMER_FEATURES);
     let view = target(&gpu.device);
-    let mut presenter = Presenter::new(COLOR_FORMAT, 1).expect("presenter");
+    let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
     presenter
         .register_pass(Box::new(Blit::default()))
         .expect("registered");

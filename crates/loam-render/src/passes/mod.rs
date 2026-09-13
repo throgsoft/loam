@@ -12,7 +12,7 @@ pub use sky_ground::SkyGroundPass;
 
 #[cfg(test)]
 mod tests {
-    use loam_runtime::{Eye, PointRecord, SegmentRecord};
+    use loam_runtime::{Eye, PointRecord};
     use wgpu::{
         BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
         TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
@@ -22,16 +22,13 @@ mod tests {
     use super::*;
     use crate::device::{FeatureRequest, GpuContext};
     use crate::pass::{FrameFormat, FramePass, FrameTarget, PassSchedule};
-    use crate::raymarch::{
-        polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
-    };
+    use crate::raymarch::{polytope_stub_sdfs_wgsl, BodyUniform, HYPERSLICE_KERNEL_WGSL};
     use crate::sky_ground::{Ground, DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
     use crate::view::DEPTH_FORMAT;
     use crate::DepthConvention;
 
     const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
     const SIZE: (u32, u32) = (32, 24);
-    const SAMPLES: u32 = 4;
 
     const EMPTY_SCENE: &str = r#"
 const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
@@ -79,15 +76,14 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             .expect("the noop backend always yields a context")
     }
 
-    fn frame(sample_count: u32) -> FrameFormat {
+    fn frame() -> FrameFormat {
         FrameFormat {
             color: FORMAT,
             depth: DEPTH_FORMAT,
-            sample_count,
         }
     }
 
-    fn attachment(gpu: &GpuContext, format: TextureFormat, sample_count: u32) -> TextureView {
+    fn attachment(gpu: &GpuContext, format: TextureFormat) -> TextureView {
         gpu.device
             .create_texture(&TextureDescriptor {
                 label: None,
@@ -97,7 +93,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
-                sample_count,
+                sample_count: 1,
                 dimension: TextureDimension::D2,
                 format,
                 usage: TextureUsages::RENDER_ATTACHMENT,
@@ -106,29 +102,9 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             .create_view(&TextureViewDescriptor::default())
     }
 
-    fn wrappers() -> Vec<Box<dyn FramePass>> {
-        let sky = SkyGroundPass::new(ground());
-        let hyperslice = HyperslicePass::new(kernel());
-        let line = LinePass::new("edges");
-        let point = PointPass::new("vertices");
-        sky.publish(&Eye::default(), ground());
-        hyperslice.publish(
-            Hyperslice4DUniforms::default(),
-            &[BodyUniform::sphere([0.0; 4], 0.5, [1.0; 3])],
-        );
-        line.publish(&Eye::default(), &[SegmentRecord::default()]);
-        point.publish(&Eye::default(), &[PointRecord::default()]);
-        vec![
-            Box::new(sky),
-            Box::new(hyperslice),
-            Box::new(line),
-            Box::new(point),
-        ]
-    }
-
-    fn record_once(gpu: &GpuContext, schedule: &mut PassSchedule, sample_count: u32) {
-        let color = attachment(gpu, FORMAT, sample_count);
-        let depth = attachment(gpu, DEPTH_FORMAT, sample_count);
+    fn record_once(gpu: &GpuContext, schedule: &mut PassSchedule) {
+        let color = attachment(gpu, FORMAT);
+        let depth = attachment(gpu, DEPTH_FORMAT);
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -186,32 +162,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     #[test]
-    fn a_wrapper_rebuilt_on_a_second_device_records_that_devices_resources_at_the_frames_sample_count(
-    ) {
-        let first = noop_gpu();
-        let second = noop_gpu();
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        for pass in wrappers() {
-            schedule.register(pass).expect("registered");
-        }
-
-        schedule
-            .attach(&first, frame(SAMPLES))
-            .expect("first attach");
-        record_once(&first, &mut schedule, SAMPLES);
-
-        schedule.attach(&second, frame(SAMPLES)).expect("recovery");
-        second
-            .device
-            .push_error_scope(wgpu::ErrorFilter::Validation);
-        record_once(&second, &mut schedule, SAMPLES);
-        let error = pollster::block_on(second.device.pop_error_scope());
-        assert!(
-            error.is_none(),
-            "a wrapper recorded the lost device's resources, or built at a sample count the frame does not use: {error:?}"
-        );
-    }
-    #[test]
     fn a_publish_that_changes_only_a_color_still_reaches_the_gpu() {
         let gpu = noop_gpu();
         let mut point = PointPass::new("vertices");
@@ -221,13 +171,13 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             color: [1.0, 0.0, 0.0, 1.0],
         };
         point.publish(&Eye::default(), &[record]);
-        point.attach(&gpu, frame(1)).expect("attach");
+        point.attach(&gpu, frame()).expect("attach");
 
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
         schedule
             .register(Box::new(point.clone()))
             .expect("registered");
-        record_once(&gpu, &mut schedule, 1);
+        record_once(&gpu, &mut schedule);
         let after_first = point.uploads();
 
         point.publish(
@@ -237,7 +187,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
                 ..record
             }],
         );
-        record_once(&gpu, &mut schedule, 1);
+        record_once(&gpu, &mut schedule);
         assert_eq!(
             point.uploads(),
             after_first + 1,

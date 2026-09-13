@@ -47,7 +47,6 @@ impl MaterialSpec<'_> {
         &self,
         gpu: &GpuContext,
         target: TextureFormat,
-        sample_count: u32,
     ) -> Result<MaterialPipeline, MissingGpuCapability> {
         let device = &gpu.device;
         self.features.resolve(device.features(), &device.limits())?;
@@ -103,7 +102,7 @@ impl MaterialSpec<'_> {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,
@@ -174,7 +173,7 @@ fn fs_probe() -> @location(0) vec4<f32> {
             optional_features: Features::empty(),
             required_limits: Limits::downlevel_webgl2_defaults(),
         })
-        .build(&gpu, TextureFormat::Rgba8Unorm, 1);
+        .build(&gpu, TextureFormat::Rgba8Unorm);
         assert_eq!(refused.err(), Some(MissingGpuCapability::Feature(wanted)));
     }
 }

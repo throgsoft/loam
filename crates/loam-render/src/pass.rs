@@ -51,12 +51,11 @@ pub enum PassExecutionError {
     },
 }
 
-/// The color and depth formats and sample count the presenter negotiated, handed to every pass at attach.
+/// The color and depth formats the presenter negotiated, handed to every pass at attach.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FrameFormat {
     pub color: TextureFormat,
     pub depth: TextureFormat,
-    pub sample_count: u32,
 }
 
 pub struct FrameTarget<'a> {
@@ -501,7 +500,6 @@ fn fragment() -> @location(0) vec4<f32> {
                 FrameFormat {
                     color: TextureFormat::Rgba8Unorm,
                     depth: TextureFormat::Depth32Float,
-                    sample_count: 1,
                 },
             )
             .unwrap_err();

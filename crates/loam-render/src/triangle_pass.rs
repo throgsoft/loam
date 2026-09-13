@@ -167,14 +167,12 @@ impl FramePass for TrianglePass {
             },
             DepthConvention::ReversedZ,
             self.shading,
-            frame.sample_count,
         )?;
         let sky_ground = SkyGroundNode::new(
             &gpu.device,
             frame.color,
             frame.depth,
             DepthConvention::ReversedZ,
-            frame.sample_count,
         );
         *self.built.borrow_mut() = Some(Built {
             device: gpu.device.clone(),
@@ -209,7 +207,6 @@ mod tests {
         FrameFormat {
             color: COLOR,
             depth: DEPTH_FORMAT,
-            sample_count: 1,
         }
     }
 

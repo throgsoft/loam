@@ -7,16 +7,10 @@ pub struct DepthBuffer {
     pub view: TextureView,
     pub format: TextureFormat,
     size: (u32, u32),
-    sample_count: u32,
 }
 
 impl DepthBuffer {
-    pub fn new(
-        device: &Device,
-        format: TextureFormat,
-        size: (u32, u32),
-        sample_count: u32,
-    ) -> Self {
+    pub fn new(device: &Device, format: TextureFormat, size: (u32, u32)) -> Self {
         let texture = device.create_texture(&TextureDescriptor {
             label: Some("loam-render DepthBuffer"),
             size: Extent3d {
@@ -25,19 +19,14 @@ impl DepthBuffer {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count,
+            sample_count: 1,
             dimension: TextureDimension::D2,
             format,
             usage: TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let view = texture.create_view(&TextureViewDescriptor::default());
-        Self {
-            view,
-            format,
-            size,
-            sample_count,
-        }
+        Self { view, format, size }
     }
 
     pub fn ensure(
@@ -45,14 +34,13 @@ impl DepthBuffer {
         device: &Device,
         format: TextureFormat,
         size: (u32, u32),
-        sample_count: u32,
     ) {
         let needs_recreate = match slot {
-            Some(b) => b.format != format || b.size != size || b.sample_count != sample_count,
+            Some(b) => b.format != format || b.size != size,
             None => true,
         };
         if needs_recreate {
-            *slot = Some(DepthBuffer::new(device, format, size, sample_count));
+            *slot = Some(DepthBuffer::new(device, format, size));
         }
     }
 }
