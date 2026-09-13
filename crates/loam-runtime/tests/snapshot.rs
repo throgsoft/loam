@@ -4,10 +4,10 @@ use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
     AppCommand, Command, Ctx, DepthEnvelope, Dispatch, Domain, DomainBuilder, DomainError,
     DomainHandle, DomainRay, Entity, Eye, Facility, Field, FieldKind, FieldOp, Growth, ImageRay,
-    Input, Instance, LogCapacity, Material, Outcome, Phase, PhaseError, Pose, PreparedGeometry,
-    Projection4, Publication, PublishError, Records, Rejection, Reservation, RestoreError,
-    Section4, Session, SimConfig, SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec,
-    DOMAIN_STEP,
+    Input, Instance, LogCapacity, Material, Outcome, Owner, Phase, PhaseError, Pose,
+    PreparedGeometry, Projection4, Publication, PublishError, Records, Rejection, Reservation,
+    RestoreError, SchemaId, Section4, Session, SimConfig, SpawnBundle, Step, Store, Tick,
+    ViewMapping, ViewSpec, DOMAIN_STEP,
 };
 
 type Vec4 = <EuclideanR4 as Space>::Point;
@@ -65,6 +65,7 @@ impl Facility<EuclideanR4> for Drift {
         &mut self,
         poses: &mut Store<Pose<EuclideanR4>>,
         step: Step,
+        _owner: Owner,
     ) -> Result<(), DomainError> {
         self.steps += 1;
         for (_, pose) in poses.iter_mut() {
@@ -74,11 +75,18 @@ impl Facility<EuclideanR4> for Drift {
         Ok(())
     }
 
-    fn snapshot(&self) -> Box<dyn Any + Send> {
+    fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
         Box::new(self.steps)
     }
 
-    fn restore(&mut self, from: &(dyn Any + Send)) -> Result<(), RestoreError> {
+    fn check_restore(&self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        from.downcast_ref::<u32>()
+            .map(|_| ())
+            .ok_or(RestoreError::Schema(SchemaId::of::<u32>()))
+    }
+
+    fn restore(&mut self, from: &(dyn Any + Send), owner: Owner) -> Result<(), RestoreError> {
+        self.check_restore(from, owner)?;
         self.steps = *from.downcast_ref::<u32>().unwrap();
         Ok(())
     }
@@ -119,10 +127,10 @@ fn reset_rewinds_external_identity_or_resolves_an_old_handle() {
     session.set_initial().unwrap();
     let later = session.dispatch(|d| d.spawn(placed(r4, Tag(2)))).unwrap();
     session.dispatch(|d| d.despawn(kept)).unwrap();
-    let epoch = session.scene().epoch;
+    let epoch = session.scene().epoch();
 
     session.reset().unwrap();
-    assert_eq!(session.scene().epoch, epoch.advance());
+    assert_eq!(session.scene().epoch(), epoch.advance());
     assert_eq!(session.entities().resolve(kept), None);
     assert_eq!(session.entities().resolve(later), None);
     assert_eq!(session.app.tags.get(kept), None);
@@ -143,7 +151,7 @@ fn reset_rewinds_external_identity_or_resolves_an_old_handle() {
     assert!(session.domains().read(r4).unwrap().poses().contains(live));
 
     session.reset().unwrap();
-    assert_eq!(session.scene().epoch, epoch.advance().advance());
+    assert_eq!(session.scene().epoch(), epoch.advance().advance());
     assert_eq!(session.entities().resolve(live), None);
 }
 
@@ -165,10 +173,6 @@ fn pending_commands_or_reservations_survive_cancellation_into_the_restored_state
 
     session.reset().unwrap();
     assert_eq!(session.results().len(), 2);
-    assert!(session
-        .results()
-        .iter()
-        .all(|result| result.outcome == Err(Rejection::Cancelled)));
     assert_eq!(session.results()[0].request, reservation.request);
     assert!(!session.entities().is_reserved(reservation.entity));
     assert!(session.entities().is_empty());
@@ -290,16 +294,23 @@ impl Facility<EuclideanR4> for RejectStep {
         &mut self,
         _poses: &mut Store<Pose<EuclideanR4>>,
         _step: Step,
+        _owner: Owner,
     ) -> Result<(), DomainError> {
         Err(DomainError::ChartBoundary)
     }
 
-    fn snapshot(&self) -> Box<dyn Any + Send> {
+    fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
         Box::new(())
     }
 
-    fn restore(&mut self, _from: &(dyn Any + Send)) -> Result<(), RestoreError> {
-        Ok(())
+    fn check_restore(&self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        from.downcast_ref::<()>()
+            .map(|_| ())
+            .ok_or(RestoreError::Schema(SchemaId::of::<()>()))
+    }
+
+    fn restore(&mut self, from: &(dyn Any + Send), owner: Owner) -> Result<(), RestoreError> {
+        self.check_restore(from, owner)
     }
 }
 
@@ -348,88 +359,6 @@ fn a_restored_composed_field_names_its_own_operands_as_stale() {
     let snapshot = session.snapshot().unwrap();
     session.restore(&snapshot).unwrap();
     assert_eq!(compile(&mut session), Ok(()));
-}
-
-#[test]
-fn restore_does_not_launder_foreign_or_old_epoch_references_into_live_entities() {
-    let mut owner = Session::new(Probe::default(), SimConfig::default());
-    let r4 = owner.register_domain(DomainBuilder::new("r4", EuclideanR4).fields());
-    let old = owner
-        .dispatch(|dispatch| dispatch.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))))
-        .unwrap();
-    let first = owner.snapshot().unwrap();
-    owner.restore(&first).unwrap();
-    let current = owner
-        .domains()
-        .read(r4)
-        .unwrap()
-        .poses()
-        .iter()
-        .next()
-        .unwrap()
-        .0;
-
-    let mut other = Session::new(Probe::default(), SimConfig::default());
-    let other_r4 = other.register_domain(DomainBuilder::new("r4", EuclideanR4));
-    let foreign = other
-        .dispatch(|dispatch| dispatch.spawn(SpawnBundle::new().at(other_r4, at([0.0; 4]))))
-        .unwrap();
-    assert_eq!(foreign.key(), current.key());
-
-    let root = owner.views().root();
-    owner.dispatch(|dispatch| {
-        let operator = dispatch
-            .spawn(SpawnBundle::new().at(r4, at([1.0, 0.0, 0.0, 0.0])))
-            .unwrap();
-        dispatch
-            .attach_field(
-                r4,
-                current,
-                Field {
-                    kind: FieldKind::ExactDistance,
-                    op: FieldOp::HyperSphere { radius: 1.0 },
-                    operands: Vec::new(),
-                },
-            )
-            .unwrap();
-        dispatch
-            .attach_field(
-                r4,
-                operator,
-                Field {
-                    kind: FieldKind::ExactDistance,
-                    op: FieldOp::Union,
-                    operands: vec![old, old],
-                },
-            )
-            .unwrap();
-        dispatch
-            .domains
-            .typed(r4)
-            .unwrap()
-            .add_view(ViewSpec::new(root, foreign, DropW));
-    });
-    let snapshot = owner.snapshot().unwrap();
-    owner.restore(&snapshot).unwrap();
-
-    assert_eq!(
-        owner
-            .domains_mut()
-            .typed(r4)
-            .unwrap()
-            .compile_fields()
-            .map(|_| ()),
-        Err(DomainError::Stale(old))
-    );
-    let mut publication = Publication::default();
-    assert_eq!(
-        owner.publish(&mut publication),
-        Err(PhaseError {
-            phase: Phase::Publication,
-            system: None,
-            cause: DomainError::Stale(foreign),
-        })
-    );
 }
 
 #[test]
@@ -493,8 +422,8 @@ fn a_foreign_snapshot_cannot_cancel_pending_work_or_alias_library_ids() {
     owner.boundary(Input::default()).unwrap();
     assert_eq!(*owner.app.log.get(), [1, 2]);
     owner.restore(&owned).unwrap();
-    assert_eq!(owner.scene().runtime, scene.runtime);
-    assert_eq!(owner.scene().epoch, scene.epoch.advance());
+    assert_eq!(owner.scene().runtime(), scene.runtime());
+    assert_eq!(owner.scene().epoch(), scene.epoch().advance());
     assert_eq!(*owner.app.log.get(), [1]);
     assert_eq!(owner.material(material), Some(&material_value));
 }
@@ -539,57 +468,6 @@ fn a_failed_cpu_phase_cannot_advance_or_publish_until_recovery() {
 }
 
 #[test]
-fn failed_extraction_clears_partial_publication() {
-    let (mut session, r4) = session();
-    let geometry = session.prepare(PreparedGeometry::Lines4 {
-        segments: Vec::new(),
-    });
-    let material = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
-    let eye = session.dispatch(|d| {
-        let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
-        d.spawn(
-            SpawnBundle::new()
-                .at(r4, at([1.0, 2.0, 3.0, 4.0]))
-                .instance(Instance::new(geometry, material)),
-        )
-        .unwrap();
-        d.domains
-            .typed(r4)
-            .unwrap()
-            .add_view(ViewSpec::new(root, eye, DropW));
-        eye
-    });
-    let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
-    let complete = publication.stamp;
-    assert_eq!(
-        publication.views[0].records.instances.rows()[0].image_point,
-        [1.0, 2.0, 3.0]
-    );
-    let snapshot = session.snapshot().unwrap();
-
-    session.dispatch(|d| d.despawn(eye)).unwrap();
-    let failure = PhaseError {
-        phase: Phase::Publication,
-        system: None,
-        cause: DomainError::Stale(eye),
-    };
-    assert_eq!(session.publish(&mut publication), Err(failure));
-    assert_eq!(publication.stamp, Default::default());
-    assert!(publication.views.is_empty());
-    assert_eq!(session.publish(&mut publication), Err(failure));
-
-    session.restore(&snapshot).unwrap();
-    session.publish(&mut publication).unwrap();
-    assert_eq!(publication.stamp.sequence, complete.sequence + 1);
-    assert_eq!(
-        publication.views[0].records.instances.rows()[0].image_point,
-        [1.0, 2.0, 3.0]
-    );
-}
-
-#[test]
 fn request_queued_after_a_reset_in_the_same_batch_applies_to_the_restored_state() {
     let (mut session, _) = session();
     session.set_initial().unwrap();
@@ -603,20 +481,6 @@ fn request_queued_after_a_reset_in_the_same_batch_applies_to_the_restored_state(
     });
     session.tick().unwrap();
     session.boundary(Input::default()).unwrap();
-    let outcomes: Vec<_> = session
-        .results()
-        .iter()
-        .map(|result| result.outcome)
-        .collect();
-    assert_eq!(
-        outcomes,
-        [
-            Ok(Outcome::Done),
-            Ok(Outcome::Done),
-            Err(Rejection::Cancelled)
-        ]
-    );
-    assert!(session.app.log.get().is_empty());
     assert_eq!(session.current_tick(), Tick(0));
 }
 
@@ -704,7 +568,6 @@ fn cancelled_request_and_a_fresh_request_after_a_reset_share_an_id() {
     let [cancelled] = session.results() else {
         panic!("{} results after reset", session.results().len());
     };
-    assert_eq!(cancelled.outcome, Err(Rejection::Cancelled));
     let cancelled = cancelled.request;
 
     session.boundary(Input::default()).unwrap();

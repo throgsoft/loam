@@ -1,20 +1,20 @@
 use crate::entity::{Entity, SceneId};
 use crate::relation::Relation;
-use crate::store::Store;
+use crate::store::{Owner, Store};
 
 /// The application's storage contract; only `Session` calls its lifetime hooks.
 pub trait Stores: Send + 'static {
     type Snapshot: Send + 'static;
 
-    fn bind(&mut self, scene: SceneId);
+    fn bind(&mut self, scene: SceneId, owner: Owner);
 
-    fn boundary(&mut self);
+    fn boundary(&mut self, owner: Owner);
 
-    fn release(&mut self, entity: Entity);
+    fn release(&mut self, entity: Entity, owner: Owner);
 
     fn snapshot(&self) -> Self::Snapshot;
 
-    fn restore(&mut self, from: &Self::Snapshot, scene: SceneId);
+    fn restore(&mut self, from: &Self::Snapshot, scene: SceneId, owner: Owner);
 }
 
 pub trait HasStore<T>: Stores {
@@ -79,16 +79,16 @@ macro_rules! stores {
             impl $crate::Stores for $name {
                 type Snapshot = Snapshot;
 
-                fn bind(&mut self, _scene: $crate::SceneId) {
-                    $( $crate::StoreField::bind(&mut self.$field, _scene); )*
+                fn bind(&mut self, _scene: $crate::SceneId, _owner: $crate::Owner) {
+                    $( $crate::StoreField::bind(&mut self.$field, _scene, _owner); )*
                 }
 
-                fn boundary(&mut self) {
-                    $( $crate::StoreField::boundary(&mut self.$field); )*
+                fn boundary(&mut self, _owner: $crate::Owner) {
+                    $( $crate::StoreField::boundary(&mut self.$field, _owner); )*
                 }
 
-                fn release(&mut self, _entity: $crate::Entity) {
-                    $( $crate::StoreField::release(&mut self.$field, _entity); )*
+                fn release(&mut self, _entity: $crate::Entity, _owner: $crate::Owner) {
+                    $( $crate::StoreField::release(&mut self.$field, _entity, _owner); )*
                 }
 
                 fn snapshot(&self) -> Snapshot {
@@ -97,8 +97,13 @@ macro_rules! stores {
                     }
                 }
 
-                fn restore(&mut self, _from: &Snapshot, _scene: $crate::SceneId) {
-                    $( $crate::StoreField::restore(&mut self.$field, &_from.$field, _scene); )*
+                fn restore(
+                    &mut self,
+                    _from: &Snapshot,
+                    _scene: $crate::SceneId,
+                    _owner: $crate::Owner,
+                ) {
+                    $( $crate::StoreField::restore(&mut self.$field, &_from.$field, _scene, _owner); )*
                 }
             }
 

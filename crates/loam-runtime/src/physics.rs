@@ -14,7 +14,7 @@ use crate::domain::{
 use crate::entity::{Entity, EntityKey, SceneId};
 use crate::phase::Step;
 use crate::session::RestoreError;
-use crate::store::{SchemaId, Store};
+use crate::store::{Owner, SchemaId, Store};
 
 #[derive(Clone, Copy)]
 pub struct GrabConfig<S: PhysicsSpace> {
@@ -640,11 +640,16 @@ where
         "physics"
     }
 
-    fn bind(&mut self, scene: SceneId) {
+    fn bind(&mut self, scene: SceneId, _owner: Owner) {
         self.scene = scene;
     }
 
-    fn step(&mut self, poses: &mut Store<Pose<S>>, step: Step) -> Result<(), DomainError> {
+    fn step(
+        &mut self,
+        poses: &mut Store<Pose<S>>,
+        step: Step,
+        _owner: Owner,
+    ) -> Result<(), DomainError> {
         if !step.dt.is_finite() || step.dt < 0.0 {
             return Err(EditError::InvalidTimeStep.into());
         }
@@ -659,7 +664,7 @@ where
         Ok(())
     }
 
-    fn synchronize(&mut self, poses: &mut Store<Pose<S>>) {
+    fn synchronize(&mut self, poses: &mut Store<Pose<S>>, _owner: Owner) {
         self.sync_poses(poses);
     }
 
@@ -668,6 +673,7 @@ where
         entity: Entity,
         pose: Pose<S>,
         poses: &mut Store<Pose<S>>,
+        _owner: Owner,
     ) -> Option<Result<(), DomainError>> {
         let id = self.body(entity)?;
         Some(
@@ -681,6 +687,7 @@ where
         entity: Entity,
         point: S::Point,
         poses: &mut Store<Pose<S>>,
+        _owner: Owner,
     ) -> Option<Result<(), DomainError>> {
         let id = self.body(entity)?;
         Some(
@@ -690,14 +697,14 @@ where
         )
     }
 
-    fn snapshot(&self) -> Box<dyn Any + Send> {
+    fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
         Box::new(PhysicsSnapshot::<S> {
             world: self.world.snapshot(),
             to_entity: self.to_entity.clone(),
         })
     }
 
-    fn check_restore(&self, from: &(dyn Any + Send)) -> Result<(), RestoreError> {
+    fn check_restore(&self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
         let from = from
             .downcast_ref::<PhysicsSnapshot<S>>()
             .ok_or_else(|| RestoreError::Schema(SchemaId::of::<PhysicsSnapshot<S>>()))?;
@@ -706,7 +713,7 @@ where
             .map_err(RestoreError::Edit)
     }
 
-    fn restore(&mut self, from: &(dyn Any + Send)) -> Result<(), RestoreError> {
+    fn restore(&mut self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
         let from = from
             .downcast_ref::<PhysicsSnapshot<S>>()
             .ok_or_else(|| RestoreError::Schema(SchemaId::of::<PhysicsSnapshot<S>>()))?;
@@ -734,7 +741,7 @@ where
         Ok(())
     }
 
-    fn release(&mut self, entity: Entity) {
+    fn release(&mut self, entity: Entity, _owner: Owner) {
         let _ = self.despawn(entity);
     }
 
@@ -742,6 +749,7 @@ where
         &mut self,
         command: &ChartCommand,
         poses: &mut Store<Pose<S>>,
+        _owner: Owner,
     ) -> Option<Result<Outcome, Rejection>> {
         match command {
             ChartCommand::Place { entity, pose } => {
@@ -817,12 +825,12 @@ where
 mod tests {
     use loam_math::{EuclideanR4, Rotor4};
     use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
+    use loam_time::alloc::bytes_allocated_by;
 
     use super::*;
-    use crate::domain::{Domain, DomainId};
+    use crate::domain::{DomainId, DomainOwner};
     use crate::entity::{Entities, Epoch, RuntimeId, SceneId};
     use crate::phase::Tick;
-    use crate::store::tests::alloc_probe::bytes_allocated_by;
     use crate::store::DEFAULT_LOG_CAPACITY;
     use crate::view::Vec4;
 

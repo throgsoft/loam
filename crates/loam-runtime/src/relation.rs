@@ -1,5 +1,5 @@
 use crate::entity::{Entities, Entity, SceneId};
-use crate::store::{StoreError, StoreField};
+use crate::store::{Owner, StoreError, StoreField};
 
 /// Resolves to its original link or fails: after unlink, after a restore, in another session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -281,7 +281,7 @@ impl<T> RelationSnapshot<T> {
 impl<T: Clone + Send + 'static> StoreField for Relation<T> {
     type Snapshot = RelationSnapshot<T>;
 
-    fn bind(&mut self, scene: SceneId) {
+    fn bind(&mut self, scene: SceneId, _owner: Owner) {
         self.scene = scene;
     }
 
@@ -291,7 +291,7 @@ impl<T: Clone + Send + 'static> StoreField for Relation<T> {
         }
     }
 
-    fn restore(&mut self, from: &RelationSnapshot<T>, scene: SceneId) {
+    fn restore(&mut self, from: &RelationSnapshot<T>, scene: SceneId, _owner: Owner) {
         self.scene = scene;
         self.links.clear();
         self.ids.clear();
@@ -299,14 +299,47 @@ impl<T: Clone + Send + 'static> StoreField for Relation<T> {
         self.slots.clear();
         self.free.clear();
         self.adjacency.clear();
-        for link in &from.links {
-            let from = Entity::new(scene, link.from.key());
-            let to = Entity::new(scene, link.to.key());
-            let _ = self.link_raw(from, to, link.data.clone());
+        for (dense, link) in from.links.iter().enumerate() {
+            let ends = [
+                Entity::new(scene, link.from.key()),
+                Entity::new(scene, link.to.key()),
+            ];
+            let id = LinkId {
+                scene,
+                slot: dense as u32,
+                generation: 0,
+            };
+            self.slots.push(LinkSlot {
+                generation: 0,
+                dense: Some(dense as u32),
+            });
+            for endpoint in ends {
+                let slot = endpoint.key().slot() as usize;
+                if slot >= self.adjacency.len() {
+                    self.adjacency.resize_with(slot + 1, Adjacency::default);
+                }
+                self.adjacency[slot].generation = endpoint.key().generation();
+            }
+            let outgoing = &mut self.adjacency[ends[0].key().slot() as usize].outgoing;
+            let out_position = outgoing.len() as u32;
+            outgoing.push(id);
+            let incoming = &mut self.adjacency[ends[1].key().slot() as usize].incoming;
+            let in_position = incoming.len() as u32;
+            incoming.push(id);
+            self.links.push(Link {
+                from: ends[0],
+                to: ends[1],
+                data: link.data.clone(),
+            });
+            self.ids.push(id);
+            self.ends.push(Ends {
+                outgoing: out_position,
+                incoming: in_position,
+            });
         }
     }
 
-    fn release(&mut self, entity: Entity) {
+    fn release(&mut self, entity: Entity, _owner: Owner) {
         while let Some(id) = self
             .outgoing(entity)
             .next()
@@ -337,7 +370,7 @@ mod tests {
             epoch: Epoch::default(),
         });
         let mut relation = Relation::new();
-        relation.bind(entities.scene());
+        StoreField::bind(&mut relation, entities.scene(), Owner::new());
         let [a, b, c] = [(); 3].map(|()| entities.spawn());
         let ab = relation.link(&entities, a, b, "ab").unwrap();
         let ac = relation.link(&entities, a, c, "ac").unwrap();
@@ -371,7 +404,7 @@ mod tests {
             epoch: Epoch::default(),
         });
         let mut relation = Relation::new();
-        relation.bind(entities.scene());
+        StoreField::bind(&mut relation, entities.scene(), Owner::new());
         let [a, b, c] = [(); 3].map(|()| entities.spawn());
         let ab = relation.link(&entities, a, b, "before").unwrap();
 
