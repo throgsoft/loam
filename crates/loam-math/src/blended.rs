@@ -228,30 +228,12 @@ fn transport_rhs(gradient: Vec3, tangent: Vec3, v: Vec3) -> Vec3 {
     -(v * gradient.dot(tangent) + tangent * gradient.dot(v) - gradient * tangent.dot(v))
 }
 
-fn geodesic_fault<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
-    space: &S,
-    state: GeodesicState,
-    gradient: Vec3,
-    derivative: GeodesicDerivative,
-) -> Option<GeodesicError> {
-    if let Err(fault) = validate_geodesic_point(space, state.point) {
-        return Some(fault);
-    }
-    if !state.velocity.is_finite()
-        || !state.frame.is_finite()
-        || !gradient.is_finite()
-        || !derivative.velocity.is_finite()
-        || !derivative.frame.is_finite()
-    {
-        return Some(GeodesicError::NonFinite);
-    }
-    None
-}
-
+#[inline]
 fn geodesic_derivative<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
-    state: GeodesicState,
-) -> (GeodesicDerivative, Option<GeodesicError>) {
+    state: &GeodesicState,
+    fault: &mut Option<GeodesicError>,
+) -> GeodesicDerivative {
     let gradient = space.conformal_log_half_gradient(state.point);
     let velocity_squared = state.velocity.length_squared();
     let derivative = GeodesicDerivative {
@@ -264,8 +246,18 @@ fn geodesic_derivative<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
             transport_rhs(gradient, state.velocity, state.frame.z_axis),
         ),
     };
-    let fault = geodesic_fault(space, state, gradient, derivative);
-    (derivative, fault)
+    if fault.is_none() {
+        *fault = match validate_geodesic_point(space, state.point) {
+            Err(found) => Some(found),
+            Ok(()) => (!state.velocity.is_finite()
+                || !state.frame.is_finite()
+                || !gradient.is_finite()
+                || !derivative.velocity.is_finite()
+                || !derivative.frame.is_finite())
+            .then_some(GeodesicError::NonFinite),
+        };
+    }
+    derivative
 }
 
 fn advance_geodesic_state(
@@ -286,10 +278,19 @@ fn rk4_geodesic_frame_step<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     state: GeodesicState,
     h: f32,
 ) -> (GeodesicState, Option<GeodesicError>) {
-    let (k1, fault1) = geodesic_derivative(space, state);
-    let (k2, fault2) = geodesic_derivative(space, advance_geodesic_state(state, k1, h * 0.5));
-    let (k3, fault3) = geodesic_derivative(space, advance_geodesic_state(state, k2, h * 0.5));
-    let (k4, fault4) = geodesic_derivative(space, advance_geodesic_state(state, k3, h));
+    let mut fault = None;
+    let k1 = geodesic_derivative(space, &state, &mut fault);
+    let k2 = geodesic_derivative(
+        space,
+        &advance_geodesic_state(state, k1, h * 0.5),
+        &mut fault,
+    );
+    let k3 = geodesic_derivative(
+        space,
+        &advance_geodesic_state(state, k2, h * 0.5),
+        &mut fault,
+    );
+    let k4 = geodesic_derivative(space, &advance_geodesic_state(state, k3, h), &mut fault);
     let point = state.point + (k1.point + k2.point * 2.0 + k3.point * 2.0 + k4.point) * (h / 6.0);
     let velocity = state.velocity
         + (k1.velocity + k2.velocity * 2.0 + k3.velocity * 2.0 + k4.velocity) * (h / 6.0);
@@ -300,8 +301,8 @@ fn rk4_geodesic_frame_step<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
         frame,
         estimated_error: state.estimated_error,
     };
-    let (_, fault5) = geodesic_derivative(space, next);
-    (next, fault1.or(fault2).or(fault3).or(fault4).or(fault5))
+    geodesic_derivative(space, &next, &mut fault);
+    (next, fault)
 }
 
 fn geodesic_state_error<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
