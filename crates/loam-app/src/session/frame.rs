@@ -235,6 +235,23 @@ impl<A: Stores> Frame<A> {
         now: Instant,
         finish: impl FnMut(&mut CommandEncoder),
     ) -> Result<(), HostError> {
+        let outcome = self.stepped(gpu, target, now, finish);
+        if let Err(error) = &outcome {
+            self.inner
+                .app
+                .console
+                .note(format!("frame failed: {error}"));
+        }
+        outcome
+    }
+
+    fn stepped(
+        &mut self,
+        gpu: &GpuContext,
+        target: &Target<'_>,
+        now: Instant,
+        finish: impl FnMut(&mut CommandEncoder),
+    ) -> Result<(), HostError> {
         gpu.device.poll(wgpu::PollType::Poll).map_err(failed)?;
         if let Some(error) = gpu.take_uncaptured_error() {
             return Err(failed(error));
@@ -469,6 +486,7 @@ impl<A: Stores> Inner<A> {
         gpu.queue
             .submit(self.callbacks.drain(..).chain(Some(encoder.finish())));
         presenter.after_submit();
+        crate::trace::record_presentation(presenter.sections(), presenter.uploads());
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         self.consume_capture(&gpu.device, now, pre, post);
         Ok(())

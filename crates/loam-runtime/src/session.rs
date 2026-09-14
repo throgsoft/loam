@@ -26,7 +26,6 @@ pub struct SimConfig {
 }
 
 impl SimConfig {
-    /// Refuses a catch-up of zero, which would stop ticking with no way to resume.
     pub fn new(fixed_hz: u32, max_ticks_per_frame: u32) -> Result<Self, SimConfigError> {
         let config = Self {
             fixed_hz,
