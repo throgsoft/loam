@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::bridge::Bridge;
 use crate::domain::{
     ChartCommand, ChartPose, DomainError, DomainHandle, DomainId, DomainSpace, Domains, Field,
@@ -21,6 +23,15 @@ pub enum Outcome {
     Spawned(Entity),
 }
 
+impl fmt::Display for Outcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Done => f.write_str("done"),
+            Self::Spawned(entity) => write!(f, "spawned {entity}"),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {
     Reserved(Entity),
@@ -33,6 +44,22 @@ pub enum Rejection {
     /// A world-owned edit refused the command before any change.
     #[cfg(feature = "physics")]
     Edit(loam_physics::EditError),
+}
+
+impl fmt::Display for Rejection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reserved(entity) => write!(f, "{entity} is still reserved"),
+            Self::Capacity => f.write_str("the queue is full"),
+            Self::Domain(error) => fmt::Display::fmt(error, f),
+            Self::Store(error) => fmt::Display::fmt(error, f),
+            Self::Restore(error) => fmt::Display::fmt(error, f),
+            Self::Cancelled => f.write_str("cancelled by a reset"),
+            Self::Unsupported(what) => f.write_str(what),
+            #[cfg(feature = "physics")]
+            Self::Edit(error) => fmt::Display::fmt(error, f),
+        }
+    }
 }
 
 impl From<DomainError> for Rejection {

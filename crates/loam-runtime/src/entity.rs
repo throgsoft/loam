@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::command::Rejection;
@@ -70,6 +71,12 @@ impl EntityKey {
     }
 }
 
+impl fmt::Display for EntityKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "entity {} gen {}", self.slot, self.generation)
+    }
+}
+
 /// Resolves to its original object or fails: after a restore, in another session, after despawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Entity {
@@ -88,6 +95,12 @@ impl Entity {
 
     pub fn key(self) -> EntityKey {
         self.key
+    }
+}
+
+impl fmt::Display for Entity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.key, f)
     }
 }
 

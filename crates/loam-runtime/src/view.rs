@@ -3,6 +3,7 @@ use loam_math::hyperbolic::{klein_to_poincare, poincare_to_klein, H3_DEPTH_ENVEL
 use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Space};
 use loam_shape::polytope::SectionScratch;
 use loam_shape::{LineMesh, TriangleMesh};
+use std::fmt;
 use std::ops::{Deref, DerefMut, Range};
 use std::sync::Arc;
 
@@ -27,6 +28,12 @@ impl ViewId {
     }
 }
 
+impl fmt::Display for ViewId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "view {}", self.0)
+    }
+}
+
 /// A slot and a generation; a later `place` that reuses the slot makes the earlier id stale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageSpaceId {
@@ -37,6 +44,12 @@ pub struct ImageSpaceId {
 impl ImageSpaceId {
     pub fn index(self) -> usize {
         self.slot as usize
+    }
+}
+
+impl fmt::Display for ImageSpaceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "image space {} gen {}", self.slot, self.generation)
     }
 }
 

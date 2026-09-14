@@ -1,4 +1,5 @@
 use std::any::type_name;
+use std::fmt;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,6 +15,19 @@ pub enum StoreError {
     Missing(Entity),
     Unlinked(LinkId),
     Capacity,
+}
+
+impl fmt::Display for StoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Foreign(entity) => write!(f, "{entity} belongs to another session"),
+            Self::Stale(entity) => write!(f, "{entity} is stale"),
+            Self::Occupied(entity) => write!(f, "{entity} already has a row"),
+            Self::Missing(entity) => write!(f, "{entity} has no row"),
+            Self::Unlinked(link) => write!(f, "{link} is unlinked"),
+            Self::Capacity => f.write_str("the store is full"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]

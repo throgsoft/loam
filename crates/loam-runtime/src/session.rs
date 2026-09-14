@@ -308,6 +308,21 @@ pub enum RestoreError {
     Edit(loam_physics::EditError),
 }
 
+impl std::fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => f.write_str("deferred mutation is still pending"),
+            Self::Unfinished(phase) => write!(f, "the {phase:?} phase is unfinished"),
+            Self::NoInitial => f.write_str("no initial snapshot was captured"),
+            Self::ForeignRuntime => f.write_str("the snapshot belongs to another runtime"),
+            Self::Schema(schema) => write!(f, "no stored snapshot for {}", schema.name()),
+            Self::Domain(domain) => write!(f, "{domain} refused the snapshot"),
+            #[cfg(feature = "physics")]
+            Self::Edit(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Manipulation {
     drag: Option<Drag>,

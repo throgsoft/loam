@@ -48,6 +48,12 @@ impl DomainId {
     }
 }
 
+impl fmt::Display for DomainId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "domain {}", self.0)
+    }
+}
+
 /// Names one domain of one session for typed access.
 pub struct DomainHandle<S> {
     id: DomainId,
@@ -223,6 +229,31 @@ pub enum DomainError {
     FieldCycle(Entity),
     FieldArity(Entity),
     Restore(RestoreError),
+}
+
+impl fmt::Display for DomainError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ForeignRuntime => f.write_str("the handle belongs to another runtime"),
+            Self::UnknownDomain(domain) => write!(f, "no {domain} in this session"),
+            Self::UnknownDomainName(name) => write!(f, "no domain named {name}"),
+            Self::UnknownView(view) => write!(f, "no {view} in this session"),
+            Self::SpaceMismatch(domain) => write!(f, "{domain} has another space"),
+            Self::Stale(entity) => write!(f, "{entity} is stale"),
+            Self::Store(error) => fmt::Display::fmt(error, f),
+            Self::InvalidCoordinate(coordinate) => f.write_str(coordinate),
+            Self::InvalidFrame => f.write_str("the frame is not orthonormal"),
+            Self::ChartBoundary => f.write_str("the step left the chart"),
+            Self::NoConvergence => f.write_str("the transport did not converge"),
+            Self::ErrorBudget => f.write_str("the metric error budget was exceeded"),
+            #[cfg(feature = "physics")]
+            Self::Physics(error) => fmt::Display::fmt(error, f),
+            Self::Unsupported(what) => f.write_str(what),
+            Self::FieldCycle(entity) => write!(f, "{entity} closes a field cycle"),
+            Self::FieldArity(entity) => write!(f, "{entity} has the wrong operand count"),
+            Self::Restore(error) => fmt::Display::fmt(error, f),
+        }
+    }
 }
 
 #[cfg(feature = "physics")]
