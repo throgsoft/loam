@@ -1250,6 +1250,28 @@ mod tests {
     }
 
     #[test]
+    fn a_reset_before_any_action_leaves_every_action_working() {
+        let mut booted = one_slot();
+        booted.session.submit(Command::Reset);
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the reset applied");
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        assert_eq!(*booted.session.app.mode.get(), Mode::Toybox);
+        assert!(
+            booted.session.results()[0].outcome.is_ok(),
+            "the first action after a reset was refused: {:?}",
+            booted.session.results()[0].outcome
+        );
+    }
+
+    #[test]
     fn a_mode_command_lands_in_the_store_at_the_next_boundary() {
         let mut booted = one_slot();
         send(&mut booted, Action::Mode(Mode::Toybox));

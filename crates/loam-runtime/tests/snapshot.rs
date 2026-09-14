@@ -5,9 +5,9 @@ use loam_runtime::{
     AppCommand, Command, Ctx, DepthEnvelope, Dispatch, Domain, DomainBuilder, DomainError,
     DomainHandle, DomainRay, Entity, Eye, Facility, Field, FieldKind, FieldOp, Growth, ImageRay,
     Input, Instance, LogCapacity, Material, Outcome, Owner, Phase, PhaseError, Pose,
-    PreparedGeometry, Projection4, Publication, PublishError, Records, Rejection, Reservation,
-    RestoreError, SchemaId, Section4, Session, SimConfig, SpawnBundle, Step, Store, Tick,
-    ViewMapping, ViewSpec, DOMAIN_STEP,
+    PreparedGeometry, PreparedId, Projection4, Publication, PublishError, Records, Rejection,
+    Reservation, RestoreError, SchemaId, Section4, Session, SimConfig, SpawnBundle, Step, Store,
+    Tick, ViewMapping, ViewSpec, DOMAIN_STEP,
 };
 
 type Vec4 = <EuclideanR4 as Space>::Point;
@@ -22,6 +22,7 @@ loam_runtime::stores! {
         pairs: Relation<u8>,
         log: Value<Vec<u32>>,
         reserved: Value<Vec<Reservation>>,
+        prepared: Value<Option<PreparedId>>,
     }
 }
 
@@ -849,6 +850,63 @@ fn a_restore_that_fails_after_validation_blocks_the_session_until_one_succeeds()
     session.reset().unwrap();
     assert!(session.phase_error().is_none());
     session.tick().unwrap();
+}
+
+struct PrepareSegment;
+
+impl AppCommand<Probe> for PrepareSegment {
+    fn name(&self) -> &'static str {
+        "prepare"
+    }
+
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Probe>) -> Result<Outcome, Rejection> {
+        let id = dispatch.prepare(PreparedGeometry::Lines4 {
+            segments: vec![[[0.0; 4], [1.0, 0.0, 0.0, 0.0]]],
+        });
+        dispatch.app.prepared.set(Some(id));
+        Ok(Outcome::Done)
+    }
+}
+
+#[test]
+fn geometry_prepared_by_a_command_outlives_the_restore_that_follows_it() {
+    let (mut session, r4) = session();
+    let before = session.snapshot().unwrap();
+    session.submit(Command::App(Box::new(PrepareSegment)));
+    session.boundary(Input::default()).unwrap();
+    let id = session
+        .app
+        .prepared
+        .get()
+        .expect("the command prepared geometry");
+    assert!(session.prepared(id).is_some());
+
+    session.restore(&before).unwrap();
+    assert_eq!(*session.app.prepared.get(), None);
+    assert!(
+        session.prepared(id).is_some(),
+        "a restore invalidated a library id"
+    );
+
+    let material = session.add_material(Material::flat([1.0; 4]));
+    let root = session.views().root();
+    session.dispatch(|d| {
+        let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
+        d.spawn(
+            SpawnBundle::new()
+                .at(r4, at([0.0, 0.0, -2.0, 0.0]))
+                .instance(Instance::new(id, material)),
+        )
+        .unwrap();
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+            .unwrap();
+    });
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    assert_eq!(publication.views[0].records.instances.rows().len(), 1);
 }
 
 #[test]

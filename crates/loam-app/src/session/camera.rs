@@ -113,6 +113,49 @@ mod tests {
 
     use super::*;
 
+    loam_runtime::stores! {
+        #[derive(Default)]
+        pub struct Viewer {
+            camera: Value<Orbit>,
+        }
+    }
+
+    #[test]
+    fn a_reset_brings_the_orbit_camera_back_with_the_scene() {
+        use loam_runtime::{Input, Pointer, PointerButton, PointerPhase, Session, SimConfig};
+
+        let mut session = Session::new(Viewer::default(), SimConfig::default());
+        session.app.camera.set(Orbit::around([0.0; 3], 5.0));
+        orbit(&mut session, |app| app.camera.get_mut());
+        session.set_initial().unwrap();
+        session.boundary(Input::default()).unwrap();
+        let root = session.views().root();
+        let boot = session.views().get(root).unwrap().eye.position;
+
+        let drag = Input {
+            pointers: vec![Pointer {
+                id: 0,
+                button: Some(PointerButton::Secondary),
+                ndc: [0.0; 2],
+                delta: [40.0, 0.0],
+                phase: PointerPhase::Moved,
+                time: 0.0,
+            }],
+            ..Input::default()
+        };
+        session.boundary(drag).unwrap();
+        let turned = session.views().get(root).unwrap().eye.position;
+        assert_ne!(turned, boot, "a secondary drag left the orbit where it was");
+
+        session.reset().unwrap();
+        session.boundary(Input::default()).unwrap();
+        assert_eq!(
+            session.views().get(root).unwrap().eye.position,
+            boot,
+            "the reset did not bring the camera back"
+        );
+    }
+
     #[test]
     fn freecam_keeps_the_activation_heading_and_does_not_accelerate_diagonally() {
         let mut camera = FreeCamera {
