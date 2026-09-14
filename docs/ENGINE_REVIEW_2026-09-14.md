@@ -640,3 +640,49 @@ passing with zero failures. Prior evidence used as reported by the two reviewers
 per-crate test and clippy runs, the wasm32 clippy command, 25 `space_scene`
 probes, and 46 named GPU probes on a real adapter. Still owed by everyone: any
 browser execution, any benchmark result at this head, and any host observation.
+
+## Residual row, head e69d962
+
+The residuals the affected-contract review marked worth repairing landed as one
+row of three commits, merged as `d3a1e67`, with the lead's tests in `e69d962`.
+Nothing built but unused was deleted.
+
+- S1. `Frame::step` logs a failed frame through `tracing::error` with the pass
+  and phase intact. The console note is gone: no path could draw it after an
+  error that stops the host.
+- S9. `--headless=1200` runs headless like `--headless 1200`; `Args::flag_value`
+  reads either form and hero uses it.
+- R11. The root eye's aspect is repaired once more after publication, before
+  the presenter reads it, so a Publication-phase eye write no longer publishes a
+  stretched frame. Test: `a_publication_phase_eye_write_keeps_the_frame_aspect`.
+- S3. Only `Session::reset` arms the one-restore rule; a restore to a saved
+  snapshot leaves the next `Reset` live. Test:
+  `a_restore_to_a_saved_snapshot_does_not_swallow_the_next_reset`.
+- S6. `same_style` destructures `ViewStyle` with a full pattern, so a new field
+  fails to compile until the comparison names it.
+- R9. `spawn_body` reports a missing pose instead of a stale entity, and
+  `Domains::named` reports `AmbiguousDomainName` when two domains share a name.
+  Tests: `spawning_a_body_on_a_live_entity_without_a_pose_is_missing_not_stale`,
+  `a_domain_name_shared_by_two_domains_is_reported_as_ambiguous`.
+- S2 and S5. A pass's color load is fixed when the pass is built and is the
+  value its render pass opens with. `TriangleFeed::set_ground` refuses to add or
+  remove a ground once a pass exists (test:
+  `a_ground_cannot_appear_or_vanish_after_the_pass_declared_its_color_load`).
+  The Hyperslice pass declares and records a load in both of its modes, so the
+  filmstrip cells now show the sky-ground pass behind them rather than a flat
+  horizon clear. Hero draws its ground through a registered sky-ground pass in
+  the Background stage.
+- R20. `TextPass::attach` warns through tracing when a font does not parse.
+- R15. `--all-targets` on the wasm32 clippy job is not possible: the loam-app
+  bench and its native-only tests do not build for wasm32. The job lints the
+  library targets, as before.
+
+Accepted and recorded, not repaired: S4 and S7 (no production reader yet for
+the eye-scoped Klein envelope or for `tracks_changes`), S8 (a NaN vertex on an
+unreachable path), S10 and S11 (evidence gaps), R5's gross realloc charge, R14
+(the planned measurement), R23 (deferred to the scripting kickoff), R24 (kept
+by owner decision).
+
+One visual change for the owner to judge: the filmstrip background in the
+playground. Everything else in this row is pixel-neutral by construction and the
+headless outputs are unchanged.
