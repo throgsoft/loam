@@ -11,7 +11,7 @@ use loam_runtime::host::HostError;
 use loam_runtime::{PointerButton, Session, Stores};
 
 use super::app::SessionApp;
-use super::frame::{failed, Frame, Target};
+use super::frame::{failed, Frame};
 use super::input::{winit_alt, winit_key};
 use super::pacing::Pace;
 use super::surface::SurfaceHost;
@@ -134,40 +134,12 @@ impl<A: Stores> Host<A> {
             None => elwt.set_control_flow(ControlFlow::Poll),
         };
 
-        let (frame_surface, swap_view) = match surface.begin_frame() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                surface.reconfigure(&device.context.device);
-                return Ok(());
+        let window = window.as_deref();
+        surface.present(device, frame, now, |frame, stepped| {
+            if stepped {
+                Self::apply_cursor_request(frame, window);
             }
-            Err(wgpu::SurfaceError::Timeout) => {
-                tracing::warn!("surface frame timed out");
-                return Ok(());
-            }
-            Err(wgpu::SurfaceError::OutOfMemory) => {
-                return Err(failed("surface ran out of memory"));
-            }
-            Err(wgpu::SurfaceError::Other) => {
-                tracing::warn!("surface frame failed");
-                return Ok(());
-            }
-        };
-        {
-            let view = device.scene_view().unwrap_or(&swap_view);
-            let target = Target {
-                view,
-                texture: &frame_surface.texture,
-                format: surface.format(),
-                size,
-            };
-            frame.step(&device.context, &target, now, |encoder| {
-                if device.scene_view().is_some() {
-                    device.composite_to_swap(encoder, &swap_view);
-                }
-            })?;
-        }
-        Self::apply_cursor_request(frame, window.as_deref());
-        frame_surface.present();
+        })?;
         Ok(())
     }
 

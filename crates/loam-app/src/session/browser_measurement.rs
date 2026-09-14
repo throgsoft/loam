@@ -3,17 +3,10 @@ use crate::wasm::input_queue::InputMessage;
 use loam_runtime::PhaseError;
 use web_time::Instant;
 
+use crate::session::surface::Attempt;
+
 const MAX_SECONDS: u32 = 600;
 const SAMPLE_CAPACITY: usize = 60 * MAX_SECONDS as usize + 1;
-
-pub(super) enum Attempt {
-    Presented,
-    Paced,
-    EmptySurface,
-    ReconfiguredSurface,
-    TimedOutSurface,
-    FailedSurface,
-}
 
 #[derive(Clone, Copy)]
 enum Phase {

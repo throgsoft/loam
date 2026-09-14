@@ -15,10 +15,10 @@ use web_time::Instant;
 
 use super::animation::{self, Lifecycle, Next};
 use super::app::SessionApp;
-use super::frame::{failed, Frame, Target};
+use super::frame::{failed, Frame};
 use super::input::TouchCapture;
 use super::pacing::Pace;
-use super::surface::SurfaceHost;
+use super::surface::{Attempt, SurfaceHost};
 use crate::wasm::input_queue::{self, InputMessage};
 use crate::wasm::messages;
 use crate::wasm::{install_logging_idempotent, post_failure, worker_scope};
@@ -26,7 +26,7 @@ use crate::{args::Args, WasmConfig};
 
 #[path = "browser_measurement.rs"]
 mod measurement;
-use measurement::{Attempt, Probe};
+use measurement::Probe;
 
 pub fn launch<A: Stores>(
     factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
@@ -692,24 +692,6 @@ impl<A: Stores> Worker<A> {
         if size.0 == 0 || size.1 == 0 {
             return Ok(Attempt::EmptySurface);
         }
-        let (frame_surface, swap_view) = match self.surface.begin_frame() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.reconfigure(&self.rd.context.device);
-                return Ok(Attempt::ReconfiguredSurface);
-            }
-            Err(wgpu::SurfaceError::Timeout) => {
-                tracing::warn!("surface frame timed out");
-                return Ok(Attempt::TimedOutSurface);
-            }
-            Err(wgpu::SurfaceError::OutOfMemory) => {
-                return Err(failed("surface ran out of memory"));
-            }
-            Err(wgpu::SurfaceError::Other) => {
-                tracing::warn!("surface frame failed");
-                return Ok(Attempt::FailedSurface);
-            }
-        };
         let Worker {
             frame,
             surface,
@@ -717,26 +699,11 @@ impl<A: Stores> Worker<A> {
             scope,
             ..
         } = self;
-        {
-            let view = rd.scene_view().unwrap_or(&swap_view);
-            let target = Target {
-                view,
-                texture: &frame_surface.texture,
-                format: surface.format(),
-                size,
-            };
-            let result = frame.step(&rd.context, &target, now, |encoder| {
-                if rd.scene_view().is_some() {
-                    rd.composite_to_swap(encoder, &swap_view);
-                }
-            });
+        surface.present(rd, frame, now, |frame, _| {
             if let Some(locked) = frame.take_cursor_request() {
                 post_cursor_request(scope, locked);
             }
-            result?;
-        }
-        frame_surface.present();
-        Ok(Attempt::Presented)
+        })
     }
 
     fn flush_cursor_request(&mut self) {
