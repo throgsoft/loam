@@ -55,6 +55,16 @@ pub struct DomainHandle<S> {
     space: PhantomData<fn() -> S>,
 }
 
+impl<S> Default for DomainHandle<S> {
+    fn default() -> Self {
+        Self {
+            id: DomainId::new(0),
+            runtime: SceneId::UNBOUND.runtime(),
+            space: PhantomData,
+        }
+    }
+}
+
 impl<S> Clone for DomainHandle<S> {
     fn clone(&self) -> Self {
         *self

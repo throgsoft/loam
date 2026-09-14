@@ -1,7 +1,5 @@
 use loam::math::EuclideanR4;
-use loam::runtime::{
-    Dispatch, DomainHandle, EdgeShading, Instance, MaterialId, Pose, Rejection, SpawnBundle,
-};
+use loam::runtime::{Dispatch, DomainHandle, EdgeShading, Instance, Pose, Rejection, SpawnBundle};
 
 use crate::catalog::ShapeEntry;
 use crate::mode::Mode;
@@ -12,7 +10,6 @@ pub(crate) fn add_shape(
     domain: DomainHandle<EuclideanR4>,
     entry: ShapeEntry,
     card: Card,
-    cut: MaterialId,
 ) -> Result<(), Rejection> {
     if *dispatch.app.mode.get() != Mode::Rotate {
         return Err(Rejection::Unsupported("shapes can only be added in Rotate"));
@@ -37,7 +34,7 @@ pub(crate) fn add_shape(
         });
         bundle = bundle.instance(
             Instance::new(geometry, card.material)
-                .sectioned(cut)
+                .sectioned(card.cut)
                 .shaded(shading)
                 .line_style(display.wireframe_width_px, display.wireframe_opacity),
         );
