@@ -178,6 +178,54 @@ impl Library<'_> {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct Assets {
+    prepared: Vec<PreparedGeometry>,
+    materials: Vec<Material>,
+    palettes: Vec<Vec<[f32; 4]>>,
+}
+
+impl Assets {
+    pub(crate) fn prepare(&mut self, geometry: PreparedGeometry) -> PreparedId {
+        self.prepared.push(geometry);
+        PreparedId((self.prepared.len() - 1) as u32)
+    }
+
+    pub(crate) fn prepared(&self, id: PreparedId) -> Option<&PreparedGeometry> {
+        self.prepared.get(id.index())
+    }
+
+    pub(crate) fn add_palette(&mut self, colors: Vec<[f32; 4]>) -> PaletteId {
+        self.palettes.push(colors);
+        PaletteId((self.palettes.len() - 1) as u32)
+    }
+
+    pub(crate) fn palette(&self, id: PaletteId) -> Option<&[[f32; 4]]> {
+        self.palettes.get(id.index()).map(Vec::as_slice)
+    }
+
+    pub(crate) fn add_material(&mut self, material: Material) -> MaterialId {
+        self.materials.push(material);
+        MaterialId((self.materials.len() - 1) as u32)
+    }
+
+    pub(crate) fn material(&self, id: MaterialId) -> Option<&Material> {
+        self.materials.get(id.index())
+    }
+
+    pub(crate) fn geometry(&self) -> &[PreparedGeometry] {
+        &self.prepared
+    }
+
+    pub(crate) fn library(&self) -> Library<'_> {
+        Library {
+            geometry: &self.prepared,
+            materials: &self.materials,
+            palettes: &self.palettes,
+        }
+    }
+}
+
 pub struct PublishedView {
     pub domain: DomainId,
     pub target: ViewTarget,
@@ -427,9 +475,7 @@ pub struct Session<A: Stores> {
     batch: Vec<Request<A>>,
     results: Vec<CommandResult>,
     input: Input,
-    prepared: Vec<PreparedGeometry>,
-    materials: Vec<Material>,
-    palettes: Vec<Vec<[f32; 4]>>,
+    assets: Assets,
     config: SimConfig,
     tick: Tick,
     sequence: u64,
@@ -468,9 +514,7 @@ impl<A: Stores> Session<A> {
             batch: Vec::new(),
             results: Vec::new(),
             input: Input::default(),
-            prepared: Vec::new(),
-            materials: Vec::new(),
-            palettes: Vec::new(),
+            assets: Assets::default(),
             config,
             tick: Tick::default(),
             sequence: 0,
@@ -546,31 +590,28 @@ impl<A: Stores> Session<A> {
     }
 
     pub fn prepare(&mut self, geometry: PreparedGeometry) -> PreparedId {
-        self.prepared.push(geometry);
-        PreparedId((self.prepared.len() - 1) as u32)
+        self.assets.prepare(geometry)
     }
 
     pub fn prepared(&self, id: PreparedId) -> Option<&PreparedGeometry> {
-        self.prepared.get(id.index())
+        self.assets.prepared(id)
     }
 
     /// Two colors per prepared segment, start then end, read in the prepared geometry's own order; a segment past the palette's end keeps the material color.
     pub fn add_palette(&mut self, colors: Vec<[f32; 4]>) -> PaletteId {
-        self.palettes.push(colors);
-        PaletteId((self.palettes.len() - 1) as u32)
+        self.assets.add_palette(colors)
     }
 
     pub fn palette(&self, id: PaletteId) -> Option<&[[f32; 4]]> {
-        self.palettes.get(id.index()).map(Vec::as_slice)
+        self.assets.palette(id)
     }
 
     pub fn add_material(&mut self, material: Material) -> MaterialId {
-        self.materials.push(material);
-        MaterialId((self.materials.len() - 1) as u32)
+        self.assets.add_material(material)
     }
 
     pub fn material(&self, id: MaterialId) -> Option<&Material> {
-        self.materials.get(id.index())
+        self.assets.material(id)
     }
 
     pub fn system(&mut self, phase: Phase, name: &'static str, system: impl System<A>) {
@@ -601,6 +642,7 @@ impl<A: Stores> Session<A> {
                 &mut self.views,
                 self.commands.entities_mut(),
                 &mut self.bridges,
+                &mut self.assets,
             );
             f(&mut dispatch)
         };
@@ -670,7 +712,7 @@ impl<A: Stores> Session<A> {
         self.manipulation.grab(
             &self.domains,
             &self.views,
-            &self.prepared,
+            self.assets.geometry(),
             &mut self.commands,
             ndc,
             time,
@@ -762,11 +804,7 @@ impl<A: Stores> Session<A> {
             sequence,
         };
         let extracted = (|| {
-            let library = Library {
-                geometry: &self.prepared,
-                materials: &self.materials,
-                palettes: &self.palettes,
-            };
+            let library = self.assets.library();
             let mut count = 0;
             for domain in self.domains.owned() {
                 for &target in domain.views() {
@@ -826,7 +864,7 @@ impl<A: Stores> Session<A> {
     }
 
     pub fn pick(&self, ndc: [f32; 2]) -> Option<Pick> {
-        self.domains.pick(&self.views, &self.prepared, ndc)
+        self.domains.pick(&self.views, self.assets.geometry(), ndc)
     }
 
     /// `Unfinished` while a phase is incomplete and `Pending` while deferred mutation remains.
@@ -950,7 +988,7 @@ impl<A: Stores> Session<A> {
             commands,
             results,
             input,
-            prepared,
+            assets,
             manipulation,
             phase_error,
             ..
@@ -966,7 +1004,7 @@ impl<A: Stores> Session<A> {
             commands,
             results: results.as_slice(),
             input,
-            prepared: prepared.as_slice(),
+            prepared: assets.geometry(),
             step,
             manipulation,
         });
