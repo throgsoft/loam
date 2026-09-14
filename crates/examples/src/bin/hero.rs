@@ -883,7 +883,7 @@ fn main() -> ExitCode {
         },
         |args| {
             let steps = args
-                .bare_flag_value("headless")
+                .flag_value("headless")
                 .and_then(|count| count.parse::<u32>().ok())
                 .ok_or_else(|| refused("--headless needs a tick count"))?;
             let (mut session, scene) = build()?;

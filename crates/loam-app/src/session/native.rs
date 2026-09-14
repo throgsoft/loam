@@ -40,7 +40,7 @@ pub fn launch_or_headless<A: Stores>(
     install_tracing();
     crate::par_native::install();
     let args = Args::current();
-    if args.has_bare_flag("headless") {
+    if args.has_bare_flag("headless") || args.get("headless").is_some() {
         return headless(args);
     }
     run(args, factory)
