@@ -278,11 +278,18 @@ fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {
     return mag * d / n;
 }
 
-fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+fn loam_h3_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     let p_from_clamped = loam_clamp_to_ball(p_from);
     let p_to_clamped = loam_clamp_to_ball(p_to);
     let conformal = (1.0 - dot(p_to_clamped, p_to_clamped)) / (1.0 - dot(p_from_clamped, p_from_clamped));
     return conformal * loam_gyr_apply(p_to_clamped, -p_from_clamped, v);
+}
+
+struct LoamGeodesicStep { p: vec3<f32>, v: vec3<f32> }
+
+fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {
+    let next = loam_exp(p, v * s);
+    return LoamGeodesicStep(next, loam_h3_transport(p, next, v));
 }
 
 // Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7.

@@ -121,7 +121,10 @@ fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 { return length(a - b); }
 fn loam_origin_distance(p: vec3<f32>) -> f32 { return length(p); }
 fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> { return at + v; }
 fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> { return p_to - p_from; }
-fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> { return v; }
+struct LoamGeodesicStep { p: vec3<f32>, v: vec3<f32> }
+fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {
+    return LoamGeodesicStep(loam_exp(p, v * s), v);
+}
 "#;
 
 #[cfg(test)]

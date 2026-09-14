@@ -147,21 +147,7 @@ where
     }
 
     fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
-        parallel_transport_segment_rk4(self, from, to, v, PARALLEL_TRANSPORT_DEFAULT_STEPS)
-    }
-
-    fn parallel_transport_along(&self, path: &[Vec3], v: Vec3) -> Vec3 {
-        let mut current = v;
-        for w in path.windows(2) {
-            current = parallel_transport_segment_rk4(
-                self,
-                w[0],
-                w[1],
-                current,
-                PARALLEL_TRANSPORT_DEFAULT_STEPS,
-            );
-        }
-        current
+        transport_along_geodesic(self, from, to, v)
     }
 
     fn chart_envelope(&self) -> f32 {
@@ -561,51 +547,22 @@ pub fn rk4_geodesic<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     (state.point, state.velocity)
 }
 
-pub const PARALLEL_TRANSPORT_DEFAULT_STEPS: u32 = 8;
-
-// Wald, General Relativity, 1984, App. D.
-/// Integrates transport along the chart segment.
-pub fn parallel_transport_segment_rk4<S: ConformallyFlat>(
+fn transport_along_geodesic<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
-    p_from: Vec3,
-    p_to: Vec3,
+    from: Vec3,
+    to: Vec3,
     v: Vec3,
-    n_steps: u32,
 ) -> Vec3 {
-    let dgamma = p_to - p_from;
-    if dgamma.length_squared() < 1.0e-14 {
-        return v;
-    }
-    let h = 1.0 / n_steps as f32;
-
-    let rhs = |gamma_pt: Vec3, v_at_t: Vec3| -> Vec3 {
-        transport_rhs(space.conformal_log_half_gradient(gamma_pt), dgamma, v_at_t)
-    };
-
-    let mut v_curr = v;
-    for step in 0..n_steps {
-        let t = step as f32 * h;
-        let p_t = p_from + dgamma * t;
-        let p_t_half = p_from + dgamma * (t + h * 0.5);
-        let p_t_full = p_from + dgamma * (t + h);
-
-        let k1 = rhs(p_t, v_curr);
-        let k2 = rhs(p_t_half, v_curr + k1 * (h * 0.5));
-        let k3 = rhs(p_t_half, v_curr + k2 * (h * 0.5));
-        let k4 = rhs(p_t_full, v_curr + k3 * h);
-
-        let dv = (k1 + 2.0 * k2 + 2.0 * k3 + k4) * (h / 6.0);
-        if dv.is_finite() {
-            v_curr += dv;
-        } else {
-            tracing::warn!(
-                "parallel_transport_segment_rk4: non-finite Δv at step {step}; \
-                 stopping segment"
-            );
-            break;
-        }
-    }
-    v_curr
+    let tangent = gauss_newton_log(space, from, to, GEODESIC_DEFAULT_STEPS, LOG_MAX_ITERS);
+    let (state, _) = integrate_geodesic_frame(
+        space,
+        from,
+        tangent,
+        Mat3::IDENTITY,
+        GEODESIC_DEFAULT_STEPS,
+        None,
+    );
+    state.frame * v
 }
 
 pub const LOG_MAX_ITERS: u32 = 12;
@@ -777,7 +734,6 @@ const LOAM_BLENDED_X_START: f32 = {start:?};
 const LOAM_BLENDED_X_END:   f32 = {end:?};
 const LOAM_BLENDED_X_WIDTH: f32 = {width:?};
 const LOAM_BLENDED_RK4_SUB: i32 = 16;
-const LOAM_BLENDED_TRANSPORT_SUB: i32 = 8;
 
 fn loam_blended_alpha(p: vec3<f32>) -> f32 {{
     let raw_t = (p.x - LOAM_BLENDED_X_START) / LOAM_BLENDED_X_WIDTH;
@@ -866,32 +822,20 @@ fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
     return p;
 }}
 
-fn loam_blended_transport_rhs(p: vec3<f32>, gamma_dot: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
-    let g = loam_blended_grad_phi(p);
-    let g_dot_gd = dot(g, gamma_dot);
-    let g_dot_v  = dot(g, v);
-    let gd_dot_v = dot(gamma_dot, v);
-    return -(g_dot_gd * v + g_dot_v * gamma_dot - gd_dot_v * g);
-}}
+struct LoamGeodesicStep {{ p: vec3<f32>, v: vec3<f32> }}
 
-fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{
-
-    let dgamma = p_to - p_from;
-    if dot(dgamma, dgamma) < 1e-14 {{ return v; }}
-    let h = 1.0 / f32(LOAM_BLENDED_TRANSPORT_SUB);
-    var v_curr = v;
-    for (var step: i32 = 0; step < LOAM_BLENDED_TRANSPORT_SUB; step = step + 1) {{
-        let t = f32(step) * h;
-        let p_t      = p_from + dgamma * t;
-        let p_t_half = p_from + dgamma * (t + h * 0.5);
-        let p_t_full = p_from + dgamma * (t + h);
-        let k1 = loam_blended_transport_rhs(p_t,      dgamma, v_curr);
-        let k2 = loam_blended_transport_rhs(p_t_half, dgamma, v_curr + k1 * (h * 0.5));
-        let k3 = loam_blended_transport_rhs(p_t_half, dgamma, v_curr + k2 * (h * 0.5));
-        let k4 = loam_blended_transport_rhs(p_t_full, dgamma, v_curr + k3 * h);
-        v_curr = v_curr + (k1 + 2.0 * k2 + 2.0 * k3 + k4) * (h / 6.0);
+fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {{
+    let vs = v * s;
+    if dot(vs, vs) < 1e-14 {{ return LoamGeodesicStep(p, v); }}
+    var pp = p;
+    var vv = vs;
+    let h = 1.0 / f32(LOAM_BLENDED_RK4_SUB);
+    for (var i: i32 = 0; i < LOAM_BLENDED_RK4_SUB; i = i + 1) {{
+        let st = loam_blended_rk4_step(pp, vv, h);
+        pp = st.p;
+        vv = st.v;
     }}
-    return v_curr;
+    return LoamGeodesicStep(pp, vv / s);
 }}
 
 fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {{
@@ -1310,62 +1254,6 @@ mod tests {
         let p = Vec3::new(0.2, 0.1, 0.0);
         let v = gauss_newton_log(&HyperbolicH3, p, p, GEODESIC_DEFAULT_STEPS, LOG_MAX_ITERS);
         close(v.length(), 0.0, 1e-5);
-    }
-
-    #[test]
-    fn h3_transport_agrees_with_the_closed_form_by_a_vanishing_coefficient() {
-        use crate::{HyperbolicH3, Space};
-        let bases = [
-            Vec3::new(0.05, 0.0, 0.0),
-            Vec3::new(0.0, 0.12, -0.04),
-            Vec3::new(-0.2, 0.1, 0.15),
-        ];
-        let directions = [
-            Vec3::new(1.0, 0.6, 0.0).normalize(),
-            Vec3::new(-0.3, 1.0, 0.5).normalize(),
-            Vec3::new(0.2, -0.4, 1.0).normalize(),
-        ];
-        let tangents = [
-            Vec3::new(0.1, 0.0, 0.0),
-            Vec3::new(0.0, 0.07, 0.05),
-            Vec3::new(-0.06, 0.03, 0.08),
-        ];
-
-        let mut coefficients = Vec::new();
-        for h in [0.04_f32, 0.02, 0.01] {
-            let mut worst = 0.0_f32;
-            for from in bases {
-                for dir in directions {
-                    let to = from + dir * h;
-                    for v in tangents {
-                        let numerical = parallel_transport_segment_rk4(
-                            &HyperbolicH3,
-                            from,
-                            to,
-                            v,
-                            PARALLEL_TRANSPORT_DEFAULT_STEPS,
-                        );
-                        let closed_form = HyperbolicH3.parallel_transport(from, to, v);
-                        worst = worst.max((numerical - closed_form).length() / h);
-                    }
-                }
-            }
-            coefficients.push(worst);
-        }
-
-        assert!(
-            coefficients[2] <= 3.0e-4,
-            "the transport disagrees with the closed form by a coefficient of              {} at h = 0.01, which does not vanish with the step",
-            coefficients[2]
-        );
-        for pair in coefficients.windows(2) {
-            assert!(
-                pair[1] < pair[0] * 0.6,
-                "halving h moved the disagreement coefficient from {} to {},                  not the ~4x fall an O(h³) residual has: a term linear in h,                  i.e. a different connection, is the shape that does this",
-                pair[0],
-                pair[1]
-            );
-        }
     }
 
     #[test]
