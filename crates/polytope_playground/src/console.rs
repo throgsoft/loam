@@ -429,9 +429,12 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     use loam::app::args::Args;
     use loam::runtime::host::HostConfig;
-    use loam::runtime::{Eye, Input};
+    use loam::runtime::{Ctx, DomainError, Eye, Input, Phase, Publication};
 
     use super::*;
     use crate::catalog::DEFAULT_ROW;
@@ -483,5 +486,45 @@ mod tests {
         assert!(history
             .iter()
             .any(|line| line == "wireframe width: 3.00 px"));
+    }
+    #[test]
+    fn installed_playground_console_recovers_a_fault_at_ordinary_capacity() {
+        const ORDINARY_CAPACITY: usize = 1023;
+
+        let mut booted = boot(&DEFAULT_ROW[..1]).expect("the session boots");
+        let armed = Arc::new(AtomicBool::new(true));
+        let trip = armed.clone();
+        booted.session.system(
+            Phase::Publication,
+            "trip",
+            move |_ctx: Ctx<'_, Playground>| {
+                if trip.swap(false, Ordering::Relaxed) {
+                    return Err(DomainError::ChartBoundary);
+                }
+                Ok(())
+            },
+        );
+        let epoch = booted.session.scene().epoch();
+        let mut app = install(SessionApp::with_args(
+            HostConfig::new("console recovery test", bindings()),
+            Args::default(),
+        ));
+
+        let mut publication = Publication::default();
+        booted
+            .session
+            .publish(&mut publication)
+            .expect_err("the tripped system faults publication");
+
+        for _ in 0..ORDINARY_CAPACITY {
+            app.console_mut().execute("reset");
+        }
+        app.console_mut().execute("recover");
+        app.console_mut().dispatch_pending();
+        app.boundary(&mut booted.session, Input::default())
+            .expect("the host recovers");
+
+        assert_eq!(booted.session.faulted_phase(), None);
+        assert_eq!(booted.session.scene().epoch(), epoch.advance());
     }
 }

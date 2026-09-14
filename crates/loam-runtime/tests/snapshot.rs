@@ -850,3 +850,133 @@ fn a_restore_that_fails_after_validation_blocks_the_session_until_one_succeeds()
     assert!(session.phase_error().is_none());
     session.tick().unwrap();
 }
+
+#[test]
+fn restore_does_not_launder_foreign_or_old_epoch_references_into_live_entities() {
+    let mut owner = Session::new(Probe::default(), SimConfig::default());
+    let r4 = owner.register_domain(DomainBuilder::new("r4", EuclideanR4).fields());
+    let old = owner
+        .dispatch(|dispatch| dispatch.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))))
+        .unwrap();
+    let first = owner.snapshot().unwrap();
+    owner.restore(&first).unwrap();
+    let current = owner
+        .domains()
+        .read(r4)
+        .unwrap()
+        .poses()
+        .iter()
+        .next()
+        .unwrap()
+        .0;
+
+    let mut other = Session::new(Probe::default(), SimConfig::default());
+    let other_r4 = other.register_domain(DomainBuilder::new("r4", EuclideanR4));
+    let foreign = other
+        .dispatch(|dispatch| dispatch.spawn(SpawnBundle::new().at(other_r4, at([0.0; 4]))))
+        .unwrap();
+    assert_eq!(foreign.key(), current.key());
+
+    let root = owner.views().root();
+    owner.dispatch(|dispatch| {
+        let operator = dispatch
+            .spawn(SpawnBundle::new().at(r4, at([1.0, 0.0, 0.0, 0.0])))
+            .unwrap();
+        dispatch
+            .attach_field(
+                r4,
+                current,
+                Field {
+                    kind: FieldKind::ExactDistance,
+                    op: FieldOp::HyperSphere { radius: 1.0 },
+                    operands: Vec::new(),
+                },
+            )
+            .unwrap();
+        dispatch
+            .attach_field(
+                r4,
+                operator,
+                Field {
+                    kind: FieldKind::ExactDistance,
+                    op: FieldOp::Union,
+                    operands: vec![old, old],
+                },
+            )
+            .unwrap();
+        let domain = dispatch.domains.typed(r4).unwrap();
+        assert!(matches!(
+            domain.add_view(ViewSpec::new(root, foreign, DropW)),
+            Err(DomainError::Stale(eye)) if eye == foreign
+        ));
+        assert!(matches!(
+            domain.add_view(ViewSpec::new(root, old, DropW)),
+            Err(DomainError::Stale(eye)) if eye == old
+        ));
+        domain
+            .add_view(ViewSpec::new(root, current, DropW))
+            .unwrap();
+    });
+    let snapshot = owner.snapshot().unwrap();
+    owner.restore(&snapshot).unwrap();
+
+    assert_eq!(
+        owner
+            .domains_mut()
+            .typed(r4)
+            .unwrap()
+            .compile_fields()
+            .map(|_| ()),
+        Err(DomainError::Stale(old))
+    );
+}
+
+#[test]
+fn a_despawned_eye_publishes_an_empty_view_until_a_live_eye_is_set() {
+    let (mut session, r4) = session();
+    let geometry = session.prepare(PreparedGeometry::Lines4 {
+        segments: Vec::new(),
+    });
+    let material = session.add_material(Material::flat([1.0; 4]));
+    let root = session.views().root();
+    let (eye, spare, view) = session.dispatch(|d| {
+        let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
+        let spare = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
+        d.spawn(
+            SpawnBundle::new()
+                .at(r4, at([1.0, 2.0, 3.0, 4.0]))
+                .instance(Instance::new(geometry, material)),
+        )
+        .unwrap();
+        let view = d
+            .domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, DropW))
+            .unwrap();
+        (eye, spare, view)
+    });
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    assert_eq!(
+        publication.views[0].records.instances.rows()[0].image_point,
+        [1.0, 2.0, 3.0]
+    );
+
+    session.dispatch(|d| d.despawn(eye)).unwrap();
+    session.publish(&mut publication).unwrap();
+    assert!(publication.views[0].records.instances.rows().is_empty());
+    assert_eq!(session.faulted_phase(), None);
+
+    session
+        .domains_mut()
+        .typed(r4)
+        .unwrap()
+        .set_view_eye(view, spare)
+        .unwrap();
+    session.publish(&mut publication).unwrap();
+    assert_eq!(
+        publication.views[0].records.instances.rows()[0].image_point,
+        [1.0, 2.0, 3.0]
+    );
+}
