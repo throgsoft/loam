@@ -133,7 +133,8 @@ fn partial_blended_placement_is_refused_during_publication() {
             .domains
             .typed(blend)
             .unwrap()
-            .add_view(ViewSpec::new(root, eye, ChartIdentity));
+            .add_view(ViewSpec::new(root, eye, ChartIdentity))
+            .unwrap();
         object
     });
 
@@ -256,15 +257,16 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
         let eye3 = d
             .spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO)))
             .unwrap();
-        d.domains.typed(r4).unwrap().add_view(ViewSpec::new(
-            root,
-            eye4,
-            Projection4 { focal: 2.0 },
-        ));
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye4, Projection4 { focal: 2.0 }))
+            .unwrap();
         d.domains
             .typed(h3)
             .unwrap()
-            .add_view(ViewSpec::new(root, eye3, Klein));
+            .add_view(ViewSpec::new(root, eye3, Klein))
+            .unwrap();
         let object4 = d
             .spawn(
                 SpawnBundle::new()

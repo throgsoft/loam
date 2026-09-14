@@ -1062,7 +1062,7 @@ mod tests {
                 )?;
                 d.domains
                     .typed(r4)?
-                    .add_view(ViewSpec::new(root, eye, Section4 { w: at_w }));
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: at_w }))?;
                 Ok(())
             })
             .expect("the view registered");
@@ -1097,9 +1097,10 @@ mod tests {
                         .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, 0.0)))
                         .instance(Instance::new(geometry, body).sectioned(cut)),
                 )?;
-                Ok(d.domains
+                d.domains
                     .typed(r4)?
-                    .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 })))
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                    .map_err(Rejection::from)
             })
             .expect("the view registered");
         session.views_mut().root_mut().eye = Eye::default();
@@ -1318,9 +1319,9 @@ mod tests {
                         .instance(Instance::new(edges, white)),
                 )?;
                 let domain = d.domains.typed(r4)?;
-                let section = domain.add_view(ViewSpec::new(root, eye, Section4 { w: AT_W }));
+                let section = domain.add_view(ViewSpec::new(root, eye, Section4 { w: AT_W }))?;
                 let projection =
-                    domain.add_view(ViewSpec::new(root, eye, Projection4 { focal: FOCAL }));
+                    domain.add_view(ViewSpec::new(root, eye, Projection4 { focal: FOCAL }))?;
                 Ok((section, projection))
             })
             .expect("the two views registered");
@@ -1540,7 +1541,8 @@ mod tests {
                     .domains
                     .typed(r4)
                     .unwrap()
-                    .add_view(ViewSpec::new(root, eye, Flat));
+                    .add_view(ViewSpec::new(root, eye, Flat))
+                    .unwrap();
             });
             session
         };
@@ -1574,7 +1576,8 @@ mod tests {
             d.domains
                 .typed(r4)
                 .unwrap()
-                .add_view(ViewSpec::new(root, eye, Flat));
+                .add_view(ViewSpec::new(root, eye, Flat))
+                .unwrap();
             for value in 0..8 {
                 d.spawn(
                     SpawnBundle::new()

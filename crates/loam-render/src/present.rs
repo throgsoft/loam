@@ -372,11 +372,11 @@ mod tests {
             let eye = d
                 .spawn(SpawnBundle::new().at(r4, Pose::at(glam::Vec4::ZERO)))
                 .unwrap();
-            d.domains.typed(r4).unwrap().add_view(ViewSpec::new(
-                root,
-                eye,
-                Projection4 { focal: 2.0 },
-            ));
+            d.domains
+                .typed(r4)
+                .unwrap()
+                .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+                .unwrap();
             d.spawn(
                 SpawnBundle::new()
                     .at(r4, Pose::at(glam::Vec4::NEG_Z * 4.0))
@@ -504,8 +504,12 @@ mod tests {
             )
             .expect("the body spawned");
             let domain = d.domains.typed(r4).expect("the r4 domain");
-            let _: ViewId = domain.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
-            domain.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+            let _: ViewId = domain
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .expect("the first view");
+            domain
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .expect("the second view")
         });
 
         let (device, queue) = noop_device();
@@ -569,6 +573,7 @@ mod tests {
                     .typed(domain)
                     .expect("the domain")
                     .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+                    .expect("the view")
             });
         }
 

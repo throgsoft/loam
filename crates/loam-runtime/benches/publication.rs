@@ -85,7 +85,8 @@ impl LinesFixture {
                 .domains
                 .typed(domain)
                 .expect("R3 domain")
-                .add_view(ViewSpec::new(root, eye, Identity3));
+                .add_view(ViewSpec::new(root, eye, Identity3))
+                .expect("R3 view");
             (eye, entities)
         });
         Self {
@@ -219,7 +220,8 @@ impl SectionFixture {
                 .domains
                 .typed(domain)
                 .expect("R4 domain")
-                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .expect("R4 view");
             (eye, entities)
         });
         Self {

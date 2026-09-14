@@ -81,6 +81,7 @@ impl Stage {
                 .typed(r4)
                 .unwrap()
                 .add_view(ViewSpec::new(root, eye, mapping))
+                .unwrap()
         })
     }
 

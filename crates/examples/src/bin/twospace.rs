@@ -221,10 +221,10 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
             };
             d.domains
                 .typed(r4)?
-                .add_view(ViewSpec::new(root, walker4, projection));
+                .add_view(ViewSpec::new(root, walker4, projection))?;
             d.domains
                 .typed(h3)?
-                .add_view(ViewSpec::new(root, walker3, Klein));
+                .add_view(ViewSpec::new(root, walker3, Klein))?;
             let turn = Mat3::from_rotation_y(BLEND_TURN);
             let blend_eye = d.spawn(SpawnBundle::new().at(
                 blend,
@@ -241,7 +241,7 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
             let blend_view =
                 d.domains
                     .typed(blend)?
-                    .add_view(ViewSpec::new(root, blend_eye, ChartRelative));
+                    .add_view(ViewSpec::new(root, blend_eye, ChartRelative))?;
             let ball = match physics {
                 false => None,
                 true => {
@@ -438,11 +438,14 @@ fn bridged(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool,
     let refused = |what: &str, error: String| HostError::Host(format!("{what} refused: {error}"));
     let root = session.views().root();
     let section = session.dispatch(|d| -> Result<ViewId, Rejection> {
-        Ok(d.domains.typed(scene.r4)?.add_view(ViewSpec::new(
-            root,
-            scene.walker4,
-            Section4 { w: SECTION_W },
-        )))
+        d.domains
+            .typed(scene.r4)?
+            .add_view(ViewSpec::new(
+                root,
+                scene.walker4,
+                Section4 { w: SECTION_W },
+            ))
+            .map_err(Rejection::from)
     })?;
     session
         .bridge(BridgeSpec {

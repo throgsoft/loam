@@ -503,7 +503,7 @@ mod tests {
                     root,
                     eye,
                     Section4 { w: 0.0 },
-                ));
+                ))?;
                 Ok(eye)
             })
             .expect("the invalidated view is installed");

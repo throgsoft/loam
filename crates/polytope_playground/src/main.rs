@@ -239,8 +239,8 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
         }
         let eye = d.spawn(SpawnBundle::new().at(domain, Pose::at(Vec4::ZERO)))?;
         let r4 = d.domains.typed(domain)?;
-        let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
-        let projection = r4.add_view(ViewSpec::new(root, eye, Family::default().mapping(0.0)));
+        let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))?;
+        let projection = r4.add_view(ViewSpec::new(root, eye, Family::default().mapping(0.0)))?;
         Ok(Layers {
             section,
             projection,

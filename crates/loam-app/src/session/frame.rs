@@ -869,7 +869,7 @@ struct Fragment {
                 dispatch
                     .domains
                     .typed(r3)?
-                    .add_view(ViewSpec::new(root, eye, Identity3));
+                    .add_view(ViewSpec::new(root, eye, Identity3))?;
                 Ok::<_, loam_runtime::Rejection>(())
             })
             .expect("view");

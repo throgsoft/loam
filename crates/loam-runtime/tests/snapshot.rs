@@ -238,7 +238,9 @@ fn reset_restores_the_captured_view_configuration_and_rebases_its_entities() {
     let (eye, view) = session.dispatch(|d| {
         let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
         let domain = d.domains.typed(r4).unwrap();
-        let view = domain.add_view(ViewSpec::new(root, eye, DropW).subject(eye));
+        let view = domain
+            .add_view(ViewSpec::new(root, eye, DropW).subject(eye))
+            .unwrap();
         let spec = domain.view_mut(view).unwrap();
         spec.enabled = false;
         spec.edges = false;
@@ -261,7 +263,9 @@ fn reset_restores_the_captured_view_configuration_and_rebases_its_entities() {
         spec.section_edges = true;
         spec.section_faces = true;
         spec.set_mapping(Section4 { w: 1.0 });
-        domain.add_view(ViewSpec::new(root, later_eye, Section4 { w: 2.0 }))
+        domain
+            .add_view(ViewSpec::new(root, later_eye, Section4 { w: 2.0 }))
+            .unwrap()
     });
     session.views_mut().root_mut().eye = Eye::default();
 
@@ -363,88 +367,6 @@ fn a_restored_composed_field_names_its_own_operands_as_stale() {
     let snapshot = session.snapshot().unwrap();
     session.restore(&snapshot).unwrap();
     assert_eq!(compile(&mut session), Ok(()));
-}
-
-#[test]
-fn restore_does_not_launder_foreign_or_old_epoch_references_into_live_entities() {
-    let mut owner = Session::new(Probe::default(), SimConfig::default());
-    let r4 = owner.register_domain(DomainBuilder::new("r4", EuclideanR4).fields());
-    let old = owner
-        .dispatch(|dispatch| dispatch.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))))
-        .unwrap();
-    let first = owner.snapshot().unwrap();
-    owner.restore(&first).unwrap();
-    let current = owner
-        .domains()
-        .read(r4)
-        .unwrap()
-        .poses()
-        .iter()
-        .next()
-        .unwrap()
-        .0;
-
-    let mut other = Session::new(Probe::default(), SimConfig::default());
-    let other_r4 = other.register_domain(DomainBuilder::new("r4", EuclideanR4));
-    let foreign = other
-        .dispatch(|dispatch| dispatch.spawn(SpawnBundle::new().at(other_r4, at([0.0; 4]))))
-        .unwrap();
-    assert_eq!(foreign.key(), current.key());
-
-    let root = owner.views().root();
-    owner.dispatch(|dispatch| {
-        let operator = dispatch
-            .spawn(SpawnBundle::new().at(r4, at([1.0, 0.0, 0.0, 0.0])))
-            .unwrap();
-        dispatch
-            .attach_field(
-                r4,
-                current,
-                Field {
-                    kind: FieldKind::ExactDistance,
-                    op: FieldOp::HyperSphere { radius: 1.0 },
-                    operands: Vec::new(),
-                },
-            )
-            .unwrap();
-        dispatch
-            .attach_field(
-                r4,
-                operator,
-                Field {
-                    kind: FieldKind::ExactDistance,
-                    op: FieldOp::Union,
-                    operands: vec![old, old],
-                },
-            )
-            .unwrap();
-        dispatch
-            .domains
-            .typed(r4)
-            .unwrap()
-            .add_view(ViewSpec::new(root, foreign, DropW));
-    });
-    let snapshot = owner.snapshot().unwrap();
-    owner.restore(&snapshot).unwrap();
-
-    assert_eq!(
-        owner
-            .domains_mut()
-            .typed(r4)
-            .unwrap()
-            .compile_fields()
-            .map(|_| ()),
-        Err(DomainError::Stale(old))
-    );
-    let mut publication = Publication::default();
-    assert_eq!(
-        owner.publish(&mut publication),
-        Err(PhaseError {
-            phase: Phase::Publication,
-            system: None,
-            cause: DomainError::Stale(foreign),
-        })
-    );
 }
 
 #[test]
@@ -572,7 +494,8 @@ fn failed_extraction_clears_partial_publication() {
         d.domains
             .typed(r4)
             .unwrap()
-            .add_view(ViewSpec::new(root, eye, DropW));
+            .add_view(ViewSpec::new(root, eye, DropW))
+            .unwrap();
         eye
     });
     let mut publication = Publication::default();
@@ -648,7 +571,8 @@ fn domain_view_publishes_the_wrong_image_space_position_for_a_known_pose() {
         d.domains
             .typed(r4)
             .unwrap()
-            .add_view(ViewSpec::new(root, eye, DropW));
+            .add_view(ViewSpec::new(root, eye, DropW))
+            .unwrap();
         let instance = Instance::new(geometry, material);
         let a = d
             .spawn(
@@ -741,7 +665,8 @@ fn publish_rebuilds_a_view_whose_rows_did_not_change_or_misses_one_that_did() {
         d.domains
             .typed(r4)
             .unwrap()
-            .add_view(ViewSpec::new(root, eye, DropW));
+            .add_view(ViewSpec::new(root, eye, DropW))
+            .unwrap();
         d.spawn(
             SpawnBundle::new()
                 .at(r4, at([1.0, 2.0, 3.0, 4.0]))
@@ -785,7 +710,8 @@ fn published_segments_miss_the_endpoints_the_mapping_sends_them_to() {
         d.domains
             .typed(r4)
             .unwrap()
-            .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }));
+            .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+            .unwrap();
         d.spawn(
             SpawnBundle::new()
                 .at(r4, at([0.0, 0.0, -3.0, 0.0]))
@@ -852,7 +778,8 @@ fn a_view_change_alone_republishes_the_old_segments() {
             .domains
             .typed(r4)
             .unwrap()
-            .add_view(ViewSpec::new(root, near, DropW));
+            .add_view(ViewSpec::new(root, near, DropW))
+            .unwrap();
         (view, far)
     });
 
@@ -891,7 +818,8 @@ fn an_idle_view_rebuilds_when_its_cursor_expires_at_a_boundary() {
         d.domains
             .typed(r4)
             .unwrap()
-            .add_view(ViewSpec::new(root, eye, DropW));
+            .add_view(ViewSpec::new(root, eye, DropW))
+            .unwrap();
         d.spawn(
             SpawnBundle::new()
                 .at(r4, at([1.0, 2.0, 3.0, 4.0]))

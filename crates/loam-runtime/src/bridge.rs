@@ -159,8 +159,12 @@ mod tests {
             .unwrap();
             let anchor = d.spawn(SpawnBundle::new()).unwrap();
             let domain = d.domains.typed(r4).unwrap();
-            let near = domain.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
-            let far = domain.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
+            let near = domain
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .unwrap();
+            let far = domain
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .unwrap();
             (near, far, anchor)
         });
         let placement = Placement::Rigid(Rigid {

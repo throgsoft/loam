@@ -57,7 +57,7 @@ fn build(
         };
         d.domains
             .typed(r4)?
-            .add_view(ViewSpec::new(root, eye, projection));
+            .add_view(ViewSpec::new(root, eye, projection))?;
         Ok(())
     })?;
 
