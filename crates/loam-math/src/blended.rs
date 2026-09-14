@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use glam::{Mat3, Vec3};
 
-use crate::space::{Space, WgslSpace};
+use crate::space::{Space, WgslAccuracy, WgslSpace};
 
 /// `g_ij(p) = f(p)·δ_ij` in the chart `Space::Point` carries, not in some other chart.
 pub trait ConformallyFlat: Space {
@@ -860,6 +860,8 @@ fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {{
     )
 }
 
+pub const BLENDED_E3_H3_WGSL_RESIDUAL: f32 = 1.9e-2;
+
 /// WGSL distance and log approximate the CPU operations; the geodesic step integrates the same flow as `exp`.
 impl WgslSpace for BlendedSpace<crate::EuclideanR3, crate::HyperbolicH3, LinearBlendX> {
     fn wgsl_impl(&self) -> Cow<'static, str> {
@@ -867,6 +869,12 @@ impl WgslSpace for BlendedSpace<crate::EuclideanR3, crate::HyperbolicH3, LinearB
             &self.field,
             self.chart_envelope(),
         ))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::FirstOrder {
+            residual: BLENDED_E3_H3_WGSL_RESIDUAL,
+        }
     }
 }
 

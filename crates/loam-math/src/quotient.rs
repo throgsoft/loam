@@ -7,7 +7,7 @@ use std::f32::consts::{PI, TAU};
 use glam::{BVec3, Mat4, Quat, Vec3, Vec4};
 
 use crate::euclidean::Iso3;
-use crate::space::{IsometryGroup, Space, WgslSpace, FLAT_CHART_MAX_ARC};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
 use crate::spherical::Iso4;
 use crate::spherical_embedded::SphericalS3Embedded;
 
@@ -183,6 +183,10 @@ impl QuotientSpace for FlatTorus3 {
 impl WgslSpace for FlatTorus3 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
         Cow::Owned(flat_torus3_wgsl(self.cell))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
     }
 }
 

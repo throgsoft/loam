@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslSpace, FLAT_CHART_MAX_ARC};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
 
 /// A rigid motion of R³: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -112,6 +112,10 @@ impl WgslSpace for EuclideanR3 {
         Cow::Owned(format!(
             "const LOAM_MAX_ARC: f32 = {FLAT_CHART_MAX_ARC:?};{WGSL_IMPL}"
         ))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
     }
 }
 

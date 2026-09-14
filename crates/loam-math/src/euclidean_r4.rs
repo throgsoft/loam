@@ -6,7 +6,7 @@ use glam::Vec4;
 use serde::{Deserialize, Serialize};
 
 use crate::bivector::{Rotor, Rotor4};
-use crate::space::{IsometryGroup, Space, WgslSpace, FLAT_CHART_MAX_ARC};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
 
 /// Rigid motion of R⁴; callers must keep the rotor unit length.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -121,6 +121,10 @@ impl WgslSpace for EuclideanR4 {
         Cow::Owned(format!(
             "const LOAM_MAX_ARC: f32 = {FLAT_CHART_MAX_ARC:?};{WGSL_IMPL}"
         ))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
     }
 }
 

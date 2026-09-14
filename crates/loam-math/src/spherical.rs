@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace};
 
 const SPHERE_R2_MAX: f32 = 1.0 - 1e-6;
 
@@ -217,6 +217,10 @@ const LOAM_S3_EXP_TANGENT_MIN_SQ: f32 = {EXP_TANGENT_MIN_SQ:e};
 const LOAM_S3_LOG_PERP_MIN: f32 = {LOG_PERP_MIN:e};
 {WGSL_FUNCTIONS}"#
         ))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
     }
 }
 

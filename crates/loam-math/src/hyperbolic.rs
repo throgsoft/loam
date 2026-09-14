@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use glam::{Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace};
 
 pub const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
 
@@ -194,6 +194,10 @@ impl WgslSpace for HyperbolicH3 {
         Cow::Owned(format!(
             "const LOAM_MAX_ARC: f32 = {H3_MAX_ARC:?};{WGSL_IMPL}"
         ))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
     }
 }
 
