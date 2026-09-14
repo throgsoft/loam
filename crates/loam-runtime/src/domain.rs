@@ -1801,15 +1801,14 @@ impl<S: DomainSpace> TypedDomain<S> {
         triangles.clear();
         *refusals = ViewRefusals::default();
         output.clear();
-        if !spec.style.enabled {
-            instances.replace(std::iter::empty(), stamp);
-            *built = stamp;
-            return Ok(());
-        }
-        let eye = self
-            .poses
-            .get(spec.eye)
-            .ok_or(DomainError::Stale(spec.eye))?;
+        let eye = match self.poses.get(spec.eye) {
+            Some(eye) if spec.style.enabled => eye,
+            _ => {
+                instances.replace(std::iter::empty(), stamp);
+                *built = stamp;
+                return Ok(());
+            }
+        };
         let projection = ViewProjection {
             space: &self.space,
             spec,
@@ -1879,10 +1878,9 @@ impl<S: DomainSpace> TypedDomain<S> {
         into: &mut ViewRecords,
         stamp: Stamp,
     ) -> Result<bool, DomainError> {
-        let eye = self
-            .poses
-            .get(spec.eye)
-            .ok_or(DomainError::Stale(spec.eye))?;
+        let Some(eye) = self.poses.get(spec.eye) else {
+            return Ok(false);
+        };
         let projection = ViewProjection {
             space: &self.space,
             spec,

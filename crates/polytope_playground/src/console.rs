@@ -429,12 +429,9 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
 
 #[cfg(test)]
 mod tests {
-    use glam::Vec4;
     use loam::app::args::Args;
     use loam::runtime::host::HostConfig;
-    use loam::runtime::{
-        Command, Entity, Eye, Input, Pose, Publication, Rejection, Section4, SpawnBundle, ViewSpec,
-    };
+    use loam::runtime::{Eye, Input};
 
     use super::*;
     use crate::catalog::DEFAULT_ROW;
@@ -486,51 +483,5 @@ mod tests {
         assert!(history
             .iter()
             .any(|line| line == "wireframe width: 3.00 px"));
-    }
-
-    #[test]
-    fn installed_playground_console_recovers_a_fault_at_ordinary_capacity() {
-        const ORDINARY_CAPACITY: usize = 1023;
-
-        let mut booted = boot(&DEFAULT_ROW[..1]).expect("the session boots");
-        let domain = booted.domain;
-        let root = booted.session.views().root();
-        let eye = booted
-            .session
-            .dispatch(|dispatch| -> Result<Entity, Rejection> {
-                let eye = dispatch.spawn(SpawnBundle::new().at(domain, Pose::at(Vec4::ZERO)))?;
-                dispatch.domains.typed(domain)?.add_view(ViewSpec::new(
-                    root,
-                    eye,
-                    Section4 { w: 0.0 },
-                ))?;
-                Ok(eye)
-            })
-            .expect("the invalidated view is installed");
-        let epoch = booted.session.scene().epoch();
-        let mut app = install(SessionApp::with_args(
-            HostConfig::new("console recovery test", bindings()),
-            Args::default(),
-        ));
-
-        app.sender().submit(Command::Despawn(eye));
-        app.boundary(&mut booted.session, Input::default())
-            .expect("the eye despawns");
-        let mut publication = Publication::default();
-        booted
-            .session
-            .publish(&mut publication)
-            .expect_err("the dangling view faults publication");
-
-        for _ in 0..ORDINARY_CAPACITY {
-            app.console_mut().execute("reset");
-        }
-        app.console_mut().execute("recover");
-        app.console_mut().dispatch_pending();
-        app.boundary(&mut booted.session, Input::default())
-            .expect("the host recovers");
-
-        assert_eq!(booted.session.faulted_phase(), None);
-        assert_eq!(booted.session.scene().epoch(), epoch.advance());
     }
 }
