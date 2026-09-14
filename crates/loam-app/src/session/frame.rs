@@ -835,6 +835,49 @@ struct Fragment {
     }
 
     #[test]
+    fn a_publication_with_no_views_is_reported_once_per_frame() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let app = SessionApp::<Bare>::with_args(
+            HostConfig::new("no views", Bindings::new()),
+            Args::default(),
+        )
+        .debug_layer(false);
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        session.register_domain(DomainBuilder::new("r3", EuclideanR3));
+        let mut frame = Frame::new(session, app);
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        let start = Instant::now();
+        for millis in 0..3 {
+            run_at(
+                &mut frame,
+                &gpu,
+                &texture,
+                start + Duration::from_millis(millis),
+            );
+        }
+
+        let lines: Vec<String> = frame
+            .app_mut()
+            .console_mut()
+            .ui()
+            .history()
+            .iter()
+            .map(|line| line.text.clone())
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("published no views"))
+                .count(),
+            1,
+            "the viewless publication was not reported exactly once: {lines:?}"
+        );
+    }
+
+    #[test]
     fn installed_reset_key_recovers_the_fault_and_restores_cursor_capture_once() {
         const RESET: ActionId = ActionId(0);
 

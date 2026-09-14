@@ -910,6 +910,25 @@ fn geometry_prepared_by_a_command_outlives_the_restore_that_follows_it() {
 }
 
 #[test]
+fn a_session_that_never_set_its_initial_state_resets_to_its_first_boundary() {
+    let (mut session, r4) = session();
+    session.dispatch(|d| d.spawn(placed(r4, Tag(7)))).unwrap();
+    assert_eq!(session.reset(), Err(RestoreError::NoInitial));
+
+    session.boundary(Input::default()).unwrap();
+    session.submit(Command::App(Box::new(Mark(1))));
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(*session.app.log.get(), [1]);
+
+    session.reset().unwrap();
+    assert!(session.app.log.get().is_empty());
+    assert!(
+        session.app.tags.iter().any(|(_, tag)| *tag == Tag(7)),
+        "the state at the first boundary is the initial state"
+    );
+}
+
+#[test]
 fn restore_does_not_launder_foreign_or_old_epoch_references_into_live_entities() {
     let mut owner = Session::new(Probe::default(), SimConfig::default());
     let r4 = owner.register_domain(DomainBuilder::new("r4", EuclideanR4).fields());

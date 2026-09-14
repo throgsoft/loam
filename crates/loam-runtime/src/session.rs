@@ -737,7 +737,7 @@ impl<A: Stores> Session<A> {
         self.manipulation.cancel(&mut self.commands)
     }
 
-    /// Commits deferred commands, runs each dispatch entry and then its commands, and counts what grew.
+    /// Commits deferred commands, runs each dispatch entry and then its commands, counts what grew, and on the first boundary that finishes stores the session's initial snapshot if none was set.
     pub fn boundary(&mut self, input: Input) -> Result<Growth, PhaseError> {
         self.input = input;
         if let Some(error) = self.unfinished_error() {
