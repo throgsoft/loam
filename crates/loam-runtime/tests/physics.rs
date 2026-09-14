@@ -1,7 +1,9 @@
 #![cfg(feature = "physics")]
 
 use loam_math::{EuclideanR4, Rotor4, Space};
-use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
+use loam_physics::euclidean_r4::{
+    halfspace4_body_r4, register_default_narrowphase, sphere_body_r4,
+};
 use loam_physics::{ColliderKind, EditError};
 use loam_runtime::{
     Change, ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent, Command, Ctx, Cursor,
@@ -432,4 +434,41 @@ fn checked_pose_edits_update_the_body_and_mirror_before_step() {
         Rejection::Domain(DomainError::InvalidCoordinate("x"))
     );
     assert_eq!(body_of(&session, r4, entity), placed);
+}
+
+#[test]
+fn a_ball_dropped_on_a_half_space_floor_rests_at_the_hand_derived_height() {
+    const SETTLE_TICKS: u32 = 120;
+    const HAND_REST_Y: f32 = 0.493_611_1;
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session.register_domain(
+        DomainBuilder::new("r4", EuclideanR4)
+            .physics(PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::NEG_Y))
+            .unwrap(),
+    );
+    let spawn = Vec4::new(0.0, 0.8, 0.0, 0.0);
+    let ball = session
+        .dispatch(|d| -> Result<Entity, Rejection> {
+            let floor = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
+            let ball = d.spawn(SpawnBundle::new().at(r4, Pose::at(spawn)))?;
+            let domain = d.domains.typed(r4)?;
+            domain.spawn_body(floor, halfspace4_body_r4(Vec4::Y, 0.0).unwrap())?;
+            domain.spawn_body(
+                ball,
+                sphere_body_r4(spawn, Vec4::ZERO, RADIUS, MASS).unwrap(),
+            )?;
+            Ok(ball)
+        })
+        .unwrap();
+
+    for _ in 0..SETTLE_TICKS {
+        session.boundary(Input::default()).unwrap();
+        session.tick().unwrap();
+    }
+
+    let y = pose_of(&session, r4, ball).y;
+    assert!(
+        (y - HAND_REST_Y).abs() < 1e-5,
+        "the ball rested at {y}, not {HAND_REST_Y}"
+    );
 }
