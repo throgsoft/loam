@@ -65,6 +65,6 @@ pub trait IsometryGroup: Space {
 }
 
 pub trait WgslSpace: Space {
-    /// Emits vec3 `loam_distance`, `loam_origin_distance`, `loam_exp`, `loam_log`, `loam_parallel_transport`, and `LOAM_MAX_ARC`.
+    /// Emits `loam_distance`, `loam_origin_distance`, `loam_exp`, `loam_log`, `loam_geodesic_step`, and `LOAM_MAX_ARC` over the space's point type.
     fn wgsl_impl(&self) -> Cow<'static, str>;
 }

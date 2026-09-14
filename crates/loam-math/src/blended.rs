@@ -860,7 +860,7 @@ fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {{
     )
 }
 
-/// WGSL distance and log approximate the CPU operations; transport follows a chart segment.
+/// WGSL distance and log approximate the CPU operations; the geodesic step integrates the same flow as `exp`.
 impl WgslSpace for BlendedSpace<crate::EuclideanR3, crate::HyperbolicH3, LinearBlendX> {
     fn wgsl_impl(&self) -> Cow<'static, str> {
         Cow::Owned(blended_e3_h3_linearx_wgsl(&self.field))
@@ -1257,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_is_invariant_to_how_its_own_path_is_subdivided() {
+    fn transport_along_the_geodesic_matches_the_h3_closed_form_where_the_blend_is_pure_h3() {
         use crate::{EuclideanR3, HyperbolicH3, Space};
         let bs = BlendedSpace::new(
             EuclideanR3,
@@ -1268,23 +1268,18 @@ mod tests {
 
         let mut worst = 0.0_f32;
         for (a, b) in [
-            (Vec3::new(-0.3, 0.05, 0.0), Vec3::new(0.3, -0.05, 0.02)),
-            (Vec3::new(-0.1, 0.0, 0.0), Vec3::new(0.1, 0.05, 0.0)),
-            (Vec3::new(0.2, 0.0, 0.0), Vec3::new(0.3, 0.1, 0.05)),
+            (Vec3::new(0.3, 0.05, 0.0), Vec3::new(0.45, -0.05, 0.1)),
+            (Vec3::new(0.25, 0.0, 0.0), Vec3::new(0.4, 0.1, -0.05)),
+            (Vec3::new(0.5, 0.1, 0.05), Vec3::new(0.35, 0.15, 0.0)),
         ] {
-            let direct = bs.parallel_transport(a, b, v);
-            for k in [2_u32, 4, 8, 16] {
-                let path: Vec<Vec3> = (0..=k)
-                    .map(|i| a + (b - a) * (i as f32 / k as f32))
-                    .collect();
-                let refined = bs.parallel_transport_along(&path, v);
-                worst = worst.max((refined - direct).length());
-            }
+            let closed = HyperbolicH3.parallel_transport(a, b, v);
+            let integrated = bs.parallel_transport(a, b, v);
+            worst = worst.max((integrated - closed).length());
         }
 
         assert!(
             worst <= 1.0e-4,
-            "subdividing the transport path moved the result by {worst}"
+            "the blended transport left the H3 closed form by {worst}"
         );
     }
 

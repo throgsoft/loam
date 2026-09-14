@@ -17,7 +17,7 @@ fn main() {
     _ = loam_origin_distance(a);
     _ = loam_exp(a, v);
     _ = loam_log(a, b);
-    _ = loam_parallel_transport(a, b, v);
+    _ = loam_geodesic_step(a, v, 1.0);
     _ = LOAM_MAX_ARC;
 }
 "#;
@@ -32,7 +32,7 @@ fn main() {
     _ = loam_origin_distance(a);
     _ = loam_exp(a, v);
     _ = loam_log(a, b);
-    _ = loam_parallel_transport(a, b, v);
+    _ = loam_geodesic_step(a, v, 1.0);
     _ = LOAM_MAX_ARC;
 }
 "#;
@@ -183,7 +183,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         0.0);
     out[i].exp_point = vec4<f32>(loam_exp(a, v), 0.0);
     out[i].log_vec = vec4<f32>(loam_log(a, b), 0.0);
-    out[i].transported = vec4<f32>(loam_parallel_transport(a, b, v), 0.0);
+    out[i].transported = vec4<f32>(loam_geodesic_step(a, v, 1.0).v, 0.0);
 }
 "#;
 
@@ -199,7 +199,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         0.0);
     out[i].exp_point = loam_exp(c.a, c.v);
     out[i].log_vec = loam_log(c.a, c.b);
-    out[i].transported = loam_parallel_transport(c.a, c.b, c.v);
+    out[i].transported = loam_geodesic_step(c.a, c.v, 1.0).v;
 }
 "#;
 
@@ -431,9 +431,9 @@ fn euclidean_r4_wgsl_matches_the_rust_space_at_the_domain_corners_gpu_probe() {
         assert_vec_near(&at("exp"), row.exp_point, space.exp(a, v), 1e-6);
         assert_vec_near(&at("log"), row.log_vec, space.log(a, b), 1e-6);
         assert_vec_near(
-            &at("parallel_transport"),
+            &at("geodesic_step"),
             row.transported,
-            space.parallel_transport(a, b, v),
+            space.parallel_transport(a, space.exp(a, v), v),
             1e-6,
         );
     }
@@ -640,9 +640,9 @@ where
         assert_vec_near(&at("exp"), row.exp_point, space.exp(a, v).extend(0.0), eps);
         assert_vec_near(&at("log"), row.log_vec, space.log(a, b).extend(0.0), eps);
         assert_vec_near(
-            &at("parallel_transport"),
+            &at("geodesic_step"),
             row.transported,
-            space.parallel_transport(a, b, v).extend(0.0),
+            space.parallel_transport(a, space.exp(a, v), v).extend(0.0),
             eps,
         );
     }
@@ -668,10 +668,10 @@ where
             ),
             space.exp(a, v).extend(0.0),
             space.log(a, b).extend(0.0),
-            space.parallel_transport(a, b, v).extend(0.0),
+            space.parallel_transport(a, space.exp(a, v), v).extend(0.0),
         ];
         let gpu = [row.scalars, row.exp_point, row.log_vec, row.transported];
-        let names = ["scalars", "exp", "log", "parallel_transport"];
+        let names = ["scalars", "exp", "log", "geodesic_step"];
         for ((name, cpu), gpu) in names.iter().zip(cpu).zip(gpu) {
             let where_ = || format!("{label}/{} a={a:?} b={b:?} v={v:?} {name}", case.corner);
             for (lane, (cpu, gpu)) in cpu.to_array().iter().zip(gpu).enumerate() {
@@ -793,7 +793,7 @@ fn blended_e3_h3_gpu_probe_transport_matches_cpu() {
         let a = Vec3::from_array([case.a[0], case.a[1], case.a[2]]);
         let b = Vec3::from_array([case.b[0], case.b[1], case.b[2]]);
         let v = Vec3::from_array([case.v[0], case.v[1], case.v[2]]);
-        let cpu = space.parallel_transport(a, b, v);
+        let cpu = space.parallel_transport(a, space.exp(a, v), v);
         let gpu = Vec3::new(row.transported[0], row.transported[1], row.transported[2]);
         let diff = (cpu - gpu).length();
         assert!(

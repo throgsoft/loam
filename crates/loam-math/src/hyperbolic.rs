@@ -193,7 +193,7 @@ impl WgslSpace for HyperbolicH3 {
     }
 }
 
-// distance / exp / log / parallel_transport are the v0 WGSL ABI.
+// distance / exp / log / geodesic_step are the v0 WGSL ABI.
 const WGSL_IMPL: &str = r#"
 // loam-math :: HyperbolicH3 (v0 Space WGSL ABI)
 const LOAM_MAX_ARC: f32 = 1e9;

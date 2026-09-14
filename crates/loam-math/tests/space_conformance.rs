@@ -1489,7 +1489,10 @@ conformance_suite!(euclidean_r4, EuclideanR4Fixture);
 conformance_suite!(hyperbolic_h3, HyperbolicH3Fixture);
 conformance_suite!(spherical_s3, SphericalS3Fixture);
 conformance_suite!(spherical_s3_embedded, SphericalS3EmbeddedFixture);
-conformance_suite!(blended_space, BlendedSpaceFixture;);
+conformance_suite!(blended_space, BlendedSpaceFixture;
+    log_magnitude_equals_geodesic_distance,
+    parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic,
+);
 
 conformance_suite!(lens_space_l5_2, LensSpaceFixture(LensSpace::new(5, 2)));
 conformance_suite!(lens_space_rp3, LensSpaceFixture(LensSpace::new(2, 1)));
