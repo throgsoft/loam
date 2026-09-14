@@ -42,8 +42,8 @@ pub use physics::{GrabConfig, Physics, PhysicsConfig};
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
     Growth, Library, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId, Publication,
-    PublishError, PublishedView, Records, RestoreError, Session, SessionSnapshot, SimConfig, Stamp,
-    DOMAIN_STEP,
+    PublishError, PublishedView, Records, RestoreError, Session, SessionSnapshot, SimConfig,
+    SimConfigError, Stamp, DOMAIN_STEP,
 };
 pub use store::{
     Change, Changes, Cursor, LogCapacity, Owner, Part, Partition, PartitionError, Parts,

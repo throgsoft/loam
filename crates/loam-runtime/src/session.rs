@@ -26,11 +26,43 @@ pub struct SimConfig {
 }
 
 impl SimConfig {
+    /// Refuses a catch-up of zero, which would stop ticking with no way to resume.
+    pub fn new(fixed_hz: u32, max_ticks_per_frame: u32) -> Result<Self, SimConfigError> {
+        let config = Self {
+            fixed_hz,
+            max_ticks_per_frame,
+        };
+        config.check()?;
+        Ok(config)
+    }
+
+    pub fn check(&self) -> Result<(), SimConfigError> {
+        if self.max_ticks_per_frame == 0 {
+            return Err(SimConfigError::NoCatchUp);
+        }
+        Ok(())
+    }
+
     /// `None` when `fixed_hz` is zero, which stops the simulation.
     pub fn dt(&self) -> Option<f32> {
         (self.fixed_hz > 0).then(|| 1.0 / self.fixed_hz as f32)
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimConfigError {
+    NoCatchUp,
+}
+
+impl std::fmt::Display for SimConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoCatchUp => f.write_str("max_ticks_per_frame must be at least one"),
+        }
+    }
+}
+
+impl std::error::Error for SimConfigError {}
 
 impl Default for SimConfig {
     fn default() -> Self {

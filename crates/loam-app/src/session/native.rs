@@ -62,7 +62,7 @@ fn run<A: Stores>(
     let (session, app) = factory(args)?;
     let event_loop = EventLoop::new().map_err(failed)?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut host = Host::new(session, app);
+    let mut host = Host::new(session, app)?;
     event_loop.run_app(&mut host).map_err(failed)?;
     match host.failure {
         Some(error) => Err(error),
@@ -80,15 +80,15 @@ struct Host<A: Stores> {
 }
 
 impl<A: Stores> Host<A> {
-    fn new(session: Session<A>, app: SessionApp<A>) -> Self {
-        Self {
-            frame: Frame::new(session, app),
+    fn new(session: Session<A>, app: SessionApp<A>) -> Result<Self, HostError> {
+        Ok(Self {
+            frame: Frame::new(session, app)?,
             window: None,
             surface: None,
             device: None,
             redraw_deadline: None,
             failure: None,
-        }
+        })
     }
 
     fn stop(&mut self, elwt: &ActiveEventLoop, error: HostError) {
