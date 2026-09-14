@@ -550,9 +550,11 @@ mod tests {
         Pose, SimConfig, SpawnBundle, Tick, ViewSpec,
     };
     use wgpu::{
-        BackendOptions, Backends, Color, Extent3d, Instance, InstanceDescriptor, LoadOp,
-        NoopBackendOptions, Operations, RenderPassColorAttachment, RenderPassDescriptor, StoreOp,
-        TextureDescriptor, TextureDimension, TextureUsages, TextureViewDescriptor,
+        BackendOptions, Backends, Color, ColorTargetState, ColorWrites, Extent3d, FragmentState,
+        Instance, InstanceDescriptor, LoadOp, MultisampleState, NoopBackendOptions, Operations,
+        PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
+        RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, StoreOp, TextureDescriptor,
+        TextureDimension, TextureUsages, TextureViewDescriptor, VertexState,
     };
 
     use super::*;
@@ -601,6 +603,7 @@ mod tests {
         name: &'static str,
         color: Color,
         overlay: bool,
+        pipeline: Option<RenderPipeline>,
     }
 
     impl FramePass for Paint {
@@ -621,14 +624,17 @@ mod tests {
             encoder: &mut CommandEncoder,
             target: &FrameTarget<'_>,
         ) -> anyhow::Result<()> {
-            let _pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            let Some(pipeline) = self.pipeline.as_ref() else {
+                anyhow::bail!("paint recorded before attach");
+            };
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some(self.name),
                 color_attachments: &[Some(RenderPassColorAttachment {
                     view: target.color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(self.color),
+                        load: LoadOp::Load,
                         store: StoreOp::Store,
                     },
                 })],
@@ -636,10 +642,63 @@ mod tests {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            pass.set_pipeline(pipeline);
+            pass.draw(0..3, 0..1);
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+            let Color { r, g, b, a } = self.color;
+            let source = format!(
+                r#"
+@vertex
+fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {{
+    var corners = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    return vec4<f32>(corners[index], 0.0, 1.0);
+}}
+
+@fragment
+fn fragment() -> @location(0) vec4<f32> {{
+    return vec4<f32>({r:?}, {g:?}, {b:?}, {a:?});
+}}
+"#
+            );
+            let shader = gpu.device.create_shader_module(ShaderModuleDescriptor {
+                label: Some(self.name),
+                source: ShaderSource::Wgsl(source.into()),
+            });
+            self.pipeline = Some(
+                gpu.device
+                    .create_render_pipeline(&RenderPipelineDescriptor {
+                        label: Some(self.name),
+                        layout: None,
+                        vertex: VertexState {
+                            module: &shader,
+                            entry_point: Some("vertex"),
+                            compilation_options: Default::default(),
+                            buffers: &[],
+                        },
+                        primitive: PrimitiveState::default(),
+                        depth_stencil: None,
+                        multisample: MultisampleState::default(),
+                        fragment: Some(FragmentState {
+                            module: &shader,
+                            entry_point: Some("fragment"),
+                            compilation_options: Default::default(),
+                            targets: &[Some(ColorTargetState {
+                                format: frame.color,
+                                blend: None,
+                                write_mask: ColorWrites::ALL,
+                            })],
+                        }),
+                        multiview: None,
+                        cache: None,
+                    }),
+            );
             Ok(())
         }
     }
@@ -1136,6 +1195,7 @@ struct Fragment {
                     a: 1.0,
                 },
                 overlay: false,
+                pipeline: None,
             }))
             .pass(Box::new(Paint {
                 name: "green overlay",
@@ -1146,6 +1206,7 @@ struct Fragment {
                     a: 1.0,
                 },
                 overlay: true,
+                pipeline: None,
             }))
             .capture(crate::capture::CaptureRequest::OneShot {
                 stage: crate::capture::CaptureStage::Both,

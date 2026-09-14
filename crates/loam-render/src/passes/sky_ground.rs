@@ -5,7 +5,7 @@ use loam_runtime::Eye;
 use wgpu::{CommandEncoder, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
 use crate::{DepthConvention, Viewport};
 
@@ -49,6 +49,10 @@ impl FramePass for SkyGroundPass {
 
     fn stage(&self) -> PassStage {
         PassStage::Background
+    }
+
+    fn color_load(&self) -> ColorLoad {
+        ColorLoad::Clear
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {

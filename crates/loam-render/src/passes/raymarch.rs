@@ -4,7 +4,7 @@ use std::rc::Rc;
 use wgpu::{CommandEncoder, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::raymarch::{RayMarchNode, RayMarchUniforms};
 use crate::Viewport;
 
@@ -46,6 +46,10 @@ impl FramePass for RaymarchPass {
 
     fn stage(&self) -> PassStage {
         PassStage::Background
+    }
+
+    fn color_load(&self) -> ColorLoad {
+        ColorLoad::Clear
     }
 
     fn record(

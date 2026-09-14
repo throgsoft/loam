@@ -25,8 +25,8 @@ pub use line_raster::{LineRasterNode, LineRasterUniforms};
 pub use line_raster_static_r4::{LineRasterStaticR4Node, LineRasterStaticR4Uniforms};
 pub use material::{MaterialPipeline, MaterialSpec};
 pub use pass::{
-    FrameFormat, FramePass, FrameTarget, GpuTime, PassError, PassExecutionError, PassPhase,
-    PassSchedule, PassStage, Section,
+    ColorLoad, FrameFormat, FramePass, FrameTarget, GpuTime, PassError, PassExecutionError,
+    PassPhase, PassSchedule, PassStage, Section,
 };
 pub use passes::{HyperslicePass, LinePass, PointPass, RaymarchPass, SkyGroundPass};
 pub use point_raster::{PointInstance, PointRasterNode, PointRasterUniforms};

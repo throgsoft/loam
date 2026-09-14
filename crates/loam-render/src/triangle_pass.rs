@@ -8,7 +8,7 @@ use loam_shape::TriangleMesh;
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::view::placed_view_projection;
 use crate::{
     DepthConvention, DepthMode, FragmentShading, Ground, SkyGroundNode, SkyGroundUniforms,
@@ -101,7 +101,18 @@ impl FramePass for TrianglePass {
         PassStage::Scene
     }
 
+    fn color_load(&self) -> ColorLoad {
+        match self.input.borrow().ground {
+            Some(_) => ColorLoad::Clear,
+            None => ColorLoad::Load,
+        }
+    }
+
     fn depth_convention(&self) -> Option<DepthConvention> {
+        Some(DepthConvention::ReversedZ)
+    }
+
+    fn depth_read(&self) -> Option<DepthConvention> {
         Some(DepthConvention::ReversedZ)
     }
 
