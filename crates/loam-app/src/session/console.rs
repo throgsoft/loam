@@ -208,6 +208,10 @@ impl<A: Stores> SessionConsole<A> {
         self.submit.app(command);
     }
 
+    pub(crate) fn note(&mut self, line: String) {
+        self.console.write(HistoryLine::output(line));
+    }
+
     pub(crate) fn collect(&mut self) {
         let mut state = lock(&self.state);
         for line in state.responses.drain(..) {
