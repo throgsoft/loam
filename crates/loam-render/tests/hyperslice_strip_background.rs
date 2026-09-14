@@ -1,5 +1,6 @@
-//! `record_strip` owns its clear, and the kernel discards on a miss and on
-//! the floor, so the clear is what stands in for the sky in a comparison grid.
+//! `record_strip` clears when its caller declares the clear, and the kernel
+//! discards on a miss and on the floor, so that clear is what stands in for the
+//! sky in a comparison grid.
 //! A cell of `Color::BLACK` is the regression this pins.
 
 use loam_render::device::{FeatureRequest, GpuContext};

@@ -19,7 +19,7 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A shared hyperslice pass in the Background stage: it clears the color target to the sky, then writes scene color and reversed Z depth.
+/// A shared hyperslice pass in the Background stage: it loads the color target the sky-ground pass filled, then writes scene color and reversed Z depth.
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,

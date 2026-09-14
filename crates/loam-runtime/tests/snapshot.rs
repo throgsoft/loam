@@ -1018,6 +1018,58 @@ fn an_unchanged_view_borrow_keeps_the_published_records() {
 }
 
 #[test]
+fn a_restore_to_a_saved_snapshot_does_not_swallow_the_next_reset() {
+    let (mut session, _r4) = session();
+    session.boundary(Input::default()).unwrap();
+    session.submit(Command::App(Box::new(Mark(1))));
+    session.boundary(Input::default()).unwrap();
+    let saved = session.snapshot().unwrap();
+    session.submit(Command::App(Box::new(Mark(2))));
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(*session.app.log.get(), [1, 2]);
+
+    session.restore(&saved).unwrap();
+    assert_eq!(*session.app.log.get(), [1]);
+    let restored = session.scene().epoch();
+
+    session.submit(Command::Reset);
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(
+        session.scene().epoch(),
+        restored.advance(),
+        "the reset after a restore to a saved snapshot was swallowed"
+    );
+    assert!(session.app.log.get().is_empty());
+}
+
+#[test]
+fn a_domain_name_shared_by_two_domains_is_reported_as_ambiguous() {
+    let (mut session, first) = session();
+    session.register_domain(DomainBuilder::new("r4", EuclideanR4));
+    let h3 = session.register_domain(DomainBuilder::new("h3", loam_math::HyperbolicH3));
+    let domains = session.domains();
+    assert_eq!(
+        domains.named::<EuclideanR4>("r4").err(),
+        Some(DomainError::AmbiguousDomainName("r4"))
+    );
+    assert_eq!(
+        domains.named::<EuclideanR4>("nowhere").err(),
+        Some(DomainError::UnknownDomainName("nowhere"))
+    );
+    assert_eq!(
+        domains.named::<EuclideanR4>("h3").err(),
+        Some(DomainError::SpaceMismatch(h3.id()))
+    );
+    assert_eq!(
+        domains
+            .named::<loam_math::HyperbolicH3>("h3")
+            .map(|h| h.id()),
+        Ok(h3.id())
+    );
+    let _ = first;
+}
+
+#[test]
 fn restore_does_not_launder_foreign_or_old_epoch_references_into_live_entities() {
     let mut owner = Session::new(Probe::default(), SimConfig::default());
     let r4 = owner.register_domain(DomainBuilder::new("r4", EuclideanR4).fields());

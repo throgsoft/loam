@@ -472,3 +472,22 @@ fn a_ball_dropped_on_a_half_space_floor_rests_at_the_hand_derived_height() {
         "the ball rested at {y}, not {HAND_REST_Y}"
     );
 }
+
+#[test]
+fn spawning_a_body_on_a_live_entity_without_a_pose_is_missing_not_stale() {
+    let (mut session, r4) = session();
+    let bare = session
+        .dispatch(|d| d.spawn(SpawnBundle::new().row(7_u32)))
+        .unwrap();
+    let result = session.domains_mut().typed(r4).unwrap().spawn_body(
+        bare,
+        sphere_body_r4(Vec4::ZERO, Vec4::ZERO, RADIUS, MASS).unwrap(),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(DomainError::Store(loam_runtime::StoreError::Missing(entity))) if entity == bare
+        ),
+        "spawn_body reported {result:?}"
+    );
+}

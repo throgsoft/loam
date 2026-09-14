@@ -979,6 +979,40 @@ struct Fragment {
     }
 
     #[test]
+    fn a_publication_phase_eye_write_keeps_the_frame_aspect() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let app = SessionApp::<Bare>::with_args(
+            HostConfig::new("aspect", Bindings::new()),
+            Args::default(),
+        )
+        .debug_layer(false);
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        session.register_domain(DomainBuilder::new("r3", EuclideanR3));
+        session.system(
+            Phase::Publication,
+            "camera",
+            |ctx: loam_runtime::Ctx<'_, Bare>| {
+                ctx.views.root_mut().eye =
+                    Eye::looking_at([0.0, 2.0, 5.0], [0.0; 3], [0.0, 1.0, 0.0]);
+                Ok(())
+            },
+        );
+        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        run_at(&mut frame, &gpu, &texture, Instant::now());
+
+        let root = frame.inner.session.views().root();
+        let aspect = frame.inner.session.views().get(root).unwrap().eye.aspect;
+        assert!(
+            (aspect - SIZE.0 as f32 / SIZE.1 as f32).abs() <= 1e-6,
+            "a Publication-phase eye write published aspect {aspect}"
+        );
+    }
+
+    #[test]
     fn installed_reset_key_recovers_the_fault_and_restores_cursor_capture_once() {
         const RESET: ActionId = ActionId(0);
 

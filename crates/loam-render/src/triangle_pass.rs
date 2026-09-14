@@ -43,7 +43,7 @@ impl std::fmt::Display for GroundLocked {
 
 impl std::error::Error for GroundLocked {}
 
-/// The mesh, view, and optional ground drawn in the Scene stage by the pass `pass` builds; the mesh uploads once per `edit` and again after a device loss.
+/// The mesh and view drawn by the pass `pass` builds, plus a ground only when one was configured before the pass was built, which makes the pass a clearing Background pass; the mesh uploads once per `edit` and again after a device loss.
 #[derive(Clone, Default)]
 pub struct TriangleFeed {
     input: Rc<RefCell<Input>>,
@@ -325,6 +325,44 @@ mod tests {
             mesh.colors = vec![color; 3];
             mesh.indices = vec![[0, 1, 2]];
         });
+    }
+
+    fn ground() -> Ground {
+        Ground {
+            y: 0.0,
+            dark: [0.1; 3],
+            light: [0.3; 3],
+            fog_per_unit: 0.0,
+            visible: true,
+        }
+    }
+
+    #[test]
+    fn a_ground_cannot_appear_or_vanish_after_the_pass_declared_its_color_load() {
+        let feed = TriangleFeed::default();
+        let _pass = feed.pass(FragmentShading::FaceNormalLambert);
+        let refused = feed.set_ground(Some(ground()));
+        assert!(
+            matches!(
+                refused,
+                Err(GroundLocked {
+                    declared: ColorLoad::Load
+                })
+            ),
+            "a ground added after registration was accepted: {refused:?}"
+        );
+        feed.set_ground(None)
+            .expect("keeping the declared load is allowed");
+
+        let grounded = TriangleFeed::default();
+        grounded
+            .set_ground(Some(ground()))
+            .expect("no pass is built yet");
+        let _pass = grounded.pass(FragmentShading::FaceNormalLambert);
+        assert!(grounded.set_ground(None).is_err());
+        grounded
+            .set_ground(Some(ground()))
+            .expect("replacing a declared ground keeps the load");
     }
 
     #[test]

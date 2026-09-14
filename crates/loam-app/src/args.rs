@@ -187,6 +187,12 @@ mod tests {
         assert_eq!(args.get("shapes"), None);
         assert!(args.has_bare_flag("shapes"));
         assert_eq!(args.bare_flag_value("shapes"), Some("5-cell,8-cell"));
+        assert_eq!(args.flag_value("shapes"), Some("5-cell,8-cell"));
+        assert_eq!(
+            Args::from_argv(["--headless=1200"]).flag_value("headless"),
+            Some("1200")
+        );
+        assert_eq!(Args::from_argv(["--other"]).flag_value("headless"), None);
         assert_eq!(
             Args::from_argv(["--headless=1200"]).bare_flag_value("headless"),
             None
