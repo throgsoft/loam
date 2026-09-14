@@ -7,6 +7,8 @@ use bytemuck::{Pod, Zeroable};
 use loam_math::Rotor4;
 use wgpu::*;
 
+use crate::pass::ColorLoad;
+
 const INITIAL_BODY_CAPACITY: usize = 32;
 
 /// Mirrored as `SHAPE_*` in [`HYPERSLICE_KERNEL_WGSL`]; keep in sync.
@@ -735,6 +737,13 @@ impl Hyperslice4DNode {
         self.clear_color = color;
     }
 
+    fn color_load_op(&self, load: ColorLoad) -> LoadOp<Color> {
+        match load {
+            ColorLoad::Clear => LoadOp::Clear(self.clear_color),
+            ColorLoad::Load => LoadOp::Load,
+        }
+    }
+
     /// Grows by doubling in `set_bodies` and never shrinks or truncates.
     pub fn body_capacity(&self) -> usize {
         self.body_capacity
@@ -771,7 +780,7 @@ impl Hyperslice4DNode {
         view: &wgpu::TextureView,
         viewport: crate::Viewport,
     ) {
-        self.record(encoder, view, None, viewport);
+        self.record(encoder, view, None, viewport, ColorLoad::Load);
     }
 
     pub fn record(
@@ -780,6 +789,7 @@ impl Hyperslice4DNode {
         view: &wgpu::TextureView,
         depth_view: Option<&wgpu::TextureView>,
         viewport: crate::Viewport,
+        load: ColorLoad,
     ) {
         match (self.has_depth, depth_view.is_some()) {
             (true, false) => panic!(
@@ -807,7 +817,7 @@ impl Hyperslice4DNode {
                 depth_slice: None,
                 resolve_target: None,
                 ops: Operations {
-                    load: LoadOp::Load,
+                    load: self.color_load_op(load),
                     store: StoreOp::Store,
                 },
             })],
@@ -829,6 +839,7 @@ impl Hyperslice4DNode {
         encoder: &mut CommandEncoder,
         view: &wgpu::TextureView,
         cells: &[(crate::Viewport, f32, BodyUniform)],
+        load: ColorLoad,
     ) -> Result<()> {
         let drawn = cells
             .iter()
@@ -898,7 +909,7 @@ impl Hyperslice4DNode {
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(self.clear_color),
+                        load: self.color_load_op(load),
                         store: StoreOp::Store,
                     },
                 })],
@@ -1181,8 +1192,15 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         let cells = strip_probe_cells();
         let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module);
         let mut encoder = device.create_command_encoder(&Default::default());
-        node.record_strip(&device, &queue, &mut encoder, &view, &cells)
-            .expect("filmstrip should render");
+        node.record_strip(
+            &device,
+            &queue,
+            &mut encoder,
+            &view,
+            &cells,
+            ColorLoad::Clear,
+        )
+        .expect("filmstrip should render");
         queue.submit(Some(encoder.finish()));
 
         let pixels = read_back_rgba(&device, &queue, &target, SIZE);
@@ -1313,6 +1331,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             &view,
             None,
             crate::Viewport::full([SIZE, SIZE]),
+            ColorLoad::Load,
         );
         queue.submit(Some(encoder.finish()));
 
@@ -1408,6 +1427,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             &color_view,
             Some(&depth_view),
             crate::Viewport::full([DEPTH_PROBE_SIZE, DEPTH_PROBE_SIZE]),
+            ColorLoad::Load,
         );
         let readback = device.create_buffer(&BufferDescriptor {
             label: Some("hyperslice4d depth probe readback"),

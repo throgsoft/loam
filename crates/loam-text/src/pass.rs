@@ -128,7 +128,11 @@ impl FramePass for TextPass {
                 state.renderer = Some(renderer);
                 state.failure = None;
             }
-            Err(error) => state.failure = Some(format!("{error:#}")),
+            Err(error) => {
+                let failure = format!("{error:#}");
+                tracing::warn!("pass `{}` has no font: {failure}", self.name);
+                state.failure = Some(failure);
+            }
         }
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());
