@@ -495,6 +495,7 @@ pub struct Session<A: Stores> {
     tick: Tick,
     sequence: u64,
     initial: Option<SessionSnapshot<A>>,
+    restored: bool,
     unfinished: Option<Phase>,
     phase_error: Option<PhaseError>,
 }
@@ -534,6 +535,7 @@ impl<A: Stores> Session<A> {
             tick: Tick::default(),
             sequence: 0,
             initial: None,
+            restored: false,
             unfinished: None,
             phase_error: None,
         }
@@ -766,10 +768,16 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
         };
+        let mut dispatched = Ok(());
         for index in 0..self.phases.entries(Phase::Dispatch).len() {
-            self.run_entry(Phase::Dispatch, index, step)?;
+            if let Err(error) = self.run_entry(Phase::Dispatch, index, step) {
+                dispatched = Err(error);
+                break;
+            }
             self.commit(&mut growth);
         }
+        self.restored = false;
+        dispatched?;
         self.app.boundary(Owner::new());
         for domain in self.domains.iter_mut() {
             domain.boundary();
@@ -931,6 +939,7 @@ impl<A: Stores> Session<A> {
         for (domain, snapshot) in self.domains.owned().zip(&from.domains) {
             domain.check_restore(snapshot)?;
         }
+        self.restored = true;
         self.commands.cancel_into(&mut self.results);
         self.commands.restore(&from.entities, from.next_request);
         let scene = self.scene();
@@ -977,6 +986,7 @@ impl<A: Stores> Session<A> {
         for request in batch.drain(..) {
             let despawn = matches!(request.command, Command::Despawn(_));
             let outcome = match request.command {
+                Command::Reset if self.restored => Err(Rejection::Cancelled),
                 Command::Reset => {
                     let unfinished = self.unfinished;
                     let phase_error = self.phase_error;
