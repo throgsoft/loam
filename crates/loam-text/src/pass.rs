@@ -22,6 +22,7 @@ struct State {
     text: String,
     draws: Vec<TextDraw>,
     renderer: Option<TextRenderer>,
+    failure: Option<String>,
     device: Option<Device>,
     queue: Option<Queue>,
 }
@@ -43,6 +44,7 @@ impl TextPass {
                 text: String::new(),
                 draws: Vec::new(),
                 renderer: None,
+                failure: None,
                 device: None,
                 queue: None,
             })),
@@ -61,6 +63,10 @@ impl TextPass {
     /// False when the font never parsed, so the pass draws nothing.
     pub fn ready(&self) -> bool {
         self.shared.borrow().renderer.is_some()
+    }
+
+    pub fn failure(&self) -> Option<String> {
+        self.shared.borrow().failure.clone()
     }
 }
 
@@ -110,13 +116,20 @@ impl FramePass for TextPass {
 
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
-        state.renderer = Some(TextRenderer::new(
+        state.renderer = None;
+        match TextRenderer::new(
             &gpu.device,
             &gpu.queue,
             frame.color,
             &state.font,
             state.bake_size_px,
-        )?);
+        ) {
+            Ok(renderer) => {
+                state.renderer = Some(renderer);
+                state.failure = None;
+            }
+            Err(error) => state.failure = Some(format!("{error:#}")),
+        }
         state.device = Some(gpu.device.clone());
         state.queue = Some(gpu.queue.clone());
         Ok(())
