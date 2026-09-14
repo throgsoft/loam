@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use glam::Vec4;
 use loam::app::args::Args;
-use loam::app::session::{launch_or_headless, FrameHook, Orbit, SessionApp};
+use loam::app::session::{launch_or_headless, look, FrameHook, Orbit, SessionApp};
 use loam::math::{Bivector, Bivector4, EuclideanR4};
 use loam::render::pass::FramePass;
 use loam::render::raymarch::BodyUniform;
@@ -512,11 +512,7 @@ fn install_systems(
                 ];
                 let camera = ctx.app.camera.get_mut();
                 camera.free.travel(axes, camera.speed * ctx.step.dt);
-                let root = ctx.views.root_mut();
-                root.eye = Eye {
-                    aspect: root.eye.aspect,
-                    ..camera.free.eye
-                };
+                look(ctx.views, camera.free.eye);
             }
             Ok(())
         },
@@ -605,10 +601,11 @@ impl AppCommand<Playground> for Action {
                 dispatch.app.gimbal.set(setting.unwrap_or(!shown));
             }
             Action::Running(setting) => {
-                if *dispatch.app.mode.get() == Mode::Rotate {
-                    let running = dispatch.app.spin.get_mut();
-                    running.running = setting.unwrap_or(!running.running);
+                if *dispatch.app.mode.get() == Mode::Toybox {
+                    return Err(Rejection::Unsupported("rotation belongs to Rotate"));
                 }
+                let running = dispatch.app.spin.get_mut();
+                running.running = setting.unwrap_or(!running.running);
             }
             Action::Projection(family) => {
                 dispatch.app.projection.set(family);
@@ -1067,11 +1064,7 @@ fn control_camera(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR
             camera.free.eye
         }
     };
-    let root = ctx.views.root_mut();
-    root.eye = Eye {
-        aspect: root.eye.aspect,
-        ..eye
-    };
+    look(ctx.views, eye);
 }
 
 fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR4>) {
@@ -1210,6 +1203,7 @@ mod tests {
         body_color: [0.95, 0.45, 0.85],
         label: "24-cell",
         long_name: "icositetrachoron",
+        category: catalog::Category::RegularPolychoron,
     };
 
     const EYE_BACK: f32 = 5.0;
@@ -2256,6 +2250,7 @@ mod tests {
             body_color: [0.30, 0.55, 0.95],
             label: "8-cell",
             long_name: "tesseract",
+            category: catalog::Category::RegularPolychoron,
         };
         let mut booted = boot(&[TESSERACT]).expect("the session boots");
         booted.session.boundary(Input::default()).expect("boundary");

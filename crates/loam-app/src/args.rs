@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub struct Args {
     map: HashMap<String, String>,
     bare_flags: Vec<String>,
+    bare_values: HashMap<String, String>,
 }
 
 impl Args {
@@ -32,6 +33,7 @@ impl Args {
         Self {
             map,
             bare_flags: Vec::new(),
+            bare_values: HashMap::new(),
         }
     }
 
@@ -43,22 +45,35 @@ impl Args {
     {
         let mut map = HashMap::new();
         let mut bare_flags = Vec::new();
+        let mut bare_values = HashMap::new();
+        let mut awaiting: Option<String> = None;
         for arg in argv {
             if arg.as_ref() == "--" {
                 break;
             }
             let Some(stripped) = arg.as_ref().strip_prefix("--") else {
+                if let Some(flag) = awaiting.take() {
+                    bare_values.insert(flag, arg.as_ref().to_string());
+                }
                 continue;
             };
+            awaiting = None;
             match stripped.split_once('=') {
                 Some((k, v)) if !k.is_empty() => {
                     map.insert(k.to_string(), v.to_string());
                 }
-                None if !stripped.is_empty() => bare_flags.push(stripped.to_string()),
+                None if !stripped.is_empty() => {
+                    bare_flags.push(stripped.to_string());
+                    awaiting = Some(stripped.to_string());
+                }
                 _ => {}
             }
         }
-        Self { map, bare_flags }
+        Self {
+            map,
+            bare_flags,
+            bare_values,
+        }
     }
 
     pub fn from_pairs<I, K, V>(pairs: I) -> Self
@@ -73,12 +88,17 @@ impl Args {
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
             bare_flags: Vec::new(),
+            bare_values: HashMap::new(),
         }
     }
 
     /// Always false on wasm32: the query surface has no bare form.
     pub fn has_bare_flag(&self, key: &str) -> bool {
         self.bare_flags.iter().any(|flag| flag == key)
+    }
+
+    pub fn bare_flag_value(&self, key: &str) -> Option<&str> {
+        self.bare_values.get(key).map(String::as_str)
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {

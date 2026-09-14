@@ -7,7 +7,7 @@ use glam::{Vec2, Vec3, Vec4};
 use loam::app::args::Args;
 use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
 use loam::app::environment::Environment;
-use loam::app::session::{launch, FrameHook, Orbit, SessionApp};
+use loam::app::session::{launch_or_headless, FrameHook, Orbit, SessionApp};
 use loam::math::{Bivector4, EuclideanR4, Rotor, WPlane};
 use loam::physics::body::MASK_ALL;
 use loam::physics::euclidean_r4::{
@@ -875,25 +875,21 @@ fn headless(
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
-    let steps = args
-        .iter()
-        .position(|arg| arg == "--headless")
-        .map(|at| args.get(at + 1).and_then(|steps| steps.parse::<u32>().ok()));
-    let outcome = match steps {
-        Some(None) => {
-            eprintln!("hero: --headless needs a tick count");
-            return ExitCode::FAILURE;
-        }
-        Some(Some(steps)) => {
-            build().and_then(|(mut session, scene)| headless(&mut session, scene.r4, steps))
-        }
-        None => launch(|args| {
+    let outcome = launch_or_headless(
+        |args| {
             let (session, _) = build()?;
             let record = record_request(&args);
             Ok((session, host(args, record)))
-        }),
-    };
+        },
+        |args| {
+            let steps = args
+                .bare_flag_value("headless")
+                .and_then(|count| count.parse::<u32>().ok())
+                .ok_or_else(|| refused("--headless needs a tick count"))?;
+            let (mut session, scene) = build()?;
+            headless(&mut session, scene.r4, steps)
+        },
+    );
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
