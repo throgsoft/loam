@@ -4,15 +4,9 @@ use std::rc::Rc;
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{
-    FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_BASE, SCENE_COLOR,
-    SCENE_DEPTH,
-};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::raymarch::{BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms};
 use crate::{DepthConvention, DepthMode, Viewport};
-
-const WRITES: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
-const READS: [ResourceId; 1] = [SCENE_BASE];
 
 struct State {
     enabled: bool,
@@ -78,14 +72,6 @@ impl HyperslicePass {
 impl FramePass for HyperslicePass {
     fn name(&self) -> &'static str {
         "hyperslice"
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        &WRITES
-    }
-
-    fn reads(&self) -> &[ResourceId] {
-        &READS
     }
 
     fn stage(&self) -> PassStage {

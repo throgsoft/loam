@@ -6,13 +6,8 @@ use loam_runtime::{Eye, SegmentRecord};
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{
-    FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR, SCENE_DEPTH,
-};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::{DepthConvention, DepthMode, LineRasterNode};
-
-const READS: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
-const WRITES: [ResourceId; 1] = [SCENE_COLOR];
 
 struct State {
     eye: Eye,
@@ -62,14 +57,6 @@ impl LinePass {
 impl FramePass for LinePass {
     fn name(&self) -> &'static str {
         self.name
-    }
-
-    fn reads(&self) -> &[ResourceId] {
-        &READS
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        &WRITES
     }
 
     fn stage(&self) -> PassStage {

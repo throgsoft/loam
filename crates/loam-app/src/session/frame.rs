@@ -536,9 +536,7 @@ mod tests {
     use glam::Vec3;
     use loam_math::EuclideanR3;
     use loam_render::device::FeatureRequest;
-    use loam_render::pass::{
-        FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR,
-    };
+    use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
     use loam_runtime::{
         ActionId, Bindings, Command, DomainBuilder, HostConfig, Identity3, Key, LogCapacity, Phase,
         Pose, SimConfig, SpawnBundle, Tick, ViewSpec,
@@ -561,7 +559,6 @@ mod tests {
     }
 
     const CAPTURE_FPS: u16 = 60;
-    const SCENE: [ResourceId; 1] = [SCENE_COLOR];
 
     struct Probe {
         recorded: Arc<AtomicU32>,
@@ -601,10 +598,6 @@ mod tests {
     impl FramePass for Paint {
         fn name(&self) -> &'static str {
             self.name
-        }
-
-        fn writes(&self) -> &[ResourceId] {
-            &SCENE
         }
 
         fn stage(&self) -> PassStage {

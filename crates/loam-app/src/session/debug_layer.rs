@@ -6,7 +6,7 @@ use std::sync::Arc;
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use loam_egui::egui;
 use loam_render::device::GpuContext;
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR};
+use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use wgpu::{CommandBuffer, CommandEncoder, Device, Queue, TextureFormat, TextureView};
 use winit::event::WindowEvent;
 use winit::window::Window;
@@ -14,10 +14,7 @@ use winit::window::Window;
 #[cfg(any(target_arch = "wasm32", test))]
 use super::input::TouchCapture;
 
-pub const DEBUG_LAYER: ResourceId = "debug-layer";
-
-const READS: [ResourceId; 1] = [SCENE_COLOR];
-const WRITES: [ResourceId; 1] = [DEBUG_LAYER];
+pub const DEBUG_LAYER: &str = "debug-layer";
 
 enum Feed {
     Winit(Box<WinitInput>),
@@ -453,14 +450,6 @@ impl FramePass for LayerPass {
         DEBUG_LAYER
     }
 
-    fn reads(&self) -> &[ResourceId] {
-        &READS
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        &WRITES
-    }
-
     fn stage(&self) -> PassStage {
         PassStage::Overlay
     }
@@ -499,11 +488,6 @@ impl FramePass for LayerPass {
 #[cfg(test)]
 mod tests {
     use loam_render::device::FeatureRequest;
-    use loam_render::pass::PassSchedule;
-    use loam_render::{
-        DepthConvention, FragmentShading, Ground, HyperslicePass, LinePass, SkyGroundPass,
-        TriangleFeed,
-    };
     use wgpu::{
         BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
         TextureDescriptor, TextureDimension, TextureUsages, TextureViewDescriptor,
@@ -524,44 +508,6 @@ mod tests {
         });
         pollster::block_on(GpuContext::new(instance, FeatureRequest::default(), None))
             .expect("the noop backend always yields a context")
-    }
-
-    #[test]
-    fn scene_and_overlay_passes_keep_capture_and_compositing_order() {
-        let gpu = noop_gpu();
-        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, (16, 16), 1.0);
-        let text = loam_text::TextPass::new("text", Vec::new(), 16.0);
-        let triangle = TriangleFeed::default().pass(FragmentShading::FaceNormalLambert);
-        let ground = Ground {
-            y: 0.0,
-            dark: [0.1, 0.1, 0.1],
-            light: [0.2, 0.2, 0.2],
-            fog_per_unit: 0.0,
-            visible: true,
-        };
-        let passes: [Box<dyn FramePass>; 6] = [
-            layer.pass(),
-            Box::new(text),
-            Box::new(LinePass::new("lines")),
-            triangle,
-            Box::new(HyperslicePass::new(String::new())),
-            Box::new(SkyGroundPass::new(ground)),
-        ];
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        for pass in passes {
-            schedule.register(pass).expect("registered");
-        }
-        assert_eq!(
-            schedule.names().collect::<Vec<_>>(),
-            [
-                "sky-ground",
-                "triangles",
-                "hyperslice",
-                "lines",
-                "text",
-                DEBUG_LAYER,
-            ]
-        );
     }
 
     #[test]

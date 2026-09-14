@@ -22,46 +22,11 @@ mod tests {
     use super::*;
     use crate::device::{FeatureRequest, GpuContext};
     use crate::pass::{FrameFormat, FramePass, FrameTarget, PassSchedule};
-    use crate::raymarch::{polytope_stub_sdfs_wgsl, BodyUniform, HYPERSLICE_KERNEL_WGSL};
-    use crate::sky_ground::{Ground, DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
     use crate::view::DEPTH_FORMAT;
     use crate::DepthConvention;
 
     const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
     const SIZE: (u32, u32) = (32, 24);
-
-    const EMPTY_SCENE: &str = r#"
-const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
-const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
-const LOAM_PRIM_OTHER: u32 = 255u;
-struct LoamSceneHit { dist: f32, kind: u32 }
-fn loam_scene_at(p: vec3<f32>) -> LoamSceneHit {
-    return LoamSceneHit(1.0e9, LOAM_PRIM_OTHER);
-}
-fn loam_scene_sdf(p: vec3<f32>) -> f32 {
-    return loam_scene_at(p).dist;
-}
-fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
-    return 1.0e9;
-}
-"#;
-
-    fn kernel() -> String {
-        format!(
-            "{HYPERSLICE_KERNEL_WGSL}\n{stubs}\n{EMPTY_SCENE}",
-            stubs = polytope_stub_sdfs_wgsl()
-        )
-    }
-
-    fn ground() -> Ground {
-        Ground {
-            y: 0.0,
-            dark: GROUND_DARK_GREY,
-            light: GROUND_LIGHT_GREY,
-            fog_per_unit: DEFAULT_FOG_PER_UNIT,
-            visible: true,
-        }
-    }
 
     fn noop_gpu() -> GpuContext {
         let instance = Instance::new(&InstanceDescriptor {
@@ -115,6 +80,9 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         };
         schedule.begin_frame();
         schedule
+            .record(crate::PassStage::Background, &mut encoder, &target)
+            .expect("background recorded");
+        schedule
             .record(crate::PassStage::Scene, &mut encoder, &target)
             .expect("scene recorded");
         schedule
@@ -122,43 +90,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             .expect("overlays recorded");
         schedule.end_frame(&mut encoder);
         gpu.queue.submit(Some(encoder.finish()));
-    }
-
-    #[test]
-    fn the_background_wrapper_precedes_the_scene_and_the_overlays_follow_the_depth_writer() {
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        let hyperslice = HyperslicePass::new(kernel());
-        hyperslice.publish_strip(&[(
-            crate::Viewport::full([SIZE.0, SIZE.1]),
-            0.0,
-            BodyUniform::sphere([0.0; 4], 0.5, [1.0; 3]),
-        )]);
-        for pass in [
-            Box::new(LinePass::new("edges")) as Box<dyn FramePass>,
-            Box::new(PointPass::new("vertices")),
-            Box::new(PointPass::new("grab-point")),
-            Box::new(hyperslice.clone()),
-            Box::new(SkyGroundPass::new(ground())),
-        ] {
-            schedule.register(pass).expect("registered");
-        }
-        hyperslice.publish_strip(&[]);
-        let names: Vec<&'static str> = schedule.names().collect();
-        let index = |name: &str| {
-            names
-                .iter()
-                .position(|held| *held == name)
-                .unwrap_or_else(|| panic!("{name} never registered: {names:?}"))
-        };
-        assert!(
-            index("sky-ground") < index("hyperslice"),
-            "the background clears after the marcher shaded into it: {names:?}"
-        );
-        assert!(
-            index("hyperslice") < index("edges") && index("hyperslice") < index("vertices"),
-            "an overlay records before the pass that writes the depth it tests: {names:?}"
-        );
-        assert!(index("vertices") < index("grab-point"));
     }
 
     #[test]

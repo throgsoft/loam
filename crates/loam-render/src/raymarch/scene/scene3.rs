@@ -5,7 +5,7 @@ use std::boxed::Box;
 
 use glam::Vec3;
 
-use super::combinator::smooth_min_fn;
+use super::literal::wgsl_f32;
 use super::primitive::Primitive;
 use loam_math::{Space, WgslSpace};
 pub use loam_shape::Shape as PrimitiveKind;
@@ -153,6 +153,16 @@ fn emit_node<S: WgslSpace>(
             var
         }
     }
+}
+
+fn smooth_min_fn(name: &str, k: f32) -> String {
+    let k = wgsl_f32(k);
+    format!(
+        "fn {name}(a: f32, b: f32) -> f32 {{\n\
+         \tlet h = clamp(0.5 + 0.5 * (b - a) / ({k}), 0.0, 1.0);\n\
+         \treturn mix(b, a, h) - ({k}) * h * (1.0 - h);\n\
+         }}\n",
+    )
 }
 
 fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S, p: Vec3) -> f32 {

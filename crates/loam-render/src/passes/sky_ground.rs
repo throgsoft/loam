@@ -5,7 +5,7 @@ use loam_runtime::Eye;
 use wgpu::{CommandEncoder, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_BASE};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
 use crate::{DepthConvention, Viewport};
 
@@ -15,8 +15,6 @@ struct State {
     node: Option<SkyGroundNode>,
     queue: Option<Queue>,
 }
-
-const BASE: [ResourceId; 1] = [SCENE_BASE];
 
 /// A shared scene background pass with a sky and reversed Z floor.
 #[derive(Clone)]
@@ -49,16 +47,8 @@ impl FramePass for SkyGroundPass {
         "sky-ground"
     }
 
-    fn reads(&self) -> &[ResourceId] {
-        &BASE
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        &BASE
-    }
-
     fn stage(&self) -> PassStage {
-        PassStage::Scene
+        PassStage::Background
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {

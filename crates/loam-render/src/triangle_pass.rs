@@ -8,18 +8,12 @@ use loam_shape::TriangleMesh;
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{
-    FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_BASE, SCENE_COLOR,
-    SCENE_DEPTH,
-};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::view::placed_view_projection;
 use crate::{
     DepthConvention, DepthMode, FragmentShading, Ground, SkyGroundNode, SkyGroundUniforms,
     TriangleRasterNode, Viewport,
 };
-
-const WRITES: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
-const READS: [ResourceId; 1] = [SCENE_BASE];
 
 #[derive(Default)]
 struct Input {
@@ -101,14 +95,6 @@ struct TrianglePass {
 impl FramePass for TrianglePass {
     fn name(&self) -> &'static str {
         "triangles"
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        &WRITES
-    }
-
-    fn reads(&self) -> &[ResourceId] {
-        &READS
     }
 
     fn stage(&self) -> PassStage {

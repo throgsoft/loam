@@ -2,14 +2,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use loam_render::device::GpuContext;
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR};
+use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::TextRenderer;
-
-const READS: [ResourceId; 1] = [SCENE_COLOR];
-const WRITES: [ResourceId; 1] = [SCENE_COLOR];
 
 /// One placement of the published text, in physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,14 +67,6 @@ impl TextPass {
 impl FramePass for TextPass {
     fn name(&self) -> &'static str {
         self.name
-    }
-
-    fn reads(&self) -> &[ResourceId] {
-        &READS
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        &WRITES
     }
 
     fn stage(&self) -> PassStage {

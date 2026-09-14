@@ -8,14 +8,9 @@ use crate::device::{GpuContext, LossSignal, UncapturedGpuError};
 use crate::gpu_timer::SectionTimer;
 use crate::DepthConvention;
 
-pub type ResourceId = &'static str;
-
-pub const SCENE_COLOR: ResourceId = "scene-color";
-pub const SCENE_DEPTH: ResourceId = "scene-depth";
-pub(crate) const SCENE_BASE: ResourceId = "scene-base";
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PassStage {
+    Background,
     Scene,
     Overlay,
 }
@@ -67,16 +62,6 @@ pub struct FrameTarget<'a> {
 pub trait FramePass {
     fn name(&self) -> &'static str;
 
-    /// Tokens whose producers precede this pass within its stage.
-    fn reads(&self) -> &[ResourceId] {
-        &[]
-    }
-
-    /// Tokens that place this pass before their consumers within its stage.
-    fn writes(&self) -> &[ResourceId] {
-        &[]
-    }
-
     fn stage(&self) -> PassStage;
 
     /// `None` means the pass writes no depth; `Some` must match the frame's convention to register.
@@ -101,9 +86,6 @@ pub enum PassError {
         declared: DepthConvention,
         frame: DepthConvention,
     },
-    Cycle {
-        pass: &'static str,
-    },
 }
 
 impl fmt::Display for PassError {
@@ -116,10 +98,6 @@ impl fmt::Display for PassError {
             } => write!(
                 f,
                 "pass `{pass}` writes depth under {declared:?}; this frame compares under {frame:?}"
-            ),
-            Self::Cycle { pass } => write!(
-                f,
-                "pass `{pass}` both follows and precedes a registered pass"
             ),
         }
     }
@@ -173,7 +151,6 @@ impl PassSchedule {
         &self.sections
     }
 
-    /// Orders producers before consumers and serializes passes that both read and write the same resource in registration order.
     pub fn register(&mut self, pass: Box<dyn FramePass>) -> Result<(), PassError> {
         if let Some(declared) = pass.depth_convention() {
             if declared != self.convention {
@@ -184,18 +161,9 @@ impl PassSchedule {
                 });
             }
         }
-        let name = pass.name();
-        self.passes.push(pass);
-        let Some(order) = topological(&self.passes) else {
-            self.passes.pop();
-            return Err(PassError::Cycle { pass: name });
-        };
-        let mut held: Vec<Option<Box<dyn FramePass>>> = self.passes.drain(..).map(Some).collect();
-        for index in order {
-            if let Some(pass) = held[index].take() {
-                self.passes.push(pass);
-            }
-        }
+        let stage = pass.stage();
+        let at = self.passes.partition_point(|held| held.stage() <= stage);
+        self.passes.insert(at, pass);
         Ok(())
     }
 
@@ -291,53 +259,6 @@ fn backend_error(source: UncapturedGpuError) -> PassExecutionError {
     PassExecutionError::Backend {
         source: source.into(),
     }
-}
-
-fn precedes(left: &dyn FramePass, right: &dyn FramePass, registered_first: bool) -> bool {
-    left.stage() < right.stage()
-        || (left.stage() == right.stage()
-            && left.writes().iter().any(|id| {
-                right.reads().contains(id)
-                    && (registered_first
-                        || !left.reads().contains(id)
-                        || !right.writes().contains(id))
-            }))
-}
-
-fn topological(passes: &[Box<dyn FramePass>]) -> Option<Vec<usize>> {
-    let count = passes.len();
-    let mut waiting = vec![0usize; count];
-    for (consumer, degree) in waiting.iter_mut().enumerate() {
-        *degree = (0..count)
-            .filter(|&producer| {
-                producer != consumer
-                    && precedes(
-                        passes[producer].as_ref(),
-                        passes[consumer].as_ref(),
-                        producer < consumer,
-                    )
-            })
-            .count();
-    }
-    let mut order = Vec::with_capacity(count);
-    let mut placed = vec![false; count];
-    while order.len() < count {
-        let next = (0..count).find(|&index| !placed[index] && waiting[index] == 0)?;
-        placed[next] = true;
-        order.push(next);
-        for consumer in 0..count {
-            if !placed[consumer]
-                && precedes(
-                    passes[next].as_ref(),
-                    passes[consumer].as_ref(),
-                    next < consumer,
-                )
-            {
-                waiting[consumer] -= 1;
-            }
-        }
-    }
-    Some(order)
 }
 
 fn time_section<T>(
@@ -453,8 +374,6 @@ fn fragment() -> @location(0) vec4<f32> {
 
     struct Probe {
         name: &'static str,
-        reads: &'static [ResourceId],
-        writes: &'static [ResourceId],
         convention: Option<DepthConvention>,
         stage: PassStage,
     }
@@ -462,14 +381,6 @@ fn fragment() -> @location(0) vec4<f32> {
     impl FramePass for Probe {
         fn name(&self) -> &'static str {
             self.name
-        }
-
-        fn reads(&self) -> &[ResourceId] {
-            self.reads
-        }
-
-        fn writes(&self) -> &[ResourceId] {
-            self.writes
         }
 
         fn stage(&self) -> PassStage {
@@ -524,46 +435,12 @@ fn fragment() -> @location(0) vec4<f32> {
         );
     }
 
-    fn probe(
-        name: &'static str,
-        reads: &'static [ResourceId],
-        writes: &'static [ResourceId],
-    ) -> Box<Probe> {
+    fn probe(name: &'static str) -> Box<Probe> {
         Box::new(Probe {
             name,
-            reads,
-            writes,
             convention: None,
             stage: PassStage::Scene,
         })
-    }
-
-    #[test]
-    fn a_consumer_registered_first_still_runs_after_the_pass_it_reads() {
-        const GLOW: ResourceId = "glow";
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        schedule.register(probe("consumer", &[GLOW], &[])).unwrap();
-        schedule.register(probe("producer", &[], &[GLOW])).unwrap();
-        assert_eq!(
-            schedule.names().collect::<Vec<_>>(),
-            ["producer", "consumer"]
-        );
-    }
-
-    #[test]
-    fn a_transform_registered_after_its_source_and_its_sink_is_not_a_cycle() {
-        const RAW: ResourceId = "raw";
-        const TONED: ResourceId = "toned";
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        schedule.register(probe("source", &[], &[RAW])).unwrap();
-        schedule.register(probe("sink", &[TONED], &[])).unwrap();
-        schedule
-            .register(probe("transform", &[RAW], &[TONED]))
-            .unwrap();
-        assert_eq!(
-            schedule.names().collect::<Vec<_>>(),
-            ["source", "transform", "sink"]
-        );
     }
 
     #[test]
@@ -571,8 +448,6 @@ fn fragment() -> @location(0) vec4<f32> {
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
         let refused = schedule.register(Box::new(Probe {
             name: "standard-z overlay",
-            reads: &[],
-            writes: &[SCENE_DEPTH],
             convention: Some(DepthConvention::StandardZ),
             stage: PassStage::Scene,
         }));
@@ -588,34 +463,26 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn overlay_stage_follows_scene_with_reverse_registration() {
+    fn a_stage_orders_a_pass_ahead_of_one_registered_before_it() {
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
         schedule
             .register(Box::new(Probe {
                 name: "overlay",
-                reads: &[SCENE_COLOR],
-                writes: &[SCENE_COLOR],
                 convention: None,
                 stage: PassStage::Overlay,
             }))
             .unwrap();
+        schedule.register(probe("scene")).unwrap();
         schedule
-            .register(probe("scene", &[], &[SCENE_COLOR]))
+            .register(Box::new(Probe {
+                name: "background",
+                convention: None,
+                stage: PassStage::Background,
+            }))
             .unwrap();
-        assert_eq!(schedule.names().collect::<Vec<_>>(), ["scene", "overlay"]);
-    }
-
-    #[test]
-    fn two_passes_each_reading_the_others_output_refuse_the_second_as_a_cycle() {
-        const LEFT: ResourceId = "left";
-        const RIGHT: ResourceId = "right";
-        const SHARED: ResourceId = "shared";
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        schedule
-            .register(probe("left", &[RIGHT, SHARED], &[LEFT, SHARED]))
-            .unwrap();
-        let refused = schedule.register(probe("right", &[LEFT, SHARED], &[RIGHT, SHARED]));
-        assert_eq!(refused, Err(PassError::Cycle { pass: "right" }));
-        assert_eq!(schedule.names().collect::<Vec<_>>(), ["left"]);
+        assert_eq!(
+            schedule.names().collect::<Vec<_>>(),
+            ["background", "scene", "overlay"]
+        );
     }
 }
