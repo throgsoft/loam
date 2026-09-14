@@ -71,7 +71,7 @@ fn menu_bar(
                 }
             });
             ui.menu_button("Edit", |ui| {
-                if ui.button("Reset all").clicked() {
+                if ui.button("Reset poses, rotation, and slice").clicked() {
                     sender.app(Action::Reset);
                     ui.close_kind(egui::UiKind::Menu);
                 }
@@ -590,7 +590,7 @@ fn transport(
             rate_toggle(ui, control, &mut rate, 4.0, true, true);
         }
         if refresh_button(ui, control)
-            .on_hover_text("Reset the scene.")
+            .on_hover_text("Reset poses, rotation, and slice.")
             .clicked()
         {
             sender.app(Action::Reset);

@@ -108,7 +108,7 @@ pub(crate) fn seek(
         ));
     }
     if *app.mode.get() == Mode::Toybox {
-        return Ok(());
+        return Err(DomainError::Unsupported("playback belongs to Rotate"));
     }
     let before = rotor_at(app, *app.time.get());
     let after = rotor_at(app, time);

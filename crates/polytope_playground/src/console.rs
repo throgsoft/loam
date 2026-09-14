@@ -75,7 +75,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
 
     app = app.command(
         "reset",
-        "reset the active demo in place",
+        "reset poses, rotation, and slice; shapes, view, and camera stay",
         move |args, submit, _out| {
             if !args.is_empty() {
                 bail!("usage: reset");

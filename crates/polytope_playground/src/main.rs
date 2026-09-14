@@ -605,10 +605,11 @@ impl AppCommand<Playground> for Action {
                 dispatch.app.gimbal.set(setting.unwrap_or(!shown));
             }
             Action::Running(setting) => {
-                if *dispatch.app.mode.get() == Mode::Rotate {
-                    let running = dispatch.app.spin.get_mut();
-                    running.running = setting.unwrap_or(!running.running);
+                if *dispatch.app.mode.get() == Mode::Toybox {
+                    return Err(Rejection::Unsupported("rotation belongs to Rotate"));
                 }
+                let running = dispatch.app.spin.get_mut();
+                running.running = setting.unwrap_or(!running.running);
             }
             Action::Projection(family) => {
                 dispatch.app.projection.set(family);
