@@ -7,7 +7,7 @@ use glam::{Vec2, Vec3, Vec4};
 use loam::app::args::Args;
 use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
 use loam::app::environment::Environment;
-use loam::app::session::{launch, FrameHook, SessionApp};
+use loam::app::session::{launch, FrameHook, Orbit, SessionApp};
 use loam::math::{Bivector4, EuclideanR4, Rotor, WPlane};
 use loam::physics::body::MASK_ALL;
 use loam::physics::euclidean_r4::{
@@ -18,8 +18,8 @@ use loam::render::{FragmentShading, TriangleFeed};
 use loam::runtime::host::{self, HostConfig, HostError};
 use loam::runtime::{
     ActionId, Bindings, Command, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle, Domains,
-    Entity, Key, LogCapacity, Orbit, Order, Outcome, Phase, Physics, PhysicsConfig, Pose,
-    Rejection, Rigid, Session, SimConfig, SpawnBundle, DOMAIN_STEP,
+    Entity, Key, LogCapacity, Order, Outcome, Phase, Physics, PhysicsConfig, Pose, Rejection,
+    Rigid, Session, SimConfig, SpawnBundle, DOMAIN_STEP,
 };
 use loam::shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
 use loam::shape::{Shape, TriangleMesh};
@@ -564,7 +564,7 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
 
     let mut orbit = Orbit::around(centre.to_array(), BOOT_ORBIT_DISTANCE);
     orbit.pitch = BOOT_ORBIT_PITCH;
-    session.orbit(orbit);
+    loam::app::session::orbit(&mut session, orbit);
 
     session.system(Phase::Dispatch, "keys", move |ctx: Ctx<'_, HeroStores>| {
         if ctx.input.pressed(PAUSE) {

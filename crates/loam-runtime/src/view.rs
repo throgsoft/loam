@@ -98,53 +98,6 @@ impl Default for Eye {
     }
 }
 
-/// Orbits a target using the delta convention in `Pointer`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Orbit {
-    pub target: [f32; 3],
-    pub yaw: f32,
-    pub pitch: f32,
-    pub distance: f32,
-}
-
-impl Orbit {
-    pub fn around(target: [f32; 3], distance: f32) -> Self {
-        Self {
-            target,
-            yaw: 0.0,
-            pitch: 0.0,
-            distance,
-        }
-    }
-
-    pub fn drag(&mut self, delta: [f32; 2]) {
-        self.yaw -= delta[0] * ORBIT_GAIN;
-        self.pitch = (self.pitch + delta[1] * ORBIT_GAIN).clamp(-PITCH_LIMIT, PITCH_LIMIT);
-    }
-
-    pub fn zoom(&mut self, lines: f32) {
-        self.distance =
-            (self.distance * (-lines * ZOOM_GAIN).exp()).clamp(MIN_DISTANCE, MAX_DISTANCE);
-    }
-
-    pub fn eye(&self) -> Eye {
-        let (yaw_sin, yaw_cos) = self.yaw.sin_cos();
-        let (pitch_sin, pitch_cos) = self.pitch.sin_cos();
-        let offset = Vec3::new(yaw_sin * pitch_cos, -pitch_sin, yaw_cos * pitch_cos);
-        Eye::looking_at(
-            (Vec3::from(self.target) + offset * self.distance).to_array(),
-            self.target,
-            [0.0, 1.0, 0.0],
-        )
-    }
-}
-
-const ORBIT_GAIN: f32 = 0.006;
-const PITCH_LIMIT: f32 = 1.5;
-const ZOOM_GAIN: f32 = 0.12;
-const MIN_DISTANCE: f32 = 1.5;
-const MAX_DISTANCE: f32 = 20.0;
-
 pub struct ImageSpace {
     pub eye: Eye,
 }

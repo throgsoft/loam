@@ -708,14 +708,14 @@ mod tests {
             map.button(map.css_ndc(50.0, 50.0), PointerButton::Secondary, true);
             map.moved(map.css_ndc(70.0, 70.0));
             let input = map.take();
-            let mut orbit = loam_runtime::Orbit::around([0.0; 3], 5.0);
+            let mut orbit = crate::session::camera::Orbit::around([0.0; 3], 5.0);
             orbit.drag(input.drag(PointerButton::Secondary));
             assert!((orbit.yaw + 0.12).abs() < 1e-6);
             assert!((orbit.pitch + 0.12).abs() < 1e-6);
 
             map.set_cursor_locked(true);
             map.raw_motion(20.0 * scale, 20.0 * scale);
-            let mut camera = loam_runtime::FreeCamera::default();
+            let mut camera = crate::session::camera::FreeCamera::default();
             camera.look(map.take().look);
             let [x, y, z] = camera.eye.forward;
             assert!(((-x).atan2(-z) + 0.04).abs() < 1e-6);

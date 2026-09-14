@@ -13,8 +13,8 @@ pub use loam_time::FixedTimestep;
 
 #[cfg(feature = "app")]
 pub use loam_app::session::{
-    launch, launch_with, CaptureControl, CommandSender, CursorPolicy, FrameHook, InputHook,
-    SessionApp, Target,
+    launch, launch_with, orbit, CaptureControl, CommandSender, CursorPolicy, FrameHook, FreeCamera,
+    InputHook, Orbit, SessionApp, Target,
 };
 #[cfg(feature = "app")]
 pub use loam_app::{egui, WasmConfig};

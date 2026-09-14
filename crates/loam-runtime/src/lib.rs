@@ -1,5 +1,4 @@
 pub mod bridge;
-pub mod camera;
 pub mod command;
 pub mod domain;
 pub mod entity;
@@ -17,7 +16,6 @@ pub mod value;
 pub mod view;
 
 pub use bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
-pub use camera::FreeCamera;
 pub use command::{
     AppCommand, Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
     Reservation, SpawnBundle,
@@ -56,7 +54,7 @@ pub use stores::{HasRelation, HasStore, Stores};
 pub use value::Value;
 pub use view::{
     DepthEnvelope, DomainRay, Eye, Identity3, ImageRay, ImageSpace, ImageSpaceId, InstanceRecord,
-    Klein, Orbit, Pick, Placement, PointRecord, Projection4, RefusalSource, Rigid, Section4,
-    SectionCut, SegmentRecord, TriangleRecord, ViewId, ViewMapping, ViewRecords, ViewRefusal,
-    ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
+    Klein, Pick, Placement, PointRecord, Projection4, RefusalSource, Rigid, Section4, SectionCut,
+    SegmentRecord, TriangleRecord, ViewId, ViewMapping, ViewRecords, ViewRefusal, ViewRefusals,
+    ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
 };
