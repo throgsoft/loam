@@ -11,11 +11,11 @@ use loam::physics::euclidean_r4::{
 };
 use loam::runtime::host::{self, HostConfig, HostError};
 use loam::runtime::{
-    ActionEvent, ActionId, Bindings, BridgeSpec, Ctx, DepthEnvelope, DomainBuilder, DomainError,
-    DomainHandle, DomainRay, DomainSpace, Entity, ImageRay, Input, Instance, Key, Klein,
-    LogCapacity, Material, Phase, PhysicsConfig, Placement, Pose, PreparedGeometry, Projection4,
-    Publication, Rejection, Rigid, Section4, Session, SimConfig, SpawnBundle, ViewId, ViewMapping,
-    ViewSpec,
+    ActionEvent, ActionId, Bindings, BridgeSpec, Command, Ctx, DepthEnvelope, DomainBuilder,
+    DomainError, DomainHandle, DomainRay, DomainSpace, Entity, ImageRay, Input, Instance, Key,
+    Klein, LogCapacity, Material, Phase, PhysicsConfig, Placement, Pose, PreparedGeometry,
+    Projection4, Publication, Rejection, Rigid, Section4, Session, SimConfig, SpawnBundle, ViewId,
+    ViewMapping, ViewSpec,
 };
 use loam::shape::polytope::Polytope4;
 use web_time::Instant;
@@ -37,6 +37,7 @@ const DRAG_NDC: f32 = 0.15;
 const DRAG_SECONDS: f64 = 0.25;
 const EDIT: ActionId = ActionId(4);
 const EDIT_STEP: f32 = 0.05;
+const RESET: ActionId = ActionId(5);
 const LATENCY_SAMPLES: usize = 128;
 const BALL_RADIUS: f32 = 0.5;
 const BALL_MASS: f32 = 1.0;
@@ -159,6 +160,7 @@ fn bindings() -> Bindings {
         .key(Key::Letter('a'), LEFT)
         .key(Key::Letter('d'), RIGHT)
         .key(Key::Letter('e'), EDIT)
+        .key(Key::Letter('r'), RESET)
 }
 
 fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
@@ -305,6 +307,17 @@ fn build(physics: bool) -> Result<(Session<TwoSpaceStores>, Scene), HostError> {
                 step,
                 submitted: Some(Instant::now()),
             });
+            Ok(())
+        },
+    );
+
+    session.system(
+        Phase::Dispatch,
+        "reset",
+        |ctx: Ctx<'_, TwoSpaceStores>| -> Result<(), DomainError> {
+            if ctx.input.pressed(RESET) {
+                ctx.commands.submit(Command::Reset);
+            }
             Ok(())
         },
     );
@@ -629,7 +642,8 @@ fn main() -> ExitCode {
         }
         None => launch(|args| {
             let (session, _) = build(false)?;
-            let app = SessionApp::with_args(HostConfig::new("twospace", bindings()), args);
+            let app = SessionApp::with_args(HostConfig::new("twospace", bindings()), args)
+                .recover_on_fault(RESET);
             Ok((session, app))
         })
         .map(|()| true),
