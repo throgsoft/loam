@@ -175,6 +175,7 @@ loam::runtime::stores! {
         held: Value<Vec<Held>>,
         environment: Value<Environment>,
         mesh: Value<TriangleMesh<3>>,
+        camera: Value<Orbit>,
     }
 }
 
@@ -564,7 +565,8 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
 
     let mut orbit = Orbit::around(centre.to_array(), BOOT_ORBIT_DISTANCE);
     orbit.pitch = BOOT_ORBIT_PITCH;
-    loam::app::session::orbit(&mut session, orbit);
+    session.app.camera.set(orbit);
+    loam::app::session::orbit(&mut session, |app: &mut HeroStores| app.camera.get_mut());
 
     session.system(Phase::Dispatch, "keys", move |ctx: Ctx<'_, HeroStores>| {
         if ctx.input.pressed(PAUSE) {
