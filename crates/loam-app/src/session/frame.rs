@@ -329,6 +329,7 @@ impl<A: Stores> Inner<A> {
                     session.tick()?;
                 }
             }
+            session.views_mut().root_mut().eye.aspect = aspect;
             Ok(())
         })();
         input.reclaim(session.take_input());

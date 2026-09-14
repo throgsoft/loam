@@ -1,5 +1,5 @@
 use loam_math::{EuclideanR3, Space};
-use loam_runtime::{Ctx, Eye, Input, Phase, PointerButton, Session, Stores};
+use loam_runtime::{Ctx, Eye, Input, Phase, PointerButton, Session, Stores, Views};
 
 type Vec3 = <EuclideanR3 as Space>::Vector;
 
@@ -92,6 +92,14 @@ const ZOOM_GAIN: f32 = 0.12;
 const MIN_DISTANCE: f32 = 1.5;
 const MAX_DISTANCE: f32 = 20.0;
 
+pub fn look(views: &mut Views, eye: Eye) {
+    let root = views.root_mut();
+    root.eye = Eye {
+        aspect: root.eye.aspect,
+        ..eye
+    };
+}
+
 pub fn orbit<A: Stores>(
     session: &mut Session<A>,
     camera: impl Fn(&mut A) -> &mut Orbit + Send + 'static,
@@ -99,10 +107,8 @@ pub fn orbit<A: Stores>(
     session.system(Phase::Dispatch, "orbit", move |ctx: Ctx<'_, A>| {
         let orbit = camera(ctx.app);
         orbit.apply(ctx.input);
-        let mut eye = orbit.eye();
-        let root = ctx.views.root_mut();
-        eye.aspect = root.eye.aspect;
-        root.eye = eye;
+        let eye = orbit.eye();
+        look(ctx.views, eye);
         Ok(())
     });
 }
