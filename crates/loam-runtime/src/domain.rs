@@ -1786,7 +1786,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
-    ) -> Result<(), DomainError> {
+    ) {
         let ViewRecords {
             instances,
             segments,
@@ -1806,7 +1806,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             _ => {
                 instances.replace(std::iter::empty(), stamp);
                 *built = stamp;
-                return Ok(());
+                return;
             }
         };
         let projection = ViewProjection {
@@ -1868,7 +1868,6 @@ impl<S: DomainSpace> TypedDomain<S> {
             });
         instances.replace(records, stamp);
         *built = stamp;
-        Ok(())
     }
 
     fn patch_view(
@@ -1877,9 +1876,9 @@ impl<S: DomainSpace> TypedDomain<S> {
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
-    ) -> Result<bool, DomainError> {
+    ) -> bool {
         let Some(eye) = self.poses.get(spec.eye) else {
-            return Ok(false);
+            return false;
         };
         let projection = ViewProjection {
             space: &self.space,
@@ -1907,10 +1906,10 @@ impl<S: DomainSpace> TypedDomain<S> {
                 continue;
             };
             let Some(pose) = self.poses.get(entity) else {
-                return Ok(false);
+                return false;
             };
             let Some(cached) = output.get(entity).cloned() else {
-                return Ok(false);
+                return false;
             };
             patch_segments.clear();
             patch_triangles.clear();
@@ -1931,7 +1930,7 @@ impl<S: DomainSpace> TypedDomain<S> {
                 || patch_triangles.len() != cached.triangles.end - cached.triangles.start
                 || section_refusals.count != 0
             {
-                return Ok(false);
+                return false;
             }
             segments[cached.section_segments.clone()].copy_from_slice(patch_segments);
             triangles[cached.triangles.clone()].copy_from_slice(patch_triangles);
@@ -1950,12 +1949,12 @@ impl<S: DomainSpace> TypedDomain<S> {
                 || record.is_some() != cached.instance
                 || record_refusals.count != 0
             {
-                return Ok(false);
+                return false;
             }
             segments[cached.line_segments.clone()].copy_from_slice(patch_segments);
             if let Some(record) = record {
                 if !instances.update(entity, record) {
-                    return Ok(false);
+                    return false;
                 }
             }
             patched = true;
@@ -1964,7 +1963,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         if patched {
             *built = stamp;
         }
-        Ok(true)
+        true
     }
 
     pub fn fields(&self) -> Option<&Store<Field>> {
@@ -2248,7 +2247,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
                 into.instances.restamp(stamp);
                 true
             } else if spec.style.enabled && into.refusals.count == 0 {
-                self.patch_view(spec, library, into, stamp)?
+                self.patch_view(spec, library, into, stamp)
             } else {
                 false
             };
@@ -2261,7 +2260,8 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         self.poses.catch_up(&mut into.poses);
         self.instances.catch_up(&mut into.attachments);
         into.revision = revision;
-        self.rebuild_view(spec, library, into, stamp)
+        self.rebuild_view(spec, library, into, stamp);
+        Ok(())
     }
 
     fn step(&mut self, step: Step) -> Result<(), DomainError> {

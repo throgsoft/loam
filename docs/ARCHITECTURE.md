@@ -97,7 +97,8 @@ Each view counts explicit geometry refusals and retains the first and last
 entity, error, and source. Normal projection clipping is not a refusal.
 
 `Records` prevents publication into a buffer that a consumer still holds.
-Failed extraction clears the attempted publication and faults the session.
+A view whose eye has despawned publishes empty until a live eye is set. A
+Publication system that fails faults the session.
 The host does not render a partial buffer. Fill callbacks receive shared session
 and publication references. UI actions enter a later command boundary.
 
