@@ -75,10 +75,12 @@ appears.
 
 ## What this decides
 
-- The render target cap moves into the production browser build, with an
-  override for measurement.
-- The wasm build gets its own profile (fat LTO, one codegen unit, abort on
-  panic, size-optimized), measured for size and speed before it ships.
+- The browser host exposes its existing render target cap as a launch
+  option, off by default. The engine enforces nothing; the page that embeds
+  the playground sets the cap, and the measurements below assume it did.
+- The wasm build gets a release profile (fat LTO, one codegen unit, abort on
+  panic, size-optimized) so measured timings and bundle size are the shipped
+  ones. This is build hygiene, not engine work.
 - Scaling work such as range uploads, placing each vertex once, per-cell
   edge lists, and chunked publication proceeds only against a measured miss
   on this ladder.
