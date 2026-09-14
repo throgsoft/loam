@@ -27,7 +27,8 @@ fn cell_plane_and_projection_agree() {
             for &index in topology.cells[cell_index] {
                 let vertex = topology.vertices[index as usize];
                 assert!((vertex.dot(params.cell_normal) - params.cell_offset).abs() < 5e-4);
-                let projected = EuclideanR4::project_point(vertex, &projection);
+                let projected = EuclideanR4::project_point(vertex, &projection)
+                    .expect("a cell vertex is off the Schlegel viewpoint");
                 let reconstructed = params.cell_basis[0] * projected.x
                     + params.cell_basis[1] * projected.y
                     + params.cell_basis[2] * projected.z

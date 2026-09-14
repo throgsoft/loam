@@ -255,7 +255,9 @@ impl PointRasterNode {
             .zip(mesh.sizes.iter())
         {
             let p_native = S::array_to_point(*p);
-            let p3 = S::project_point(p_native, projection);
+            let Some(p3) = S::project_point(p_native, projection) else {
+                continue;
+            };
             if !p3.is_finite() {
                 continue;
             }

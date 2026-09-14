@@ -138,7 +138,8 @@ fn push_clipped_subsegment(
 // Coxeter, Introduction to Geometry, 1969, §6.9.
 pub fn stereographic_view_point(p: Vec4, projection: &loam_math::Projection<4>) -> Vec3 {
     let proj =
-        <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(p, projection);
+        <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(p, projection)
+            .unwrap_or(Vec3::NAN);
     let loam_math::Projection::Stereographic { pole } = projection else {
         return proj;
     };

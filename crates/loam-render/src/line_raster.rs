@@ -375,7 +375,7 @@ fn build_line_instances<S, const N: usize>(
         let mut previous = None;
         let mut index = 0;
         S::tessellate_segment(p0, p1, samples, |point| {
-            let q1 = S::project_point(point, projection);
+            let q1 = S::project_point(point, projection).unwrap_or(glam::Vec3::NAN);
             if let Some(q0) = previous {
                 let t0 = index as f32 / samples as f32;
                 let t1 = (index + 1) as f32 / samples as f32;

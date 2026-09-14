@@ -6,7 +6,7 @@ const SPACE_TESSELLATION_SAMPLES: usize = 16;
 const STEREOGRAPHIC_VIEW_RADIUS: f32 = 6.0;
 
 fn project_to_world(p: Vec4, projection: &Projection<4>, position: Vec3) -> Vec3 {
-    EuclideanR4::project_point(p, projection) + position
+    EuclideanR4::project_point(p, projection).unwrap_or(Vec3::NAN) + position
 }
 
 mod blended_edge_tests {

@@ -212,7 +212,7 @@ impl TriangleRasterNode {
         let verts = &mut self.vertices_scratch;
         for (v, color) in mesh.vertices.iter().zip(mesh.colors.iter()) {
             let p_native = S::array_to_point(*v);
-            let p3 = S::project_point(p_native, projection);
+            let p3 = S::project_point(p_native, projection).unwrap_or(glam::Vec3::NAN);
             verts.push(TriangleVertex {
                 position: p3.to_array(),
                 _pad0: 0.0,
