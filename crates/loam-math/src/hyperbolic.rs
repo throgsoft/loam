@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::space::{IsometryGroup, Space, WgslSpace};
 
-const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
+pub const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
 
 /// H³ hits at least `H3_DEPTH_SEPARATION` apart stay ordered within this hyperbolic distance of an eye at most `H3_EYE_CHART_REACH` from the chart origin, and `valid_point` refuses points farther than this from the origin.
 pub const H3_DEPTH_ENVELOPE: f32 = 6.0;

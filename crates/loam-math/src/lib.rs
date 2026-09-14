@@ -22,7 +22,7 @@ pub use blended::{BlendedSpace, BlendingField, ConformallyFlat, LinearBlendX};
 pub use euclidean::{EuclideanR3, Iso3};
 pub use euclidean_r2::{EuclideanR2, Iso2};
 pub use euclidean_r4::{EuclideanR4, Iso4Flat};
-pub use hyperbolic::{HyperbolicH3, Iso3H};
+pub use hyperbolic::{HyperbolicH3, Iso3H, POINCARE_R2_MAX};
 pub use quotient::{CoveringSpace, FlatTorus3, LensSpace, QuotientSpace};
 pub use rasterizable::{Projection, RasterizableSpace, STEREOGRAPHIC_POLE_EPSILON};
 pub use sectionable::{WPlane, EDGE_PARALLEL_EPSILON, SLICE_PERTURBATION_EPSILON};
