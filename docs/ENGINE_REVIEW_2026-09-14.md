@@ -420,3 +420,223 @@ any host observation of appearance or interaction.
   ordering enforced on write and read, and fourteen tests each naming a distinct
   malformed input.
 
+
+## Affected-contract review after the repair rows, head 350a51a
+
+Range `0650128d0d7e5d246a1a8d96c186b8bd36ec4b46..350a51ae6ab6b869d66353a7e8d904685b419274`,
+29 commits, 69 files, 1800 insertions and 323 deletions, clean tree with no
+untracked source. Two independent reviewers covered the range, one on the
+runtime, host, and applications and one on rendering, text, and geometry; this
+referee opened every cited site, challenged every closure verdict and every new
+finding, and renumbered the two independent finding sets as S1 onward in
+consequence order. The target is unchanged: the foundational engine architecture
+for the Polytope Playground and the coming scripting layer.
+
+Owner's rules applied. A finding whose only content is that something has not
+been observed on a host, browser, or device is an evidence gap that lowers
+confidence and not the grade. Nothing built but unused may be deleted, so R24 is
+accepted. R23 is deferred to the scripting kickoff, and R14 is covered by
+`docs/SCALING_EXPERIMENT.md`, planned and not run.
+
+Referee corrections. The ground clear is latent, not shipped: the only caller of
+`TriangleFeed::set_ground` is `crates/examples/src/bin/hero.rs:794`, and hero
+never calls `add_view`, so both presenter Scene passes record nothing before the
+clear. R22's second half is closed, not untouched:
+`crates/loam-math/src/rasterizable.rs:149` refuses the four-dimensional variants
+at `N` of three, where the review found a Schlegel collapsing to the origin. The
+range is 29 commits; the two reports said 28 and 32.
+
+### Reconciled category grades at 350a51a
+
+| Category | Grade | Confidence | Pass | Reason | Below A |
+|---|---|---|---|---|---|
+| Application ergonomics | B | High | Regraded | Named refusals reach the console from system submissions and one press means one reset, but a Publication-phase eye write still publishes a stretched frame with no error. | R11, S9 |
+| End-to-end ownership | A | High | Carried | The restore fan-out to domains, app state, and views is unchanged by this range; only a boundary flag was added beside it. | none |
+| Abstraction value | B | High | Regraded | `look` and the catalog category removed real caller duplication, but the range added two required surfaces with no consumer. | S4, S7 |
+| Geometry model | A | High | Regraded | `chart_reach` is finite past the ball at the shared constant, every emitted space carries a real arc cap, the H3 fixture covers its whole 6.0 envelope, and unsupported projections now refuse by dimension. | none |
+| Domain and presentation boundaries | B | High | Regraded | Every emitted space declares an accuracy tier that executed probes assert on a real adapter, but the depth envelope that states the boundary's validity limit has no reader on any render or publication path. | S4, S2 |
+| Runtime correctness | B | High | Regraded | Both reachable defects are closed with production-path tests, but the one-restore-per-boundary rule is set by every `Session::restore` and documented on neither side of the coupling. | S3 |
+| Data layout and scaling | B | Medium | Carried | Neither the store default nor either bench changed in the range, and no bench ran at this head; the allocation probe can no longer confuse zero bytes with an absent allocator. | R14, R5 |
+| Cache correctness and value | B | High | Regraded | Access no longer bumps, a real style change bumps before every publication, and published views are keyed by domain and target, but the comparison driving all of it is a hand-listed field set. | S6 |
+| Rendering architecture | B | High | Regraded | The pass contract now governs color loads and depth readers and a failed attach cannot record, but a declaration is a live query rather than a commitment and nothing checks a pass against what it records. | S2, S5, R20 |
+| Native and WASM separation | B | Medium | Regraded | A wasm32 clippy job now keeps the browser host under deny-warnings, but it omits `--all-targets`, the worker still forces an empty feature set, and the routing table is still executed by no test. | R15 |
+| Numerical and physics quality | B | Medium | Regraded | The blended approximation carries a declared residual an executed probe checks and the H3 fixture reaches its full envelope, but the transport endpoint is still a pin and the new eye-scoped envelope has one proved point and one chosen point. | R17, S10 |
+| Rust implementation quality | A | High | Regraded | The projective singularity now has one convention at the source and refuses by dimension; the single consumer that discards the refusal is unreachable from any shipped call site. | none |
+| Behavior and presentation fidelity | B | Medium | Regraded | Every source-provable item that held the C is repaired, with the labels agreeing, both Toybox refusals named and tested, and one recovery press running one restore. | R11 |
+| Verification and diagnosis | B | High | Regraded | Three error families name what was refused, `Missing` replaces `Stale` at ten sites, and `trace passes` prints per-pass CPU and GPU time, but the console half of R8 reaches no rendered frame. | S1, R9, R20 |
+| Extension cost | B | High | Regraded | A custom pass costs four methods with the two new declarations defaulted safely, and a new space costs one line that buys an asserted parity tier, but a pass's declaration is a promise nothing keeps. | S5 |
+
+Movement against `0650128`: Geometry model B to A and Behavior and presentation
+fidelity C to B. Every other grade held, with different findings holding it.
+
+### Closure of R1 to R25
+
+- R1. Closed. One restore per boundary at `crates/loam-runtime/src/session.rs:1026`, flag cleared at `:810`, tested; hero still reseeds once. Residual S3.
+- R2. Closed. `CommandResult.name` at `crates/loam-runtime/src/command.rs:87` and unmatched rejections routed through `deliver` at `crates/loam-app/src/session/commands.rs:238`, with an exact-line console test.
+- R3. Closed. `SimConfig::check` at `crates/loam-runtime/src/session.rs:37` enforced at `crates/loam-app/src/session/frame.rs:63`, and a zero rate now pauses instead of tripping the timestep assert.
+- R4. Closed. `crates/loam-runtime/src/domain.rs:729` clamps with the shared `POINCARE_R2_MAX` constant, tested at three radii.
+- R5. Partly closed. `crates/loam-time/src/alloc.rs:95` returns `None` without the allocator; `realloc` at `:55` still charges gross on a grow in place.
+- R6. Closed. `WgslAccuracy` is required on `WgslSpace` at `crates/loam-math/src/space.rs:87` and executed parity probes assert the declared tier.
+- R7. Partly closed. `ColorLoad` and `depth_read` are declared and refused at `crates/loam-render/src/pass.rs:216`, and the filmstrip clear moved to Background. Residuals S2 and S5.
+- R8. Partly closed. `trace passes` prints per-pass CPU and GPU time from `crates/loam-app/src/trace.rs:119`; the console half is S1, and `PerfOverlay` still has no shipped constructor.
+- R9. Partly closed. Three error families name what was refused and ten sites return `Missing`; `crates/loam-runtime/src/domain.rs:2074` still returns `Stale` for a live row-less entity, and `:2644` and `:2647` report missing and ambiguous alike.
+- R10. Closed. The Edit item, the refresh hover, and the console help all read the same thing, and `spin` and `seek` return named refusals in Toybox with a test.
+- R11. Partly closed. `look` at `crates/loam-app/src/session/camera.rs:95` and the post-tick repair at `crates/loam-app/src/session/frame.rs:332` landed untested, and a Publication-phase eye write still publishes stretched.
+- R12. Closed. `H3_MAX_ARC` of 17.5 at `crates/loam-math/src/hyperbolic.rs:10` is emitted by the H3 kernel, with flat and blended peers carrying real caps.
+- R13. Closed. Access no longer bumps, a real change bumps inside `synchronize`, and published views are keyed by domain and target, correctly for a skipped middle target. Residual S6.
+- R14. Accepted decision. Covered by `docs/SCALING_EXPERIMENT.md`, planned and not run.
+- R15. Partly closed. A wasm32 clippy job runs clean at this head; it omits `--all-targets`, `crates/loam-app/src/session/browser.rs:276` still forces an empty feature set, and the routing table is untested.
+- R16. Partly closed. `klein_depth_envelope` at `crates/loam-runtime/src/view.rs:744` takes the eye distance. Residuals S4 and S10.
+- R17. Not addressed by this range. The pinned transport endpoint stands.
+- R18. Closed. The H3 fixture samples to chart radius 0.99506 and metric distance 6.0, with 172 conformance cases passing at unchanged tolerances.
+- R19. Closed. Hero enters through `launch_or_headless` and the bare-flag value form is parsed and tested. Residual S9.
+- R20. Partly closed. A bad font leaves the renderer unset and the host alive; the message at `crates/loam-text/src/pass.rs:131` is stored and nothing logs or reads it outside one test.
+- R21. Closed. The category is a field on the entry and the menu filters on it, with a test; the two couplings R21 named as riding along are unchanged.
+- R22. Closed. `project_point` returns `Option`, both clamps are gone, and `crates/loam-math/src/rasterizable.rs:149` refuses the four-dimensional variants at three dimensions. Residual S8.
+- R23. Deferred by decision to the scripting kickoff.
+- R24. Accepted decision. Nothing built but unused may be deleted.
+- R25. Closed. `docs/PERFORMANCE_BASELINE.md:40` separates today's build from the decision, and the glyph type reaches callers through `loam-text`.
+
+### Residual findings
+
+**S1. The frame-failure console note cannot be rendered. Defect.**
+`crates/loam-app/src/session/frame.rs:243`. Trigger: any error `Frame::step`
+returns. The note is written after `stepped` returns, and that frame's console
+was drawn inside `drive` at `:440`; every error on this path is terminal for both
+hosts. Contract: R8 asked for the engine's diagnosis on the surface the user is
+looking at. Repair: note the error where the non-terminal branch already notes,
+at `:427`. Verify with a test that forces an error and reads the console history.
+
+**S2. A ground set after registration clears the shared target in Scene. Design debt, latent.**
+`crates/loam-render/src/triangle_pass.rs:104` and `:141`,
+`crates/loam-render/src/pass.rs:216`. Trigger: register a triangle pass with no
+ground, then set one. `color_load` answers from live feed state and `register`
+queries it once, so the Scene-stage clear gate is passed and then contradicted.
+Contract: no Scene pass clears the shared color or depth target. Latent because
+hero, the only ground caller, publishes no views. Repair: take the color load by
+value in `TriangleFeed::pass`. Verify by extending the registration-refusal test.
+
+**S3. Any restore arms the one-restore-per-boundary rule. Design debt, latent.**
+`crates/loam-runtime/src/session.rs:967`, `:978`, `:1026`. Trigger: call the
+public `Session::restore` with a saved snapshot, then let a queued
+`Command::Reset` reach the next boundary. It returns `Ok(Outcome::Done)` while
+the session stays on the saved snapshot. Contract: undocumented on both sides.
+Not reachable from a shipped caller today; the scripting layer is the next
+consumer of both. Repair: set the flag inside `reset`, or state the rule in
+`restore`. Verify with one snapshot test that restores and then resets.
+
+**S4. The depth envelope family has no production reader. Design debt.**
+`crates/loam-runtime/src/view.rs:735`, `:739`, `:744`. Trigger: none; the
+declaration, the default, five implementations, two benches, and three tests are
+the only occurrences. R16's repair is expressed and never consumed, and the
+unconditional value moved from 6.0 to 1.0 with nothing to observe either.
+Contract: a declared validity limit should reach the depth path. Repair: record
+the intent in one doc line, since deletion is off the table. Verify by reading.
+
+**S5. Nothing checks a pass against what it records. Design debt.**
+`crates/loam-render/src/passes/hyperslice.rs:81` against
+`crates/loam-render/src/raymarch/hyperslice4d.rs:810`. Trigger: the full-frame
+hyperslice path declares `Clear` and records `Load`. The direction is
+conservative and the presenter's own clear guarantees a cleared target, so
+nothing is discarded. Contract: the declaration is enforced at registration and
+never again. Repair: fold into S2. Verify with the same test.
+
+**S6. The view stamp comparison is a hand-listed field set. Design debt.**
+`crates/loam-runtime/src/domain.rs:1208`. Trigger: add a sixth field to
+`ViewStyle` at `crates/loam-runtime/src/view.rs:467`. It compiles clean and
+silently stops invalidating the view that reads it, which is the failure mode
+R13 existed to remove. Contract: every supported edit invalidates the right
+output. Repair: destructure both sides so a new field fails to compile.
+
+**S7. `Domain::tracks_changes` is required and has no consumer. Design debt.**
+`crates/loam-runtime/src/domain.rs:1579` and `:2101`. Added by this referee.
+Trigger: none; the declaration and one implementation are the only occurrences.
+R13 asked for a tracking accessor and shipped one nothing reads, while every
+future `Domain` implementor pays for it. Repair: one doc line beside it.
+
+**S8. The projective refusal reaches the raster paths as three conventions. Design debt, latent.**
+`crates/loam-render/src/triangle_raster.rs:215`,
+`crates/loam-render/src/line_raster.rs:378`,
+`crates/loam-render/src/point_raster.rs:258`. Trigger: a refused vertex under a
+four-dimensional projection. The point path skips, the line path makes a NaN and
+filters it, and the triangle path pushes `Vec3::NAN` into the vertex buffer with
+no guard. Contract: an explicit refusal should not become undefined clip space.
+Latent: every shipped upload passes `EuclideanR3` with `Projection::Identity`,
+which never refuses. Repair: drop the triangle rather than write NaN. Verify with
+a raster unit test under `Perspective4D`.
+
+**S9. The equals form of a bare flag silently opens a window. Design debt.**
+`crates/loam-app/src/args.rs:100`, `crates/loam-app/src/session/native.rs:43`.
+Trigger: `hero --headless=1200`. The value lands in the key map, not the bare
+flags, so the branch falls through to the windowed host with no message, while
+`crates/polytope_playground/src/catalog.rs:197` refuses the space form for
+`--shapes` by name. Contract: R19 asked for the equals form to be accepted.
+Repair: have `bare_flag_value` fall back to `get`. Verify with one args test.
+
+**S10. The eye-scoped envelope interior is chosen, not derived. Evidence gap.**
+`crates/loam-runtime/src/view.rs:744`, `crates/loam-math/src/hyperbolic.rs:15`.
+The documented proof covers an eye within `H3_EYE_CHART_REACH`, where the
+expression saturates at 6.0. Nothing establishes that an eye at distance three
+keeps `H3_DEPTH_SEPARATION` ordering out to a far of four. Repair: sweep eye
+distance against the f32 ordering measurement in the render depth test, or say
+in the doc that the interior is conservative and unproved.
+
+**S11. The blended parity assertion has 0.57 percent headroom on one adapter. Evidence gap.**
+`crates/loam-math/src/blended.rs:875`, asserted at
+`crates/loam-render/tests/space_scene.rs:905`. The declared residual of 1.9e-2 is
+checked against a measured worst of 1.8892527e-2 on one adapter, where the Exact
+spaces sit three orders below their 1e-5. Repair: none until a second adapter is
+available.
+
+Noted and not a finding: `the_menu_categories_partition_the_catalog_in_order` at
+`crates/polytope_playground/src/catalog.rs:219` pins static data, now that the
+menu filters by each entry's own category.
+
+### What to repair and what to accept
+
+One more small repair row is worth it, in one crate each. In `loam-app`, S1, S9,
+and the Publication-phase half of R11 with tests for `look` and the post-tick
+repair; this moves Application ergonomics to A and is the last thing Verification
+and diagnosis needs from the host. In `loam-runtime`, S3, S6, and the two R9 sites
+at `crates/loam-runtime/src/domain.rs:2074`, `:2644`, and `:2647`; this moves
+Runtime correctness and Cache correctness and value to A. In `loam-render` with
+one line in `loam-text`, S2 and S5 taken together as one change plus logging the
+stored font failure; this moves Rendering architecture to A. Adding
+`--all-targets` to the wasm32 clippy job is one word and belongs here. Every one
+of these is a few lines with a named test.
+
+Record as accepted limitations and do not spend a row on them. S4 and S7, where
+deletion is off the table and inventing a consumer would be speculative; one doc
+line each states the intent. S8, which no shipped call site can reach and which
+becomes required before any application rasterizes triangles under a
+four-dimensional projection. S10 and S11, both evidence gaps. R5's gross charge
+on a grow in place, which the exact bytes oracle depends on staying as it is.
+R15's empty feature override and untested routing table, which need a browser run
+and not a code change. R17, R14, R23, and R24, all already decided.
+
+### Decision
+
+Acceptable for the stated target, with explicitly accepted limitations. No
+identified defect breaks a central current contract of the foundational engine
+architecture for the Polytope Playground and the coming scripting layer. The
+repair rows closed both defects a user could reach at `0650128` and every
+geometry finding, each with a production-path test. The one defect this pass adds,
+S1, degrades diagnosis on a frame that was already terminal; it corrupts no state
+and blocks no supported operation. Everything else standing is latent, deferred,
+or an evidence gap. Hold is not warranted: there is no demonstrated blocking
+defect and no required release evidence that is unavailable rather than unrun.
+
+Accepted limitations carried forward unchanged: no host or browser observation
+exists for any interactive behavior at this candidate, and the stage move in this
+range changed what composites over what, so Behavior and presentation fidelity
+and Native and WASM separation both stay at Medium confidence until a host run is
+recorded; performance budgets still wait on a reference device, build, workload,
+and budget; H3 remains unreachable from any shipped application; and the command
+boundary scripting must enter is still one level deep.
+
+Checks run by this referee at `350a51a` on a clean tree: `git status --short`
+empty after detaching, and `cargo test -p loam-runtime -p loam-app -p loam-math`
+passing with zero failures. Prior evidence used as reported by the two reviewers:
+per-crate test and clippy runs, the wasm32 clippy command, 25 `space_scene`
+probes, and 46 named GPU probes on a real adapter. Still owed by everyone: any
+browser execution, any benchmark result at this head, and any host observation.
