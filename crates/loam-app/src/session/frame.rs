@@ -529,7 +529,7 @@ impl<A: Stores> Inner<A> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -863,16 +863,28 @@ struct Fragment {
         let r3 = session
             .register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity::default()));
         let root = session.views().root();
-        let eye = session
+        session
             .dispatch(|dispatch| {
                 let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::ZERO)))?;
                 dispatch
                     .domains
                     .typed(r3)?
                     .add_view(ViewSpec::new(root, eye, Identity3));
-                Ok::<_, loam_runtime::Rejection>(eye)
+                Ok::<_, loam_runtime::Rejection>(())
             })
             .expect("view");
+        let armed = Arc::new(AtomicBool::new(false));
+        let trip = armed.clone();
+        session.system(
+            Phase::Publication,
+            "trip",
+            move |_ctx: loam_runtime::Ctx<'_, Bare>| {
+                if trip.swap(false, Ordering::Relaxed) {
+                    return Err(loam_runtime::DomainError::ChartBoundary);
+                }
+                Ok(())
+            },
+        );
         session.system(
             Phase::Dispatch,
             "authored reset",
@@ -906,7 +918,7 @@ struct Fragment {
         );
         assert_eq!(frame.take_cursor_request(), Some(true));
         frame.cursor_applied(true);
-        frame.inner.app.sender().submit(Command::Despawn(eye));
+        armed.store(true, Ordering::Relaxed);
         run_at(&mut frame, &gpu, &texture, start + Duration::from_millis(1));
         assert_eq!(
             frame
