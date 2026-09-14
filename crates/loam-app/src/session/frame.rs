@@ -394,7 +394,7 @@ impl<A: Stores> Inner<A> {
             }
             Err(error) if self.session.faulted_phase().is_some() => {
                 if faulted_before.is_none() || self.session.scene() != scene_before {
-                    tracing::error!("session frame failed: {error:?}");
+                    tracing::error!("session frame failed: {error}");
                     self.cursor.suspend();
                 }
                 self.timestep.reset_clock(now);

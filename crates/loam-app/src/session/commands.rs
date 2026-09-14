@@ -156,7 +156,7 @@ fn deliver<A>(
     if !report {
         match &outcome {
             Ok(_) => return,
-            Err(rejection) => tracing::warn!("{name}: rejected, {rejection:?}"),
+            Err(rejection) => tracing::warn!("{name}: rejected, {rejection}"),
         }
     }
     if shared.reported.len() < MAX_REPORTED_COMMANDS {
@@ -246,7 +246,7 @@ impl<A: Stores> CommandInbox<A> {
                 .position(|submitted| submitted.request == result.request)
             else {
                 if let Err(rejection) = result.outcome {
-                    tracing::warn!("{:?}: rejected, {rejection:?}", result.request);
+                    tracing::warn!("{:?}: rejected, {rejection}", result.request);
                 }
                 continue;
             };

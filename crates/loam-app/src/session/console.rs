@@ -221,8 +221,8 @@ impl<A: Stores> SessionConsole<A> {
         let dropped = self.submit.commands.take_reported(&mut self.completed);
         for reported in self.completed.drain(..) {
             let line = match reported.outcome {
-                Ok(outcome) => format!("{}: {outcome:?}", reported.name),
-                Err(rejection) => format!("{}: rejected, {rejection:?}", reported.name),
+                Ok(outcome) => format!("{}: {outcome}", reported.name),
+                Err(rejection) => format!("{}: rejected, {rejection}", reported.name),
             };
             self.console.write(HistoryLine::output(line));
         }
@@ -287,7 +287,7 @@ mod tests {
         assert!(
             !history(&app.console)
                 .iter()
-                .any(|line| line.contains("Done")),
+                .any(|line| line.contains("done")),
             "the result cannot exist before the boundary that applies the command"
         );
 
@@ -299,7 +299,7 @@ mod tests {
         assert!(
             history(&app.console)
                 .iter()
-                .any(|line| line == "bump: Done"),
+                .any(|line| line == "bump: done"),
             "the console never matched its request to the session result: {:?}",
             history(&app.console)
         );
@@ -326,7 +326,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line == "refused: rejected, Unsupported(\"not now\")"),
+                .any(|line| line == "refused: rejected, not now"),
             "the refusal never reached the console: {lines:?}"
         );
         assert!(
