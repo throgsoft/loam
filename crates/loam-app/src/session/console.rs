@@ -248,7 +248,9 @@ const MAX_ACCEPTED_FPS: f32 = 1000.0;
 
 #[cfg(test)]
 mod tests {
-    use loam_runtime::{Bindings, HostConfig, Input, Rejection, Session, SimConfig};
+    use loam_runtime::{
+        Bindings, DomainError, HostConfig, Input, Rejection, Session, SimConfig, SpawnBundle,
+    };
 
     use super::*;
     use crate::args::Args;
@@ -332,6 +334,34 @@ mod tests {
         assert!(
             !lines.iter().any(|line| line.starts_with("accepted")),
             "an unreported success reached the console: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_line_names_the_entity_and_what_went_wrong_with_it() {
+        let mut session = Session::new(Counted::default(), SimConfig::default());
+        let mut app =
+            SessionApp::with_args(HostConfig::new("console", Bindings::new()), Args::default());
+        let entity = session
+            .dispatch(|d| d.spawn(SpawnBundle::new()))
+            .expect("a bare entity");
+        app.sender()
+            .try_app_fn("nudge", move |_d: &mut Dispatch<'_, Counted>| {
+                Err(Rejection::Domain(DomainError::Stale(entity)))
+            });
+
+        app.boundary(&mut session, Input::default())
+            .expect("boundary");
+
+        let expected = format!("nudge: rejected, {entity} is stale");
+        let lines = history(&app.console);
+        assert!(
+            lines.iter().any(|line| *line == expected),
+            "the refusal did not name the entity: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("Stale(")),
+            "a refusal reached the console as Debug text: {lines:?}"
         );
     }
 
