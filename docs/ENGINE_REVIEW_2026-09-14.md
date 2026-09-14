@@ -686,3 +686,9 @@ by owner decision).
 One visual change for the owner to judge: the filmstrip background in the
 playground. Everything else in this row is pixel-neutral by construction and the
 headless outputs are unchanged.
+
+Owner observation, 2026-09-14, native host at head e69d962: the filmstrip
+background drawn by the sky-ground pass was accepted; the reset label and its
+behavior, the refused Toybox spin in the console, the hero floor toggle, and
+hero reseeding once per press were observed as described. The attached
+headless flag was confirmed equal to the space-separated form.
