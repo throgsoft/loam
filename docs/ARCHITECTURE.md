@@ -103,7 +103,8 @@ The host does not render a partial buffer. Fill callbacks receive shared session
 and publication references. UI actions enter a later command boundary.
 
 Raster and raymarch passes share projective depth and negotiated frame formats.
-The pass schedule validates resource ordering and depth compatibility. Custom
+The pass schedule runs passes by stage, background then scene then overlay,
+in registration order, and validates depth compatibility. Custom
 native passes remain available. Renderer resources rebuild after device loss
 without a GPU simulation checkpoint protocol.
 
