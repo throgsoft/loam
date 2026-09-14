@@ -55,7 +55,7 @@ impl fmt::Display for Rejection {
             Self::Store(error) => fmt::Display::fmt(error, f),
             Self::Restore(error) => fmt::Display::fmt(error, f),
             Self::Cancelled => f.write_str("cancelled by a reset"),
-            Self::Unsupported(what) => f.write_str(what),
+            Self::Unsupported(what) => write!(f, "unsupported: {what}"),
             #[cfg(feature = "physics")]
             Self::Edit(error) => fmt::Display::fmt(error, f),
         }
@@ -84,6 +84,7 @@ impl From<loam_physics::EditError> for Rejection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandResult {
     pub request: RequestId,
+    pub name: &'static str,
     pub outcome: Result<Outcome, Rejection>,
 }
 
@@ -107,6 +108,18 @@ pub enum Command<A> {
     Chart(DomainId, ChartCommand),
     App(Box<dyn AppCommand<A>>),
     Reset,
+}
+
+impl<A: 'static> Command<A> {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Spawn(_) => "spawn",
+            Self::Despawn(_) => "despawn",
+            Self::Chart(_, _) => "chart",
+            Self::App(command) => command.name(),
+            Self::Reset => "reset",
+        }
+    }
 }
 
 impl<A> Command<A> {
@@ -162,6 +175,7 @@ impl<A: Stores> Commands<A> {
             }
             results.push(CommandResult {
                 request: request.id,
+                name: request.command.name(),
                 outcome: Err(Rejection::Cancelled),
             });
         }

@@ -39,7 +39,7 @@ pub(crate) fn failed(error: impl std::fmt::Display) -> HostError {
 struct Inner<A: Stores> {
     session: Session<A>,
     records: Records,
-    timestep: FixedTimestep,
+    timestep: Option<FixedTimestep>,
     callbacks: Vec<CommandBuffer>,
     input: InputMap,
     cursor: CursorCapture,
@@ -58,16 +58,19 @@ pub(crate) struct Frame<A: Stores> {
 }
 
 impl<A: Stores> Frame<A> {
-    pub(crate) fn new(session: Session<A>, app: SessionApp<A>) -> Self {
+    pub(crate) fn new(session: Session<A>, app: SessionApp<A>) -> Result<Self, HostError> {
         let sim = session.config();
-        Self {
+        sim.check().map_err(failed)?;
+        let timestep = sim
+            .dt()
+            .map(|_| FixedTimestep::new(sim.fixed_hz).with_max_catch_up(sim.max_ticks_per_frame));
+        Ok(Self {
             presenter: None,
             layer: None,
             inner: Inner {
                 session,
                 records: Records::default(),
-                timestep: FixedTimestep::new(sim.fixed_hz)
-                    .with_max_catch_up(sim.max_ticks_per_frame),
+                timestep,
                 callbacks: Vec::new(),
                 input: InputMap::default(),
                 cursor: CursorCapture::new(),
@@ -78,7 +81,7 @@ impl<A: Stores> Frame<A> {
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
                 capture: crate::capture::Capture::new(),
             },
-        }
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -176,7 +179,9 @@ impl<A: Stores> Frame<A> {
     }
 
     pub(crate) fn reset_clock(&mut self, now: Instant) {
-        self.inner.timestep.reset_clock(now);
+        if let Some(timestep) = self.inner.timestep.as_mut() {
+            timestep.reset_clock(now);
+        }
         self.inner.app.pacer.reset();
     }
 
@@ -224,6 +229,23 @@ impl<A: Stores> Frame<A> {
     }
 
     pub(crate) fn step(
+        &mut self,
+        gpu: &GpuContext,
+        target: &Target<'_>,
+        now: Instant,
+        finish: impl FnMut(&mut CommandEncoder),
+    ) -> Result<(), HostError> {
+        let outcome = self.stepped(gpu, target, now, finish);
+        if let Err(error) = &outcome {
+            self.inner
+                .app
+                .console
+                .note(format!("frame failed: {error}"));
+        }
+        outcome
+    }
+
+    fn stepped(
         &mut self,
         gpu: &GpuContext,
         target: &Target<'_>,
@@ -298,15 +320,16 @@ impl<A: Stores> Inner<A> {
                 app.boundary(session, gathered)?;
             }
             session.views_mut().root_mut().eye.aspect = aspect;
-            if was_faulted && session.faulted_phase().is_none() {
-                timestep.reset_clock(now);
-            }
-            {
+            if let Some(timestep) = timestep.as_mut() {
+                if was_faulted && session.faulted_phase().is_none() {
+                    timestep.reset_clock(now);
+                }
                 let _simulation = frame_trace::scope("simulation");
                 for _ in timestep.advance(now) {
                     session.tick()?;
                 }
             }
+            session.views_mut().root_mut().eye.aspect = aspect;
             Ok(())
         })();
         input.reclaim(session.take_input());
@@ -406,7 +429,9 @@ impl<A: Stores> Inner<A> {
                     tracing::error!("session frame failed: {error}");
                     self.cursor.suspend();
                 }
-                self.timestep.reset_clock(now);
+                if let Some(timestep) = self.timestep.as_mut() {
+                    timestep.reset_clock(now);
+                }
                 None
             }
             Err(error) => Some(error),
@@ -462,6 +487,7 @@ impl<A: Stores> Inner<A> {
         gpu.queue
             .submit(self.callbacks.drain(..).chain(Some(encoder.finish())));
         presenter.after_submit();
+        crate::trace::record_presentation(presenter.sections(), presenter.uploads());
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         self.consume_capture(&gpu.device, now, pre, post);
         Ok(())
@@ -735,6 +761,7 @@ fn fragment() -> @location(0) vec4<f32> {{
 
     fn bare(app: SessionApp<Bare>) -> Frame<Bare> {
         Frame::new(Session::new(Bare::default(), SimConfig::default()), app)
+            .expect("the frame accepted the simulation config")
     }
 
     fn host<A: Stores>(name: &'static str) -> SessionApp<A> {
@@ -904,7 +931,7 @@ struct Fragment {
         .debug_layer(false);
         let mut session = Session::new(Bare::default(), SimConfig::default());
         session.register_domain(DomainBuilder::new("r3", EuclideanR3));
-        let mut frame = Frame::new(session, app);
+        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
         frame
             .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
@@ -1000,7 +1027,7 @@ struct Fragment {
         );
         session.set_initial().expect("initial state");
         let epoch = session.scene().epoch();
-        let mut frame = Frame::new(session, app);
+        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
         frame
             .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
@@ -1069,10 +1096,7 @@ struct Fragment {
         assert_eq!(filled.load(Ordering::Relaxed), 2);
 
         assert_eq!(frame.phase_error(), None);
-        assert_eq!(
-            frame.inner.session.scene().epoch(),
-            epoch.advance().advance()
-        );
+        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
         assert_eq!(frame.inner.session.current_tick(), Tick(0));
         assert_eq!(filled.load(Ordering::Relaxed), 2);
         assert_eq!(frame.take_cursor_request(), Some(true));
@@ -1082,10 +1106,7 @@ struct Fragment {
             &texture,
             start + Duration::from_secs(60) + Duration::from_millis(1),
         );
-        assert_eq!(
-            frame.inner.session.scene().epoch(),
-            epoch.advance().advance()
-        );
+        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
     }
 
     #[test]

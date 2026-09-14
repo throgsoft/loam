@@ -328,7 +328,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line == "refused: rejected, not now"),
+                .any(|line| line == "refused: rejected, unsupported: not now"),
             "the refusal never reached the console: {lines:?}"
         );
         assert!(

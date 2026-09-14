@@ -26,11 +26,42 @@ pub struct SimConfig {
 }
 
 impl SimConfig {
+    pub fn new(fixed_hz: u32, max_ticks_per_frame: u32) -> Result<Self, SimConfigError> {
+        let config = Self {
+            fixed_hz,
+            max_ticks_per_frame,
+        };
+        config.check()?;
+        Ok(config)
+    }
+
+    pub fn check(&self) -> Result<(), SimConfigError> {
+        if self.max_ticks_per_frame == 0 {
+            return Err(SimConfigError::NoCatchUp);
+        }
+        Ok(())
+    }
+
     /// `None` when `fixed_hz` is zero, which stops the simulation.
     pub fn dt(&self) -> Option<f32> {
         (self.fixed_hz > 0).then(|| 1.0 / self.fixed_hz as f32)
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimConfigError {
+    NoCatchUp,
+}
+
+impl std::fmt::Display for SimConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoCatchUp => f.write_str("max_ticks_per_frame must be at least one"),
+        }
+    }
+}
+
+impl std::error::Error for SimConfigError {}
 
 impl Default for SimConfig {
     fn default() -> Self {
@@ -495,6 +526,7 @@ pub struct Session<A: Stores> {
     tick: Tick,
     sequence: u64,
     initial: Option<SessionSnapshot<A>>,
+    restored: bool,
     unfinished: Option<Phase>,
     phase_error: Option<PhaseError>,
 }
@@ -534,6 +566,7 @@ impl<A: Stores> Session<A> {
             tick: Tick::default(),
             sequence: 0,
             initial: None,
+            restored: false,
             unfinished: None,
             phase_error: None,
         }
@@ -766,10 +799,16 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
         };
+        let mut dispatched = Ok(());
         for index in 0..self.phases.entries(Phase::Dispatch).len() {
-            self.run_entry(Phase::Dispatch, index, step)?;
+            if let Err(error) = self.run_entry(Phase::Dispatch, index, step) {
+                dispatched = Err(error);
+                break;
+            }
             self.commit(&mut growth);
         }
+        self.restored = false;
+        dispatched?;
         self.app.boundary(Owner::new());
         for domain in self.domains.iter_mut() {
             domain.boundary();
@@ -821,6 +860,7 @@ impl<A: Stores> Session<A> {
         };
         self.unfinished = Some(Phase::Publication);
         self.run_phase(Phase::Publication, step)?;
+        self.domains.synchronize();
         let scene = self.scene();
         if into.source != Some(scene) {
             *into = Publication::default();
@@ -840,18 +880,22 @@ impl<A: Stores> Session<A> {
                     else {
                         continue;
                     };
-                    let current = into
+                    let held = into
                         .views
-                        .get(count)
-                        .is_some_and(|view| view.domain == domain.id() && view.target == target);
-                    if !current {
-                        into.views.truncate(count);
-                        into.views.push(PublishedView {
-                            domain: domain.id(),
-                            target,
-                            placement,
-                            records: ViewRecords::default(),
-                        });
+                        .iter()
+                        .position(|view| view.domain == domain.id() && view.target == target);
+                    match held {
+                        Some(index) if index != count => into.views.swap(index, count),
+                        Some(_) => {}
+                        None => into.views.insert(
+                            count,
+                            PublishedView {
+                                domain: domain.id(),
+                                target,
+                                placement,
+                                records: ViewRecords::default(),
+                            },
+                        ),
                     }
                     into.views[count].placement = placement;
                     domain.publish(target.view, library, &mut into.views[count].records, stamp)?;
@@ -931,6 +975,7 @@ impl<A: Stores> Session<A> {
         for (domain, snapshot) in self.domains.owned().zip(&from.domains) {
             domain.check_restore(snapshot)?;
         }
+        self.restored = true;
         self.commands.cancel_into(&mut self.results);
         self.commands.restore(&from.entities, from.next_request);
         let scene = self.scene();
@@ -976,7 +1021,9 @@ impl<A: Stores> Session<A> {
         self.commands.drain_into(&mut batch);
         for request in batch.drain(..) {
             let despawn = matches!(request.command, Command::Despawn(_));
+            let name = request.command.name();
             let outcome = match request.command {
+                Command::Reset if self.restored => Err(Rejection::Cancelled),
                 Command::Reset => {
                     let unfinished = self.unfinished;
                     let phase_error = self.phase_error;
@@ -1000,6 +1047,7 @@ impl<A: Stores> Session<A> {
             }
             self.results.push(CommandResult {
                 request: request.id,
+                name,
                 outcome,
             });
         }

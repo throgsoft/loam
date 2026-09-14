@@ -19,7 +19,7 @@ mod browser;
 mod native;
 
 pub use app::{CaptureControl, FrameHook, InputHook, SessionApp};
-pub use camera::{orbit, FreeCamera, Orbit};
+pub use camera::{look, orbit, FreeCamera, Orbit};
 pub use commands::CommandSender;
 pub use console::{SessionConsole, Submit};
 pub use cursor::CursorPolicy;

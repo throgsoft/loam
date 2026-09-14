@@ -70,7 +70,7 @@ impl<A: Stores> Clone for CommandSender<A> {
 
 impl<A: Stores> CommandSender<A> {
     pub fn submit(&self, command: Command<A>) {
-        let name = command_name(&command);
+        let name = command.name();
         let recovery = matches!(&command, Command::Reset);
         let mut shared = lock(&self.shared);
         let pending = shared.queued.len() + shared.submitted.len() + shared.in_flight;
@@ -134,16 +134,6 @@ impl<A: Stores> CommandSender<A> {
         let mut shared = lock(&self.shared);
         into.append(&mut shared.reported);
         std::mem::take(&mut shared.dropped_reports)
-    }
-}
-
-fn command_name<A: Stores>(command: &Command<A>) -> &'static str {
-    match command {
-        Command::Spawn(_) => "spawn",
-        Command::Despawn(_) => "despawn",
-        Command::Chart(_, _) => "chart",
-        Command::App(command) => command.name(),
-        Command::Reset => "reset",
     }
 }
 
@@ -245,8 +235,8 @@ impl<A: Stores> CommandInbox<A> {
                 .iter()
                 .position(|submitted| submitted.request == result.request)
             else {
-                if let Err(rejection) = result.outcome {
-                    tracing::warn!("{:?}: rejected, {rejection}", result.request);
+                if result.outcome.is_err() {
+                    deliver(&mut shared, result.name, false, result.outcome);
                 }
                 continue;
             };

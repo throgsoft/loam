@@ -280,7 +280,7 @@ async fn start<A: Stores>(
         .await
         .context("SurfaceHost::new")?;
 
-    let mut frame = Frame::new(session, app);
+    let mut frame = Frame::new(session, app).map_err(|error| anyhow!("{error:?}"))?;
     frame
         .attach(&rd.context, rd.target_format(), None, size, dpr)
         .map_err(|error| anyhow!("{error:?}"))?;

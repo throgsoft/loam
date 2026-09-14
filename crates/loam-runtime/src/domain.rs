@@ -241,14 +241,14 @@ impl fmt::Display for DomainError {
             Self::SpaceMismatch(domain) => write!(f, "{domain} has another space"),
             Self::Stale(entity) => write!(f, "{entity} is stale"),
             Self::Store(error) => fmt::Display::fmt(error, f),
-            Self::InvalidCoordinate(coordinate) => f.write_str(coordinate),
+            Self::InvalidCoordinate(coordinate) => write!(f, "invalid {coordinate}"),
             Self::InvalidFrame => f.write_str("the frame is not orthonormal"),
             Self::ChartBoundary => f.write_str("the step left the chart"),
             Self::NoConvergence => f.write_str("the transport did not converge"),
             Self::ErrorBudget => f.write_str("the metric error budget was exceeded"),
             #[cfg(feature = "physics")]
             Self::Physics(error) => fmt::Display::fmt(error, f),
-            Self::Unsupported(what) => f.write_str(what),
+            Self::Unsupported(what) => write!(f, "unsupported: {what}"),
             Self::FieldCycle(entity) => write!(f, "{entity} closes a field cycle"),
             Self::FieldArity(entity) => write!(f, "{entity} has the wrong operand count"),
             Self::Restore(error) => fmt::Display::fmt(error, f),
@@ -1203,6 +1203,14 @@ struct ViewEntry<S: DomainSpace> {
     style: ViewStyle<S>,
 }
 
+fn same_style<S: DomainSpace>(a: &ViewStyle<S>, b: &ViewStyle<S>) -> bool {
+    a.enabled == b.enabled
+        && a.edges == b.edges
+        && a.section_edges == b.section_edges
+        && a.section_faces == b.section_faces
+        && std::sync::Arc::ptr_eq(&a.mapping, &b.mapping)
+}
+
 impl<S: DomainSpace> Clone for ViewEntry<S> {
     fn clone(&self) -> Self {
         Self {
@@ -1566,6 +1574,8 @@ pub trait Domain: Send + 'static {
 
     fn name(&self) -> &'static str;
 
+    fn tracks_changes(&self) -> bool;
+
     fn views(&self) -> &[ViewTarget];
 
     fn view(&self, id: ViewId) -> Option<ViewSummary>;
@@ -1632,6 +1642,7 @@ pub struct TypedDomain<S: DomainSpace> {
     views: Vec<ViewEntry<S>>,
     targets: Vec<ViewTarget>,
     view_revisions: Vec<u32>,
+    view_stamps: Vec<ViewStyle<S>>,
     pub(crate) facilities: Vec<Box<dyn Facility<S>>>,
     compiler: FieldCompiler,
 }
@@ -1677,14 +1688,14 @@ impl<S: DomainSpace> TypedDomain<S> {
         instance: Instance,
     ) -> Result<(), Rejection> {
         if !self.poses.contains(entity) {
-            return Err(Rejection::Domain(DomainError::Stale(entity)));
+            return Err(StoreError::Missing(entity).into());
         }
         put_row(&mut self.instances, entity, instance)
     }
 
     pub(crate) fn attach_field(&mut self, entity: Entity, field: Field) -> Result<(), Rejection> {
         if !self.poses.contains(entity) {
-            return Err(Rejection::Domain(DomainError::Stale(entity)));
+            return Err(StoreError::Missing(entity).into());
         }
         let fields = self
             .fields
@@ -1700,7 +1711,7 @@ impl<S: DomainSpace> TypedDomain<S> {
 
     fn apply_pose(&mut self, entity: Entity, pose: Pose<S>) -> Result<(), DomainError> {
         if !self.poses.contains(entity) {
-            return Err(DomainError::Stale(entity));
+            return Err(StoreError::Missing(entity).into());
         }
         for facility in &mut self.facilities {
             if let Some(result) = facility.set_pose(entity, pose, &mut self.poses, Owner::new()) {
@@ -1710,18 +1721,18 @@ impl<S: DomainSpace> TypedDomain<S> {
         *self
             .poses
             .get_mut(entity)
-            .ok_or(DomainError::Stale(entity))? = pose;
+            .ok_or(StoreError::Missing(entity))? = pose;
         Ok(())
     }
 
     pub fn set_point(&mut self, entity: Entity, point: S::Point) -> Result<(), DomainError> {
-        let mut pose = *self.poses.get(entity).ok_or(DomainError::Stale(entity))?;
+        let mut pose = *self.poses.get(entity).ok_or(StoreError::Missing(entity))?;
         pose.point = point;
         self.set_pose(entity, pose)
     }
 
     pub fn set_frame(&mut self, entity: Entity, frame: S::Frame) -> Result<(), DomainError> {
-        let mut pose = *self.poses.get(entity).ok_or(DomainError::Stale(entity))?;
+        let mut pose = *self.poses.get(entity).ok_or(StoreError::Missing(entity))?;
         pose.frame = frame;
         self.set_pose(entity, pose)
     }
@@ -1747,6 +1758,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             image: spec.image,
         });
         self.view_revisions.push(0);
+        self.view_stamps.push(spec.style.clone());
         self.views.push(ViewEntry {
             eye: spec.eye,
             subject: spec.subject,
@@ -1768,8 +1780,6 @@ impl<S: DomainSpace> TypedDomain<S> {
     }
 
     pub fn view_mut(&mut self, id: ViewId) -> Option<&mut ViewStyle<S>> {
-        let revision = self.view_revisions.get_mut(id.index())?;
-        *revision = revision.wrapping_add(1);
         let spec = self.views.get_mut(id.index())?;
         Some(&mut spec.style)
     }
@@ -2020,7 +2030,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         velocity: S::Vector,
         dt: f32,
     ) -> Result<(), DomainError> {
-        let pose = self.poses.get(entity).ok_or(DomainError::Stale(entity))?;
+        let pose = self.poses.get(entity).ok_or(StoreError::Missing(entity))?;
         let next = self.space.walk(pose, velocity, dt)?;
         self.apply_pose(entity, next)
     }
@@ -2029,7 +2039,7 @@ impl<S: DomainSpace> TypedDomain<S> {
     pub fn move_to(&mut self, entity: Entity, point: ChartPoint) -> Result<(), DomainError> {
         let target = self.space.point_from_chart(&point)?;
         if !self.poses.contains(entity) {
-            return Err(DomainError::Stale(entity));
+            return Err(StoreError::Missing(entity).into());
         }
         for facility in &mut self.facilities {
             if let Some(result) = facility.move_to(entity, target, &mut self.poses, Owner::new()) {
@@ -2040,7 +2050,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         let pose = self
             .poses
             .get_mut(entity)
-            .ok_or(DomainError::Stale(entity))?;
+            .ok_or(StoreError::Missing(entity))?;
         let next = space.moved(pose, target)?;
         *pose = next;
         Ok(())
@@ -2084,6 +2094,10 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
 
     fn name(&self) -> &'static str {
         self.name
+    }
+
+    fn tracks_changes(&self) -> bool {
+        self.poses.is_tracked()
     }
 
     fn views(&self) -> &[ViewTarget] {
@@ -2316,6 +2330,18 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         for facility in &mut self.facilities {
             facility.synchronize(&mut self.poses, Owner::new());
         }
+        for (index, view) in self.views.iter().enumerate() {
+            let Some(stamp) = self.view_stamps.get_mut(index) else {
+                continue;
+            };
+            if same_style(&view.style, stamp) {
+                continue;
+            }
+            *stamp = view.style.clone();
+            if let Some(revision) = self.view_revisions.get_mut(index) {
+                *revision = revision.wrapping_add(1);
+            }
+        }
     }
 
     fn release(&mut self, entity: Entity) {
@@ -2408,6 +2434,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         self.views = views;
         self.targets.clone_from(&from.targets);
         self.view_revisions = revisions;
+        self.view_stamps = self.views.iter().map(|view| view.style.clone()).collect();
         self.compiler.invalidate();
         Ok(())
     }
@@ -2415,7 +2442,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
     fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection> {
         let owned = self.poses.contains(command.entity());
         if !owned && !matches!(command, ChartCommand::Place { .. }) {
-            return Err(DomainError::Stale(command.entity()).into());
+            return Err(StoreError::Missing(command.entity()).into());
         }
         match command {
             ChartCommand::Place { pose, .. } => {
@@ -2522,6 +2549,7 @@ impl<S: DomainSpace> DomainBuilder<S> {
             views: Vec::new(),
             targets: Vec::new(),
             view_revisions: Vec::new(),
+            view_stamps: Vec::new(),
             facilities,
             compiler: FieldCompiler::new(),
         }
@@ -2620,7 +2648,7 @@ impl Domains {
             .as_any()
             .downcast_ref::<TypedDomain<S>>()
             .map(TypedDomain::handle)
-            .ok_or(DomainError::UnknownDomainName(name))
+            .ok_or(DomainError::SpaceMismatch(domain.id()))
     }
 
     pub fn read<S: DomainSpace>(
