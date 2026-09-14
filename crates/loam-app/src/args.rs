@@ -101,6 +101,10 @@ impl Args {
         self.bare_values.get(key).map(String::as_str)
     }
 
+    pub fn flag_value(&self, key: &str) -> Option<&str> {
+        self.bare_flag_value(key).or_else(|| self.get(key))
+    }
+
     pub fn get(&self, key: &str) -> Option<&str> {
         self.map.get(key).map(String::as_str)
     }

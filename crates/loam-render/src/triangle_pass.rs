@@ -22,8 +22,26 @@ struct Input {
     revision: u64,
     view_projection: Mat4,
     ground: Option<Ground>,
+    declared: Option<ColorLoad>,
     uploads: u64,
 }
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct GroundLocked {
+    pub declared: ColorLoad,
+}
+
+impl std::fmt::Display for GroundLocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a registered triangle pass declared {:?}, so the ground cannot be added or removed",
+            self.declared
+        )
+    }
+}
+
+impl std::error::Error for GroundLocked {}
 
 /// The mesh, view, and optional ground drawn in the Scene stage by the pass `pass` builds; the mesh uploads once per `edit` and again after a device loss.
 #[derive(Clone, Default)]
@@ -33,9 +51,16 @@ pub struct TriangleFeed {
 
 impl TriangleFeed {
     pub fn pass(&self, shading: FragmentShading) -> Box<dyn FramePass> {
+        let load = {
+            let mut input = self.input.borrow_mut();
+            let load = ground_load(input.ground);
+            input.declared = Some(load);
+            load
+        };
         Box::new(TrianglePass {
             input: self.input.clone(),
             shading,
+            load,
             built: None,
         })
     }
@@ -44,8 +69,14 @@ impl TriangleFeed {
         self.input.borrow_mut().view_projection = placed_view_projection(eye, placement);
     }
 
-    pub fn set_ground(&self, ground: Option<Ground>) {
-        self.input.borrow_mut().ground = ground;
+    pub fn set_ground(&self, ground: Option<Ground>) -> Result<(), GroundLocked> {
+        let mut input = self.input.borrow_mut();
+        let load = ground_load(ground);
+        if let Some(declared) = input.declared.filter(|declared| *declared != load) {
+            return Err(GroundLocked { declared });
+        }
+        input.ground = ground;
+        Ok(())
     }
 
     /// Bumps the revision, so the next record uploads the mesh.
@@ -86,9 +117,17 @@ struct Built {
     uploaded: Option<u64>,
 }
 
+fn ground_load(ground: Option<Ground>) -> ColorLoad {
+    match ground {
+        Some(_) => ColorLoad::Clear,
+        None => ColorLoad::Load,
+    }
+}
+
 struct TrianglePass {
     input: Rc<RefCell<Input>>,
     shading: FragmentShading,
+    load: ColorLoad,
     built: Option<Built>,
 }
 
@@ -102,10 +141,7 @@ impl FramePass for TrianglePass {
     }
 
     fn color_load(&self) -> ColorLoad {
-        match self.input.borrow().ground {
-            Some(_) => ColorLoad::Clear,
-            None => ColorLoad::Load,
-        }
+        self.load
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
@@ -138,7 +174,7 @@ impl FramePass for TrianglePass {
                 &Projection::Identity,
             );
         }
-        if let Some(ground) = input.ground {
+        if let (ColorLoad::Clear, Some(ground)) = (self.load, input.ground) {
             built.sky_ground.set_uniforms(
                 &built.queue,
                 &SkyGroundUniforms::new(

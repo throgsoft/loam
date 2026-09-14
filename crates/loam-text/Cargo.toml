@@ -19,6 +19,7 @@ ab_glyph   = "0.2"
 anyhow     = { workspace = true }
 thiserror  = { workspace = true }
 glam       = { workspace = true }
+tracing    = { workspace = true }
 
 [dev-dependencies]
 pollster.workspace = true

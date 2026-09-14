@@ -3,7 +3,7 @@
 //! A cell of `Color::BLACK` is the regression this pins.
 
 use loam_render::device::{FeatureRequest, GpuContext};
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget};
+use loam_render::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget};
 use loam_render::raymarch::{
     polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
     HYPERSLICE_KERNEL_WGSL,
@@ -98,8 +98,15 @@ fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
         .map(|vp| (vp, 0.0, BodyUniform::default()))
         .collect();
     let mut strip_encoder = device.create_command_encoder(&Default::default());
-    node.record_strip(&device, &queue, &mut strip_encoder, &view, &cells)
-        .expect("strip draw");
+    node.record_strip(
+        &device,
+        &queue,
+        &mut strip_encoder,
+        &view,
+        &cells,
+        ColorLoad::Clear,
+    )
+    .expect("strip draw");
     queue.submit(Some(strip_encoder.finish()));
 
     let bytes_per_row = SIZE[0] * 4;

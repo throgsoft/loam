@@ -23,11 +23,13 @@ struct State {
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,
+    load: ColorLoad,
 }
 
 impl HyperslicePass {
     pub fn new(source: String) -> Self {
         Self {
+            load: ColorLoad::Load,
             shared: Rc::new(RefCell::new(State {
                 enabled: true,
                 source,
@@ -79,7 +81,7 @@ impl FramePass for HyperslicePass {
     }
 
     fn color_load(&self) -> ColorLoad {
-        ColorLoad::Clear
+        self.load
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
@@ -117,7 +119,7 @@ impl FramePass for HyperslicePass {
         uniforms.viewport_origin = [0.0, 0.0];
         *node.uniforms_mut() = *uniforms;
         if !cells.is_empty() {
-            node.record_strip(device, queue, encoder, target.color, cells)?;
+            node.record_strip(device, queue, encoder, target.color, cells, self.load)?;
             return Ok(());
         }
         let Some(depth) = target.depth else {
@@ -130,6 +132,7 @@ impl FramePass for HyperslicePass {
             target.color,
             Some(depth),
             Viewport::full([target.size.0, target.size.1]),
+            self.load,
         );
         Ok(())
     }

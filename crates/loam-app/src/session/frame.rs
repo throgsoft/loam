@@ -237,10 +237,7 @@ impl<A: Stores> Frame<A> {
     ) -> Result<(), HostError> {
         let outcome = self.stepped(gpu, target, now, finish);
         if let Err(error) = &outcome {
-            self.inner
-                .app
-                .console
-                .note(format!("frame failed: {error}"));
+            tracing::error!("frame failed: {error}");
         }
         outcome
     }
@@ -354,6 +351,7 @@ impl<A: Stores> Inner<A> {
                     PublishError::Phase(error) => HostError::Phase(error),
                 })?;
         }
+        self.session.views_mut().root_mut().eye.aspect = size.0 as f32 / size.1 as f32;
         let root = self.session.views().root();
         let eye = self
             .session

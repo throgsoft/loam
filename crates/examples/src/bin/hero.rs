@@ -13,7 +13,7 @@ use loam::physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
 };
 use loam::physics::BodyId;
-use loam::render::{FragmentShading, TriangleFeed};
+use loam::render::{FragmentShading, SkyGroundPass, TriangleFeed};
 use loam::runtime::host::{self, HostConfig, HostError};
 use loam::runtime::{
     ActionId, Bindings, Command, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle, Domains,
@@ -779,19 +779,24 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
 
 fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
     let feed = TriangleFeed::default();
+    let sky = SkyGroundPass::new(Environment::default().ground(FLOOR_Y, true));
     let mut start = record;
     let mut recording = start.is_some();
     SessionApp::with_args(HostConfig::new("loam", bindings()), args)
         .recover_on_fault(RESEED)
+        .pass(Box::new(sky.clone()))
         .pass(feed.pass(FragmentShading::FaceNormalLambert))
         .target_fps(TICK_HZ as f32)
         .on_frame(move |hook: &mut FrameHook<'_, HeroStores>| {
+            let environment = *hook.session.app.environment.get();
             let root = hook.session.views().root();
             if let Some(image) = hook.session.views().get(root) {
                 feed.set_view(&image.eye, Rigid::IDENTITY);
+                sky.publish(
+                    &image.eye,
+                    environment.ground(FLOOR_Y, environment.floor_visible),
+                );
             }
-            let environment = *hook.session.app.environment.get();
-            feed.set_ground(Some(environment.ground(FLOOR_Y, environment.floor_visible)));
             let version = hook.session.app.mesh.version();
             feed.set_mesh(version, hook.session.app.mesh.get());
             if let Some(request) = start.take() {
@@ -883,7 +888,7 @@ fn main() -> ExitCode {
         },
         |args| {
             let steps = args
-                .bare_flag_value("headless")
+                .flag_value("headless")
                 .and_then(|count| count.parse::<u32>().ok())
                 .ok_or_else(|| refused("--headless needs a tick count"))?;
             let (mut session, scene) = build()?;

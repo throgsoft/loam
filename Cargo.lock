@@ -1460,6 +1460,7 @@ dependencies = [
  "loam-shape",
  "pollster",
  "thiserror 1.0.69",
+ "tracing",
  "wgpu",
 ]
 
