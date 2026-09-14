@@ -575,45 +575,9 @@ mod tests {
 
     use super::*;
 
-    mod alloc_probe {
-        use std::alloc::{GlobalAlloc, Layout, System};
-        use std::cell::Cell;
-
-        thread_local! {
-            static BYTES: Cell<usize> = const { Cell::new(0) };
-        }
-
-        pub struct Counting;
-
-        // SAFETY: Methods preserve System contracts; const TLS and wrapping Cell updates cannot unwind.
-        unsafe impl GlobalAlloc for Counting {
-            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(layout.size())));
-                // SAFETY: The caller supplies a valid nonzero allocation layout.
-                unsafe { System.alloc(layout) }
-            }
-
-            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-                // SAFETY: The caller supplies a live System allocation and its original layout.
-                unsafe { System.dealloc(ptr, layout) }
-            }
-
-            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-                let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(new_size)));
-                // SAFETY: The caller supplies a live System allocation, its layout, and a valid new size.
-                unsafe { System.realloc(ptr, layout, new_size) }
-            }
-        }
-
-        pub fn bytes_allocated_by(body: impl FnOnce()) -> usize {
-            let before = BYTES.with(Cell::get);
-            body();
-            BYTES.with(Cell::get).wrapping_sub(before)
-        }
-    }
-
     #[global_allocator]
-    static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
+    static COUNTING_ALLOCATOR: loam_time::alloc::CountingAllocator<std::alloc::System> =
+        loam_time::alloc::CountingAllocator::new(std::alloc::System);
 
     const WALK: ActionId = ActionId(0);
 
@@ -689,7 +653,7 @@ mod tests {
             cycle(&mut map, &mut session);
         }
 
-        let bytes = alloc_probe::bytes_allocated_by(|| {
+        let bytes = loam_time::alloc::bytes_allocated_by(|| {
             for _ in 0..16 {
                 cycle(&mut map, &mut session);
             }
