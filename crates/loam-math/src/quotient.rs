@@ -7,7 +7,7 @@ use std::f32::consts::{PI, TAU};
 use glam::{BVec3, Mat4, Quat, Vec3, Vec4};
 
 use crate::euclidean::Iso3;
-use crate::space::{IsometryGroup, Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
 use crate::spherical::Iso4;
 use crate::spherical_embedded::SphericalS3Embedded;
 
@@ -184,6 +184,10 @@ impl WgslSpace for FlatTorus3 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
         Cow::Owned(flat_torus3_wgsl(self.cell))
     }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
+    }
 }
 
 fn flat_torus3_wgsl(cell: Vec3) -> String {
@@ -192,7 +196,7 @@ fn flat_torus3_wgsl(cell: Vec3) -> String {
     format!(
         r#"
 
-const LOAM_MAX_ARC: f32 = 1e9;
+const LOAM_MAX_ARC: f32 = {max_arc:?};
 const LOAM_TORUS_CELL: vec3<f32> = vec3<f32>({cx:?}, {cy:?}, {cz:?});
 const LOAM_TORUS_HALF: vec3<f32> = vec3<f32>({hx:?}, {hy:?}, {hz:?});
 
@@ -212,7 +216,8 @@ struct LoamGeodesicStep {{ p: vec3<f32>, v: vec3<f32> }}
 fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {{
     return LoamGeodesicStep(loam_exp(p, v * s), v);
 }}
-"#
+"#,
+        max_arc = FLAT_CHART_MAX_ARC
     )
 }
 

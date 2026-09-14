@@ -5,9 +5,11 @@ use std::borrow::Cow;
 use glam::{Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace};
 
-const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
+pub const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
+
+pub const H3_MAX_ARC: f32 = 17.5;
 
 /// H³ hits at least `H3_DEPTH_SEPARATION` apart stay ordered within this hyperbolic distance of an eye at most `H3_EYE_CHART_REACH` from the chart origin, and `valid_point` refuses points farther than this from the origin.
 pub const H3_DEPTH_ENVELOPE: f32 = 6.0;
@@ -189,14 +191,19 @@ impl IsometryGroup for HyperbolicH3 {
 
 impl WgslSpace for HyperbolicH3 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Borrowed(WGSL_IMPL)
+        Cow::Owned(format!(
+            "const LOAM_MAX_ARC: f32 = {H3_MAX_ARC:?};{WGSL_IMPL}"
+        ))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
     }
 }
 
 // distance / exp / log / geodesic_step are the v0 WGSL ABI.
 const WGSL_IMPL: &str = r#"
 // loam-math :: HyperbolicH3 (v0 Space WGSL ABI)
-const LOAM_MAX_ARC: f32 = 1e9;
 const LOAM_H3_R2_MAX: f32 = 0.9999999;
 const LOAM_H3_GYR_N2_MIN: f32 = 1e-20;
 

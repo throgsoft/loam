@@ -107,10 +107,10 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
         Vec4::from_array(arr).normalize()
     }
 
-    fn project_point(point: Vec4, projection: &Projection<4>) -> glam::Vec3 {
+    fn project_point(point: Vec4, projection: &Projection<4>) -> Option<glam::Vec3> {
         match projection {
             Projection::Stereographic { pole } => {
-                crate::rasterizable::stereographic_to_r3(point, *pole)
+                Some(crate::rasterizable::stereographic_to_r3(point, *pole))
             }
 
             Projection::Identity
@@ -380,7 +380,8 @@ mod tests {
     fn project_point_stereographic_is_conformal_map_not_drop_w() {
         let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
         let proj = Projection::Stereographic { pole: Vec4::W };
-        let got = <SphericalS3Embedded as RasterizableSpace<4>>::project_point(p, &proj);
+        let got = <SphericalS3Embedded as RasterizableSpace<4>>::project_point(p, &proj)
+            .expect("stereographic should accept an off-pole point");
         let want = glam::Vec3::new(p.x, p.y, p.z) / (1.0 - p.w);
         assert_relative_eq!(got.x, want.x, epsilon = 1e-6);
         assert_relative_eq!(got.y, want.y, epsilon = 1e-6);

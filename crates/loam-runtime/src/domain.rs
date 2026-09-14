@@ -727,7 +727,9 @@ impl DomainSpace for HyperbolicH3 {
     }
 
     fn chart_reach(&self, _at: Self::Point, radius: f32) -> f32 {
-        2.0 * radius.min(1.0).atanh()
+        2.0 * radius
+            .min(loam_math::hyperbolic::POINCARE_R2_MAX.sqrt())
+            .atanh()
     }
 
     fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32> {
