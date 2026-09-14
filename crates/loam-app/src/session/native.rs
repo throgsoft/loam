@@ -28,6 +28,7 @@ pub fn launch_with<A: Stores>(
     _wasm: WasmConfig,
     factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
 ) -> Result<(), HostError> {
+    install_tracing();
     crate::par_native::install();
     run(Args::current(), factory)
 }
@@ -36,12 +37,22 @@ pub fn launch_or_headless<A: Stores>(
     factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
     headless: impl FnOnce(Args) -> Result<(), HostError>,
 ) -> Result<(), HostError> {
+    install_tracing();
     crate::par_native::install();
     let args = Args::current();
     if args.has_bare_flag("headless") {
         return headless(args);
     }
     run(args, factory)
+}
+
+fn install_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 fn run<A: Stores>(
