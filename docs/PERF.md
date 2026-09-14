@@ -60,7 +60,8 @@ ecs then branch: 101 bodies 8174 and 8610, 201 bodies 22416 and 20955,
 ### Edit to result, 2026-09-09, debug build, unit5b-materials 10c4862
 
 `cargo run -p examples --bin twospace -- --edit-latency`, a debug build,
-headless. A Dispatch-phase system submits a command through
+headless. The twospace binary was removed on 2026-09-14; this entry is a
+record of the measurement, not a runnable command. A Dispatch-phase system submits a command through
 `Commands::app_fn` that moves the R⁴ landmark; the host ticks and publishes
 until the published instance record moves. Over 128 samples the median was
 0 ticks and 0.0172 to 0.0173 ms of wall time across three runs, measured
@@ -159,8 +160,10 @@ first head regressed both builds because publication computed the
 eye-relative element for every vertex; `DomainSpace::relative` now
 prepares it once per entity, and `place_relative` applies it per vertex.
 
-`twospace --headless N` prints the publish timings, 64 samples per run,
-debug build, with the r4 landmark dirty: ecs 39.5 us median, a48e896
+`twospace --headless N` printed the publish timings, 64 samples per run,
+debug build, with the r4 landmark dirty (the binary was removed on
+2026-09-14; the same scene now runs as the `blend` cases of
+`cargo bench -p loam-runtime --bench publication`): ecs 39.5 us median, a48e896
 42.3 us, e19cde2 41.5 us over four runs (41.4, 41.6, 40.7, 43.3). The
 blended domain's publish, one entity with one segment, is 124 us median:
 each blended `local` runs one checked Gauss-Newton log, at most 12
