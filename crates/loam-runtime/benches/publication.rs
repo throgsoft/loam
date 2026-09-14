@@ -3,11 +3,11 @@ use std::hint::black_box;
 use std::mem::size_of_val;
 use std::time::Instant;
 
-use loam_math::{EuclideanR3, EuclideanR4, Space};
+use loam_math::{BlendedSpace, EuclideanR3, EuclideanR4, HyperbolicH3, LinearBlendX, Mat3, Space};
 use loam_runtime::{
-    Command, DomainBuilder, DomainHandle, Entity, Identity3, Input, Instance, LogCapacity,
-    Material, Outcome, Pose, PreparedGeometry, Publication, Section4, Session, SimConfig,
-    SpawnBundle, ViewSpec,
+    Command, DepthEnvelope, DomainBuilder, DomainHandle, DomainRay, DomainSpace, Entity, Identity3,
+    ImageRay, Input, Instance, LogCapacity, Material, Outcome, Pose, PreparedGeometry, Projection4,
+    Publication, Section4, Session, SimConfig, SpawnBundle, ViewMapping, ViewSpec,
 };
 use loam_shape::polytope::Polytope4;
 use loam_time::alloc::{current_snapshot, delta, AllocDelta, CountingAllocator};
@@ -19,6 +19,16 @@ const BATCHES: usize = 7;
 const CHURN_RING: usize = 1024;
 const CHURN_SOAK: usize = 4096;
 const WARM_REPS: usize = 4;
+const BLEND_REPS: usize = 64;
+const BLEND_START: f32 = -0.5;
+const BLEND_END: f32 = 0.5;
+const BLEND_TURN: f32 = 0.3;
+const BLEND_SPAN: f32 = 0.05;
+const BLEND_FOCAL: f32 = 2.0;
+const BLEND_EYE: Point3 = Point3::new(-0.7, 0.0, 0.0);
+const BLEND_IMAGE: Point3 = Point3::new(0.0, -0.0866, -0.25);
+const BLEND_LANDMARK: Point4 = Point4::new(1.5, 0.0, -4.0, 0.0);
+const BLEND_LANDMARK_SCALE: f32 = 1.0;
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -283,6 +293,181 @@ impl SectionFixture {
     }
 }
 
+type Blend = BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>;
+
+struct ChartIdentity;
+
+impl<S: DomainSpace<Point = Point3, Frame = Mat3>> ViewMapping<S> for ChartIdentity {
+    fn name(&self) -> &'static str {
+        "chart-identity"
+    }
+
+    fn image_point(&self, eye: &Pose<S>, point: Point3) -> Option<[f32; 3]> {
+        let inverse = eye.frame.inverse();
+        inverse
+            .is_finite()
+            .then(|| (inverse * (point - eye.point)).to_array())
+    }
+
+    fn lift(&self, _eye: &Pose<S>, _ray: &ImageRay) -> Option<DomainRay<S>> {
+        None
+    }
+
+    fn ray_lift(&self) -> bool {
+        false
+    }
+
+    fn depth_envelope(&self) -> DepthEnvelope {
+        DepthEnvelope {
+            near: 0.0,
+            far: f32::INFINITY,
+        }
+    }
+}
+
+fn blend_space() -> Blend {
+    BlendedSpace::new(
+        EuclideanR3,
+        HyperbolicH3,
+        LinearBlendX::new(BLEND_START, BLEND_END).expect("blend zone width"),
+    )
+}
+
+struct BlendFixture {
+    session: Session<Empty>,
+    blend: DomainHandle<Blend>,
+    r4: DomainHandle<EuclideanR4>,
+    mark: Entity,
+    mark_pose: Pose<Blend>,
+    landmark: Entity,
+    landmark_pose: Pose<EuclideanR4>,
+    publication: Publication,
+}
+
+impl BlendFixture {
+    fn new() -> Self {
+        let mut session = Session::new(Empty::default(), SimConfig::default());
+        let blend = session.register_domain(
+            DomainBuilder::new("blend", blend_space())
+                .tracked(LogCapacity::default())
+                .fields(),
+        );
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let space = blend_space();
+        let mark_edges = session.prepare(PreparedGeometry::Lines3 {
+            segments: vec![[[BLEND_SPAN, 0.0, 0.0], [-BLEND_SPAN, 0.0, 0.0]]],
+        });
+        let edges4 = session.prepare(PreparedGeometry::edges_of(
+            Polytope4::Tesseract.topology(),
+            BLEND_LANDMARK_SCALE,
+        ));
+        let material = session.add_material(Material::lines([1.0, 1.0, 1.0, 0.95], 1.6));
+        let root = session.views().root();
+        let turn = Mat3::from_rotation_y(BLEND_TURN);
+        let (mark, landmark) = session.dispatch(|dispatch| {
+            let eye = dispatch
+                .spawn(SpawnBundle::new().at(
+                    blend,
+                    Pose {
+                        point: BLEND_EYE,
+                        frame: turn,
+                    },
+                ))
+                .expect("blend eye");
+            let mark = dispatch
+                .spawn(
+                    SpawnBundle::new()
+                        .at(blend, Pose::new(&space, BLEND_EYE + turn * BLEND_IMAGE))
+                        .instance(Instance::new(mark_edges, material)),
+                )
+                .expect("blend mark");
+            dispatch
+                .domains
+                .typed(blend)
+                .expect("blend domain")
+                .add_view(ViewSpec::new(root, eye, ChartIdentity))
+                .expect("blend view");
+            let walker = dispatch
+                .spawn(SpawnBundle::new().at(r4, Pose::at(Point4::ZERO)))
+                .expect("R4 eye");
+            let landmark = dispatch
+                .spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose::at(BLEND_LANDMARK))
+                        .instance(Instance::new(edges4, material)),
+                )
+                .expect("R4 landmark");
+            dispatch
+                .domains
+                .typed(r4)
+                .expect("R4 domain")
+                .add_view(ViewSpec::new(
+                    root,
+                    walker,
+                    Projection4 { focal: BLEND_FOCAL },
+                ))
+                .expect("R4 view");
+            (mark, landmark)
+        });
+        let mark_pose = *session
+            .domains()
+            .read(blend)
+            .expect("blend domain")
+            .poses()
+            .get(mark)
+            .expect("blend mark pose");
+        let landmark_pose = *session
+            .domains()
+            .read(r4)
+            .expect("R4 domain")
+            .poses()
+            .get(landmark)
+            .expect("R4 landmark pose");
+        Self {
+            session,
+            blend,
+            r4,
+            mark,
+            mark_pose,
+            landmark,
+            landmark_pose,
+            publication: Publication::default(),
+        }
+    }
+
+    fn idle(&mut self) {}
+
+    fn move_blend(&mut self) {
+        self.session
+            .domains_mut()
+            .typed(self.blend)
+            .expect("blend domain")
+            .set_pose(self.mark, self.mark_pose)
+            .expect("blend pose edit");
+    }
+
+    fn move_r4(&mut self) {
+        self.session
+            .domains_mut()
+            .typed(self.r4)
+            .expect("R4 domain")
+            .set_pose(self.landmark, self.landmark_pose)
+            .expect("R4 pose edit");
+    }
+
+    fn publish(&mut self) {
+        self.session
+            .publish(&mut self.publication)
+            .expect("blend publication");
+        black_box(self.publication.stamp);
+    }
+
+    fn counts(&self) -> Counts {
+        counts(&self.publication)
+    }
+}
+
 fn cube_lines() -> Vec<[[f32; 3]; 2]> {
     let vertices = [
         [-0.04, -0.04, -0.04],
@@ -380,14 +565,19 @@ fn allocation<T>(
 }
 
 fn run_case<T>(
+    filters: &[String],
     name: &str,
     population: usize,
-    reps: usize,
-    mut state: T,
+    state: impl FnOnce() -> T,
     mut mutate: impl FnMut(&mut T),
     mut publish: impl FnMut(&mut T),
     counts: impl Fn(&T) -> Counts,
 ) {
+    if !selected(filters, name) {
+        return;
+    }
+    let mut state = state();
+    let reps = reps(population);
     let before_warm = current_snapshot().expect("counting allocator");
     for _ in 0..WARM_REPS {
         mutate(&mut state);
@@ -419,11 +609,22 @@ fn run_case<T>(
 }
 
 fn reps(population: usize) -> usize {
-    if population == 1_000 {
-        10
-    } else {
-        2
+    match population {
+        1 => BLEND_REPS,
+        1_000 => 10,
+        _ => 2,
     }
+}
+
+fn filters() -> Vec<String> {
+    std::env::args()
+        .skip(1)
+        .filter(|arg| !arg.starts_with('-') && arg.parse::<f64>().is_err())
+        .collect()
+}
+
+fn selected(filters: &[String], name: &str) -> bool {
+    filters.is_empty() || filters.iter().any(|filter| name.contains(filter.as_str()))
 }
 
 fn soak_churn(state: &mut LinesFixture, population: usize) {
@@ -469,6 +670,7 @@ fn soak_churn(state: &mut LinesFixture, population: usize) {
 }
 
 fn main() {
+    let filters = filters();
     println!(
         "environment os={} arch={} host={} mode={} source={}",
         std::env::consts::OS,
@@ -486,76 +688,105 @@ fn main() {
     println!("case population reps publication_ns mutation_plus_publication_ns publication_alloc_count publication_alloc_bytes mutation_alloc_count mutation_alloc_bytes warm_retained_bytes instances segments triangles refusals output_bytes");
     for population in [1_000, 10_000] {
         run_case(
+            &filters,
             "r3_lines_idle",
             population,
-            reps(population),
-            LinesFixture::new(population),
+            || LinesFixture::new(population),
             LinesFixture::idle,
             LinesFixture::publish,
             LinesFixture::counts,
         );
         run_case(
+            &filters,
             "r3_lines_one",
             population,
-            reps(population),
-            LinesFixture::new(population),
+            || LinesFixture::new(population),
             LinesFixture::edit_one,
             LinesFixture::publish,
             LinesFixture::counts,
         );
         run_case(
+            &filters,
             "r3_lines_all",
             population,
-            reps(population),
-            LinesFixture::new(population),
+            || LinesFixture::new(population),
             LinesFixture::edit_all,
             LinesFixture::publish,
             LinesFixture::counts,
         );
         run_case(
+            &filters,
             "r3_lines_eye",
             population,
-            reps(population),
-            LinesFixture::new(population),
+            || LinesFixture::new(population),
             LinesFixture::edit_eye,
             LinesFixture::publish,
             LinesFixture::counts,
         );
         run_case(
+            &filters,
             "r4_section_one",
             population,
-            reps(population),
-            SectionFixture::new(population),
+            || SectionFixture::new(population),
             SectionFixture::edit_one,
             SectionFixture::publish,
             SectionFixture::counts,
         );
         run_case(
+            &filters,
             "r4_section_all",
             population,
-            reps(population),
-            SectionFixture::new(population),
+            || SectionFixture::new(population),
             SectionFixture::edit_all,
             SectionFixture::publish,
             SectionFixture::counts,
         );
         run_case(
+            &filters,
             "r4_section_eye",
             population,
-            reps(population),
-            SectionFixture::new(population),
+            || SectionFixture::new(population),
             SectionFixture::edit_eye,
             SectionFixture::publish,
             SectionFixture::counts,
         );
     }
-    let mut churn = LinesFixture::new(10_000);
-    soak_churn(&mut churn, 10_000);
     run_case(
+        &filters,
+        "blend_publish_blend_moved",
+        1,
+        BlendFixture::new,
+        BlendFixture::move_blend,
+        BlendFixture::publish,
+        BlendFixture::counts,
+    );
+    run_case(
+        &filters,
+        "blend_publish_r4_moved",
+        1,
+        BlendFixture::new,
+        BlendFixture::move_r4,
+        BlendFixture::publish,
+        BlendFixture::counts,
+    );
+    run_case(
+        &filters,
+        "blend_publish_idle",
+        1,
+        BlendFixture::new,
+        BlendFixture::idle,
+        BlendFixture::publish,
+        BlendFixture::counts,
+    );
+    run_case(
+        &filters,
         "r3_churn",
         10_000,
-        reps(10_000),
-        churn,
+        || {
+            let mut churn = LinesFixture::new(10_000);
+            soak_churn(&mut churn, 10_000);
+            churn
+        },
         LinesFixture::churn,
         LinesFixture::publish,
         LinesFixture::counts,
