@@ -276,7 +276,7 @@ async fn start<A: Stores>(
 
     let mut frame = Frame::new(session, app);
     frame
-        .attach(&rd.context, rd.target_format(), 1, None, size, dpr)
+        .attach(&rd.context, rd.target_format(), None, size, dpr)
         .map_err(|error| anyhow!("{error:?}"))?;
     let worker = Rc::new(RefCell::new(Some(Worker {
         frame,

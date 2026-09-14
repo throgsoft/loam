@@ -228,7 +228,6 @@ struct Layer {
     device: Device,
     queue: Queue,
     format: TextureFormat,
-    sample_count: u32,
     feed: Feed,
     primitives: Vec<egui::ClippedPrimitive>,
     textures: egui::TexturesDelta,
@@ -238,12 +237,12 @@ struct Layer {
     managed_textures: HashMap<egui::TextureId, ManagedTexture>,
 }
 
-fn renderer(device: &Device, format: TextureFormat, sample_count: u32) -> Renderer {
+fn renderer(device: &Device, format: TextureFormat) -> Renderer {
     Renderer::new(
         device,
         format,
         RendererOptions {
-            msaa_samples: sample_count,
+            msaa_samples: 1,
             ..Default::default()
         },
     )
@@ -253,7 +252,6 @@ impl Layer {
     fn new(
         gpu: &GpuContext,
         format: TextureFormat,
-        sample_count: u32,
         ctx: egui::Context,
         feed: Feed,
         size: (u32, u32),
@@ -261,11 +259,10 @@ impl Layer {
     ) -> Self {
         Self {
             ctx,
-            renderer: renderer(&gpu.device, format, sample_count),
+            renderer: renderer(&gpu.device, format),
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
             format,
-            sample_count,
             feed,
             primitives: Vec::new(),
             textures: egui::TexturesDelta::default(),
@@ -418,14 +415,13 @@ impl DebugLayer {
     pub fn on_window(
         gpu: &GpuContext,
         format: TextureFormat,
-        sample_count: u32,
         window: Arc<Window>,
         size: (u32, u32),
     ) -> Self {
         let ctx = egui::Context::default();
         let feed = Feed::Winit(Box::new(WinitInput::new(&ctx, window.as_ref())));
         let scale = window.scale_factor() as f32;
-        let layer = Layer::new(gpu, format, sample_count, ctx, feed, size, scale);
+        let layer = Layer::new(gpu, format, ctx, feed, size, scale);
         Self {
             shared: Rc::new(RefCell::new(layer)),
             window: Some(window),
@@ -435,7 +431,6 @@ impl DebugLayer {
     pub fn offscreen(
         gpu: &GpuContext,
         format: TextureFormat,
-        sample_count: u32,
         size: (u32, u32),
         scale: f32,
     ) -> Self {
@@ -447,15 +442,7 @@ impl DebugLayer {
             #[cfg(any(target_arch = "wasm32", test))]
             reset_after_pass: false,
         });
-        let layer = Layer::new(
-            gpu,
-            format,
-            sample_count,
-            egui::Context::default(),
-            feed,
-            size,
-            scale,
-        );
+        let layer = Layer::new(gpu, format, egui::Context::default(), feed, size, scale);
         Self {
             shared: Rc::new(RefCell::new(layer)),
             window: None,
@@ -599,7 +586,7 @@ impl FramePass for LayerPass {
         layer.device = gpu.device.clone();
         layer.queue = gpu.queue.clone();
         layer.format = frame.color;
-        layer.renderer = renderer(&gpu.device, frame.color, layer.sample_count);
+        layer.renderer = renderer(&gpu.device, frame.color);
         let Layer {
             renderer,
             managed_textures,
@@ -649,7 +636,7 @@ mod tests {
     #[test]
     fn scene_and_overlay_passes_keep_capture_and_compositing_order() {
         let gpu = noop_gpu();
-        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, 1, (16, 16), 1.0);
+        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, (16, 16), 1.0);
         let text = loam_text::TextPass::new("text", Vec::new(), 16.0);
         let triangle = TriangleFeed::default().pass(FragmentShading::FaceNormalLambert);
         let ground = Ground {
@@ -687,7 +674,7 @@ mod tests {
     #[test]
     fn browser_zoom_does_not_feed_output_scale_back_as_native_dpr() {
         let gpu = noop_gpu();
-        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, 1, (600, 300), 2.0);
+        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, (600, 300), 2.0);
         let mut layer = layer.shared.borrow_mut();
         layer.ctx.set_zoom_factor(1.5);
 
@@ -831,7 +818,7 @@ mod tests {
         }
 
         let gpu = noop_gpu();
-        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, 1, (256, 192), 1.0);
+        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, (256, 192), 1.0);
         let mut touches = TouchCapture::default();
         let initial = observe(&layer);
 
@@ -887,7 +874,7 @@ mod tests {
     fn managed_partial_texture_after_recovery_uses_replay_and_free_removes_it() {
         let gpu = noop_gpu();
         let format = TextureFormat::Rgba8UnormSrgb;
-        let layer = DebugLayer::offscreen(&gpu, format, 1, (16, 16), 1.0);
+        let layer = DebugLayer::offscreen(&gpu, format, (16, 16), 1.0);
         let target = gpu.device.create_texture(&TextureDescriptor {
             label: Some("debug layer texture recovery probe"),
             size: Extent3d {

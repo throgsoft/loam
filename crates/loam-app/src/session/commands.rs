@@ -242,6 +242,9 @@ impl<A: Stores> CommandInbox<A> {
                 .iter()
                 .position(|submitted| submitted.request == result.request)
             else {
+                if let Err(rejection) = result.outcome {
+                    tracing::warn!("{:?}: rejected, {rejection:?}", result.request);
+                }
                 continue;
             };
             let submitted = shared.submitted.swap_remove(index);
