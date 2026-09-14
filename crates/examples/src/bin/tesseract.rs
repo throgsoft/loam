@@ -25,6 +25,7 @@ loam::runtime::stores! {
     #[derive(Default)]
     pub struct TesseractStores {
         spin: Store<Spin>,
+        camera: Value<Orbit>,
     }
 }
 
@@ -83,7 +84,10 @@ fn build(
 
     let mut orbit = Orbit::around([0.0; 3], 5.0);
     orbit.pitch = -0.15;
-    loam::app::session::orbit(&mut session, orbit);
+    session.app.camera.set(orbit);
+    loam::app::session::orbit(&mut session, |app: &mut TesseractStores| {
+        app.camera.get_mut()
+    });
 
     session.system(
         Phase::Simulation,

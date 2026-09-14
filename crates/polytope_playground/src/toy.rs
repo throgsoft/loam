@@ -13,7 +13,7 @@ use loam::shape::polytope::Polytope4;
 
 use crate::catalog::{ShapeEntry, SHAPE_CATALOG};
 use crate::consts::{FLOOR_Y, GRAVITY};
-use crate::{HiddenSlot, Playground, Slot, Toy, Wall};
+use crate::{Card, HiddenSlot, Playground, Slot, Toy, Wall};
 
 pub(crate) const BODY_SIZE: f32 = 0.45;
 pub(crate) const ARENA_HALF: f32 = 3.6;
@@ -213,11 +213,11 @@ pub(crate) fn pose_at(polytope: Polytope4, x: f32) -> Pose<EuclideanR4> {
     }
 }
 
-fn asset_of(polytope: Polytope4, assets: &[Option<Instance>]) -> Option<(ShapeEntry, Instance)> {
+fn asset_of(polytope: Polytope4, cards: &[Card]) -> Option<(ShapeEntry, Instance)> {
     SHAPE_CATALOG
         .iter()
         .position(|entry| entry.collider_polytope() == Some(polytope))
-        .and_then(|index| Some((SHAPE_CATALOG[index], assets.get(index).copied().flatten()?)))
+        .and_then(|index| Some((SHAPE_CATALOG[index], cards.get(index)?.toy()?)))
 }
 
 pub(crate) fn add_body(
@@ -302,7 +302,7 @@ fn spawn_walls(
 pub(crate) fn populate(
     dispatch: &mut Dispatch<'_, Playground>,
     domain: DomainHandle<EuclideanR4>,
-    assets: &[Option<Instance>],
+    cards: &[Card],
 ) -> Result<(), Rejection> {
     let visible: Vec<(Entity, Slot)> = dispatch
         .app
@@ -325,7 +325,7 @@ pub(crate) fn populate(
     }
 
     for (at, polytope) in TOYS.into_iter().enumerate() {
-        let (entry, instance) = asset_of(polytope, assets)
+        let (entry, instance) = asset_of(polytope, cards)
             .ok_or(Rejection::Unsupported("the toy has no prepared asset"))?;
         spawn_toy(dispatch, domain, polytope, entry, instance, at, TOYS.len())?;
     }
@@ -366,10 +366,10 @@ pub(crate) fn clear(
 pub(crate) fn reset(
     dispatch: &mut Dispatch<'_, Playground>,
     domain: DomainHandle<EuclideanR4>,
-    assets: &[Option<Instance>],
+    cards: &[Card],
 ) -> Result<(), Rejection> {
     clear(dispatch, domain)?;
-    populate(dispatch, domain, assets)
+    populate(dispatch, domain, cards)
 }
 
 pub(crate) fn settle(

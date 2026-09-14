@@ -72,6 +72,7 @@ const EDGE_WIDTH_PX: f32 = display::DEFAULT_WIREFRAME_WIDTH_PX;
 const HEADLESS_STEPS: u32 = 8;
 const HEADLESS_FRAME: (u32, u32) = (1280, 720);
 const CAMERA_DISTANCE: f32 = 8.0;
+const DOMAIN_NAME: &str = "r4";
 
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
@@ -125,15 +126,27 @@ pub(crate) struct Card {
     geometry: Option<PreparedId>,
     toy_geometry: Option<PreparedId>,
     material: MaterialId,
+    cut: MaterialId,
     shades: Option<Shades>,
 }
 
-#[derive(Clone)]
-pub(crate) struct ControlAssets {
-    domain: DomainHandle<EuclideanR4>,
+impl Card {
+    fn dressed(&self, geometry: PreparedId) -> Instance {
+        Instance::new(geometry, self.material).sectioned(self.cut)
+    }
+
+    pub(crate) fn body(&self) -> Option<Instance> {
+        self.geometry.map(|geometry| self.dressed(geometry))
+    }
+
+    pub(crate) fn toy(&self) -> Option<Instance> {
+        self.toy_geometry.map(|geometry| self.dressed(geometry))
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Catalog {
     cards: Arc<[Card]>,
-    assets: Arc<[Option<Instance>]>,
-    cut: MaterialId,
 }
 
 loam::runtime::stores! {
@@ -160,7 +173,7 @@ loam::runtime::stores! {
         formula: Value<bool>,
         camera: Value<camera::Camera>,
         control: Value<Control>,
-        control_assets: Value<Option<ControlAssets>>,
+        catalog: Value<Catalog>,
     }
 }
 
@@ -212,16 +225,16 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
         SimConfig::default(),
     );
     let domain = session.register_domain(
-        DomainBuilder::new("r4", EuclideanR4)
+        DomainBuilder::new(DOMAIN_NAME, EuclideanR4)
             .tracked(LogCapacity::default())
             .physics(toy::physics_config())
             .map_err(|error| HostError::Setup(Rejection::Edit(error)))?,
     );
     let root = session.views().root();
-    let cut = session.add_material(Material::lines(SECTION_COLOR, SECTION_WIDTH_PX));
-    let cards: Arc<[Card]> = prepare_catalog(&mut session).into();
 
     let layers = session.dispatch(|d| -> Result<Layers, Rejection> {
+        let cut = d.add_material(Material::lines(SECTION_COLOR, SECTION_WIDTH_PX));
+        let cards: Arc<[Card]> = prepare_catalog(d, cut).into();
         for (index, entry) in row.iter().enumerate() {
             let rest = rest_of(index, row.len());
             let mut bundle = SpawnBundle::new().at(domain, Pose::at(rest)).row(Slot {
@@ -229,11 +242,8 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
                 entry: *entry,
                 rest,
             });
-            if let Some(card) = card_of(entry) {
-                if let Some(geometry) = cards[card].geometry {
-                    bundle = bundle
-                        .instance(Instance::new(geometry, cards[card].material).sectioned(cut));
-                }
+            if let Some(instance) = card_of(entry).and_then(|card| cards[card].body()) {
+                bundle = bundle.instance(instance);
             }
             d.spawn(bundle)?;
         }
@@ -241,6 +251,7 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
         let r4 = d.domains.typed(domain)?;
         let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))?;
         let projection = r4.add_view(ViewSpec::new(root, eye, Family::default().mapping(0.0)))?;
+        d.app.catalog.set(Catalog { cards });
         Ok(Layers {
             section,
             projection,
@@ -250,13 +261,8 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
         Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
     session.app.controls.set(true);
 
-    let assets = install_systems(&mut session, domain, layers, cards.clone(), cut);
-    session.app.control_assets.set(Some(ControlAssets {
-        domain,
-        cards,
-        assets,
-        cut,
-    }));
+    let cards = session.app.catalog.get().cards.clone();
+    install_systems(&mut session, domain, layers, cards);
     session.set_initial()?;
     Ok(Boot { session, domain })
 }
@@ -271,32 +277,33 @@ fn card_of(entry: &ShapeEntry) -> Option<usize> {
     catalog::SHAPE_CATALOG.iter().position(|held| held == entry)
 }
 
-fn prepare_catalog(session: &mut Session<Playground>) -> Vec<Card> {
+fn prepare_catalog(dispatch: &mut Dispatch<'_, Playground>, cut: MaterialId) -> Vec<Card> {
     catalog::SHAPE_CATALOG
         .iter()
         .map(|entry| {
             let [r, g, b] = entry.body_color;
-            let material = session.add_material(Material::lines([r, g, b, 1.0], EDGE_WIDTH_PX));
+            let material = dispatch.add_material(Material::lines([r, g, b, 1.0], EDGE_WIDTH_PX));
             let polytope = entry.shape.polytope4();
             Card {
                 geometry: polytope.map(|polytope| {
-                    session.prepare(PreparedGeometry::Polytope4 {
+                    dispatch.prepare(PreparedGeometry::Polytope4 {
                         polytope,
                         scale: BODY_SIZE,
                     })
                 }),
                 toy_geometry: polytope.map(|polytope| {
-                    session.prepare(PreparedGeometry::Polytope4 {
+                    dispatch.prepare(PreparedGeometry::Polytope4 {
                         polytope,
                         scale: toy::BODY_SIZE,
                     })
                 }),
                 material,
+                cut,
                 shades: polytope.map(|polytope| {
                     let topology = polytope.topology();
                     Shades {
-                        gradient: session.add_palette(color::vertex_gradient_colors(topology)),
-                        unique: session.add_palette(color::unique_edge_colors(topology.edges)),
+                        gradient: dispatch.add_palette(color::vertex_gradient_colors(topology)),
+                        unique: dispatch.add_palette(color::unique_edge_colors(topology.edges)),
                         extent: color::w_extent(topology, BODY_SIZE),
                     }
                 }),
@@ -310,16 +317,7 @@ fn install_systems(
     domain: DomainHandle<EuclideanR4>,
     layers: Layers,
     cards: Arc<[Card]>,
-    cut: MaterialId,
-) -> Arc<[Option<Instance>]> {
-    let assets: Arc<[Option<Instance>]> = cards
-        .iter()
-        .map(|card| {
-            card.toy_geometry
-                .map(|geometry| Instance::new(geometry, card.material).sectioned(cut))
-        })
-        .collect::<Vec<_>>()
-        .into();
+) {
     session.system(
         Phase::Dispatch,
         "controls",
@@ -426,12 +424,15 @@ fn install_systems(
             spec.section_edges = false;
             spec.section_faces = false;
             for (entity, slot) in app.slots.iter() {
-                let Some(shades) = card_of(&slot.entry).and_then(|card| cards[card].shades) else {
+                let Some(card) = card_of(&slot.entry).map(|index| cards[index]) else {
+                    continue;
+                };
+                let Some(shades) = card.shades else {
                     continue;
                 };
                 if let Some(instance) = r4.instance_mut(entity) {
                     instance.shading = shades.of(mode);
-                    instance.section = (!strip).then_some(cut);
+                    instance.section = (!strip).then_some(card.cut);
                     instance.line_width_px = Some(display.wireframe_width_px);
                     instance.line_opacity = Some(display.wireframe_opacity);
                 }
@@ -527,7 +528,6 @@ fn install_systems(
             toy::settle(ctx.app, ctx.domains, domain, ctx.step)
         },
     );
-    assets
 }
 
 impl AppCommand<Playground> for Action {
@@ -564,22 +564,10 @@ impl AppCommand<Playground> for Action {
     }
 
     fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let control = dispatch
-            .app
-            .control_assets
-            .get()
-            .clone()
-            .ok_or(Rejection::Unsupported(
-                "playground actions are not initialized",
-            ))?;
-        let ControlAssets {
-            domain,
-            cards,
-            assets,
-            cut,
-        } = control;
+        let domain = dispatch.domains.named::<EuclideanR4>(DOMAIN_NAME)?;
+        let Catalog { cards } = dispatch.app.catalog.get().clone();
         match *self {
-            Action::Mode(mode) => mode::set_mode(dispatch, domain, &assets, mode)?,
+            Action::Mode(mode) => mode::set_mode(dispatch, domain, &cards, mode)?,
             Action::Active(slot) => {
                 if slot >= dispatch.app.slots.len() {
                     return Err(Rejection::Unsupported("no such slot"));
@@ -664,7 +652,7 @@ impl AppCommand<Playground> for Action {
                 dispatch.app.spin.get_mut().rate = rate.clamp(0.0, consts::MAX_RATE);
             }
             Action::Display(display) => display::set(dispatch.app, display)?,
-            Action::Reset => mode::reset(dispatch, domain, &assets)?,
+            Action::Reset => mode::reset(dispatch, domain, &cards)?,
             Action::Controls(setting) => {
                 let visible = *dispatch.app.controls.get();
                 dispatch.app.controls.set(setting.unwrap_or(!visible));
@@ -684,13 +672,13 @@ impl AppCommand<Playground> for Action {
                 let Some(entry) = catalog::SHAPE_CATALOG.get(card) else {
                     return Ok(Outcome::Done);
                 };
-                mode::set_shape(dispatch, domain, slot, *entry, cards[card], cut)?;
+                mode::set_shape(dispatch, domain, slot, *entry, cards[card])?;
             }
             Action::AddShape(card) => {
                 let Some(entry) = catalog::SHAPE_CATALOG.get(card) else {
                     return Ok(Outcome::Done);
                 };
-                row::add_shape(dispatch, domain, *entry, cards[card], cut)?;
+                row::add_shape(dispatch, domain, *entry, cards[card])?;
             }
             Action::RemoveShape(slot) => row::remove_shape(dispatch, domain, slot)?,
             Action::Throw(entity, velocity) => {
@@ -1068,8 +1056,7 @@ fn control_camera(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR
     let eye = match mode {
         camera::CameraMode::Orbit => {
             let control = ctx.app.control.get_mut();
-            control.orbit.drag(ctx.input.drag(PointerButton::Secondary));
-            control.orbit.zoom(ctx.input.scroll[1]);
+            control.orbit.apply(ctx.input);
             control.orbit.eye()
         }
         camera::CameraMode::Freecam => {

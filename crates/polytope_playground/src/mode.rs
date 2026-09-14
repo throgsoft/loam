@@ -1,7 +1,6 @@
 use loam::math::{Bivector4, EuclideanR4, Plane4, Rotor4};
 use loam::runtime::{
-    Dispatch, DomainHandle, Domains, EdgeShading, Entity, Instance, MaterialId, Pose, Rejection,
-    SpawnBundle,
+    Dispatch, DomainHandle, Domains, EdgeShading, Entity, Instance, Pose, Rejection, SpawnBundle,
 };
 
 use crate::catalog::ShapeEntry;
@@ -64,7 +63,7 @@ impl Spin {
 pub(crate) fn set_mode(
     dispatch: &mut Dispatch<'_, Playground>,
     domain: DomainHandle<EuclideanR4>,
-    assets: &[Option<Instance>],
+    cards: &[Card],
     mode: Mode,
 ) -> Result<(), Rejection> {
     let held = *dispatch.app.mode.get();
@@ -72,7 +71,7 @@ pub(crate) fn set_mode(
         return Ok(());
     }
     match (held, mode) {
-        (_, Mode::Toybox) => toy::populate(dispatch, domain, assets)?,
+        (_, Mode::Toybox) => toy::populate(dispatch, domain, cards)?,
         (Mode::Toybox, _) => toy::clear(dispatch, domain)?,
         _ => {}
     }
@@ -87,10 +86,10 @@ pub(crate) fn set_mode(
 pub(crate) fn reset(
     dispatch: &mut Dispatch<'_, Playground>,
     domain: DomainHandle<EuclideanR4>,
-    assets: &[Option<Instance>],
+    cards: &[Card],
 ) -> Result<(), Rejection> {
     if *dispatch.app.mode.get() == Mode::Toybox {
-        toy::reset(dispatch, domain, assets)?;
+        toy::reset(dispatch, domain, cards)?;
     } else {
         let r4 = dispatch.domains.typed(domain)?;
         for (entity, slot) in dispatch.app.slots.iter() {
@@ -172,7 +171,6 @@ pub(crate) fn set_shape(
     slot: usize,
     entry: ShapeEntry,
     card: Card,
-    cut: MaterialId,
 ) -> Result<(), Rejection> {
     let held = dispatch
         .app
@@ -235,7 +233,7 @@ pub(crate) fn set_shape(
         bundle = bundle.instance(
             Instance::new(geometry, card.material)
                 .shaded(shading)
-                .sectioned(cut)
+                .sectioned(card.cut)
                 .line_style(display.wireframe_width_px, display.wireframe_opacity),
         );
     }

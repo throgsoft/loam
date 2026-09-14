@@ -5,7 +5,9 @@ use crate::domain::{
 };
 use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
 use crate::relation::Relation;
-use crate::session::RestoreError;
+use crate::session::{
+    Assets, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId, RestoreError,
+};
 use crate::store::{Owner, StoreError};
 use crate::stores::{HasRelation, HasStore, Stores};
 use crate::view::Views;
@@ -327,6 +329,7 @@ pub struct Dispatch<'a, A> {
     pub views: &'a mut Views,
     entities: &'a mut Entities,
     bridges: &'a mut Relation<Bridge>,
+    assets: &'a mut Assets,
 }
 
 impl<'a, A: Stores> Dispatch<'a, A> {
@@ -336,6 +339,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         views: &'a mut Views,
         entities: &'a mut Entities,
         bridges: &'a mut Relation<Bridge>,
+        assets: &'a mut Assets,
     ) -> Self {
         Self {
             app,
@@ -343,7 +347,32 @@ impl<'a, A: Stores> Dispatch<'a, A> {
             views,
             entities,
             bridges,
+            assets,
         }
+    }
+
+    pub fn prepare(&mut self, geometry: PreparedGeometry) -> PreparedId {
+        self.assets.prepare(geometry)
+    }
+
+    pub fn prepared(&self, id: PreparedId) -> Option<&PreparedGeometry> {
+        self.assets.prepared(id)
+    }
+
+    pub fn add_palette(&mut self, colors: Vec<[f32; 4]>) -> PaletteId {
+        self.assets.add_palette(colors)
+    }
+
+    pub fn palette(&self, id: PaletteId) -> Option<&[[f32; 4]]> {
+        self.assets.palette(id)
+    }
+
+    pub fn add_material(&mut self, material: Material) -> MaterialId {
+        self.assets.add_material(material)
+    }
+
+    pub fn material(&self, id: MaterialId) -> Option<&Material> {
+        self.assets.material(id)
     }
 
     pub fn spawn(&mut self, bundle: SpawnBundle<A>) -> Result<Entity, Rejection> {
