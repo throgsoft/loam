@@ -71,6 +71,8 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: cargo test --workspace --all-targets
         run: cargo test --workspace --all-targets
+      - name: cargo test -p loam-physics --features persist
+        run: cargo test -p loam-physics --features persist
       # Adapter probes use lavapipe; font fixtures are in the repository.
       - name: cargo test gpu_probe -- --include-ignored
         if: matrix.os == 'ubuntu-latest'
