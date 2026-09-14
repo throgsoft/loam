@@ -1211,6 +1211,7 @@ mod tests {
         body_color: [0.95, 0.45, 0.85],
         label: "24-cell",
         long_name: "icositetrachoron",
+        category: catalog::Category::RegularPolychoron,
     };
 
     const EYE_BACK: f32 = 5.0;
@@ -2257,6 +2258,7 @@ mod tests {
             body_color: [0.30, 0.55, 0.95],
             label: "8-cell",
             long_name: "tesseract",
+            category: catalog::Category::RegularPolychoron,
         };
         let mut booted = boot(&[TESSERACT]).expect("the session boots");
         booted.session.boundary(Input::default()).expect("boundary");
