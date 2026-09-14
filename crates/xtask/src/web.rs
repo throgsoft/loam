@@ -6,6 +6,7 @@ pub struct Options {
     pub package: Option<String>,
     pub release: bool,
     pub public_url: String,
+    pub features: Vec<String>,
 }
 
 impl Options {
@@ -20,6 +21,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         package: None,
         release: false,
         public_url: "/".to_string(),
+        features: Vec::new(),
     };
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -31,6 +33,14 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--public-url" => {
                 opts.public_url = args.next().cloned().ok_or("--public-url needs a path")?;
+            }
+            "--features" => {
+                let list = args.next().cloned().ok_or("--features needs a list")?;
+                opts.features.extend(
+                    list.split(',')
+                        .filter(|name| !name.is_empty())
+                        .map(String::from),
+                );
             }
             other => return Err(format!("unknown flag: {other}")),
         }
@@ -45,14 +55,20 @@ pub fn run(opts: &Options) -> Result<(), String> {
     let root = crate::workspace_root()?;
     let profile = if opts.release { "release" } else { "debug" };
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let status = Command::new(cargo)
+    let mut command = Command::new(cargo);
+    command
         .current_dir(&root)
         .args(["build", "--target", "wasm32-unknown-unknown"])
         .args(["-p", opts.package(), "--bin", &opts.bin])
         .arg("--no-default-features")
-        .args(opts.release.then_some("--release"))
-        .status()
-        .map_err(|e| format!("run cargo: {e}"))?;
+        .args(opts.release.then_some("--release"));
+    for feature in &opts.features {
+        if let Some((package, _)) = feature.split_once('/') {
+            command.args(["-p", package]);
+        }
+        command.args(["--features", feature]);
+    }
+    let status = command.status().map_err(|e| format!("run cargo: {e}"))?;
     if !status.success() {
         return Err(format!("cargo build failed: {status}"));
     }

@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use loam_console::CommandLine;
 use loam_egui::{cmd, Console, ConsoleWriter, HistoryLine};
 use loam_runtime::{AppCommand, Dispatch, Stores};
 
 use super::commands::{CommandSender, Reported};
-use crate::command::CommandLine;
 
 #[derive(Default)]
 struct ConsoleState {

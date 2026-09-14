@@ -1,4 +1,5 @@
-use loam::runtime::{ActionId, FreeCamera};
+use loam::app::session::FreeCamera;
+use loam::runtime::ActionId;
 
 pub(crate) const RIGHT: ActionId = ActionId(20);
 pub(crate) const LEFT: ActionId = ActionId(21);

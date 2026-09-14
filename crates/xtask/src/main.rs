@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "usage:
-  cargo xtask web [--bin <name>] [--package <name>] [--release] [--public-url <path>]
+  cargo xtask web [--bin <name>] [--package <name>] [--release] [--public-url <path>] [--features <list>]
   cargo xtask serve [--port <port>]";
 
 fn main() -> ExitCode {

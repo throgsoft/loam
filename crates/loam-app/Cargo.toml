@@ -13,6 +13,7 @@ categories = ["game-development"]
 [features]
 default = ["capture"]
 capture = ["dep:image", "dep:gif", "dep:color_quant", "dep:png"]
+measure = []
 
 [dependencies]
 anyhow.workspace = true

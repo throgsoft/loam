@@ -88,7 +88,7 @@ impl<A: Stores> Frame<A> {
         &mut self.inner.app
     }
 
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(any(all(target_arch = "wasm32", feature = "measure"), test))]
     pub(crate) fn phase_error(&self) -> Option<loam_runtime::PhaseError> {
         self.inner.session.phase_error()
     }
@@ -182,7 +182,6 @@ impl<A: Stores> Frame<A> {
         &mut self,
         gpu: &GpuContext,
         format: TextureFormat,
-        sample_count: u32,
         window: Option<Arc<Window>>,
         size: (u32, u32),
         scale: f32,
@@ -195,8 +194,8 @@ impl<A: Stores> Frame<A> {
             let layer = match self.layer.clone() {
                 Some(layer) => layer,
                 None => match window {
-                    Some(window) => DebugLayer::on_window(gpu, format, sample_count, window, size),
-                    None => DebugLayer::offscreen(gpu, format, sample_count, size, scale),
+                    Some(window) => DebugLayer::on_window(gpu, format, window, size),
+                    None => DebugLayer::offscreen(gpu, format, size, scale),
                 },
             };
             presenter.register_pass(layer.pass()).map_err(failed)?;
@@ -724,7 +723,7 @@ struct Fragment {
             host("shader error").pass(Box::new(loam_render::HyperslicePass::new(source.into())));
         let mut frame = bare(app);
         let error = frame
-            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect_err("incompatible shader");
         let message = format!("{error:?}");
         assert!(message.contains("pass `hyperslice` failed during attach"));
@@ -743,7 +742,7 @@ struct Fragment {
         }));
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
         run_one(&mut frame, &gpu, &texture);
         assert_eq!(recorded.load(Ordering::Relaxed), 1);
@@ -781,7 +780,7 @@ struct Fragment {
             });
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
 
         run_one(&mut frame, &gpu, &texture);
@@ -817,7 +816,7 @@ struct Fragment {
             });
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
 
         run_one(&mut frame, &gpu, &texture);
@@ -888,7 +887,7 @@ struct Fragment {
         let epoch = session.scene().epoch();
         let mut frame = Frame::new(session, app);
         frame
-            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
         let start = Instant::now();
         let expected_sections = ["present-clear", "triangles", "present-draw", "probe"];
@@ -990,7 +989,7 @@ struct Fragment {
             });
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
 
         let mut after_each = Vec::new();
@@ -1042,7 +1041,7 @@ struct Fragment {
             .expect("capture supported");
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
         run_one(&mut frame, &gpu, &texture);
         drop(frame);
@@ -1094,7 +1093,7 @@ struct Fragment {
             .expect("capture supported");
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
         run_one(&mut frame, &gpu, &texture);
 
@@ -1140,7 +1139,7 @@ struct Fragment {
         });
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, 1, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
         for _ in 0..4 {
             run_one(&mut frame, &gpu, &texture);

@@ -16,8 +16,7 @@ use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, System, SystemEn
 use crate::relation::{LinkId, Relation, RelationSnapshot};
 use crate::store::{Owner, SchemaId, StoreField};
 use crate::stores::Stores;
-use crate::view::{ImageRay, Orbit, Pick, Rigid, ViewRecords, ViewTarget, Views, ViewsSnapshot};
-use crate::PointerButton;
+use crate::view::{ImageRay, Pick, Rigid, ViewRecords, ViewTarget, Views, ViewsSnapshot};
 
 const RELEASE_STALE_SECONDS: f64 = 0.12;
 
@@ -589,18 +588,6 @@ impl<A: Stores> Session<A> {
 
     pub fn system(&mut self, phase: Phase, name: &'static str, system: impl System<A>) {
         self.phases.push(phase, SystemEntry::new(name, system));
-    }
-
-    pub fn orbit(&mut self, mut orbit: Orbit) {
-        self.system(Phase::Dispatch, "orbit", move |ctx: Ctx<'_, A>| {
-            orbit.drag(ctx.input.drag(PointerButton::Secondary));
-            orbit.zoom(ctx.input.scroll[1]);
-            let mut eye = orbit.eye();
-            let root = ctx.views.root_mut();
-            eye.aspect = root.eye.aspect;
-            root.eye = eye;
-            Ok(())
-        });
     }
 
     /// `None` when no entry of that phase has the named anchor.

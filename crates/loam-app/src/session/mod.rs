@@ -1,4 +1,5 @@
 pub mod app;
+pub mod camera;
 pub mod console;
 pub mod debug_layer;
 pub mod pacing;
@@ -9,7 +10,6 @@ mod commands;
 mod cursor;
 mod frame;
 mod surface;
-mod winit_input;
 
 #[cfg(target_arch = "wasm32")]
 mod animation;
@@ -19,6 +19,7 @@ mod browser;
 mod native;
 
 pub use app::{CaptureControl, FrameHook, InputHook, SessionApp};
+pub use camera::{orbit, FreeCamera, Orbit};
 pub use commands::CommandSender;
 pub use console::{SessionConsole, Submit};
 pub use cursor::CursorPolicy;

@@ -1,10 +1,26 @@
 use anyhow::{anyhow, Result};
 use loam_render::device::{FeatureRequest, GpuContext, RenderDevice};
+use loam_runtime::host::HostError;
+use loam_runtime::Stores;
+use web_time::Instant;
 use wgpu::{
     CompositeAlphaMode, Device, DownlevelFlags, Instance, PresentMode, Surface,
     SurfaceConfiguration, SurfaceTexture, TextureFormat, TextureUsages, TextureView,
     TextureViewDescriptor,
 };
+
+use super::frame::{failed, Frame, Target};
+
+pub(crate) enum Attempt {
+    Presented,
+    #[cfg(target_arch = "wasm32")]
+    Paced,
+    #[cfg(target_arch = "wasm32")]
+    EmptySurface,
+    ReconfiguredSurface,
+    TimedOutSurface,
+    FailedSurface,
+}
 
 pub(crate) struct SurfaceHost {
     surface: Surface<'static>,
@@ -81,12 +97,57 @@ impl SurfaceHost {
         self.reconfigure(device);
     }
 
-    pub(crate) fn begin_frame(
+    fn begin_frame(
         &self,
     ) -> std::result::Result<(SurfaceTexture, TextureView), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
         Ok((frame, view))
+    }
+
+    pub(crate) fn present<A: Stores>(
+        &self,
+        device: &RenderDevice,
+        frame: &mut Frame<A>,
+        now: Instant,
+        after_step: impl FnOnce(&mut Frame<A>, bool),
+    ) -> std::result::Result<Attempt, HostError> {
+        let (surface_frame, swap_view) = match self.begin_frame() {
+            Ok(acquired) => acquired,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.reconfigure(&device.context.device);
+                return Ok(Attempt::ReconfiguredSurface);
+            }
+            Err(wgpu::SurfaceError::Timeout) => {
+                tracing::warn!("surface frame timed out");
+                return Ok(Attempt::TimedOutSurface);
+            }
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                return Err(failed("surface ran out of memory"));
+            }
+            Err(wgpu::SurfaceError::Other) => {
+                tracing::warn!("surface frame failed");
+                return Ok(Attempt::FailedSurface);
+            }
+        };
+        {
+            let view = device.scene_view().unwrap_or(&swap_view);
+            let target = Target {
+                view,
+                texture: &surface_frame.texture,
+                format: self.format(),
+                size: self.size,
+            };
+            let stepped = frame.step(&device.context, &target, now, |encoder| {
+                if device.scene_view().is_some() {
+                    device.composite_to_swap(encoder, &swap_view);
+                }
+            });
+            after_step(frame, stepped.is_ok());
+            stepped?;
+        }
+        surface_frame.present();
+        Ok(Attempt::Presented)
     }
 
     pub(crate) fn set_vsync(&mut self, device: &Device, enabled: bool) {

@@ -1,11 +1,11 @@
 use glam::Vec4;
-use loam::app::session::{launch, SessionApp};
+use loam::app::session::{launch, Orbit, SessionApp};
 use loam::math::{Bivector, Bivector4, EuclideanR4};
 use loam::runtime::host::{HostConfig, HostError};
 use loam::runtime::{
     ActionId, Bindings, Command, Dispatch, DomainBuilder, DomainError, Instance, Key, LogCapacity,
-    Material, Orbit, Outcome, Phase, Pose, PreparedGeometry, Projection4, Rejection, Session,
-    SimConfig, SpawnBundle, ViewSpec,
+    Material, Outcome, Phase, Pose, PreparedGeometry, Projection4, Rejection, Session, SimConfig,
+    SpawnBundle, ViewSpec,
 };
 use loam::shape::polytope::Polytope4;
 
@@ -83,7 +83,7 @@ fn build(
 
     let mut orbit = Orbit::around([0.0; 3], 5.0);
     orbit.pitch = -0.15;
-    session.orbit(orbit);
+    loam::app::session::orbit(&mut session, orbit);
 
     session.system(
         Phase::Simulation,
