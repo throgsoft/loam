@@ -269,7 +269,7 @@ fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {
     return perp4.xyz * (d / n);
 }
 
-fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+fn loam_s3_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     let pf = loam_s3_clamp(p_from);
     let pt = loam_s3_clamp(p_to);
     let qf = loam_s3_lift(pf);
@@ -281,6 +281,13 @@ fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> 
     let denom = dot(sum, sum) * 0.5;
     let v4t = v4 - (dot(v4, qt) / denom) * sum;
     return v4t.xyz;
+}
+
+struct LoamGeodesicStep { p: vec3<f32>, v: vec3<f32> }
+
+fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {
+    let next = loam_exp(p, v * s);
+    return LoamGeodesicStep(next, loam_s3_transport(p, next, v));
 }
 "#;
 

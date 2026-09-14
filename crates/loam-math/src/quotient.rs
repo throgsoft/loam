@@ -208,7 +208,10 @@ fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {{ return length(loam_torus_
 fn loam_origin_distance(p: vec3<f32>) -> f32 {{ return length(loam_torus_wrap(p)); }}
 fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{ return loam_torus_wrap(at + v); }}
 fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {{ return loam_torus_wrap(p_to - p_from); }}
-fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{ return v; }}
+struct LoamGeodesicStep {{ p: vec3<f32>, v: vec3<f32> }}
+fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {{
+    return LoamGeodesicStep(loam_exp(p, v * s), v);
+}}
 "#
     )
 }
@@ -789,7 +792,7 @@ mod tests {
             "fn loam_origin_distance(",
             "fn loam_exp(",
             "fn loam_log(",
-            "fn loam_parallel_transport(",
+            "fn loam_geodesic_step(",
             "fn loam_torus_wrap(",
             "const LOAM_MAX_ARC",
         ] {
