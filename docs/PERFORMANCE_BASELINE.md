@@ -37,8 +37,9 @@ thread; Loam runs in a worker.
 | Allocation | No recurring allocation in Simulation, Publication, or upload after warm-up. | Same |
 
 At the time of the decision the playground bundle is 6.25 MB raw and
-1.76 MB after brotli, and the production browser build has no pixel cap. The
-cap exists only in the measure build.
+1.76 MB after brotli. Today the production browser build has no pixel cap and
+the cap exists only in the measure build; the last section decides to expose
+it as a launch option.
 
 ## Workloads
 
