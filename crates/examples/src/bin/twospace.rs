@@ -682,6 +682,36 @@ mod tests {
     }
 
     #[test]
+    fn a_reset_press_restores_the_scene_and_the_walkers_walk_again() {
+        let (mut session, scene) = build(false).unwrap();
+        let config = HostConfig::new("twospace", bindings());
+        let epoch = session.scene().epoch();
+        let reset_at = HEADLESS_WALK.end;
+        let holds = [
+            (Key::Letter('w'), HEADLESS_WALK),
+            (Key::Letter('r'), reset_at..reset_at + 1),
+            (Key::Letter('w'), reset_at + 1..reset_at + 4),
+        ];
+        host::run_headless(&mut session, &config, reset_at + 4, &holds).unwrap();
+
+        assert_eq!(session.faulted_phase(), None);
+        assert_eq!(session.scene().epoch(), epoch.advance());
+        let domains = session.domains();
+        let r4 = domains.read(scene.r4).unwrap();
+        let h3 = domains.read(scene.h3).unwrap();
+        let walked = session.app.players.iter().any(|(entity, _)| {
+            r4.poses()
+                .get(entity)
+                .is_some_and(|pose| pose.point != Vec4::ZERO)
+                || h3
+                    .poses()
+                    .get(entity)
+                    .is_some_and(|pose| pose.point != Vec3::ZERO)
+        });
+        assert!(walked, "the walkers stood still after the reset");
+    }
+
+    #[test]
     fn reset_keeps_relations_but_a_handle_from_before_it_still_resolves() {
         let (mut session, scene) = build(false).unwrap();
         let config = HostConfig::new("twospace", bindings());

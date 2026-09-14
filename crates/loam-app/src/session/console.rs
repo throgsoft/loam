@@ -248,7 +248,7 @@ const MAX_ACCEPTED_FPS: f32 = 1000.0;
 
 #[cfg(test)]
 mod tests {
-    use loam_runtime::{Bindings, HostConfig, Input, Session, SimConfig};
+    use loam_runtime::{Bindings, HostConfig, Input, Rejection, Session, SimConfig};
 
     use super::*;
     use crate::args::Args;
@@ -302,6 +302,36 @@ mod tests {
                 .any(|line| line == "bump: Done"),
             "the console never matched its request to the session result: {:?}",
             history(&app.console)
+        );
+    }
+
+    #[test]
+    fn a_refused_command_from_an_unreported_sender_reaches_the_console_history() {
+        let mut session = Session::new(Counted::default(), SimConfig::default());
+        let mut app =
+            SessionApp::with_args(HostConfig::new("console", Bindings::new()), Args::default());
+        app.sender()
+            .try_app_fn("refused", |_d: &mut Dispatch<'_, Counted>| {
+                Err(Rejection::Unsupported("not now"))
+            });
+        app.sender()
+            .app_fn("accepted", |d: &mut Dispatch<'_, Counted>| {
+                *d.app.hits.get_mut() += 1;
+            });
+
+        app.boundary(&mut session, Input::default())
+            .expect("boundary");
+
+        let lines = history(&app.console);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "refused: rejected, Unsupported(\"not now\")"),
+            "the refusal never reached the console: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.starts_with("accepted")),
+            "an unreported success reached the console: {lines:?}"
         );
     }
 
