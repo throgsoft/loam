@@ -46,13 +46,17 @@ impl<A: Stores> FrameHook<'_, A> {
 /// Queues capture starts and stops that the host drains at the end of the same frame.
 pub struct CaptureControl<'a> {
     requests: &'a mut Vec<CaptureRequest>,
+    supported: bool,
 }
+
+const CAPTURE_SUPPORTED: bool = cfg!(all(feature = "capture", not(target_arch = "wasm32")));
 
 fn queue_capture(
     requests: &mut Vec<CaptureRequest>,
     request: CaptureRequest,
+    supported: bool,
 ) -> Result<(), CaptureUnavailable> {
-    if !cfg!(all(feature = "capture", not(target_arch = "wasm32"))) {
+    if !supported {
         return Err(CaptureUnavailable);
     }
     requests.push(request);
@@ -61,11 +65,18 @@ fn queue_capture(
 
 impl<'a> CaptureControl<'a> {
     pub(crate) fn new(requests: &'a mut Vec<CaptureRequest>) -> Self {
-        Self { requests }
+        Self::with_support(requests, CAPTURE_SUPPORTED)
+    }
+
+    fn with_support(requests: &'a mut Vec<CaptureRequest>, supported: bool) -> Self {
+        Self {
+            requests,
+            supported,
+        }
     }
 
     pub fn start(&mut self, request: CaptureRequest) -> Result<(), CaptureUnavailable> {
-        queue_capture(self.requests, request)
+        queue_capture(self.requests, request, self.supported)
     }
 
     pub fn stop(&mut self) -> Result<(), CaptureUnavailable> {
@@ -197,7 +208,7 @@ impl<A: Stores> SessionApp<A> {
     }
 
     pub fn capture(mut self, request: CaptureRequest) -> Result<Self, CaptureUnavailable> {
-        queue_capture(&mut self.captures, request)?;
+        queue_capture(&mut self.captures, request, CAPTURE_SUPPORTED)?;
         Ok(self)
     }
 
@@ -211,7 +222,7 @@ impl<A: Stores> SessionApp<A> {
     }
 }
 
-#[cfg(all(test, any(not(feature = "capture"), target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -223,7 +234,7 @@ mod tests {
     #[test]
     fn unsupported_capture_refuses_without_retaining_requests() {
         let mut requests = Vec::new();
-        let mut control = CaptureControl::new(&mut requests);
+        let mut control = CaptureControl::with_support(&mut requests, false);
         assert_eq!(
             control.start(CaptureRequest::OneShot {
                 stage: crate::capture::CaptureStage::Post,
@@ -234,14 +245,16 @@ mod tests {
         );
         assert_eq!(control.stop(), Err(CaptureUnavailable));
         assert!(requests.is_empty());
-
-        let app = SessionApp::<Bare>::with_args(
-            HostConfig::new("capture", loam_runtime::Bindings::new()),
-            Args::default(),
-        );
-        assert!(matches!(
-            app.capture(CaptureRequest::Stop),
-            Err(CaptureUnavailable)
-        ));
+        #[cfg(any(not(feature = "capture"), target_arch = "wasm32"))]
+        {
+            let app = SessionApp::<Bare>::with_args(
+                HostConfig::new("capture", loam_runtime::Bindings::new()),
+                Args::default(),
+            );
+            assert!(matches!(
+                app.capture(CaptureRequest::Stop),
+                Err(CaptureUnavailable)
+            ));
+        }
     }
 }

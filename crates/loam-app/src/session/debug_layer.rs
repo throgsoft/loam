@@ -11,7 +11,7 @@ use wgpu::{CommandBuffer, CommandEncoder, Device, Queue, TextureFormat, TextureV
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 use super::input::TouchCapture;
 
 pub const DEBUG_LAYER: ResourceId = "debug-layer";
@@ -60,7 +60,8 @@ struct RawFeed {
     pending: Vec<egui::Event>,
     modifiers: egui::Modifiers,
     canceled: bool,
-    #[cfg(target_arch = "wasm32")]
+    quiet: bool,
+    #[cfg(any(target_arch = "wasm32", test))]
     reset: bool,
 }
 
@@ -82,7 +83,7 @@ impl RawFeed {
         self.canceled |= cancellation;
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     fn cancel_touch(&mut self, id: u64, pos: egui::Pos2, pointer: bool) {
         self.push(egui::Event::Touch {
             device_id: egui::TouchDeviceId(0),
@@ -94,24 +95,29 @@ impl RawFeed {
         self.canceled |= pointer;
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     fn cancel_pointer(&mut self) {
         self.canceled = true;
     }
 
     fn take(&mut self) -> Vec<egui::Event> {
         let current = std::mem::take(&mut self.events);
-        self.events.append(&mut self.pending);
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.reset = self.canceled;
+        if self.quiet {
+            self.quiet = false;
+            self.canceled = false;
+            self.events.append(&mut self.pending);
+        } else if self.canceled {
+            self.quiet = true;
+            #[cfg(any(target_arch = "wasm32", test))]
+            {
+                self.reset = true;
+            }
         }
-        self.canceled = false;
         current
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
 fn reset_pointer(context: &egui::Context) {
     context.input_mut(|input| input.pointer = egui::PointerState::default());
     context.stop_dragging();
@@ -205,7 +211,7 @@ impl Layer {
 
     fn finish(&mut self, window: Option<&Window>) {
         let output = self.ctx.end_pass();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", test))]
         if let Feed::Raw(feed) = &mut self.feed {
             if std::mem::take(&mut feed.reset) {
                 reset_pointer(&self.ctx);
@@ -340,7 +346,8 @@ impl DebugLayer {
             pending: Vec::new(),
             modifiers: egui::Modifiers::default(),
             canceled: false,
-            #[cfg(target_arch = "wasm32")]
+            quiet: false,
+            #[cfg(any(target_arch = "wasm32", test))]
             reset: false,
         });
         let layer = Layer::new(gpu, format, egui::Context::default(), feed, size, scale);
@@ -385,14 +392,14 @@ impl DebugLayer {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(super) fn cancel_touch(&self, id: u64, pos: egui::Pos2, pointer: bool) {
         if let Feed::Raw(feed) = &mut self.shared.borrow_mut().feed {
             feed.cancel_touch(id, pos, pointer);
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(super) fn cancel_touches(&self, touches: &mut TouchCapture) {
         for (id, pos) in touches.cancel_all() {
             self.cancel_touch(id, egui::pos2(pos[0], pos[1]), false);
@@ -400,7 +407,7 @@ impl DebugLayer {
         self.cancel_pointer();
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(any(target_arch = "wasm32", test))]
     fn cancel_pointer(&self) {
         if let Feed::Raw(feed) = &mut self.shared.borrow_mut().feed {
             feed.cancel_pointer();
@@ -501,6 +508,8 @@ mod tests {
         BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
         TextureDescriptor, TextureDimension, TextureUsages, TextureViewDescriptor,
     };
+
+    use crate::wasm::input_queue::PointerPhase;
 
     use super::*;
 
@@ -648,5 +657,182 @@ mod tests {
         pass.attach(&gpu, frame)
             .expect("renderer recreated after free");
         assert!(!layer.shared.borrow().managed_textures.contains_key(&id));
+    }
+    #[test]
+    fn canceled_touch_never_clicks_and_later_input_lands_in_the_next_pass() {
+        struct Observed {
+            a: egui::Rect,
+            b: egui::Rect,
+            c: egui::Rect,
+            clicked_a: bool,
+            clicked_b: bool,
+            clicked_c: bool,
+            released: usize,
+            any_released: bool,
+            down: bool,
+            touches: bool,
+            payload: bool,
+        }
+
+        fn observe(layer: &DebugLayer) -> Observed {
+            let context = layer.begin();
+            let mut a = egui::Rect::NOTHING;
+            let mut b = egui::Rect::NOTHING;
+            let mut c = egui::Rect::NOTHING;
+            let mut clicked_a = false;
+            let mut clicked_b = false;
+            let mut clicked_c = false;
+            egui::CentralPanel::default().show(&context, |ui| {
+                let (_, response) =
+                    ui.allocate_exact_size(egui::vec2(120.0, 48.0), egui::Sense::click_and_drag());
+                a = response.rect;
+                clicked_a = response.clicked();
+                if response.is_pointer_button_down_on() {
+                    context.set_dragged_id(response.id);
+                    egui::DragAndDrop::set_payload(&context, 7_u32);
+                }
+                let (_, response) =
+                    ui.allocate_exact_size(egui::vec2(120.0, 48.0), egui::Sense::click());
+                b = response.rect;
+                clicked_b = response.clicked();
+                let (_, response) =
+                    ui.allocate_exact_size(egui::vec2(120.0, 48.0), egui::Sense::click());
+                c = response.rect;
+                clicked_c = response.clicked();
+            });
+            let (released, any_released, down, touches) = context.input(|input| {
+                let released = input
+                    .raw
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        matches!(event, egui::Event::PointerButton { pressed: false, .. })
+                    })
+                    .count();
+                (
+                    released,
+                    input.pointer.any_released(),
+                    input.pointer.any_down(),
+                    input.any_touches(),
+                )
+            });
+            let payload = egui::DragAndDrop::has_any_payload(&context);
+            layer.finish();
+            Observed {
+                a,
+                b,
+                c,
+                clicked_a,
+                clicked_b,
+                clicked_c,
+                released,
+                any_released,
+                down,
+                touches,
+                payload,
+            }
+        }
+
+        fn down(layer: &DebugLayer, touches: &mut TouchCapture, id: u64, pos: egui::Pos2) {
+            assert!(touches.route(id, PointerPhase::Down, true, [pos.x, pos.y]));
+            layer.push(egui::Event::Touch {
+                device_id: egui::TouchDeviceId(0),
+                id: egui::TouchId::from(id),
+                phase: egui::TouchPhase::Start,
+                pos,
+                force: None,
+            });
+            layer.push(egui::Event::PointerMoved(pos));
+            layer.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+
+        fn cancel(layer: &DebugLayer, touches: &mut TouchCapture, id: u64, pos: egui::Pos2) {
+            let pointer = touches.is_pointer(id);
+            assert!(touches.route(id, PointerPhase::Cancel, false, [pos.x, pos.y]));
+            layer.cancel_touch(id, pos, pointer);
+        }
+
+        fn up(layer: &DebugLayer, touches: &mut TouchCapture, id: u64, pos: egui::Pos2) {
+            let pointer = touches.is_pointer(id);
+            assert!(touches.route(id, PointerPhase::Up, false, [pos.x, pos.y]));
+            layer.push(egui::Event::Touch {
+                device_id: egui::TouchDeviceId(0),
+                id: egui::TouchId::from(id),
+                phase: egui::TouchPhase::End,
+                pos,
+                force: None,
+            });
+            if pointer {
+                layer.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::default(),
+                });
+                layer.push(egui::Event::PointerGone);
+            }
+        }
+
+        let gpu = noop_gpu();
+        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, (256, 192), 1.0);
+        let mut touches = TouchCapture::default();
+        let initial = observe(&layer);
+
+        down(&layer, &mut touches, 1, initial.a.center());
+        let held_a = observe(&layer);
+        assert!(!held_a.clicked_a && !held_a.clicked_b && !held_a.clicked_c);
+        assert!(held_a.down && held_a.touches && held_a.payload);
+
+        layer.cancel_touches(&mut touches);
+        down(&layer, &mut touches, 2, initial.c.center());
+        cancel(&layer, &mut touches, 2, initial.c.center());
+        down(&layer, &mut touches, 3, initial.b.center());
+        up(&layer, &mut touches, 3, initial.b.center());
+
+        let canceled = observe(&layer);
+        assert!(!canceled.clicked_a && !canceled.clicked_b && !canceled.clicked_c);
+        assert_eq!(canceled.released, 0);
+        assert!(!canceled.any_released && !canceled.touches);
+
+        let quiet = observe(&layer);
+        assert!(!quiet.clicked_a && !quiet.clicked_b && !quiet.clicked_c);
+        assert!(!quiet.down && !quiet.touches);
+
+        let valid_b = observe(&layer);
+        assert!(!valid_b.clicked_a && valid_b.clicked_b && !valid_b.clicked_c);
+        assert_eq!(valid_b.released, 1);
+        assert!(valid_b.any_released);
+        assert!(!valid_b.down && !valid_b.touches && !valid_b.payload);
+
+        down(&layer, &mut touches, 4, initial.a.center());
+        let held_a = observe(&layer);
+        assert!(held_a.down && held_a.touches && held_a.payload);
+
+        up(&layer, &mut touches, 4, initial.a.center());
+        down(&layer, &mut touches, 5, initial.c.center());
+        cancel(&layer, &mut touches, 5, initial.c.center());
+        down(&layer, &mut touches, 6, initial.b.center());
+        up(&layer, &mut touches, 6, initial.b.center());
+
+        let valid_a = observe(&layer);
+        assert!(valid_a.clicked_a && !valid_a.clicked_b && !valid_a.clicked_c);
+        assert_eq!(valid_a.released, 1);
+        assert!(valid_a.any_released && !valid_a.touches);
+
+        let quiet = observe(&layer);
+        assert!(!quiet.clicked_a && !quiet.clicked_b && !quiet.clicked_c);
+        assert!(!quiet.down && !quiet.touches);
+
+        let valid_b = observe(&layer);
+        assert!(!valid_b.clicked_a && valid_b.clicked_b && !valid_b.clicked_c);
+        assert_eq!(valid_b.released, 1);
+        assert!(!valid_b.down && !valid_b.touches && !valid_b.payload);
+        assert!(!touches.is_pointer(6));
+        assert_eq!(touches.cancel_all().count(), 0);
     }
 }
