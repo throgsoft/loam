@@ -1023,7 +1023,7 @@ impl<A: Stores> Session<A> {
             let despawn = matches!(request.command, Command::Despawn(_));
             let name = request.command.name();
             let outcome = match request.command {
-                Command::Reset if self.restored => Err(Rejection::Cancelled),
+                Command::Reset if self.restored => Ok(Outcome::Done),
                 Command::Reset => {
                     let unfinished = self.unfinished;
                     let phase_error = self.phase_error;
