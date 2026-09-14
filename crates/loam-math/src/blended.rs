@@ -724,11 +724,11 @@ impl BlendingField for LinearBlendX {
     }
 }
 
-fn blended_e3_h3_linearx_wgsl(field: &LinearBlendX) -> String {
+fn blended_e3_h3_linearx_wgsl(field: &LinearBlendX, max_arc: f32) -> String {
     format!(
         r#"
 // loam-math :: BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX> (v0 Space WGSL ABI)
-const LOAM_MAX_ARC: f32 = 1e9;
+const LOAM_MAX_ARC: f32 = {max_arc:?};
 const LOAM_BLENDED_R2_MAX: f32 = 0.9999999;
 const LOAM_BLENDED_X_START: f32 = {start:?};
 const LOAM_BLENDED_X_END:   f32 = {end:?};
@@ -863,7 +863,10 @@ fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {{
 /// WGSL distance and log approximate the CPU operations; the geodesic step integrates the same flow as `exp`.
 impl WgslSpace for BlendedSpace<crate::EuclideanR3, crate::HyperbolicH3, LinearBlendX> {
     fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Owned(blended_e3_h3_linearx_wgsl(&self.field))
+        Cow::Owned(blended_e3_h3_linearx_wgsl(
+            &self.field,
+            self.chart_envelope(),
+        ))
     }
 }
 

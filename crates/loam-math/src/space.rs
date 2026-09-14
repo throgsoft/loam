@@ -64,6 +64,8 @@ pub trait IsometryGroup: Space {
     fn iso_transport(&self, iso: Self::Iso, at: Self::Point, v: Self::Vector) -> Self::Vector;
 }
 
+pub const FLAT_CHART_MAX_ARC: f32 = 40.0;
+
 pub trait WgslSpace: Space {
     /// Emits `loam_distance`, `loam_origin_distance`, `loam_exp`, `loam_log`, `loam_geodesic_step`, and `LOAM_MAX_ARC` over the space's point type.
     fn wgsl_impl(&self) -> Cow<'static, str>;
