@@ -4,10 +4,10 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 
+use loam_console::CommandLine;
 use loam_runtime::Stores;
 
 use crate::args::Args;
-use crate::command::CommandLine;
 use crate::session::SessionConsole;
 
 // Captures must finish after the last scripted frame presents.

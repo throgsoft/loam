@@ -8,11 +8,11 @@ use loam_egui::egui;
 use loam_render::device::GpuContext;
 use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR};
 use wgpu::{CommandBuffer, CommandEncoder, Device, Queue, TextureFormat, TextureView};
+use winit::event::WindowEvent;
 use winit::window::Window;
 
 #[cfg(any(target_arch = "wasm32", test))]
 use super::input::TouchCapture;
-use super::winit_input::WinitInput;
 
 pub const DEBUG_LAYER: ResourceId = "debug-layer";
 
@@ -22,6 +22,37 @@ const WRITES: [ResourceId; 1] = [DEBUG_LAYER];
 enum Feed {
     Winit(Box<WinitInput>),
     Raw(RawFeed),
+}
+
+struct WinitInput {
+    state: egui_winit::State,
+}
+
+impl WinitInput {
+    fn new(ctx: &egui::Context, window: &Window) -> Self {
+        Self {
+            state: egui_winit::State::new(
+                ctx.clone(),
+                egui::ViewportId::ROOT,
+                window,
+                Some(window.scale_factor() as f32),
+                window.theme(),
+                None,
+            ),
+        }
+    }
+
+    fn on_event(&mut self, window: &Window, event: &WindowEvent) -> egui_winit::EventResponse {
+        self.state.on_window_event(window, event)
+    }
+
+    fn take(&mut self, window: &Window) -> egui::RawInput {
+        self.state.take_egui_input(window)
+    }
+
+    fn handle_output(&mut self, window: &Window, output: egui::PlatformOutput) {
+        self.state.handle_platform_output(window, output);
+    }
 }
 
 struct RawFeed {
@@ -449,7 +480,7 @@ impl DebugLayer {
         }
     }
 
-    pub fn on_window_event(&self, event: &winit::event::WindowEvent) -> bool {
+    pub fn on_window_event(&self, event: &WindowEvent) -> bool {
         let Some(window) = self.window.clone() else {
             return false;
         };

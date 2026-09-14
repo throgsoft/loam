@@ -10,7 +10,6 @@ pub mod capture {
 }
 mod capture_types;
 
-pub mod command;
 pub mod environment;
 pub mod keymap;
 #[cfg(not(target_arch = "wasm32"))]

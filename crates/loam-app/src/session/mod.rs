@@ -9,7 +9,6 @@ mod commands;
 mod cursor;
 mod frame;
 mod surface;
-mod winit_input;
 
 #[cfg(target_arch = "wasm32")]
 mod animation;
