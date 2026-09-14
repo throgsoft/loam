@@ -92,7 +92,7 @@ impl TouchCapture {
         }
     }
 
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(target_arch = "wasm32")]
     pub(super) fn cancel_all(&mut self) -> impl Iterator<Item = (u64, [f32; 2])> + '_ {
         self.pointer = None;
         self.active
@@ -100,7 +100,7 @@ impl TouchCapture {
             .filter_map(|touch| touch.captured.then_some((touch.id, touch.pos)))
     }
 
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn is_pointer(&self, id: u64) -> bool {
         self.pointer == Some(id)
     }
