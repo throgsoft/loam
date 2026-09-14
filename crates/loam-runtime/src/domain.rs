@@ -214,6 +214,7 @@ pub enum DomainError {
     ForeignRuntime,
     UnknownDomain(DomainId),
     UnknownDomainName(&'static str),
+    AmbiguousDomainName(&'static str),
     UnknownView(ViewId),
     SpaceMismatch(DomainId),
     Stale(Entity),
@@ -237,6 +238,9 @@ impl fmt::Display for DomainError {
             Self::ForeignRuntime => f.write_str("the handle belongs to another runtime"),
             Self::UnknownDomain(domain) => write!(f, "no {domain} in this session"),
             Self::UnknownDomainName(name) => write!(f, "no domain named {name}"),
+            Self::AmbiguousDomainName(name) => {
+                write!(f, "more than one domain named {name}")
+            }
             Self::UnknownView(view) => write!(f, "no {view} in this session"),
             Self::SpaceMismatch(domain) => write!(f, "{domain} has another space"),
             Self::Stale(entity) => write!(f, "{entity} is stale"),
@@ -1206,11 +1210,25 @@ struct ViewEntry<S: DomainSpace> {
 }
 
 fn same_style<S: DomainSpace>(a: &ViewStyle<S>, b: &ViewStyle<S>) -> bool {
-    a.enabled == b.enabled
-        && a.edges == b.edges
-        && a.section_edges == b.section_edges
-        && a.section_faces == b.section_faces
-        && std::sync::Arc::ptr_eq(&a.mapping, &b.mapping)
+    let ViewStyle {
+        enabled,
+        edges,
+        section_edges,
+        section_faces,
+        mapping,
+    } = a;
+    let ViewStyle {
+        enabled: other_enabled,
+        edges: other_edges,
+        section_edges: other_section_edges,
+        section_faces: other_section_faces,
+        mapping: other_mapping,
+    } = b;
+    enabled == other_enabled
+        && edges == other_edges
+        && section_edges == other_section_edges
+        && section_faces == other_section_faces
+        && std::sync::Arc::ptr_eq(mapping, other_mapping)
 }
 
 impl<S: DomainSpace> Clone for ViewEntry<S> {
@@ -2071,7 +2089,7 @@ where
         entity: Entity,
         body: loam_physics::BodyDef<S>,
     ) -> Result<loam_physics::BodyId, DomainError> {
-        let pose = *self.poses.get(entity).ok_or(DomainError::Stale(entity))?;
+        let pose = *self.poses.get(entity).ok_or(StoreError::Missing(entity))?;
         let physics = self
             .facilities
             .iter_mut()
@@ -2644,7 +2662,7 @@ impl Domains {
             return Err(DomainError::UnknownDomainName(name));
         };
         if matched.next().is_some() {
-            return Err(DomainError::UnknownDomainName(name));
+            return Err(DomainError::AmbiguousDomainName(name));
         }
         domain
             .as_any()

@@ -975,7 +975,6 @@ impl<A: Stores> Session<A> {
         for (domain, snapshot) in self.domains.owned().zip(&from.domains) {
             domain.check_restore(snapshot)?;
         }
-        self.restored = true;
         self.commands.cancel_into(&mut self.results);
         self.commands.restore(&from.entities, from.next_request);
         let scene = self.scene();
@@ -1013,6 +1012,7 @@ impl<A: Stores> Session<A> {
         };
         let result = self.restore(&initial);
         self.initial = Some(initial);
+        self.restored = true;
         result
     }
 
