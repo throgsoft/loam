@@ -760,6 +760,18 @@ impl<A: Stores> Session<A> {
             domain.boundary();
         }
         self.unfinished = None;
+        if self.initial.is_none() {
+            match self.snapshot() {
+                Ok(initial) => self.initial = Some(initial),
+                Err(cause) => {
+                    let error =
+                        PhaseError::system(Phase::Dispatch, "initial", DomainError::Restore(cause));
+                    self.unfinished = Some(Phase::Dispatch);
+                    self.phase_error = Some(error);
+                    return Err(error);
+                }
+            }
+        }
         Ok(growth)
     }
 
