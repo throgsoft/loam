@@ -1,3 +1,4 @@
+use std::fmt;
 use std::ops::Range;
 
 use crate::command::Rejection;
@@ -24,6 +25,17 @@ pub enum HostError {
     Setup(Rejection),
     Phase(PhaseError),
     Host(String),
+}
+
+impl fmt::Display for HostError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingCapability(capability) => write!(f, "the host is missing {capability}"),
+            Self::Setup(rejection) => fmt::Display::fmt(rejection, f),
+            Self::Phase(error) => fmt::Display::fmt(error, f),
+            Self::Host(message) => f.write_str(message),
+        }
+    }
 }
 
 impl From<Rejection> for HostError {

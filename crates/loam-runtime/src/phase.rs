@@ -70,10 +70,10 @@ impl fmt::Display for PhaseError {
         match self.system {
             Some(system) => write!(
                 formatter,
-                "system `{system}` failed in {:?}: {:?}",
+                "system `{system}` failed in {:?}: {}",
                 self.phase, self.cause
             ),
-            None => write!(formatter, "{:?} phase failed: {:?}", self.phase, self.cause),
+            None => write!(formatter, "{:?} phase failed: {}", self.phase, self.cause),
         }
     }
 }

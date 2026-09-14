@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::entity::{Entities, Entity, SceneId};
 use crate::store::{Owner, StoreError, StoreField};
 
@@ -7,6 +9,12 @@ pub struct LinkId {
     scene: SceneId,
     slot: u32,
     generation: u32,
+}
+
+impl fmt::Display for LinkId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "link {} gen {}", self.slot, self.generation)
+    }
 }
 
 /// A typed pair of entities with data; endpoints resolve through the sparse index.
