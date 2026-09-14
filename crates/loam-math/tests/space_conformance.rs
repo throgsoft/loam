@@ -1068,7 +1068,11 @@ impl SpaceFixture for HyperbolicH3Fixture {
     }
 
     fn points(&self) -> Vec<Vec3> {
-        ball_samples(0x0083_0F1A, 5, 0.4)
+        ball_samples(
+            0x0083_0F1A,
+            5,
+            (loam_math::hyperbolic::H3_DEPTH_ENVELOPE / 2.0).tanh(),
+        )
     }
 
     fn tangents(&self, _at: Vec3) -> Vec<Vec3> {
