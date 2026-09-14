@@ -985,6 +985,7 @@ impl<A: Stores> Session<A> {
         self.commands.drain_into(&mut batch);
         for request in batch.drain(..) {
             let despawn = matches!(request.command, Command::Despawn(_));
+            let name = request.command.name();
             let outcome = match request.command {
                 Command::Reset if self.restored => Err(Rejection::Cancelled),
                 Command::Reset => {
@@ -1010,6 +1011,7 @@ impl<A: Stores> Session<A> {
             }
             self.results.push(CommandResult {
                 request: request.id,
+                name,
                 outcome,
             });
         }

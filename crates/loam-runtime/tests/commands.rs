@@ -168,6 +168,7 @@ fn a_fallible_function_command_reports_its_rejection() {
         session.results(),
         [CommandResult {
             request,
+            name: "reject",
             outcome: Err(Rejection::Unsupported("rejected")),
         }]
     );
@@ -293,7 +294,7 @@ fn rejected_spawn_bundle_leaves_an_attachment_behind() {
     let reservation = session.app.reserved.get()[0];
     assert!(matches!(
         session.results(),
-        [CommandResult { request, outcome: Err(Rejection::Store(StoreError::Occupied(_))) }]
+        [CommandResult { request, name: "spawn", outcome: Err(Rejection::Store(StoreError::Occupied(_))) }]
             if *request == reservation.request
     ));
     assert!(session.app.tags.is_empty());
@@ -470,6 +471,7 @@ fn reserved_handle_resolves_before_its_spawn_commits() {
         session.results(),
         [CommandResult {
             request: reservation.request,
+            name: "spawn",
             outcome: Ok(Outcome::Spawned(reservation.entity)),
         }]
     );
