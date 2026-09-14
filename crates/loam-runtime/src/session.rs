@@ -860,6 +860,7 @@ impl<A: Stores> Session<A> {
         };
         self.unfinished = Some(Phase::Publication);
         self.run_phase(Phase::Publication, step)?;
+        self.domains.synchronize();
         let scene = self.scene();
         if into.source != Some(scene) {
             *into = Publication::default();
@@ -879,18 +880,22 @@ impl<A: Stores> Session<A> {
                     else {
                         continue;
                     };
-                    let current = into
+                    let held = into
                         .views
-                        .get(count)
-                        .is_some_and(|view| view.domain == domain.id() && view.target == target);
-                    if !current {
-                        into.views.truncate(count);
-                        into.views.push(PublishedView {
-                            domain: domain.id(),
-                            target,
-                            placement,
-                            records: ViewRecords::default(),
-                        });
+                        .iter()
+                        .position(|view| view.domain == domain.id() && view.target == target);
+                    match held {
+                        Some(index) if index != count => into.views.swap(index, count),
+                        Some(_) => {}
+                        None => into.views.insert(
+                            count,
+                            PublishedView {
+                                domain: domain.id(),
+                                target,
+                                placement,
+                                records: ViewRecords::default(),
+                            },
+                        ),
                     }
                     into.views[count].placement = placement;
                     domain.publish(target.view, library, &mut into.views[count].records, stamp)?;

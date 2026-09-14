@@ -1203,6 +1203,14 @@ struct ViewEntry<S: DomainSpace> {
     style: ViewStyle<S>,
 }
 
+fn same_style<S: DomainSpace>(a: &ViewStyle<S>, b: &ViewStyle<S>) -> bool {
+    a.enabled == b.enabled
+        && a.edges == b.edges
+        && a.section_edges == b.section_edges
+        && a.section_faces == b.section_faces
+        && std::sync::Arc::ptr_eq(&a.mapping, &b.mapping)
+}
+
 impl<S: DomainSpace> Clone for ViewEntry<S> {
     fn clone(&self) -> Self {
         Self {
@@ -1566,6 +1574,8 @@ pub trait Domain: Send + 'static {
 
     fn name(&self) -> &'static str;
 
+    fn tracks_changes(&self) -> bool;
+
     fn views(&self) -> &[ViewTarget];
 
     fn view(&self, id: ViewId) -> Option<ViewSummary>;
@@ -1632,6 +1642,7 @@ pub struct TypedDomain<S: DomainSpace> {
     views: Vec<ViewEntry<S>>,
     targets: Vec<ViewTarget>,
     view_revisions: Vec<u32>,
+    view_stamps: Vec<ViewStyle<S>>,
     pub(crate) facilities: Vec<Box<dyn Facility<S>>>,
     compiler: FieldCompiler,
 }
@@ -1747,6 +1758,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             image: spec.image,
         });
         self.view_revisions.push(0);
+        self.view_stamps.push(spec.style.clone());
         self.views.push(ViewEntry {
             eye: spec.eye,
             subject: spec.subject,
@@ -1768,8 +1780,6 @@ impl<S: DomainSpace> TypedDomain<S> {
     }
 
     pub fn view_mut(&mut self, id: ViewId) -> Option<&mut ViewStyle<S>> {
-        let revision = self.view_revisions.get_mut(id.index())?;
-        *revision = revision.wrapping_add(1);
         let spec = self.views.get_mut(id.index())?;
         Some(&mut spec.style)
     }
@@ -2086,6 +2096,10 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         self.name
     }
 
+    fn tracks_changes(&self) -> bool {
+        self.poses.is_tracked()
+    }
+
     fn views(&self) -> &[ViewTarget] {
         &self.targets
     }
@@ -2316,6 +2330,18 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         for facility in &mut self.facilities {
             facility.synchronize(&mut self.poses, Owner::new());
         }
+        for (index, view) in self.views.iter().enumerate() {
+            let Some(stamp) = self.view_stamps.get_mut(index) else {
+                continue;
+            };
+            if same_style(&view.style, stamp) {
+                continue;
+            }
+            *stamp = view.style.clone();
+            if let Some(revision) = self.view_revisions.get_mut(index) {
+                *revision = revision.wrapping_add(1);
+            }
+        }
     }
 
     fn release(&mut self, entity: Entity) {
@@ -2408,6 +2434,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         self.views = views;
         self.targets.clone_from(&from.targets);
         self.view_revisions = revisions;
+        self.view_stamps = self.views.iter().map(|view| view.style.clone()).collect();
         self.compiler.invalidate();
         Ok(())
     }
@@ -2522,6 +2549,7 @@ impl<S: DomainSpace> DomainBuilder<S> {
             views: Vec::new(),
             targets: Vec::new(),
             view_revisions: Vec::new(),
+            view_stamps: Vec::new(),
             facilities,
             compiler: FieldCompiler::new(),
         }
