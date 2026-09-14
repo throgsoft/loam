@@ -37,6 +37,18 @@ jobs:
             pkg-config
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  clippy-wasm:
+    name: clippy (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo clippy -p loam-app -p polytope_playground --target wasm32-unknown-unknown -- -D warnings
+
   platform-cfg:
     name: cfg(target_arch = "wasm32") only in loam-app
     runs-on: ubuntu-latest

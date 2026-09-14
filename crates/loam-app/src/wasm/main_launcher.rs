@@ -14,6 +14,8 @@ struct CanvasMetrics {
 
 /// `host_id` is the `data-mode="manual"` container, `button_id` the overlay,
 /// `canvas_id` the `<canvas>` transferred via `transferControlToOffscreen`.
+type Pending<T> = Rc<RefCell<Option<T>>>;
+
 pub fn launch_on_click(host_id: &str, button_id: &str, canvas_id: &str) -> Result<()> {
     super::install_logging_idempotent();
 
@@ -151,7 +153,6 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
                 &format!("worker initialization message failed: {e:?}"),
                 &button_for_ready,
             );
-            return;
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     worker
@@ -517,7 +518,7 @@ fn install_dom_input_forwarders(
 
     const RESIZE_DEBOUNCE_FRAMES: u32 = 6;
     {
-        let pending: Rc<RefCell<Option<(u32, u32, f32, u32)>>> = Rc::new(RefCell::new(None));
+        let pending: Pending<(u32, u32, f32, u32)> = Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
         let canvas_for_listener = canvas.clone();
         let window_for_listener = window.clone();
@@ -538,7 +539,7 @@ fn install_dom_input_forwarders(
         let worker_for_raf = worker.clone();
         let pending_for_raf = pending.clone();
         let window_for_raf = window.clone();
-        let raf_cb: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+        let raf_cb: Pending<Closure<dyn FnMut()>> = Rc::new(RefCell::new(None));
         let raf_cb_for_closure = raf_cb.clone();
         *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move || {
             let commit = {
@@ -578,8 +579,7 @@ fn install_dom_input_forwarders(
     }
 
     {
-        let pending: Rc<RefCell<Option<(f32, f32, u32, f32, f32, f64)>>> =
-            Rc::new(RefCell::new(None));
+        let pending: Pending<(f32, f32, u32, f32, f32, f64)> = Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
         let cb = Closure::wrap(Box::new(move |ev: web_sys::MouseEvent| {
             let mut p = pending_for_listener.borrow_mut();
@@ -604,7 +604,7 @@ fn install_dom_input_forwarders(
         let worker_for_raf = worker.clone();
         let pending_for_raf = pending.clone();
         let window_for_raf = window.clone();
-        let raf_cb: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+        let raf_cb: Pending<Closure<dyn FnMut()>> = Rc::new(RefCell::new(None));
         let raf_cb_for_closure = raf_cb.clone();
         *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move || {
             if let Some((x, y, buttons, dx, dy, time)) = pending_for_raf.borrow_mut().take() {

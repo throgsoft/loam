@@ -330,7 +330,7 @@ fn install_animation_frame<A: Stores>(
     scope: DedicatedWorkerGlobalScope,
     worker: Rc<RefCell<Option<Worker<A>>>>,
 ) {
-    let callback: Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>> = Rc::new(RefCell::new(None));
+    let callback: Pending<Closure<dyn FnMut(f64)>> = Rc::new(RefCell::new(None));
     let callback_for_closure = callback.clone();
     let scope_for_closure = scope.clone();
     let worker_for_closure = worker.clone();
@@ -445,10 +445,7 @@ fn install_animation_frame<A: Stores>(
     }
 }
 
-fn request_frame(
-    scope: &DedicatedWorkerGlobalScope,
-    callback: &Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>,
-) {
+fn request_frame(scope: &DedicatedWorkerGlobalScope, callback: &Pending<Closure<dyn FnMut(f64)>>) {
     let held = callback.borrow();
     let Some(callback) = held.as_ref() else {
         return;
