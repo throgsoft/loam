@@ -55,7 +55,7 @@ impl fmt::Display for Rejection {
             Self::Store(error) => fmt::Display::fmt(error, f),
             Self::Restore(error) => fmt::Display::fmt(error, f),
             Self::Cancelled => f.write_str("cancelled by a reset"),
-            Self::Unsupported(what) => f.write_str(what),
+            Self::Unsupported(what) => write!(f, "unsupported: {what}"),
             #[cfg(feature = "physics")]
             Self::Edit(error) => fmt::Display::fmt(error, f),
         }

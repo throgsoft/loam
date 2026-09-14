@@ -241,14 +241,14 @@ impl fmt::Display for DomainError {
             Self::SpaceMismatch(domain) => write!(f, "{domain} has another space"),
             Self::Stale(entity) => write!(f, "{entity} is stale"),
             Self::Store(error) => fmt::Display::fmt(error, f),
-            Self::InvalidCoordinate(coordinate) => f.write_str(coordinate),
+            Self::InvalidCoordinate(coordinate) => write!(f, "invalid {coordinate}"),
             Self::InvalidFrame => f.write_str("the frame is not orthonormal"),
             Self::ChartBoundary => f.write_str("the step left the chart"),
             Self::NoConvergence => f.write_str("the transport did not converge"),
             Self::ErrorBudget => f.write_str("the metric error budget was exceeded"),
             #[cfg(feature = "physics")]
             Self::Physics(error) => fmt::Display::fmt(error, f),
-            Self::Unsupported(what) => f.write_str(what),
+            Self::Unsupported(what) => write!(f, "unsupported: {what}"),
             Self::FieldCycle(entity) => write!(f, "{entity} closes a field cycle"),
             Self::FieldArity(entity) => write!(f, "{entity} has the wrong operand count"),
             Self::Restore(error) => fmt::Display::fmt(error, f),
@@ -1677,14 +1677,14 @@ impl<S: DomainSpace> TypedDomain<S> {
         instance: Instance,
     ) -> Result<(), Rejection> {
         if !self.poses.contains(entity) {
-            return Err(Rejection::Domain(DomainError::Stale(entity)));
+            return Err(StoreError::Missing(entity).into());
         }
         put_row(&mut self.instances, entity, instance)
     }
 
     pub(crate) fn attach_field(&mut self, entity: Entity, field: Field) -> Result<(), Rejection> {
         if !self.poses.contains(entity) {
-            return Err(Rejection::Domain(DomainError::Stale(entity)));
+            return Err(StoreError::Missing(entity).into());
         }
         let fields = self
             .fields
@@ -1700,7 +1700,7 @@ impl<S: DomainSpace> TypedDomain<S> {
 
     fn apply_pose(&mut self, entity: Entity, pose: Pose<S>) -> Result<(), DomainError> {
         if !self.poses.contains(entity) {
-            return Err(DomainError::Stale(entity));
+            return Err(StoreError::Missing(entity).into());
         }
         for facility in &mut self.facilities {
             if let Some(result) = facility.set_pose(entity, pose, &mut self.poses, Owner::new()) {
@@ -1710,18 +1710,18 @@ impl<S: DomainSpace> TypedDomain<S> {
         *self
             .poses
             .get_mut(entity)
-            .ok_or(DomainError::Stale(entity))? = pose;
+            .ok_or(StoreError::Missing(entity))? = pose;
         Ok(())
     }
 
     pub fn set_point(&mut self, entity: Entity, point: S::Point) -> Result<(), DomainError> {
-        let mut pose = *self.poses.get(entity).ok_or(DomainError::Stale(entity))?;
+        let mut pose = *self.poses.get(entity).ok_or(StoreError::Missing(entity))?;
         pose.point = point;
         self.set_pose(entity, pose)
     }
 
     pub fn set_frame(&mut self, entity: Entity, frame: S::Frame) -> Result<(), DomainError> {
-        let mut pose = *self.poses.get(entity).ok_or(DomainError::Stale(entity))?;
+        let mut pose = *self.poses.get(entity).ok_or(StoreError::Missing(entity))?;
         pose.frame = frame;
         self.set_pose(entity, pose)
     }
@@ -2020,7 +2020,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         velocity: S::Vector,
         dt: f32,
     ) -> Result<(), DomainError> {
-        let pose = self.poses.get(entity).ok_or(DomainError::Stale(entity))?;
+        let pose = self.poses.get(entity).ok_or(StoreError::Missing(entity))?;
         let next = self.space.walk(pose, velocity, dt)?;
         self.apply_pose(entity, next)
     }
@@ -2029,7 +2029,7 @@ impl<S: DomainSpace> TypedDomain<S> {
     pub fn move_to(&mut self, entity: Entity, point: ChartPoint) -> Result<(), DomainError> {
         let target = self.space.point_from_chart(&point)?;
         if !self.poses.contains(entity) {
-            return Err(DomainError::Stale(entity));
+            return Err(StoreError::Missing(entity).into());
         }
         for facility in &mut self.facilities {
             if let Some(result) = facility.move_to(entity, target, &mut self.poses, Owner::new()) {
@@ -2040,7 +2040,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         let pose = self
             .poses
             .get_mut(entity)
-            .ok_or(DomainError::Stale(entity))?;
+            .ok_or(StoreError::Missing(entity))?;
         let next = space.moved(pose, target)?;
         *pose = next;
         Ok(())
@@ -2415,7 +2415,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
     fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection> {
         let owned = self.poses.contains(command.entity());
         if !owned && !matches!(command, ChartCommand::Place { .. }) {
-            return Err(DomainError::Stale(command.entity()).into());
+            return Err(StoreError::Missing(command.entity()).into());
         }
         match command {
             ChartCommand::Place { pose, .. } => {
@@ -2620,7 +2620,7 @@ impl Domains {
             .as_any()
             .downcast_ref::<TypedDomain<S>>()
             .map(TypedDomain::handle)
-            .ok_or(DomainError::UnknownDomainName(name))
+            .ok_or(DomainError::SpaceMismatch(domain.id()))
     }
 
     pub fn read<S: DomainSpace>(
