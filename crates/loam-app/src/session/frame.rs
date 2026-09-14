@@ -88,7 +88,7 @@ impl<A: Stores> Frame<A> {
         &mut self.inner.app
     }
 
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(any(all(target_arch = "wasm32", feature = "measure"), test))]
     pub(crate) fn phase_error(&self) -> Option<loam_runtime::PhaseError> {
         self.inner.session.phase_error()
     }

@@ -45,9 +45,12 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
     let dpr = window.device_pixel_ratio() as f32;
     let css_w = canvas.client_width().max(1) as f32;
     let css_h = canvas.client_height().max(1) as f32;
+    #[cfg(feature = "measure")]
     let max_pixels = crate::args::Args::current()
         .parse::<u32>("max-pixels")
         .filter(|pixels| *pixels > 0);
+    #[cfg(not(feature = "measure"))]
+    let max_pixels: Option<u32> = None;
     let metrics = canvas_metrics(&canvas, dpr, max_pixels);
     let width = metrics.width;
     let height = metrics.height;
@@ -162,6 +165,7 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
 
     install_preview_ready_handler(&worker, button_id)?;
     install_worker_failure_handler(&worker, button_id)?;
+    #[cfg(feature = "measure")]
     install_measurement_result_handler(&worker, host_id)?;
 
     install_embed_lifecycle(&worker, host_id, button_id).context("install_embed_lifecycle")?;
@@ -824,6 +828,7 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
     Ok(())
 }
 
+#[cfg(feature = "measure")]
 fn install_measurement_result_handler(worker: &Worker, host_id: &str) -> Result<()> {
     let host_id = host_id.to_owned();
     let callback = Closure::wrap(Box::new(move |event: MessageEvent| {

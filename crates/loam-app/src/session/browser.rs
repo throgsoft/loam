@@ -24,8 +24,10 @@ use crate::wasm::messages;
 use crate::wasm::{install_logging_idempotent, post_failure, worker_scope};
 use crate::{args::Args, WasmConfig};
 
+#[cfg(feature = "measure")]
 #[path = "browser_measurement.rs"]
 mod measurement;
+#[cfg(feature = "measure")]
 use measurement::Probe;
 
 pub fn launch<A: Stores>(
@@ -118,6 +120,7 @@ fn post_cursor_request(scope: &DedicatedWorkerGlobalScope, locked: bool) {
     }
 }
 
+#[cfg(feature = "measure")]
 fn post_measurement(scope: &DedicatedWorkerGlobalScope, result: &str) {
     let message = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
@@ -135,6 +138,7 @@ fn post_measurement(scope: &DedicatedWorkerGlobalScope, result: &str) {
     }
 }
 
+#[cfg(feature = "measure")]
 fn committed_wasm_memory_bytes() -> u64 {
     let memory = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
     let buffer = memory.buffer().unchecked_into::<js_sys::ArrayBuffer>();
@@ -212,6 +216,7 @@ where
             let width = read_u32("width").unwrap_or(800);
             let height = read_u32("height").unwrap_or(600);
             let dpr = messages::read_device_pixel_ratio(&data);
+            #[cfg(feature = "measure")]
             let measurement = Probe::from_args(&args, width, height, dpr);
             let scope = scope.clone();
             let failure_scope = scope.clone();
@@ -223,6 +228,7 @@ where
                     canvas,
                     (width, height),
                     dpr,
+                    #[cfg(feature = "measure")]
                     measurement,
                 )
                 .await;
@@ -257,7 +263,7 @@ async fn start<A: Stores>(
     canvas: OffscreenCanvas,
     size: (u32, u32),
     dpr: f32,
-    measurement: Option<Probe>,
+    #[cfg(feature = "measure")] measurement: Option<Probe>,
 ) -> Result<()> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::BROWSER_WEBGPU,
@@ -287,10 +293,36 @@ async fn start<A: Stores>(
         messages: VecDeque::new(),
         touches: TouchCapture::default(),
         dpr,
+        #[cfg(feature = "measure")]
         measurement,
     })));
     post(&scope, "preview_ready");
     install_animation_frame(scope, worker);
+    Ok(())
+}
+
+#[cfg(feature = "measure")]
+fn measure<A: Stores>(worker: &mut Worker<A>) -> std::result::Result<(), HostError> {
+    let started = worker.measurement.as_ref().map(|_| Instant::now());
+    let attempt = worker.animate()?;
+    if let Some(started) = started {
+        let cpu_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let report = match worker.frame.phase_error() {
+            Some(error) => worker.measurement.take().map(|probe| probe.invalid(error)),
+            None => worker
+                .measurement
+                .as_mut()
+                .and_then(|probe| probe.observe(attempt, started, cpu_ms)),
+        };
+        if let Some(mut report) = report {
+            report.push_str(&format!(
+                "\nWASM linear memory committed at report: {} bytes\nGPU memory: unavailable\nGPU duration: unavailable; no timestamp query",
+                committed_wasm_memory_bytes()
+            ));
+            post_measurement(&worker.scope, &report);
+            worker.measurement = None;
+        }
+    }
     Ok(())
 }
 
@@ -319,29 +351,10 @@ fn install_animation_frame<A: Stores>(
                 let Some(worker) = held.as_mut() else {
                     return Err(failed("the session worker is unavailable"));
                 };
-                let started = worker.measurement.as_ref().map(|_| Instant::now());
-                let attempt = worker.animate()?;
-                if let Some(started) = started {
-                    let cpu_ms = started.elapsed().as_secs_f64() * 1000.0;
-                    let report = match worker.frame.phase_error() {
-                        Some(error) => worker
-                            .measurement
-                            .take()
-                            .map(|probe| probe.invalid(error)),
-                        None => worker
-                            .measurement
-                            .as_mut()
-                            .and_then(|probe| probe.observe(attempt, started, cpu_ms)),
-                    };
-                    if let Some(mut report) = report {
-                        report.push_str(&format!(
-                            "\nWASM linear memory committed at report: {} bytes\nGPU memory: unavailable\nGPU duration: unavailable; no timestamp query",
-                            committed_wasm_memory_bytes()
-                        ));
-                        post_measurement(&worker.scope, &report);
-                        worker.measurement = None;
-                    }
-                }
+                #[cfg(feature = "measure")]
+                measure(worker)?;
+                #[cfg(not(feature = "measure"))]
+                worker.animate()?;
                 Ok(())
             });
             lifecycle.set(state);
@@ -454,6 +467,7 @@ async fn recover<A: Stores>(
     let Some(mut active) = active else {
         return Err("the session worker is unavailable during recovery".to_owned());
     };
+    #[cfg(feature = "measure")]
     if let Some(probe) = active.measurement.as_mut() {
         probe.recover();
     }
@@ -633,6 +647,7 @@ struct Worker<A: Stores> {
     messages: VecDeque<InputMessage>,
     touches: TouchCapture,
     dpr: f32,
+    #[cfg(feature = "measure")]
     measurement: Option<Probe>,
 }
 
@@ -648,6 +663,7 @@ impl<A: Stores> Worker<A> {
     }
 
     fn apply(&mut self, message: InputMessage) {
+        #[cfg(feature = "measure")]
         if let Some(probe) = self.measurement.as_mut() {
             probe.observe_message(&message);
         }
