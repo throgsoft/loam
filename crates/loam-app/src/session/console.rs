@@ -356,7 +356,7 @@ mod tests {
         let expected = format!("nudge: rejected, {entity} is stale");
         let lines = history(&app.console);
         assert!(
-            lines.iter().any(|line| *line == expected),
+            lines.contains(&expected),
             "the refusal did not name the entity: {lines:?}"
         );
         assert!(
