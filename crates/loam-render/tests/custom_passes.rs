@@ -3,19 +3,16 @@ use std::sync::Arc;
 
 use loam_render::device::{FeatureRequest, GpuContext};
 use loam_render::gpu_timer::SectionTimer;
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR};
+use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use loam_render::present::Presenter;
 use loam_render::{DepthConvention, GpuTime};
 use wgpu::*;
 
 const SIZE: (u32, u32) = (64, 64);
 const COLOR_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
-const GLOW: ResourceId = "glow";
 
 struct Recorder {
     name: &'static str,
-    reads: &'static [ResourceId],
-    writes: &'static [ResourceId],
     convention: Option<DepthConvention>,
     log: Arc<AtomicU32>,
     tag: u32,
@@ -24,14 +21,6 @@ struct Recorder {
 impl FramePass for Recorder {
     fn name(&self) -> &'static str {
         self.name
-    }
-
-    fn reads(&self) -> &[ResourceId] {
-        self.reads
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        self.writes
     }
 
     fn stage(&self) -> PassStage {
@@ -147,12 +136,6 @@ fn target(device: &Device) -> TextureView {
         .create_view(&TextureViewDescriptor::default())
 }
 
-fn presenter_on(gpu: &GpuContext) -> Presenter {
-    let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
-    presenter.attach(gpu).expect("attach");
-    presenter
-}
-
 fn frame(gpu: &GpuContext, presenter: &mut Presenter, view: &TextureView) {
     presenter.upload(
         &gpu.device,
@@ -175,36 +158,6 @@ fn frame(gpu: &GpuContext, presenter: &mut Presenter, view: &TextureView) {
 }
 
 #[test]
-fn a_consumer_registered_first_is_recorded_after_the_pass_that_writes_its_input() {
-    let gpu = noop_context();
-    let view = target(&gpu.device);
-    let mut presenter = presenter_on(&gpu);
-    let log = Arc::new(AtomicU32::new(0));
-    for (name, reads, writes, tag) in [
-        ("consumer", [GLOW].as_slice(), [].as_slice(), 2u32),
-        ("producer", [].as_slice(), [GLOW].as_slice(), 1),
-    ] {
-        presenter
-            .register_pass(Box::new(Recorder {
-                name,
-                reads,
-                writes,
-                convention: None,
-                log: log.clone(),
-                tag,
-            }))
-            .expect("registered");
-    }
-
-    frame(&gpu, &mut presenter, &view);
-    assert_eq!(
-        log.load(Ordering::Relaxed),
-        12,
-        "the producer must record before the consumer that reads its output"
-    );
-}
-
-#[test]
 fn without_a_timer_a_recorded_pass_reports_its_gpu_time_unavailable() {
     let gpu = noop_context();
     let view = target(&gpu.device);
@@ -212,8 +165,6 @@ fn without_a_timer_a_recorded_pass_reports_its_gpu_time_unavailable() {
     presenter
         .register_pass(Box::new(Recorder {
             name: "overlay",
-            reads: &[SCENE_COLOR],
-            writes: &[],
             convention: None,
             log: Arc::new(AtomicU32::new(0)),
             tag: 1,

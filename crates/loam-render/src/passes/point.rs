@@ -8,11 +8,8 @@ use loam_shape::PointMesh;
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_COLOR};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::{DepthConvention, DepthMode, PointRasterNode};
-
-const READS: [ResourceId; 1] = [SCENE_COLOR];
-const WRITES: [ResourceId; 1] = [SCENE_COLOR];
 
 struct State {
     eye: Eye,
@@ -84,14 +81,6 @@ impl PointPass {
 impl FramePass for PointPass {
     fn name(&self) -> &'static str {
         self.name
-    }
-
-    fn reads(&self) -> &[ResourceId] {
-        &READS
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        &WRITES
     }
 
     fn stage(&self) -> PassStage {

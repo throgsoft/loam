@@ -2,7 +2,6 @@
 //! through `literal::wgsl_f32`, so parsing the emitted literal recovers the
 //! exact input bits and the emitter contributes no floor to CPU/GPU parity.
 
-pub mod combinator;
 mod literal;
 pub mod primitive;
 pub mod primitive4;

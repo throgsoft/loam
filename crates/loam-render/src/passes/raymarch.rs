@@ -4,7 +4,7 @@ use std::rc::Rc;
 use wgpu::{CommandEncoder, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage, ResourceId, SCENE_BASE};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::raymarch::{RayMarchNode, RayMarchUniforms};
 use crate::Viewport;
 
@@ -14,8 +14,6 @@ struct State {
     node: Option<RayMarchNode>,
     queue: Option<Queue>,
 }
-
-const BASE: [ResourceId; 1] = [SCENE_BASE];
 
 /// A shared scene background pass built from WGSL source.
 #[derive(Clone)]
@@ -46,16 +44,8 @@ impl FramePass for RaymarchPass {
         "raymarch"
     }
 
-    fn reads(&self) -> &[ResourceId] {
-        &BASE
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        &BASE
-    }
-
     fn stage(&self) -> PassStage {
-        PassStage::Scene
+        PassStage::Background
     }
 
     fn record(

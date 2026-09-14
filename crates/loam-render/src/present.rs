@@ -12,7 +12,7 @@ use crate::depth::DepthBuffer;
 use crate::device::GpuContext;
 use crate::pass::{
     FrameFormat, FramePass, FrameTarget, PassError, PassExecutionError, PassSchedule, PassStage,
-    ResourceId, Section, SCENE_COLOR, SCENE_DEPTH,
+    Section,
 };
 use crate::triangle_pass::TriangleFeed;
 use crate::view::{DEPTH_CLEAR, DEPTH_FORMAT};
@@ -77,9 +77,6 @@ impl ViewLines {
     }
 }
 
-const VIEW_READS: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
-const VIEW_WRITES: [ResourceId; 2] = [SCENE_COLOR, SCENE_DEPTH];
-
 struct PublishedLines {
     views: Rc<RefCell<Vec<ViewLines>>>,
 }
@@ -87,14 +84,6 @@ struct PublishedLines {
 impl FramePass for PublishedLines {
     fn name(&self) -> &'static str {
         "present-draw"
-    }
-
-    fn reads(&self) -> &[ResourceId] {
-        &VIEW_READS
-    }
-
-    fn writes(&self) -> &[ResourceId] {
-        &VIEW_WRITES
     }
 
     fn stage(&self) -> PassStage {
@@ -285,6 +274,8 @@ impl Presenter {
                 occlusion_query_set: None,
             });
         });
+        self.schedule
+            .record(PassStage::Background, encoder, &frame)?;
         self.schedule.record(PassStage::Scene, encoder, &frame)
     }
 
@@ -623,12 +614,8 @@ mod tests {
             "paint"
         }
 
-        fn writes(&self) -> &[ResourceId] {
-            &[crate::pass::SCENE_BASE]
-        }
-
         fn stage(&self) -> PassStage {
-            PassStage::Scene
+            PassStage::Background
         }
 
         fn record(
