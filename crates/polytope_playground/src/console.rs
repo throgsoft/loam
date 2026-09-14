@@ -429,12 +429,12 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
 
 #[cfg(test)]
 mod tests {
-    use glam::Vec4;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     use loam::app::args::Args;
     use loam::runtime::host::HostConfig;
-    use loam::runtime::{
-        Command, Entity, Eye, Input, Pose, Publication, Rejection, Section4, SpawnBundle, ViewSpec,
-    };
+    use loam::runtime::{Ctx, DomainError, Eye, Input, Phase, Publication};
 
     use super::*;
     use crate::catalog::DEFAULT_ROW;
@@ -487,40 +487,34 @@ mod tests {
             .iter()
             .any(|line| line == "wireframe width: 3.00 px"));
     }
-
     #[test]
     fn installed_playground_console_recovers_a_fault_at_ordinary_capacity() {
         const ORDINARY_CAPACITY: usize = 1023;
 
         let mut booted = boot(&DEFAULT_ROW[..1]).expect("the session boots");
-        let domain = booted.domain;
-        let root = booted.session.views().root();
-        let eye = booted
-            .session
-            .dispatch(|dispatch| -> Result<Entity, Rejection> {
-                let eye = dispatch.spawn(SpawnBundle::new().at(domain, Pose::at(Vec4::ZERO)))?;
-                dispatch.domains.typed(domain)?.add_view(ViewSpec::new(
-                    root,
-                    eye,
-                    Section4 { w: 0.0 },
-                ));
-                Ok(eye)
-            })
-            .expect("the invalidated view is installed");
+        let armed = Arc::new(AtomicBool::new(true));
+        let trip = armed.clone();
+        booted.session.system(
+            Phase::Publication,
+            "trip",
+            move |_ctx: Ctx<'_, Playground>| {
+                if trip.swap(false, Ordering::Relaxed) {
+                    return Err(DomainError::ChartBoundary);
+                }
+                Ok(())
+            },
+        );
         let epoch = booted.session.scene().epoch();
         let mut app = install(SessionApp::with_args(
             HostConfig::new("console recovery test", bindings()),
             Args::default(),
         ));
 
-        app.sender().submit(Command::Despawn(eye));
-        app.boundary(&mut booted.session, Input::default())
-            .expect("the eye despawns");
         let mut publication = Publication::default();
         booted
             .session
             .publish(&mut publication)
-            .expect_err("the dangling view faults publication");
+            .expect_err("the tripped system faults publication");
 
         for _ in 0..ORDINARY_CAPACITY {
             app.console_mut().execute("reset");

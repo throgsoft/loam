@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use loam_shape::polytope::Polytope4Topology;
 
 use crate::bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
@@ -188,22 +186,11 @@ pub struct PublishedView {
 }
 
 /// What a frame presents; publication writes it and the host reads it.
-pub struct Publication<A: Stores> {
+#[derive(Default)]
+pub struct Publication {
     pub views: Vec<PublishedView>,
     pub stamp: Stamp,
     source: Option<SceneId>,
-    app: PhantomData<fn() -> A>,
-}
-
-impl<A: Stores> Default for Publication<A> {
-    fn default() -> Self {
-        Self {
-            views: Vec::new(),
-            stamp: Stamp::default(),
-            source: None,
-            app: PhantomData,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,11 +206,11 @@ impl From<PhaseError> for PublishError {
 }
 
 /// The one record buffer a session publishes into.
-pub struct Records<A: Stores> {
-    idle: Option<Publication<A>>,
+pub struct Records {
+    idle: Option<Publication>,
 }
 
-impl<A: Stores> Default for Records<A> {
+impl Default for Records {
     fn default() -> Self {
         Self {
             idle: Some(Publication::default()),
@@ -231,19 +218,19 @@ impl<A: Stores> Default for Records<A> {
     }
 }
 
-impl<A: Stores> Records<A> {
-    pub fn publish(&mut self, session: &mut Session<A>) -> Result<Stamp, PublishError> {
+impl Records {
+    pub fn publish<A: Stores>(&mut self, session: &mut Session<A>) -> Result<Stamp, PublishError> {
         let buffer = self.idle.as_mut().ok_or(PublishError::Borrowed)?;
         session.publish(buffer)?;
         Ok(buffer.stamp)
     }
 
     /// Until the buffer is released, [`Self::publish`] returns [`PublishError::Borrowed`].
-    pub fn lend(&mut self) -> Option<Publication<A>> {
+    pub fn lend(&mut self) -> Option<Publication> {
         self.idle.take()
     }
 
-    pub fn release(&mut self, publication: Publication<A>) {
+    pub fn release(&mut self, publication: Publication) {
         self.idle = Some(publication);
     }
 }
@@ -755,7 +742,7 @@ impl<A: Stores> Session<A> {
         Ok(())
     }
 
-    pub fn publish(&mut self, into: &mut Publication<A>) -> Result<(), PhaseError> {
+    pub fn publish(&mut self, into: &mut Publication) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
@@ -1062,7 +1049,7 @@ mod tests {
                 )?;
                 d.domains
                     .typed(r4)?
-                    .add_view(ViewSpec::new(root, eye, Section4 { w: at_w }));
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: at_w }))?;
                 Ok(())
             })
             .expect("the view registered");
@@ -1097,15 +1084,16 @@ mod tests {
                         .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, 0.0)))
                         .instance(Instance::new(geometry, body).sectioned(cut)),
                 )?;
-                Ok(d.domains
+                d.domains
                     .typed(r4)?
-                    .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 })))
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                    .map_err(Rejection::from)
             })
             .expect("the view registered");
         session.views_mut().root_mut().eye = Eye::default();
 
         let mut records = Records::default();
-        let read = |session: &mut Session<Quiet>, records: &mut Records<Quiet>| {
+        let read = |session: &mut Session<Quiet>, records: &mut Records| {
             records.publish(session).expect("published");
             let publication = records.lend().expect("the buffer is free");
             let view = &publication.views[0];
@@ -1318,9 +1306,9 @@ mod tests {
                         .instance(Instance::new(edges, white)),
                 )?;
                 let domain = d.domains.typed(r4)?;
-                let section = domain.add_view(ViewSpec::new(root, eye, Section4 { w: AT_W }));
+                let section = domain.add_view(ViewSpec::new(root, eye, Section4 { w: AT_W }))?;
                 let projection =
-                    domain.add_view(ViewSpec::new(root, eye, Projection4 { focal: FOCAL }));
+                    domain.add_view(ViewSpec::new(root, eye, Projection4 { focal: FOCAL }))?;
                 Ok((section, projection))
             })
             .expect("the two views registered");
@@ -1540,7 +1528,8 @@ mod tests {
                     .domains
                     .typed(r4)
                     .unwrap()
-                    .add_view(ViewSpec::new(root, eye, Flat));
+                    .add_view(ViewSpec::new(root, eye, Flat))
+                    .unwrap();
             });
             session
         };
@@ -1574,7 +1563,8 @@ mod tests {
             d.domains
                 .typed(r4)
                 .unwrap()
-                .add_view(ViewSpec::new(root, eye, Flat));
+                .add_view(ViewSpec::new(root, eye, Flat))
+                .unwrap();
             for value in 0..8 {
                 d.spawn(
                     SpawnBundle::new()
@@ -1596,7 +1586,7 @@ mod tests {
             Ok(())
         });
         let mut publication = Publication::default();
-        let cycle = |session: &mut Session<Shown>, publication: &mut Publication<Shown>| {
+        let cycle = |session: &mut Session<Shown>, publication: &mut Publication| {
             session.tick().unwrap();
             session.boundary(Input::default()).unwrap();
             session.publish(publication).unwrap();

@@ -239,8 +239,8 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
         }
         let eye = d.spawn(SpawnBundle::new().at(domain, Pose::at(Vec4::ZERO)))?;
         let r4 = d.domains.typed(domain)?;
-        let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
-        let projection = r4.add_view(ViewSpec::new(root, eye, Family::default().mapping(0.0)));
+        let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))?;
+        let projection = r4.add_view(ViewSpec::new(root, eye, Family::default().mapping(0.0)))?;
         Ok(Layers {
             section,
             projection,
@@ -1252,8 +1252,8 @@ mod tests {
 
     fn published<R>(
         session: &mut Session<Playground>,
-        records: &mut Records<Playground>,
-        read: impl FnOnce(&loam::runtime::Publication<Playground>) -> R,
+        records: &mut Records,
+        read: impl FnOnce(&loam::runtime::Publication) -> R,
     ) -> R {
         records.publish(session).expect("published");
         let publication = records.lend().expect("the buffer is free");
@@ -1346,7 +1346,7 @@ mod tests {
             .session
             .boundary(Input::default())
             .expect("the boundary ran");
-        let built = |session: &mut Session<Playground>, records: &mut Records<Playground>| {
+        let built = |session: &mut Session<Playground>, records: &mut Records| {
             published(session, records, |publication| {
                 publication.views[0].records.built()
             })
@@ -1623,7 +1623,7 @@ mod tests {
         let mut gimbal_renderer = gimbal::GimbalRenderer::default();
         let mut lines = String::new();
         let frame = |booted: &mut Boot,
-                     records: &mut Records<Playground>,
+                     records: &mut Records,
                      scratch: &mut Scratch,
                      gimbal_renderer: &mut gimbal::GimbalRenderer,
                      lines: &mut String| {

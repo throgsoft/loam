@@ -38,7 +38,7 @@ pub(crate) fn failed(error: impl std::fmt::Display) -> HostError {
 
 struct Inner<A: Stores> {
     session: Session<A>,
-    records: Records<A>,
+    records: Records,
     timestep: FixedTimestep,
     callbacks: Vec<CommandBuffer>,
     input: InputMap,
@@ -317,7 +317,7 @@ impl<A: Stores> Inner<A> {
         now: Instant,
         size: (u32, u32),
         ui: Option<&loam_egui::egui::Context>,
-    ) -> Result<(Publication<A>, Eye), HostError> {
+    ) -> Result<(Publication, Eye), HostError> {
         self.advance(now, size, ui)?;
         {
             let _publication = frame_trace::scope("publication");
@@ -869,7 +869,7 @@ struct Fragment {
                 dispatch
                     .domains
                     .typed(r3)?
-                    .add_view(ViewSpec::new(root, eye, Identity3));
+                    .add_view(ViewSpec::new(root, eye, Identity3))?;
                 Ok::<_, loam_runtime::Rejection>(())
             })
             .expect("view");

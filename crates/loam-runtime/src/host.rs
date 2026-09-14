@@ -56,7 +56,7 @@ pub fn run_headless<A: Stores>(
     config: &HostConfig,
     steps: u32,
     holds: &[(Key, Range<u32>)],
-) -> Result<Publication<A>, HostError> {
+) -> Result<Publication, HostError> {
     let mut publication = Publication::default();
     let mut held: Vec<ActionId> = Vec::new();
     for step in 0..steps {

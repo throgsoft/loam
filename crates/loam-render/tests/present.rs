@@ -95,15 +95,16 @@ fn twospace() -> (Session<Landmarks>, [Entity; 2]) {
         let walker3 = d
             .spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO)))
             .unwrap();
-        d.domains.typed(r4).unwrap().add_view(ViewSpec::new(
-            root,
-            walker4,
-            Projection4 { focal: FOCAL },
-        ));
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, walker4, Projection4 { focal: FOCAL }))
+            .unwrap();
         d.domains
             .typed(h3)
             .unwrap()
-            .add_view(ViewSpec::new(root, walker3, Klein));
+            .add_view(ViewSpec::new(root, walker3, Klein))
+            .unwrap();
         [landmark4, landmark3]
     });
     (session, landmarks)
@@ -132,7 +133,7 @@ async fn request_device() -> (Device, Queue) {
         .expect("request_device")
 }
 
-fn render(publication: &Publication<Landmarks>) -> Vec<u8> {
+fn render(publication: &Publication) -> Vec<u8> {
     let (device, queue) = pollster::block_on(request_device());
     let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
     let color = device.create_texture(&TextureDescriptor {
@@ -265,11 +266,12 @@ fn bridged() -> Session<Landmarks> {
                     .instance(Instance::new(edges, white)),
             )
             .unwrap();
-        let section =
-            d.domains
-                .typed(r4)
-                .unwrap()
-                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
+        let section = d
+            .domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+            .unwrap();
         (section, anchor)
     });
     session

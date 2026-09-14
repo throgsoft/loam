@@ -372,11 +372,11 @@ mod tests {
             let eye = d
                 .spawn(SpawnBundle::new().at(r4, Pose::at(glam::Vec4::ZERO)))
                 .unwrap();
-            d.domains.typed(r4).unwrap().add_view(ViewSpec::new(
-                root,
-                eye,
-                Projection4 { focal: 2.0 },
-            ));
+            d.domains
+                .typed(r4)
+                .unwrap()
+                .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+                .unwrap();
             d.spawn(
                 SpawnBundle::new()
                     .at(r4, Pose::at(glam::Vec4::NEG_Z * 4.0))
@@ -404,7 +404,7 @@ mod tests {
             })
             .create_view(&Default::default());
         let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
-        let mut records = Records::<Spun>::default();
+        let mut records = Records::default();
         let eye = Eye::default();
         let spin = |session: &mut Session<Spun>| {
             if let Ok(domain) = session.domains_mut().typed(r4) {
@@ -416,7 +416,7 @@ mod tests {
             }
         };
         let present = |session: &mut Session<Spun>,
-                       records: &mut Records<Spun>,
+                       records: &mut Records,
                        presenter: &mut Presenter,
                        encoder: &mut CommandEncoder| {
             records.publish(session).unwrap();
@@ -504,13 +504,17 @@ mod tests {
             )
             .expect("the body spawned");
             let domain = d.domains.typed(r4).expect("the r4 domain");
-            let _: ViewId = domain.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
-            domain.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+            let _: ViewId = domain
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .expect("the first view");
+            domain
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .expect("the second view")
         });
 
         let (device, queue) = noop_device();
         let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
-        let mut records = Records::<Spun>::default();
+        let mut records = Records::default();
         let eye = Eye::default();
         records.publish(&mut session).expect("published");
         let published = records.lend().expect("the buffer is free");
@@ -569,12 +573,13 @@ mod tests {
                     .typed(domain)
                     .expect("the domain")
                     .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+                    .expect("the view")
             });
         }
 
         let (device, queue) = noop_device();
         let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
-        let mut records = Records::<Spun>::default();
+        let mut records = Records::default();
         let eye = Eye::default();
         records.publish(&mut session).expect("published");
         let published = records.lend().expect("the buffer is free");

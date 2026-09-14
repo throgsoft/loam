@@ -49,7 +49,7 @@ struct LinesFixture {
     entities: Vec<Entity>,
     geometry: loam_runtime::PreparedId,
     material: loam_runtime::MaterialId,
-    publication: Publication<Empty>,
+    publication: Publication,
     shifted: bool,
 }
 
@@ -85,7 +85,8 @@ impl LinesFixture {
                 .domains
                 .typed(domain)
                 .expect("R3 domain")
-                .add_view(ViewSpec::new(root, eye, Identity3));
+                .add_view(ViewSpec::new(root, eye, Identity3))
+                .expect("R3 view");
             (eye, entities)
         });
         Self {
@@ -182,7 +183,7 @@ struct SectionFixture {
     domain: DomainHandle<EuclideanR4>,
     eye: Entity,
     entities: Vec<Entity>,
-    publication: Publication<Empty>,
+    publication: Publication,
     shifted: bool,
 }
 
@@ -219,7 +220,8 @@ impl SectionFixture {
                 .domains
                 .typed(domain)
                 .expect("R4 domain")
-                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .expect("R4 view");
             (eye, entities)
         });
         Self {
@@ -322,7 +324,7 @@ fn point4(index: usize, shift: f32) -> Point4 {
     Point4::new(x, y, -3.0, 0.0)
 }
 
-fn counts(publication: &Publication<Empty>) -> Counts {
+fn counts(publication: &Publication) -> Counts {
     let view = publication.views.first().expect("published view");
     let instances = view.records.instances.rows();
     let segments = view.records.segments();

@@ -24,7 +24,7 @@ pub struct InputHook<'a, A: Stores> {
 /// Runs between publication and presentation.
 pub struct FrameHook<'a, A: Stores> {
     pub session: &'a Session<A>,
-    pub published: &'a Publication<A>,
+    pub published: &'a Publication,
     pub sections: &'a [Section],
     pub ui: Option<&'a egui::Context>,
     pub size: (u32, u32),

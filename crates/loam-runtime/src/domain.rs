@@ -1700,7 +1700,15 @@ impl<S: DomainSpace> TypedDomain<S> {
             .map(|_| ())
     }
 
-    pub fn add_view(&mut self, spec: ViewSpec<S>) -> ViewId {
+    pub fn add_view(&mut self, spec: ViewSpec<S>) -> Result<ViewId, DomainError> {
+        if !self.poses.contains(spec.eye) {
+            return Err(DomainError::Stale(spec.eye));
+        }
+        if let Some(subject) = spec.subject {
+            if !self.poses.contains(subject) {
+                return Err(DomainError::Stale(subject));
+            }
+        }
         let id = ViewId::new(self.views.len());
         self.targets.push(ViewTarget {
             view: id,
@@ -1712,7 +1720,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             subject: spec.subject,
             style: spec.style,
         });
-        id
+        Ok(id)
     }
 
     pub fn view(&self, id: ViewId) -> Option<&ViewStyle<S>> {
@@ -1793,15 +1801,14 @@ impl<S: DomainSpace> TypedDomain<S> {
         triangles.clear();
         *refusals = ViewRefusals::default();
         output.clear();
-        if !spec.style.enabled {
-            instances.replace(std::iter::empty(), stamp);
-            *built = stamp;
-            return Ok(());
-        }
-        let eye = self
-            .poses
-            .get(spec.eye)
-            .ok_or(DomainError::Stale(spec.eye))?;
+        let eye = match self.poses.get(spec.eye) {
+            Some(eye) if spec.style.enabled => eye,
+            _ => {
+                instances.replace(std::iter::empty(), stamp);
+                *built = stamp;
+                return Ok(());
+            }
+        };
         let projection = ViewProjection {
             space: &self.space,
             spec,
@@ -1871,10 +1878,9 @@ impl<S: DomainSpace> TypedDomain<S> {
         into: &mut ViewRecords,
         stamp: Stamp,
     ) -> Result<bool, DomainError> {
-        let eye = self
-            .poses
-            .get(spec.eye)
-            .ok_or(DomainError::Stale(spec.eye))?;
+        let Some(eye) = self.poses.get(spec.eye) else {
+            return Ok(false);
+        };
         let projection = ViewProjection {
             space: &self.space,
             spec,
@@ -2690,7 +2696,8 @@ mod tests {
                 .domains
                 .typed(r4)
                 .unwrap()
-                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }).subject(subject));
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }).subject(subject))
+                .unwrap();
             (eye, subject, stale, view)
         });
         session
@@ -2744,7 +2751,8 @@ mod tests {
                 .domains
                 .typed(r4)
                 .unwrap()
-                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }).subject(subject));
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }).subject(subject))
+                .unwrap();
             (subject, view)
         });
         let mut publication = Publication::default();
@@ -2805,33 +2813,34 @@ mod tests {
                 )
                 .unwrap();
             let domain = dispatch.domains.typed(r4).unwrap();
-            let view = domain.add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }));
+            let view = domain
+                .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+                .unwrap();
             let mut section_spec = ViewSpec::new(root, eye, Section4 { w: 0.0 }).subject(edited);
             section_spec.edges = false;
-            let section_view = domain.add_view(section_spec);
+            let section_view = domain.add_view(section_spec).unwrap();
             (edited, removed, alternate_eye, view, section_view)
         });
         let snapshot = session.snapshot().unwrap();
         let mut publication = Publication::default();
-        let publish_and_compare =
-            |session: &mut Session<Probe>, publication: &mut Publication<Probe>| {
-                session.publish(publication).unwrap();
-                let mut fresh = Publication::default();
-                session.publish(&mut fresh).unwrap();
-                assert_eq!(publication.views.len(), fresh.views.len());
-                for (cached, fresh) in publication.views.iter().zip(&fresh.views) {
-                    assert_eq!(cached.domain, fresh.domain);
-                    assert_eq!(cached.target, fresh.target);
-                    assert_eq!(cached.placement, fresh.placement);
-                    assert_eq!(
-                        cached.records.instances.rows(),
-                        fresh.records.instances.rows()
-                    );
-                    assert_eq!(cached.records.segments(), fresh.records.segments());
-                    assert_eq!(cached.records.triangles(), fresh.records.triangles());
-                    assert_eq!(cached.records.refusals(), fresh.records.refusals());
-                }
-            };
+        let publish_and_compare = |session: &mut Session<Probe>, publication: &mut Publication| {
+            session.publish(publication).unwrap();
+            let mut fresh = Publication::default();
+            session.publish(&mut fresh).unwrap();
+            assert_eq!(publication.views.len(), fresh.views.len());
+            for (cached, fresh) in publication.views.iter().zip(&fresh.views) {
+                assert_eq!(cached.domain, fresh.domain);
+                assert_eq!(cached.target, fresh.target);
+                assert_eq!(cached.placement, fresh.placement);
+                assert_eq!(
+                    cached.records.instances.rows(),
+                    fresh.records.instances.rows()
+                );
+                assert_eq!(cached.records.segments(), fresh.records.segments());
+                assert_eq!(cached.records.triangles(), fresh.records.triangles());
+                assert_eq!(cached.records.refusals(), fresh.records.refusals());
+            }
+        };
         publish_and_compare(&mut session, &mut publication);
         let initial_segments = publication.views[1].records.segments().len();
         let initial_triangles = publication.views[1].records.triangles().len();
@@ -2967,13 +2976,15 @@ mod tests {
                 )
                 .unwrap();
             let domain = dispatch.domains.typed(r4).unwrap();
-            let refusal_view = domain.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }));
+            let refusal_view = domain
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .unwrap();
             let mut clipped_spec =
                 ViewSpec::new(root, eye, Projection4 { focal: 2.0 }).subject(clipped);
             clipped_spec.edges = false;
             clipped_spec.section_edges = false;
             clipped_spec.section_faces = false;
-            let clipped_view = domain.add_view(clipped_spec);
+            let clipped_view = domain.add_view(clipped_spec).unwrap();
             (first, last, refusal_view, clipped_view)
         });
         let mut publication = Publication::default();
