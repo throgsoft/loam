@@ -55,16 +55,6 @@ pub struct DomainHandle<S> {
     space: PhantomData<fn() -> S>,
 }
 
-impl<S> Default for DomainHandle<S> {
-    fn default() -> Self {
-        Self {
-            id: DomainId::new(0),
-            runtime: SceneId::UNBOUND.runtime(),
-            space: PhantomData,
-        }
-    }
-}
-
 impl<S> Clone for DomainHandle<S> {
     fn clone(&self) -> Self {
         *self
@@ -217,6 +207,7 @@ pub enum EdgeShading {
 pub enum DomainError {
     ForeignRuntime,
     UnknownDomain(DomainId),
+    UnknownDomainName(&'static str),
     UnknownView(ViewId),
     SpaceMismatch(DomainId),
     Stale(Entity),
@@ -2581,6 +2572,24 @@ impl Domains {
             .as_any_mut()
             .downcast_mut::<TypedDomain<S>>()
             .ok_or(DomainError::SpaceMismatch(handle.id))
+    }
+
+    pub fn named<S: DomainSpace>(
+        &self,
+        name: &'static str,
+    ) -> Result<DomainHandle<S>, DomainError> {
+        let mut matched = self.list.iter().filter(|domain| domain.name() == name);
+        let Some(domain) = matched.next() else {
+            return Err(DomainError::UnknownDomainName(name));
+        };
+        if matched.next().is_some() {
+            return Err(DomainError::UnknownDomainName(name));
+        }
+        domain
+            .as_any()
+            .downcast_ref::<TypedDomain<S>>()
+            .map(TypedDomain::handle)
+            .ok_or(DomainError::UnknownDomainName(name))
     }
 
     pub fn read<S: DomainSpace>(

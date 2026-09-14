@@ -72,6 +72,7 @@ const EDGE_WIDTH_PX: f32 = display::DEFAULT_WIREFRAME_WIDTH_PX;
 const HEADLESS_STEPS: u32 = 8;
 const HEADLESS_FRAME: (u32, u32) = (1280, 720);
 const CAMERA_DISTANCE: f32 = 8.0;
+const DOMAIN_NAME: &str = "r4";
 
 #[derive(Clone, Copy)]
 pub(crate) struct Slot {
@@ -145,7 +146,6 @@ impl Card {
 
 #[derive(Clone, Default)]
 pub(crate) struct Catalog {
-    domain: DomainHandle<EuclideanR4>,
     cards: Arc<[Card]>,
 }
 
@@ -225,7 +225,7 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
         SimConfig::default(),
     );
     let domain = session.register_domain(
-        DomainBuilder::new("r4", EuclideanR4)
+        DomainBuilder::new(DOMAIN_NAME, EuclideanR4)
             .tracked(LogCapacity::default())
             .physics(toy::physics_config())
             .map_err(|error| HostError::Setup(Rejection::Edit(error)))?,
@@ -251,7 +251,7 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
         let r4 = d.domains.typed(domain)?;
         let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))?;
         let projection = r4.add_view(ViewSpec::new(root, eye, Family::default().mapping(0.0)))?;
-        d.app.catalog.set(Catalog { domain, cards });
+        d.app.catalog.set(Catalog { cards });
         Ok(Layers {
             section,
             projection,
@@ -564,7 +564,8 @@ impl AppCommand<Playground> for Action {
     }
 
     fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let Catalog { domain, cards } = dispatch.app.catalog.get().clone();
+        let domain = dispatch.domains.named::<EuclideanR4>(DOMAIN_NAME)?;
+        let Catalog { cards } = dispatch.app.catalog.get().clone();
         match *self {
             Action::Mode(mode) => mode::set_mode(dispatch, domain, &cards, mode)?,
             Action::Active(slot) => {
