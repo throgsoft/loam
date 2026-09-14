@@ -44,6 +44,7 @@ struct Inner<A: Stores> {
     input: InputMap,
     cursor: CursorCapture,
     app: SessionApp<A>,
+    no_views_reported: bool,
     #[cfg(test)]
     presented: Option<Eye>,
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
@@ -71,6 +72,7 @@ impl<A: Stores> Frame<A> {
                 input: InputMap::default(),
                 cursor: CursorCapture::new(),
                 app,
+                no_views_reported: false,
                 #[cfg(test)]
                 presented: None,
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
@@ -340,6 +342,13 @@ impl<A: Stores> Inner<A> {
             .records
             .lend()
             .ok_or_else(|| HostError::Host("the publication buffer is unavailable".into()))?;
+        if records.views.is_empty() && !self.no_views_reported {
+            self.no_views_reported = true;
+            tracing::warn!("the session published no views, so nothing is drawn");
+            self.app
+                .console
+                .note("the session published no views, so nothing is drawn".to_string());
+        }
         Ok((records, eye))
     }
 
