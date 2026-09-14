@@ -272,14 +272,13 @@ impl<A: Stores> Inner<A> {
         } = self;
         let aspect = size.0 as f32 / size.1 as f32;
         session.views_mut().root_mut().eye.aspect = aspect;
-        let mut gathered = input.take();
+        let gathered = input.take();
         let sender = app.commands.sender();
         let was_faulted = session.faulted_phase().is_some();
-        let recovery = app
+        if app
             .fault_recovery
-            .filter(|action| was_faulted && gathered.pressed(*action));
-        if let Some(action) = recovery {
-            gathered.actions.retain(|event| event.action != action);
+            .is_some_and(|action| was_faulted && gathered.pressed(action))
+        {
             sender.reset();
         }
         if let Some(hook) = app.input.as_mut() {
@@ -959,7 +958,10 @@ struct Fragment {
         assert_eq!(filled.load(Ordering::Relaxed), 2);
 
         assert_eq!(frame.phase_error(), None);
-        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
+        assert_eq!(
+            frame.inner.session.scene().epoch(),
+            epoch.advance().advance()
+        );
         assert_eq!(frame.inner.session.current_tick(), Tick(0));
         assert_eq!(filled.load(Ordering::Relaxed), 2);
         assert_eq!(frame.take_cursor_request(), Some(true));
@@ -969,7 +971,10 @@ struct Fragment {
             &texture,
             start + Duration::from_secs(60) + Duration::from_millis(1),
         );
-        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
+        assert_eq!(
+            frame.inner.session.scene().epoch(),
+            epoch.advance().advance()
+        );
     }
 
     #[test]

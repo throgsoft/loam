@@ -86,11 +86,7 @@ impl<A: Stores> CommandSender<A> {
             pending >= MAX_PENDING_COMMANDS - 1
         };
         if rejected {
-            if self.report {
-                push_report(&mut shared, name, Err(Rejection::Capacity));
-            } else {
-                tracing::warn!("{name}: rejected, Capacity");
-            }
+            deliver(&mut shared, name, self.report, Err(Rejection::Capacity));
             return;
         }
         shared.queued.push(Queued {
@@ -151,7 +147,18 @@ fn command_name<A: Stores>(command: &Command<A>) -> &'static str {
     }
 }
 
-fn push_report<A>(shared: &mut State<A>, name: &'static str, outcome: Result<Outcome, Rejection>) {
+fn deliver<A>(
+    shared: &mut State<A>,
+    name: &'static str,
+    report: bool,
+    outcome: Result<Outcome, Rejection>,
+) {
+    if !report {
+        match &outcome {
+            Ok(_) => return,
+            Err(rejection) => tracing::warn!("{name}: rejected, {rejection:?}"),
+        }
+    }
     if shared.reported.len() < MAX_REPORTED_COMMANDS {
         shared.reported.push(Reported { name, outcome });
     } else {
@@ -209,11 +216,7 @@ impl<A: Stores> CommandInbox<A> {
             } else {
                 Err(Rejection::Cancelled)
             };
-            if queued.report {
-                push_report(&mut shared, queued.name, result);
-            } else if let Err(rejection) = result {
-                tracing::warn!("{}: rejected, {rejection:?}", queued.name);
-            }
+            deliver(&mut shared, queued.name, queued.report, result);
         }
         outcome
     }
@@ -248,11 +251,12 @@ impl<A: Stores> CommandInbox<A> {
                 continue;
             };
             let submitted = shared.submitted.swap_remove(index);
-            if submitted.report {
-                push_report(&mut shared, submitted.name, result.outcome);
-            } else if let Err(rejection) = result.outcome {
-                tracing::warn!("{}: rejected, {rejection:?}", submitted.name);
-            }
+            deliver(
+                &mut shared,
+                submitted.name,
+                submitted.report,
+                result.outcome,
+            );
         }
     }
 }

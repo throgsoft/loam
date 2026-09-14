@@ -177,11 +177,16 @@ impl<A: Stores> SessionApp<A> {
         session: &mut Session<A>,
         input: Input,
     ) -> Result<Growth, HostError> {
-        let result = (|| {
-            self.commands.recover(session)?;
+        let fault = session.faulted_phase().and_then(|_| session.phase_error());
+        let recovery = self.commands.recover(session);
+        let recovered = fault.filter(|_| recovery.is_ok() && session.faulted_phase().is_none());
+        let result = recovery.map_err(HostError::from).and_then(|()| {
             self.commands.drain(session);
             session.boundary(input).map_err(HostError::from)
-        })();
+        });
+        if let Some(fault) = recovered {
+            self.console.note(format!("recovered: {fault}"));
+        }
         self.commands.collect(session);
         self.console.collect();
         result
