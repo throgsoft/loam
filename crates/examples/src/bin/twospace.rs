@@ -415,7 +415,7 @@ fn blended(session: &mut Session<TwoSpaceStores>, scene: &Scene) -> Result<bool,
 }
 
 fn published_point(
-    publication: &Publication<TwoSpaceStores>,
+    publication: &Publication,
     entity: Entity,
     through: Option<ViewId>,
 ) -> Option<[f32; 3]> {

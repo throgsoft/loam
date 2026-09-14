@@ -2823,25 +2823,24 @@ mod tests {
         });
         let snapshot = session.snapshot().unwrap();
         let mut publication = Publication::default();
-        let publish_and_compare =
-            |session: &mut Session<Probe>, publication: &mut Publication<Probe>| {
-                session.publish(publication).unwrap();
-                let mut fresh = Publication::default();
-                session.publish(&mut fresh).unwrap();
-                assert_eq!(publication.views.len(), fresh.views.len());
-                for (cached, fresh) in publication.views.iter().zip(&fresh.views) {
-                    assert_eq!(cached.domain, fresh.domain);
-                    assert_eq!(cached.target, fresh.target);
-                    assert_eq!(cached.placement, fresh.placement);
-                    assert_eq!(
-                        cached.records.instances.rows(),
-                        fresh.records.instances.rows()
-                    );
-                    assert_eq!(cached.records.segments(), fresh.records.segments());
-                    assert_eq!(cached.records.triangles(), fresh.records.triangles());
-                    assert_eq!(cached.records.refusals(), fresh.records.refusals());
-                }
-            };
+        let publish_and_compare = |session: &mut Session<Probe>, publication: &mut Publication| {
+            session.publish(publication).unwrap();
+            let mut fresh = Publication::default();
+            session.publish(&mut fresh).unwrap();
+            assert_eq!(publication.views.len(), fresh.views.len());
+            for (cached, fresh) in publication.views.iter().zip(&fresh.views) {
+                assert_eq!(cached.domain, fresh.domain);
+                assert_eq!(cached.target, fresh.target);
+                assert_eq!(cached.placement, fresh.placement);
+                assert_eq!(
+                    cached.records.instances.rows(),
+                    fresh.records.instances.rows()
+                );
+                assert_eq!(cached.records.segments(), fresh.records.segments());
+                assert_eq!(cached.records.triangles(), fresh.records.triangles());
+                assert_eq!(cached.records.refusals(), fresh.records.refusals());
+            }
+        };
         publish_and_compare(&mut session, &mut publication);
         let initial_segments = publication.views[1].records.segments().len();
         let initial_triangles = publication.views[1].records.triangles().len();

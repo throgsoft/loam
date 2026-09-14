@@ -691,7 +691,7 @@ fn published_segments_miss_the_endpoints_the_mapping_sends_them_to() {
 #[test]
 fn publish_overwrites_a_record_buffer_the_renderer_still_holds() {
     let (mut session, _) = session();
-    let mut records = Records::<Probe>::default();
+    let mut records = Records::default();
     let first = records.publish(&mut session).unwrap();
     let held = records.lend().unwrap();
     assert_eq!(held.stamp, first);

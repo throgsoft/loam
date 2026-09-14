@@ -133,7 +133,7 @@ async fn request_device() -> (Device, Queue) {
         .expect("request_device")
 }
 
-fn render(publication: &Publication<Landmarks>) -> Vec<u8> {
+fn render(publication: &Publication) -> Vec<u8> {
     let (device, queue) = pollster::block_on(request_device());
     let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
     let color = device.create_texture(&TextureDescriptor {

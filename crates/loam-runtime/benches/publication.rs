@@ -49,7 +49,7 @@ struct LinesFixture {
     entities: Vec<Entity>,
     geometry: loam_runtime::PreparedId,
     material: loam_runtime::MaterialId,
-    publication: Publication<Empty>,
+    publication: Publication,
     shifted: bool,
 }
 
@@ -183,7 +183,7 @@ struct SectionFixture {
     domain: DomainHandle<EuclideanR4>,
     eye: Entity,
     entities: Vec<Entity>,
-    publication: Publication<Empty>,
+    publication: Publication,
     shifted: bool,
 }
 
@@ -324,7 +324,7 @@ fn point4(index: usize, shift: f32) -> Point4 {
     Point4::new(x, y, -3.0, 0.0)
 }
 
-fn counts(publication: &Publication<Empty>) -> Counts {
+fn counts(publication: &Publication) -> Counts {
     let view = publication.views.first().expect("published view");
     let instances = view.records.instances.rows();
     let segments = view.records.segments();
