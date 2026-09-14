@@ -990,7 +990,8 @@ mod tests {
 
         let bytes = bytes_allocated_by(|| {
             domain.step(step_at(WARM_STEPS)).expect("step");
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(bytes, 0, "a warmed physics step allocated {bytes} bytes");
     }
 

@@ -1058,7 +1058,8 @@ pub(crate) mod tests {
                 }
                 warm(&mut store);
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "16 warmed passes asked the allocator for {bytes} bytes"

@@ -10,7 +10,6 @@ description = "Loam example bins: hero, tesseract, rubiks4d."
 publish = false
 
 [dependencies]
-ab_glyph = "0.2"
 glam.workspace = true
 tracing.workspace = true
 web-time.workspace = true

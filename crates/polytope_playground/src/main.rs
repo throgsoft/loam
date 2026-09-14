@@ -1266,6 +1266,26 @@ mod tests {
     }
 
     #[test]
+    fn spin_is_refused_in_toybox_instead_of_reporting_done() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        send(&mut booted, Action::Running(Some(true)));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let outcome = &booted.session.results()[0].outcome;
+        assert!(
+            matches!(outcome, Err(Rejection::Unsupported(_))),
+            "spin in Toybox reported {outcome:?}"
+        );
+    }
+
+    #[test]
     fn a_mode_command_lands_in_the_store_at_the_next_boundary() {
         let mut booted = one_slot();
         send(&mut booted, Action::Mode(Mode::Toybox));
@@ -1669,7 +1689,8 @@ mod tests {
                     &mut lines,
                 );
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "sixteen warmed frames of boundary, tick, publication, collection, strip, gimbal, and readout asked the allocator for {bytes} bytes"

@@ -2929,7 +2929,8 @@ mod tests {
                 }
                 assert_eq!(world.drain_dirty().count(), spheres.len());
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "16 dirty publications over a steady body set asked the allocator for {bytes} bytes"
@@ -3311,7 +3312,8 @@ mod tests {
                     &mut StepCounters::default(),
                 );
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "16 sweeps over a steady body set asked the allocator for {bytes} bytes"
@@ -3692,7 +3694,8 @@ mod tests {
             for _ in 0..16 {
                 world.solve();
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "16 solves over a steady island set asked the allocator for {bytes} bytes"
@@ -3711,7 +3714,8 @@ mod tests {
             for _ in 0..16 {
                 world.collect_constraints();
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "16 island passes over a steady contact set asked the allocator for \
@@ -3769,7 +3773,8 @@ mod tests {
             world
                 .set_pose(next, Vec3::Y * 0.49, next_orientation)
                 .unwrap();
-            bytes += bytes_allocated_by(|| world.update_manifolds());
+            bytes += bytes_allocated_by(|| world.update_manifolds())
+                .expect("the counting allocator is installed");
             inactive = active;
             active = next;
         }

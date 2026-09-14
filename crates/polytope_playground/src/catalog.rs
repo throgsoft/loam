@@ -216,6 +216,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_menu_categories_partition_the_catalog_in_order() {
+        let mut seen = 0;
+        for category in Category::ALL {
+            let indices: Vec<usize> = SHAPE_CATALOG
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.category == category)
+                .map(|(index, _)| index)
+                .collect();
+            assert!(!indices.is_empty(), "{} lists no shape", category.name());
+            assert!(
+                indices.windows(2).all(|pair| pair[1] == pair[0] + 1),
+                "{} is not contiguous: {indices:?}",
+                category.name()
+            );
+            assert_eq!(
+                indices[0],
+                seen,
+                "{} does not follow the previous category",
+                category.name()
+            );
+            seen = indices[indices.len() - 1] + 1;
+        }
+        assert_eq!(seen, SHAPE_CATALOG.len());
+    }
+
+    #[test]
     fn row_comes_from_the_args_value_not_the_process_environment() {
         assert_eq!(parse_row(&Args::default()).unwrap(), DEFAULT_ROW);
         assert_eq!(

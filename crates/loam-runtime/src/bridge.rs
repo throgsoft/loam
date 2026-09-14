@@ -198,7 +198,8 @@ mod tests {
             for _ in 0..16 {
                 assert!(session.pick([0.4330127, 0.0]).is_some());
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "16 warmed picks through two bridges asked the allocator for {bytes} bytes"

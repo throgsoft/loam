@@ -37,7 +37,7 @@ impl Args {
         }
     }
 
-    /// Positionals are ignored; a bare `--key` is kept for [`Args::has_bare_flag`].
+    /// Positionals are ignored, except the one right after a bare `--key`, which [`Args::bare_flag_value`] returns; the bare key itself is kept for [`Args::has_bare_flag`].
     pub fn from_argv<I, S>(argv: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -182,6 +182,11 @@ mod tests {
         let args = Args::from_argv(["--shapes", "5-cell,8-cell", "--seed=42"]);
         assert_eq!(args.get("shapes"), None);
         assert!(args.has_bare_flag("shapes"));
+        assert_eq!(args.bare_flag_value("shapes"), Some("5-cell,8-cell"));
+        assert_eq!(
+            Args::from_argv(["--headless=1200"]).bare_flag_value("headless"),
+            None
+        );
 
         assert!(!args.has_bare_flag("seed"));
         assert!(!args.has_bare_flag("5-cell,8-cell"));

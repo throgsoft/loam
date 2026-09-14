@@ -92,10 +92,14 @@ pub fn current_snapshot() -> Option<AllocSnapshot> {
     })
 }
 
-pub fn bytes_allocated_by(body: impl FnOnce()) -> u64 {
+pub fn bytes_allocated_by(body: impl FnOnce()) -> Option<u64> {
+    if !ALLOC_INSTALLED.load(Ordering::Relaxed) {
+        body();
+        return None;
+    }
     let before = ALLOC_BYTES.with(Cell::get);
     body();
-    ALLOC_BYTES.with(Cell::get).wrapping_sub(before)
+    Some(ALLOC_BYTES.with(Cell::get).wrapping_sub(before))
 }
 
 /// `start` must be the earlier snapshot.

@@ -657,7 +657,8 @@ mod tests {
             for _ in 0..16 {
                 cycle(&mut map, &mut session);
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "16 warmed frames of input asked the allocator for {bytes} bytes"

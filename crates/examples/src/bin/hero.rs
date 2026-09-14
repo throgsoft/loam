@@ -2,7 +2,6 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use ab_glyph::FontRef;
 use glam::{Vec2, Vec3, Vec4};
 use loam::app::args::Args;
 use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
@@ -23,6 +22,7 @@ use loam::runtime::{
 };
 use loam::shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
 use loam::shape::{Shape, TriangleMesh};
+use loam::text::ab_glyph::FontRef;
 use loam::text::glyph::{
     append_field_prism, layout_word, DistanceField2D, GlyphParams, GlyphSolid,
 };

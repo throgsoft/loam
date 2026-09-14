@@ -1496,7 +1496,8 @@ mod tests {
             }
             let quiet = session.boundary(Input::default()).unwrap();
             assert_eq!(quiet, Growth::default());
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "16 warmed cycles asked the allocator for {bytes} bytes"
@@ -1558,7 +1559,8 @@ mod tests {
 
         let bytes = bytes_allocated_by(|| {
             session.restore(&snapshot).unwrap();
-        });
+        })
+        .expect("the counting allocator is installed");
         let copied = (size_of::<Entity>() * 2) as u64;
         assert_eq!(
             bytes, copied,
@@ -1712,7 +1714,8 @@ mod tests {
             for _ in 0..16 {
                 cycle(&mut session, &mut publication);
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "16 warmed publishes asked the allocator for {bytes} bytes"

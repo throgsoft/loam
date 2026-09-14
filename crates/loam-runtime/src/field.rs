@@ -2237,7 +2237,8 @@ mod tests {
                 assert!(!cost.full_rebuild);
                 assert_eq!(cost.program_layout, 1);
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
             "32 warmed incremental compiles allocated {bytes} bytes"

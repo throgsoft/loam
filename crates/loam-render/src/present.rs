@@ -438,7 +438,8 @@ mod tests {
                 spin(&mut session);
                 records.publish(&mut session).unwrap();
             }
-        });
+        })
+        .expect("the counting allocator is installed");
         assert_eq!(
             published, 0,
             "16 warmed publications asked the allocator for {published} bytes"
@@ -455,7 +456,8 @@ mod tests {
                 before,
                 "an idle presenter uploaded a view"
             );
-        });
+        })
+        .expect("the counting allocator is installed");
         let busy = loam_time::alloc::bytes_allocated_by(|| {
             for _ in 0..16 {
                 spin(&mut session);
@@ -467,7 +469,8 @@ mod tests {
                 "sixteen changed publications uploaded the view {} times",
                 presenter.uploads() - before
             );
-        });
+        })
+        .expect("the counting allocator is installed");
         assert!(
             idle < busy,
             "the presenter uploads records it already holds: {idle} bytes idle against {busy} busy"
