@@ -249,7 +249,8 @@ const MAX_ACCEPTED_FPS: f32 = 1000.0;
 #[cfg(test)]
 mod tests {
     use loam_runtime::{
-        Bindings, DomainError, HostConfig, Input, Rejection, Session, SimConfig, SpawnBundle,
+        Bindings, Ctx, DomainError, HostConfig, Input, Phase, Rejection, Session, SimConfig,
+        SpawnBundle,
     };
 
     use super::*;
@@ -362,6 +363,30 @@ mod tests {
         assert!(
             !lines.iter().any(|line| line.contains("Stale(")),
             "a refusal reached the console as Debug text: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_from_a_system_submitted_command_reaches_the_console() {
+        let mut session = Session::new(Counted::default(), SimConfig::default());
+        session.system(Phase::Dispatch, "keys", |ctx: Ctx<'_, Counted>| {
+            ctx.commands
+                .try_app_fn("strip", |_d: &mut Dispatch<'_, Counted>| {
+                    Err(Rejection::Unsupported("filmstrip belongs to Rotate"))
+                });
+            Ok(())
+        });
+        let mut app =
+            SessionApp::with_args(HostConfig::new("console", Bindings::new()), Args::default());
+
+        app.boundary(&mut session, Input::default())
+            .expect("boundary");
+
+        let lines = history(&app.console);
+        assert!(
+            lines
+                .contains(&"strip: rejected, unsupported: filmstrip belongs to Rotate".to_string()),
+            "a system-submitted refusal never reached the console: {lines:?}"
         );
     }
 

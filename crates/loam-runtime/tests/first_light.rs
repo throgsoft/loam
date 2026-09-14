@@ -325,6 +325,35 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
 }
 
 #[test]
+fn the_h3_chart_reach_stays_finite_past_the_ball() {
+    use loam_runtime::DomainSpace;
+
+    let at_bound =
+        HyperbolicH3.chart_reach(Vec3::ZERO, loam_math::hyperbolic::POINCARE_R2_MAX.sqrt());
+    for radius in [1.0_f32, 1.5, 40.0] {
+        let reach = HyperbolicH3.chart_reach(Vec3::ZERO, radius);
+        assert!(reach.is_finite(), "radius {radius} gave reach {reach}");
+        assert_eq!(
+            reach, at_bound,
+            "radius {radius} was not clamped to the ball"
+        );
+    }
+    assert!(HyperbolicH3.chart_reach(Vec3::ZERO, 0.5) < at_bound);
+}
+
+#[test]
+fn the_klein_depth_envelope_shrinks_as_the_eye_leaves_the_origin() {
+    use loam_runtime::view::klein_depth_envelope;
+
+    let assumed = klein_depth_envelope(1.0).far;
+    assert!((assumed - 6.0).abs() <= 1e-6, "{assumed}");
+    let admitted = klein_depth_envelope(HyperbolicH3.chart_envelope()).far;
+    assert!((admitted - 1.0).abs() <= 1e-6, "{admitted}");
+    assert!(klein_depth_envelope(0.5).far >= klein_depth_envelope(2.0).far);
+    assert!(klein_depth_envelope(2.0).far >= klein_depth_envelope(4.0).far);
+}
+
+#[test]
 fn move_to_parallel_transports_around_an_h3_geodesic_triangle() {
     let origin = Vec3::ZERO;
     let a = HyperbolicH3.exp(origin, Vec3::X * 0.5);

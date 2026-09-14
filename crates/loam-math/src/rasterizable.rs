@@ -58,17 +58,17 @@ pub(crate) fn stereographic_to_r3(p: Vec4, pole: Vec4) -> Vec3 {
     Vec3::new(scaled.dot(e1), scaled.dot(e2), scaled.dot(e3))
 }
 
-/// Unsupported dimension/variant combinations return `Vec3::ZERO`.
+/// Unsupported dimension/variant combinations return `None`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Projection<const N: usize> {
     /// Keeps the first three components, padding with zero if needed.
     #[default]
     Identity,
 
-    /// Drops the indexed axis; an out-of-range index returns `Vec3::ZERO`.
+    /// Drops the indexed axis; an out-of-range index returns `None`.
     Orthographic { drop_axis: usize },
 
-    /// Pinhole at `(0, 0, 0, focal_distance)`; callers must keep every vertex below the eye in w.
+    /// Pinhole at `(0, 0, 0, focal_distance)`; a vertex at or beyond the eye in w is refused with `None`.
     Perspective4D { focal_distance: f32 },
 
     // Coxeter, Regular Polytopes, 3rd ed., ch. 13.

@@ -25,7 +25,7 @@ struct Input {
     uploads: u64,
 }
 
-/// The mesh, view, and optional ground drawn after the scene by the pass `pass` builds; the mesh uploads once per `edit` and again after a device loss.
+/// The mesh, view, and optional ground drawn in the Scene stage by the pass `pass` builds; the mesh uploads once per `edit` and again after a device loss.
 #[derive(Clone, Default)]
 pub struct TriangleFeed {
     input: Rc<RefCell<Input>>,

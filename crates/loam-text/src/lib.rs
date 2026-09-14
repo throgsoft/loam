@@ -9,6 +9,7 @@ pub use pass::{TextDraw, TextPass};
 
 use std::collections::HashMap;
 
+pub use ab_glyph;
 use ab_glyph::{Font, FontRef, Glyph, GlyphId, Point, ScaleFont};
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};

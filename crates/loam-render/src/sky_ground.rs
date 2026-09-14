@@ -270,7 +270,7 @@ impl SkyGroundNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
     }
 
-    /// Clears both attachments, so it must be the frame's first pass; `viewport` restricts the shading, not the clear.
+    /// Clears both attachments, so it records at the start of a stage the schedule lets clear; `viewport` restricts the shading, not the clear.
     pub fn record(
         &self,
         encoder: &mut CommandEncoder,

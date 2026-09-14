@@ -964,6 +964,23 @@ struct Fragment {
     }
 
     #[test]
+    fn a_zero_rate_config_pauses_the_frame_and_a_config_without_catch_up_is_refused() {
+        let paused =
+            loam_runtime::SimConfig::new(0, 2).expect("a zero rate is documented as paused");
+        let app = SessionApp::<Bare>::with_args(
+            HostConfig::new("paused", Bindings::new()),
+            Args::default(),
+        )
+        .debug_layer(false);
+        let session = Session::new(Bare::default(), paused);
+        assert!(Frame::new(session, app).is_ok());
+        assert!(matches!(
+            loam_runtime::SimConfig::new(60, 0),
+            Err(loam_runtime::SimConfigError::NoCatchUp)
+        ));
+    }
+
+    #[test]
     fn installed_reset_key_recovers_the_fault_and_restores_cursor_capture_once() {
         const RESET: ActionId = ActionId(0);
 

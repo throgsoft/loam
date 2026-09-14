@@ -929,6 +929,95 @@ fn a_session_that_never_set_its_initial_state_resets_to_its_first_boundary() {
 }
 
 #[test]
+fn a_reset_queued_in_the_boundary_after_a_restore_changes_nothing() {
+    let (mut session, r4) = session();
+    session.dispatch(|d| d.spawn(placed(r4, Tag(1)))).unwrap();
+    session.boundary(Input::default()).unwrap();
+    session.submit(Command::App(Box::new(Mark(1))));
+    session.boundary(Input::default()).unwrap();
+    let before = session.scene().epoch();
+
+    session.reset().unwrap();
+    let restored = session.scene().epoch();
+    assert_eq!(restored, before.advance());
+
+    session.submit(Command::Reset);
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(
+        session.scene().epoch(),
+        restored,
+        "a reset right after a restore restored again"
+    );
+    assert_eq!(session.results()[0].outcome, Ok(Outcome::Done));
+
+    session.submit(Command::Reset);
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(
+        session.scene().epoch(),
+        restored.advance(),
+        "a reset in the next boundary was swallowed"
+    );
+}
+
+#[test]
+fn a_pose_edit_on_a_live_entity_without_a_row_is_missing_not_stale() {
+    let (mut session, r4) = session();
+    let bare = session
+        .dispatch(|d| d.spawn(SpawnBundle::new().row(Tag(3))))
+        .unwrap();
+    let result = session.domains_mut().typed(r4).unwrap().move_to(
+        bare,
+        loam_runtime::DomainSpace::chart_point(&EuclideanR4, Vec4::X),
+    );
+    assert_eq!(
+        result,
+        Err(DomainError::Store(loam_runtime::StoreError::Missing(bare)))
+    );
+}
+
+#[test]
+fn an_unchanged_view_borrow_keeps_the_published_records() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let geometry = session.prepare(PreparedGeometry::Lines4 {
+        segments: Vec::new(),
+    });
+    let material = session.add_material(Material::flat([1.0; 4]));
+    let root = session.views().root();
+    let view = session.dispatch(|d| {
+        let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
+        d.spawn(
+            SpawnBundle::new()
+                .at(r4, at([1.0, 2.0, 3.0, 4.0]))
+                .instance(Instance::new(geometry, material)),
+        )
+        .unwrap();
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+            .unwrap()
+    });
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    let first = publication.views[0].records.built();
+
+    session
+        .domains_mut()
+        .typed(r4)
+        .unwrap()
+        .view_mut(view)
+        .expect("the view exists");
+    session.publish(&mut publication).unwrap();
+    assert_eq!(
+        publication.views[0].records.built(),
+        first,
+        "an unchanged view borrow rebuilt the records"
+    );
+}
+
+#[test]
 fn restore_does_not_launder_foreign_or_old_epoch_references_into_live_entities() {
     let mut owner = Session::new(Probe::default(), SimConfig::default());
     let r4 = owner.register_domain(DomainBuilder::new("r4", EuclideanR4).fields());

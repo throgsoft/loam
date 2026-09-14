@@ -528,6 +528,193 @@ fn fragment() -> @location(0) vec4<f32> {
         assert_eq!(schedule.names().count(), 0);
     }
 
+    struct Clearing {
+        stage: PassStage,
+    }
+
+    impl FramePass for Clearing {
+        fn name(&self) -> &'static str {
+            "clearing"
+        }
+
+        fn stage(&self) -> PassStage {
+            self.stage
+        }
+
+        fn color_load(&self) -> ColorLoad {
+            ColorLoad::Clear
+        }
+
+        fn record(
+            &mut self,
+            _encoder: &mut CommandEncoder,
+            _target: &FrameTarget<'_>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct Reader;
+
+    impl FramePass for Reader {
+        fn name(&self) -> &'static str {
+            "reader"
+        }
+
+        fn stage(&self) -> PassStage {
+            PassStage::Scene
+        }
+
+        fn depth_read(&self) -> Option<DepthConvention> {
+            Some(DepthConvention::StandardZ)
+        }
+
+        fn record(
+            &mut self,
+            _encoder: &mut CommandEncoder,
+            _target: &FrameTarget<'_>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct Flaky {
+        fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        recorded: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl FramePass for Flaky {
+        fn name(&self) -> &'static str {
+            "flaky"
+        }
+
+        fn stage(&self) -> PassStage {
+            PassStage::Scene
+        }
+
+        fn record(
+            &mut self,
+            _encoder: &mut CommandEncoder,
+            _target: &FrameTarget<'_>,
+        ) -> anyhow::Result<()> {
+            self.recorded
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+            if self.fail.load(std::sync::atomic::Ordering::Relaxed) {
+                anyhow::bail!("the pass could not build its resources");
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_pass_that_clears_the_shared_color_target_is_refused_outside_the_background() {
+        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        assert!(matches!(
+            schedule.register(Box::new(Clearing {
+                stage: PassStage::Scene
+            })),
+            Err(PassError::ColorClear {
+                pass: "clearing",
+                stage: PassStage::Scene
+            })
+        ));
+        assert!(matches!(
+            schedule.register(Box::new(Clearing {
+                stage: PassStage::Overlay
+            })),
+            Err(PassError::ColorClear { .. })
+        ));
+        schedule
+            .register(Box::new(Clearing {
+                stage: PassStage::Background,
+            }))
+            .expect("a background pass may clear");
+    }
+
+    #[test]
+    fn a_depth_reader_under_the_other_convention_is_refused_at_registration() {
+        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        assert!(matches!(
+            schedule.register(Box::new(Reader)),
+            Err(PassError::DepthRead {
+                pass: "reader",
+                declared: DepthConvention::StandardZ,
+                frame: DepthConvention::ReversedZ
+            })
+        ));
+    }
+
+    #[test]
+    fn a_failed_attach_suppresses_recording_until_every_pass_attaches() {
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        let gpu = crate::device::noop_context();
+        let fail = Arc::new(AtomicBool::new(true));
+        let recorded = Arc::new(AtomicU32::new(0));
+        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        schedule
+            .register(Box::new(Flaky {
+                fail: fail.clone(),
+                recorded: recorded.clone(),
+            }))
+            .unwrap();
+        let frame = FrameFormat {
+            color: TextureFormat::Rgba8Unorm,
+            depth: TextureFormat::Depth32Float,
+        };
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("flaky target"),
+            size: wgpu::Extent3d {
+                width: 8,
+                height: 8,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: frame.color,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let color = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let target = FrameTarget {
+            color: &color,
+            depth: None,
+            size: (8, 8),
+        };
+
+        assert!(schedule.attach(&gpu, frame).is_err());
+        assert_eq!(schedule.unattached(), Some("flaky"));
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        schedule
+            .record(PassStage::Scene, &mut encoder, &target)
+            .expect("recording is a no-op while a pass is unattached");
+        assert_eq!(recorded.load(Ordering::Relaxed), 0);
+
+        fail.store(false, Ordering::Relaxed);
+        schedule.attach(&gpu, frame).expect("the retry attaches");
+        assert_eq!(schedule.unattached(), None);
+        schedule
+            .record(PassStage::Scene, &mut encoder, &target)
+            .expect("recorded");
+        assert_eq!(recorded.load(Ordering::Relaxed), 1);
+    }
+
     #[test]
     fn a_stage_orders_a_pass_ahead_of_one_registered_before_it() {
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);

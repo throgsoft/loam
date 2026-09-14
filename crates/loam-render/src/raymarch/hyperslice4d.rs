@@ -764,7 +764,7 @@ impl Hyperslice4DNode {
 }
 
 impl Hyperslice4DNode {
-    /// `LoadOp::Load`: the kernel discards unshaded pixels, so record a background ahead of it.
+    /// `LoadOp::Load`: the kernel discards unshaded pixels, so a background records ahead of it within the same stage.
     pub fn record_in_viewport(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

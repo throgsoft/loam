@@ -902,6 +902,13 @@ fn scene_probe_points(extent: f32) -> Vec<[f32; 4]> {
         .collect()
 }
 
+fn parity_tolerance<S: WgslSpace>(space: &S) -> f32 {
+    match space.wgsl_accuracy() {
+        loam_math::WgslAccuracy::Exact => 1e-5,
+        first_order => first_order.residual(),
+    }
+}
+
 fn assert_scene_parity<S>(space: &S, label: &str, extent: f32, tolerance: f32) -> f32
 where
     S: WgslSpace + Space<Point = Vec3, Vector = Vec3>,
@@ -934,21 +941,36 @@ where
 #[test]
 #[ignore = "requires a working wgpu adapter"]
 fn scene_sdf_gpu_probe_matches_cpu_in_euclidean_r3() {
-    let worst = assert_scene_parity(&EuclideanR3, "EuclideanR3", 0.9, 1e-5);
+    let worst = assert_scene_parity(
+        &EuclideanR3,
+        "EuclideanR3",
+        0.9,
+        parity_tolerance(&EuclideanR3),
+    );
     println!("EuclideanR3 scene parity: worst residual {worst}");
 }
 
 #[test]
 #[ignore = "requires a working wgpu adapter"]
 fn scene_sdf_gpu_probe_matches_cpu_in_hyperbolic_h3() {
-    let worst = assert_scene_parity(&HyperbolicH3, "HyperbolicH3", 0.30, 2e-4);
+    let worst = assert_scene_parity(
+        &HyperbolicH3,
+        "HyperbolicH3",
+        0.30,
+        parity_tolerance(&HyperbolicH3),
+    );
     println!("HyperbolicH3 scene parity: worst residual {worst}");
 }
 
 #[test]
 #[ignore = "requires a working wgpu adapter"]
 fn scene_sdf_gpu_probe_matches_cpu_in_spherical_s3() {
-    let worst = assert_scene_parity(&SphericalS3, "SphericalS3", 0.30, 2e-4);
+    let worst = assert_scene_parity(
+        &SphericalS3,
+        "SphericalS3",
+        0.30,
+        parity_tolerance(&SphericalS3),
+    );
     println!("SphericalS3 scene parity: worst residual {worst}");
 }
 
@@ -960,7 +982,12 @@ fn scene_sdf_gpu_probe_bounds_blended_space_error() {
         HyperbolicH3,
         LinearBlendX::new(-0.5, 0.5).unwrap(),
     );
-    let worst = assert_scene_parity(&space, "BlendedSpace<E3,H3>", 0.30, 5e-2);
+    let worst = assert_scene_parity(
+        &space,
+        "BlendedSpace<E3,H3>",
+        0.30,
+        parity_tolerance(&space),
+    );
     println!("BlendedSpace<E3,H3> scene parity: worst residual {worst}");
 }
 

@@ -395,6 +395,18 @@ fn hyperboloid_to_poincare_tangent(h: Vec4, dh: Vec4) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_arc_cap_stays_inside_the_saturating_origin_distance() {
+        let farthest = HyperbolicH3.distance(Vec3::ZERO, Vec3::X * POINCARE_R2_MAX.sqrt());
+        assert!(
+            H3_MAX_ARC * 0.92 < farthest,
+            "the escape guard at {} can never fire below {farthest}",
+            H3_MAX_ARC * 0.92
+        );
+        assert!(HyperbolicH3.wgsl_impl().contains(&format!("{H3_MAX_ARC}")));
+    }
+
     use approx::assert_relative_eq;
 
     fn h3() -> HyperbolicH3 {
