@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use glam::Vec4;
 use loam::app::args::Args;
-use loam::app::session::{launch_or_headless, FrameHook, Orbit, SessionApp};
+use loam::app::session::{launch_or_headless, look, FrameHook, Orbit, SessionApp};
 use loam::math::{Bivector, Bivector4, EuclideanR4};
 use loam::render::pass::FramePass;
 use loam::render::raymarch::BodyUniform;
@@ -512,11 +512,7 @@ fn install_systems(
                 ];
                 let camera = ctx.app.camera.get_mut();
                 camera.free.travel(axes, camera.speed * ctx.step.dt);
-                let root = ctx.views.root_mut();
-                root.eye = Eye {
-                    aspect: root.eye.aspect,
-                    ..camera.free.eye
-                };
+                look(ctx.views, camera.free.eye);
             }
             Ok(())
         },
@@ -1068,11 +1064,7 @@ fn control_camera(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR
             camera.free.eye
         }
     };
-    let root = ctx.views.root_mut();
-    root.eye = Eye {
-        aspect: root.eye.aspect,
-        ..eye
-    };
+    look(ctx.views, eye);
 }
 
 fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR4>) {
