@@ -59,13 +59,27 @@ pub struct FrameTarget<'a> {
     pub size: (u32, u32),
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ColorLoad {
+    Load,
+    Clear,
+}
+
 pub trait FramePass {
     fn name(&self) -> &'static str;
 
     fn stage(&self) -> PassStage;
 
+    fn color_load(&self) -> ColorLoad {
+        ColorLoad::Load
+    }
+
     /// `None` means the pass writes no depth; `Some` must match the frame's convention to register.
     fn depth_convention(&self) -> Option<DepthConvention> {
+        None
+    }
+
+    fn depth_read(&self) -> Option<DepthConvention> {
         None
     }
 
@@ -86,6 +100,15 @@ pub enum PassError {
         declared: DepthConvention,
         frame: DepthConvention,
     },
+    DepthRead {
+        pass: &'static str,
+        declared: DepthConvention,
+        frame: DepthConvention,
+    },
+    ColorClear {
+        pass: &'static str,
+        stage: PassStage,
+    },
 }
 
 impl fmt::Display for PassError {
@@ -98,6 +121,19 @@ impl fmt::Display for PassError {
             } => write!(
                 f,
                 "pass `{pass}` writes depth under {declared:?}; this frame compares under {frame:?}"
+            ),
+            Self::DepthRead {
+                pass,
+                declared,
+                frame,
+            } => write!(
+                f,
+                "pass `{pass}` reads depth under {declared:?}; this frame compares under {frame:?}"
+            ),
+            Self::ColorClear { pass, stage } => write!(
+                f,
+                "pass `{pass}` clears the shared color target in the {stage:?} stage; only {:?} clears it",
+                PassStage::Background
             ),
         }
     }
@@ -126,6 +162,7 @@ pub struct PassSchedule {
     sections: Vec<Section>,
     timer: Option<SectionTimer>,
     signal: Option<std::sync::Arc<LossSignal>>,
+    unattached: Option<&'static str>,
 }
 
 impl PassSchedule {
@@ -136,11 +173,16 @@ impl PassSchedule {
             sections: Vec::new(),
             timer: None,
             signal: None,
+            unattached: None,
         }
     }
 
     pub fn convention(&self) -> DepthConvention {
         self.convention
+    }
+
+    pub fn unattached(&self) -> Option<&'static str> {
+        self.unattached
     }
 
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
@@ -161,7 +203,22 @@ impl PassSchedule {
                 });
             }
         }
+        if let Some(declared) = pass.depth_read() {
+            if declared != self.convention {
+                return Err(PassError::DepthRead {
+                    pass: pass.name(),
+                    declared,
+                    frame: self.convention,
+                });
+            }
+        }
         let stage = pass.stage();
+        if pass.color_load() == ColorLoad::Clear && stage != PassStage::Background {
+            return Err(PassError::ColorClear {
+                pass: pass.name(),
+                stage,
+            });
+        }
         let at = self.passes.partition_point(|held| held.stage() <= stage);
         self.passes.insert(at, pass);
         Ok(())
@@ -177,8 +234,14 @@ impl PassSchedule {
         let signal = self.signal.as_deref();
         for pass in self.passes.iter_mut() {
             let name = pass.name();
-            run_pass(signal, name, PassPhase::Attach, || pass.attach(gpu, frame))?;
+            if let Err(error) =
+                run_pass(signal, name, PassPhase::Attach, || pass.attach(gpu, frame))
+            {
+                self.unattached = Some(name);
+                return Err(error);
+            }
         }
+        self.unattached = None;
         Ok(())
     }
 
@@ -204,6 +267,9 @@ impl PassSchedule {
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
     ) -> Result<(), PassExecutionError> {
+        if self.unattached.is_some() {
+            return Ok(());
+        }
         let timer = &mut self.timer;
         let sections = &mut self.sections;
         let signal = self.signal.as_deref();

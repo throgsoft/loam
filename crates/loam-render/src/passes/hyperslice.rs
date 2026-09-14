@@ -4,7 +4,7 @@ use std::rc::Rc;
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::raymarch::{BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms};
 use crate::{DepthConvention, DepthMode, Viewport};
 
@@ -75,10 +75,18 @@ impl FramePass for HyperslicePass {
     }
 
     fn stage(&self) -> PassStage {
-        PassStage::Scene
+        PassStage::Background
+    }
+
+    fn color_load(&self) -> ColorLoad {
+        ColorLoad::Clear
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
+        Some(DepthConvention::ReversedZ)
+    }
+
+    fn depth_read(&self) -> Option<DepthConvention> {
         Some(DepthConvention::ReversedZ)
     }
 

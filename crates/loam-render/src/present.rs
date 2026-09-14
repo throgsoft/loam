@@ -94,6 +94,10 @@ impl FramePass for PublishedLines {
         Some(DepthConvention::ReversedZ)
     }
 
+    fn depth_read(&self) -> Option<DepthConvention> {
+        Some(DepthConvention::ReversedZ)
+    }
+
     fn record(
         &mut self,
         encoder: &mut CommandEncoder,
@@ -306,6 +310,7 @@ fn segment_is_opaque(segment: &SegmentRecord) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::pass::ColorLoad;
     use loam_math::EuclideanR4;
     use loam_runtime::{
         DomainBuilder, Instance, LogCapacity, Material, Pose, PreparedGeometry, Projection4,
@@ -616,6 +621,10 @@ mod tests {
 
         fn stage(&self) -> PassStage {
             PassStage::Background
+        }
+
+        fn color_load(&self) -> ColorLoad {
+            ColorLoad::Clear
         }
 
         fn record(

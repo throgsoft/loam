@@ -63,6 +63,10 @@ impl FramePass for LinePass {
         PassStage::Scene
     }
 
+    fn depth_read(&self) -> Option<DepthConvention> {
+        Some(DepthConvention::ReversedZ)
+    }
+
     fn record(
         &mut self,
         encoder: &mut CommandEncoder,
