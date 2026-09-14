@@ -1,5 +1,7 @@
 use bytemuck::{Pod, Zeroable};
-use loam_math::hyperbolic::{klein_to_poincare, poincare_to_klein, H3_DEPTH_ENVELOPE};
+use loam_math::hyperbolic::{
+    klein_to_poincare, poincare_to_klein, H3_DEPTH_ENVELOPE, H3_EYE_CHART_REACH,
+};
 use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Space};
 use loam_shape::polytope::SectionScratch;
 use loam_shape::{LineMesh, TriangleMesh};
@@ -456,6 +458,10 @@ pub trait ViewMapping<S: DomainSpace>: Send + Sync + 'static {
     }
 
     fn depth_envelope(&self) -> DepthEnvelope;
+
+    fn depth_envelope_at(&self, _eye: &Pose<S>) -> DepthEnvelope {
+        self.depth_envelope()
+    }
 }
 
 pub struct ViewStyle<S: DomainSpace> {
@@ -727,10 +733,19 @@ impl ViewMapping<HyperbolicH3> for Klein {
     }
 
     fn depth_envelope(&self) -> DepthEnvelope {
-        DepthEnvelope {
-            near: 0.0,
-            far: H3_DEPTH_ENVELOPE,
-        }
+        klein_depth_envelope(HyperbolicH3.chart_envelope())
+    }
+
+    fn depth_envelope_at(&self, eye: &Pose<HyperbolicH3>) -> DepthEnvelope {
+        klein_depth_envelope(HyperbolicH3.distance(Vec3::ZERO, eye.point))
+    }
+}
+
+pub fn klein_depth_envelope(eye_chart_distance: f32) -> DepthEnvelope {
+    DepthEnvelope {
+        near: 0.0,
+        far: (H3_EYE_CHART_REACH + H3_DEPTH_ENVELOPE - eye_chart_distance)
+            .clamp(0.0, H3_DEPTH_ENVELOPE),
     }
 }
 
