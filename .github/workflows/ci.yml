@@ -117,4 +117,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: rustup target add wasm32-unknown-unknown
-      - run: cargo build --target wasm32-unknown-unknown -p loam-math -p loam-shape -p loam-scene -p loam-physics -p loam-time -p examples
+      - run: cargo build --target wasm32-unknown-unknown -p loam-math -p loam-shape -p loam-physics -p loam-time -p examples
