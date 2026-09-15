@@ -1,5 +1,3 @@
-//! Edge tessellation and radial clipping in the projected body frame.
-
 use crate::LineMesh;
 use glam::{Vec3, Vec4};
 
@@ -158,7 +156,6 @@ pub fn stereographic_view_point(p: Vec4, projection: &loam_math::Projection<4>) 
     }
 }
 
-/// Removes appended triangles with any vertex outside the projected radius.
 pub fn retain_in_radius_triangles(
     indices: &mut Vec<[u32; 3]>,
     start_i: usize,

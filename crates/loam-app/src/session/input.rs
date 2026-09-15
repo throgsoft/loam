@@ -6,7 +6,6 @@ use loam_runtime::{
 
 use crate::wasm::input_queue::{InputMessage, PointerPhase};
 
-/// Converts host events into the session's `Input` and recycles the buffers the session hands back.
 pub struct InputMap {
     input: Input,
     spare: Input,

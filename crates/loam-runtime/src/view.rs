@@ -117,7 +117,6 @@ pub struct ImageSpace {
     pub eye: Eye,
 }
 
-/// A similarity of the root's R³: scale about the origin, then the pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rigid {
     pub pose: Iso3,
@@ -178,12 +177,10 @@ impl Rigid {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Placement {
     Rigid(Rigid),
-    /// Declared by the kind of map that would need tessellation; refused for a raster view.
     Nonlinear(&'static str),
 }
 
 impl Placement {
-    /// A nonlinear side wins.
     pub fn compose(&self, inner: &Placement) -> Placement {
         match (self, inner) {
             (Placement::Rigid(outer), Placement::Rigid(inner)) => {
@@ -217,7 +214,6 @@ pub struct ViewsSnapshot {
     placed: Vec<Placed>,
 }
 
-/// R³ image spaces; the root one projects to the screen and every hit has a position in one.
 pub struct Views {
     root: ImageSpace,
     placed: Vec<Placed>,
@@ -319,7 +315,6 @@ impl Views {
         Some(composed)
     }
 
-    /// The root eye's ray through a y-up NDC point, pulled into `image` through the inverse of its composed placement; a placed space has no eye of its own.
     pub fn ray(&self, image: ImageSpaceId, ndc: [f32; 2]) -> Option<ImageRay> {
         let root = self.root_ray(ndc)?;
         Some(self.to_root(image)?.rigid()?.inverse().ray(&root))
@@ -344,7 +339,6 @@ impl Views {
         (forward >= eye.near).then(|| eye.near / forward)
     }
 
-    /// Inverse of [`Views::ray`] on the root image space.
     pub fn ndc(&self, point: [f32; 3]) -> Option<[f32; 2]> {
         let eye = &self.root.eye;
         let (relative, forward) = eye.forward_distance(point);
@@ -408,7 +402,6 @@ pub trait ViewMapping<S: DomainSpace>: Send + Sync + 'static {
 
     fn image_point(&self, eye: &Pose<S>, point: S::Point) -> Option<[f32; 3]>;
 
-    /// Image of `local`, a point in the frame of an entity at `pose`; the default places it and maps the point, and a nonlinear map overrides it to place through `relative` and add the entity's image position after.
     fn image_local(
         &self,
         space: &S,
@@ -442,7 +435,6 @@ pub trait ViewMapping<S: DomainSpace>: Send + Sync + 'static {
 
     fn lift(&self, eye: &Pose<S>, ray: &ImageRay) -> Option<DomainRay<S>>;
 
-    /// Where this map cuts an entity at `pose`, for a prepared geometry that can be sectioned; a map that does not cut returns `None`.
     fn section(&self, _eye: &Pose<S>, _pose: &Pose<S>) -> Option<SectionCut> {
         None
     }
@@ -452,7 +444,6 @@ pub trait ViewMapping<S: DomainSpace>: Send + Sync + 'static {
         true
     }
 
-    /// Image-space radius of the metric ball of `radius` at `point`; isometric maps keep the default.
     fn image_radius(&self, _eye: &Pose<S>, _point: S::Point, radius: f32) -> f32 {
         radius
     }
@@ -549,7 +540,6 @@ impl<S: DomainSpace> DerefMut for ViewSpec<S> {
     }
 }
 
-/// Where a slicing map cuts an entity and how it places the cut in the image.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SectionCut {
     /// The cut's last chart coordinate in the eye frame, relative to the entity's origin.
@@ -558,7 +548,6 @@ pub struct SectionCut {
     pub scale: f32,
 }
 
-/// R⁴ to R³ from a center `focal` behind the eye along +W onto the eye's own hyperplane.
 pub struct Projection4 {
     pub focal: f32,
 }
@@ -682,7 +671,6 @@ fn eye_relative4(eye: &Pose<EuclideanR4>, point: Vec4) -> Option<Vec4> {
     EuclideanR4.local(eye, point).ok()
 }
 
-/// Klein model of H³ recentered at the eye; its geodesics are chords, so `lift` is exact.
 pub struct Klein;
 
 impl ViewMapping<HyperbolicH3> for Klein {
@@ -841,7 +829,6 @@ pub struct PointRecord {
     pub color: [f32; 4],
 }
 
-/// One triangle of a view in its image space, with one color for the face.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
 pub struct TriangleRecord {
@@ -936,7 +923,6 @@ impl ViewOutputCache {
     }
 }
 
-/// Records of one view map, in its image space.
 #[derive(Default)]
 pub struct ViewRecords {
     pub instances: RecordBuffer<InstanceRecord>,

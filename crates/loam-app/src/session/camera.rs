@@ -3,7 +3,6 @@ use loam_runtime::{Ctx, Eye, Input, Phase, PointerButton, Session, Stores, Views
 
 type Vec3 = <EuclideanR3 as Space>::Vector;
 
-/// A free camera in the root image space.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FreeCamera {
     pub eye: Eye,
@@ -33,7 +32,6 @@ impl FreeCamera {
     }
 }
 
-/// Orbits a target using the delta convention in `Pointer`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Orbit {
     pub target: [f32; 3],

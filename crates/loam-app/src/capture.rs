@@ -1,5 +1,3 @@
-//! Capture reads the swapchain after the runner resolves and composites the selected stage.
-
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -51,7 +49,6 @@ fn interval_elapsed(since_last: Duration, interval: Duration) -> bool {
 pub(crate) struct Capture {
     default_dir: PathBuf,
     state: CaptureState,
-    /// Encoder threads still flushing after `stop`; joined at shutdown so trailers finish.
     pending: Vec<JoinHandle<()>>,
 }
 
@@ -64,7 +61,6 @@ enum CaptureState {
     Sequence {
         stage: CaptureStage,
         writer: SequenceWriter,
-        /// `None` = unlimited.
         fps_interval: Option<Duration>,
         last_capture_time: Option<Instant>,
         frame_count: u32,
@@ -75,19 +71,15 @@ enum SequenceWriter {
     Png {
         dir: PathBuf,
     },
-    /// Frames cross a bounded channel and drop under backpressure.
     Gif {
         worker: GifWorker,
         path: PathBuf,
-        /// First-frame delay in centiseconds; later frames use wall-clock delays.
         default_delay_cs: u16,
         scale: Option<u32>,
         palette_mode: PaletteMode,
-        /// `Some` during `Global`-mode warmup.
         warming: Option<WarmingState>,
         global_palette: Option<Arc<color_quant::NeuQuant>>,
     },
-    /// The `acTL` chunk needs the frame count up front, so every frame is buffered.
     Apng {
         worker: ApngWorker,
         path: PathBuf,
@@ -110,7 +102,6 @@ struct WarmupFrame {
 // ~1 s at 30 fps; ~57 MB at 800x600, released after training.
 const GIF_WARMUP_FRAMES: u32 = 30;
 
-// Dropping it closes the channel, joins the thread, and flushes the trailer.
 pub(crate) struct GifWorker {
     tx: Option<SyncSender<GifFrame>>,
     handle: Option<JoinHandle<()>>,
@@ -121,11 +112,9 @@ struct GifFrame {
     rgba: Vec<u8>,
     src_width: u32,
     src_height: u32,
-    /// Each delay is the gap to the previous encoded frame, so drops stretch the next.
     captured_at: Instant,
     default_delay_cs: u16,
     scale: Option<u32>,
-    /// `Some` indexes against the shared table; `None` quantizes per frame.
     global_palette: Option<Arc<color_quant::NeuQuant>>,
 }
 
@@ -208,7 +197,6 @@ fn encode_one_frame(
     let w_u16: u16 = out_w.try_into().context("gif width > 65535")?;
     let h_u16: u16 = out_h.try_into().context("gif height > 65535")?;
 
-    // Global mode seeds the LSD with the shared palette; local passes an empty one.
     let enc = match encoder {
         Some(e) => e,
         None => {
@@ -272,7 +260,6 @@ fn encode_one_frame(
     };
 
     let mut gif_frame = if let Some(nq) = &frame.global_palette {
-        // Normalize alpha the same way `train_global_palette` did.
         for px in buf.chunks_exact_mut(4) {
             if px[3] != 0 {
                 px[3] = 0xFF;

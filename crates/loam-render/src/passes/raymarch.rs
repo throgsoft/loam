@@ -15,7 +15,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A shared scene background pass built from WGSL source.
 #[derive(Clone)]
 pub struct RaymarchPass {
     shared: Rc<RefCell<State>>,
@@ -33,7 +32,6 @@ impl RaymarchPass {
         }
     }
 
-    /// Stores the uniforms; the record fills in the frame's resolution.
     pub fn publish(&self, uniforms: RayMarchUniforms) {
         self.shared.borrow_mut().uniforms = uniforms;
     }

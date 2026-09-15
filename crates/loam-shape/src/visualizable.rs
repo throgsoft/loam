@@ -8,7 +8,6 @@ pub enum NotVisualizable {
 
     WrongDimension,
 
-    /// No drawable geometry.
     Degenerate,
 }
 
@@ -33,7 +32,6 @@ pub struct LineMesh<const N: usize> {
     pub widths: Vec<f32>,
 }
 
-/// Vertices carry no surface normals.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(bound(
     serialize = "[f32; N]: Serialize",
@@ -56,6 +54,5 @@ pub struct PointMesh<const N: usize> {
     pub positions: Vec<[f32; N]>,
     /// `colors.len() == positions.len()`.
     pub colors: Vec<[f32; 4]>,
-    /// Screen-space radius in pixels.
     pub sizes: Vec<f32>,
 }

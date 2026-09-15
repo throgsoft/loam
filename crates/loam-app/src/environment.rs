@@ -1,6 +1,3 @@
-//! Ground colors, fog density and floor visibility shared by every scene that
-//! records [`loam_render::SkyGroundNode`], with the verbs that edit them live.
-
 use anyhow::{anyhow, Result};
 use loam_egui::Console;
 use loam_render::sky_ground::{DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
@@ -93,7 +90,6 @@ impl Environment {
     }
 }
 
-/// Solves `1 − exp(−t·density) = 1/2` for t.
 pub fn half_blend_distance(fog_per_unit: f32) -> f32 {
     if fog_per_unit <= 0.0 {
         return f32::INFINITY;

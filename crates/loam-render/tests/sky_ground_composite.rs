@@ -1,7 +1,3 @@
-//! A quad straddling `y = 0` drawn after `SkyGroundNode`: the half on the
-//! camera's side must survive and the half behind the ground must not, from
-//! above and from below. The control arm turns the ground off.
-
 use glam::{Mat4, Vec3};
 use loam_math::{EuclideanR3, Projection};
 use loam_render::device::{FeatureRequest, GpuContext};

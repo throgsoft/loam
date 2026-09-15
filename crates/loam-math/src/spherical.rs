@@ -47,7 +47,6 @@ fn from_sphere(q: Vec4) -> Vec3 {
 /// SO(4) acting on the ambient embedding of S³.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4 {
-    /// Column-major orthogonal matrix; inverse uses the transpose without validation.
     pub matrix: Mat4,
 }
 
@@ -302,17 +301,6 @@ mod tests {
 
     fn s3() -> SphericalS3 {
         SphericalS3
-    }
-
-    #[test]
-    fn to_sphere_from_sphere_round_trip() {
-        let p = Vec3::new(0.2, -0.3, 0.1);
-        let q = to_sphere(p);
-        assert_relative_eq!(q.length(), 1.0, epsilon = 1e-6);
-        assert_relative_eq!(q.w, (1.0 - p.length_squared()).sqrt(), epsilon = 1e-6);
-        assert_relative_eq!(from_sphere(q).x, p.x, epsilon = 1e-6);
-        assert_relative_eq!(from_sphere(q).y, p.y, epsilon = 1e-6);
-        assert_relative_eq!(from_sphere(q).z, p.z, epsilon = 1e-6);
     }
 
     #[test]

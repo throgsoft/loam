@@ -1,7 +1,3 @@
-//! The analytic background: sky, checkerboard on `y = Ground::y` with analytic
-//! depth, and the frame's color and depth clear. Rays unproject through the
-//! caller's `view_proj`, so the ground's depth agrees with raster content.
-
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use wgpu::*;
@@ -265,7 +261,6 @@ impl SkyGroundNode {
         }
     }
 
-    /// Call before [`Self::record`] each frame.
     pub fn set_uniforms(&self, queue: &Queue, uniforms: &SkyGroundUniforms) {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
     }

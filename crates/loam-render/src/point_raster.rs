@@ -43,7 +43,6 @@ pub struct PointInstance {
     pub color: [f32; 4],
 }
 
-/// Construct once per `RenderDevice`.
 pub struct PointRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -215,7 +214,6 @@ impl PointRasterNode {
         }
     }
 
-    /// Call before [`Self::record`] each frame.
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4, viewport_size: Vec2) {
         let uniforms = PointRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),

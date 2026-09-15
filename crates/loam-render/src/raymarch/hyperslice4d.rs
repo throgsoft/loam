@@ -1,7 +1,3 @@
-//! The user assembles the WGSL by concatenating [`HYPERSLICE_KERNEL_WGSL`]
-//! with `Scene4::to_hyperslice_wgsl("u.w_slice")` (which defines
-//! `loam_scene_sdf`).
-
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use loam_math::Rotor4;
@@ -744,7 +740,6 @@ impl Hyperslice4DNode {
         }
     }
 
-    /// Grows by doubling in `set_bodies` and never shrinks or truncates.
     pub fn body_capacity(&self) -> usize {
         self.body_capacity
     }

@@ -13,7 +13,6 @@ use crate::world::World;
 
 pub const PERSIST_SCHEMA: &str = "loam.physics.world";
 
-/// Bump on any change to the saved layout.
 pub const PERSIST_VERSION: u32 = 3;
 
 pub const PERSIST_CODEC: &str = "ron";

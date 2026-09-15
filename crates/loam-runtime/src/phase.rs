@@ -24,7 +24,6 @@ impl Phase {
     }
 }
 
-/// Where a new entry goes relative to a named entry of the same phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Order {
     Before(&'static str),

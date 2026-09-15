@@ -1,7 +1,3 @@
-//! Both halves of a faithful silhouette are checked: a sphere over ink lands on
-//! it, and a sphere over the counter of `O` falls through. A per-letter convex
-//! hull, or a bounding volume, passes the first and fails the second.
-
 use ab_glyph::FontRef;
 use glam::{Vec2, Vec4};
 

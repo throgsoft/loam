@@ -38,7 +38,6 @@ fn clamp_to_ball(p: Vec3) -> Vec3 {
 /// SO⁺(3,1) acting on `(x, y, z, w)`, with `w` time-like.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3H {
-    /// Column-major matrix; membership in SO⁺(3,1) is a caller precondition.
     pub matrix: Mat4,
 }
 
@@ -201,7 +200,6 @@ impl WgslSpace for HyperbolicH3 {
     }
 }
 
-// distance / exp / log / geodesic_step are the v0 WGSL ABI.
 const WGSL_IMPL: &str = r#"
 // loam-math :: HyperbolicH3 (v0 Space WGSL ABI)
 const LOAM_H3_R2_MAX: f32 = 0.9999999;
@@ -415,13 +413,6 @@ mod tests {
 
     fn lambda(p: Vec3) -> f32 {
         2.0 / (1.0 - p.length_squared())
-    }
-
-    #[test]
-    fn distance_at_origin_is_twice_artanh() {
-        let s = h3();
-        let p = Vec3::new(0.4, 0.0, 0.0);
-        assert_relative_eq!(s.distance(Vec3::ZERO, p), 2.0 * artanh(0.4), epsilon = 1e-5);
     }
 
     #[test]

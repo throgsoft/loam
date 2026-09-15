@@ -1,7 +1,3 @@
-//! The summary carries a synthetic `unscoped` row: `frame` minus the sections
-//! the frame loop opens inside it (`crate::FRAME_LOOP_SECTIONS`, crate-private
-//! so not linkable from here).
-
 use loam_egui::{cmd, Console};
 use loam_render::pass::{GpuTime, Section};
 use loam_time::frame_trace;
@@ -535,7 +531,6 @@ impl PerfOverlay {
     }
 }
 
-/// 256 samples × 16 B × three buffers is 12 KB of stack per `show`.
 pub const MAX_WINDOW: usize = 256;
 
 #[derive(Clone)]

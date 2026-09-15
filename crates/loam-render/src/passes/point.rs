@@ -21,7 +21,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A shared point overlay pass without a depth test.
 #[derive(Clone)]
 pub struct PointPass {
     name: &'static str,
@@ -44,7 +43,6 @@ impl PointPass {
         }
     }
 
-    /// Stores the eye and rebuilds the point mesh; the record uploads it again only when a position, color, or radius differs from the last publish or the device was rebuilt.
     pub fn publish(&self, eye: &Eye, points: &[PointRecord]) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;

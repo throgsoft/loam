@@ -1,7 +1,3 @@
-//! The flat 3-torus through the real GPU chain. `loam-math` pins the quotient
-//! on the CPU; what only execution can pin is that the unmodified march kernel
-//! crosses the gluing by calling `loam_exp` alone.
-
 use glam::Vec3;
 use loam_math::{FlatTorus3, QuotientSpace, Space, WgslSpace};
 use loam_render::raymarch::scene::{Scene, SceneNode};

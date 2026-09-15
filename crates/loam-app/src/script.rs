@@ -1,5 +1,3 @@
-//! Frame scripts play console lines at frame indices through the session console; a driver reports `Finished` after a settle margin, and the host keeps running because no exit channel exists.
-
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -104,7 +102,6 @@ impl ScriptDriver {
         self.frame
     }
 
-    /// The sink receives owned commands without a window or global inbox.
     pub fn advance_with(&mut self, mut submit: impl FnMut(CommandLine)) -> ScriptStatus {
         while self
             .steps
@@ -124,7 +121,6 @@ impl ScriptDriver {
         status
     }
 
-    /// Queues this frame's steps on the session console; the host dispatches them with the typed lines.
     pub fn advance_console<A: Stores>(&mut self, console: &mut SessionConsole<A>) -> ScriptStatus {
         self.advance_with(|command| {
             console.execute(&loam_egui::render_line(&command.name, &command.arg_refs()));

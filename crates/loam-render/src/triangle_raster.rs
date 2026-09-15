@@ -1,7 +1,3 @@
-//! Shares a depth attachment with [`crate::line_raster::LineRasterNode`]; the
-//! caller owns and clears it. No normal attribute: `FaceNormalLambert` derives
-//! the face normal from screen-space derivatives.
-
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use loam_math::{Projection, RasterizableSpace};
@@ -185,7 +181,6 @@ impl TriangleRasterNode {
         })
     }
 
-    /// Call before [`Self::record`] each frame.
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4) {
         let uniforms = TriangleRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),

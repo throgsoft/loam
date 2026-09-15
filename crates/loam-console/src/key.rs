@@ -1,5 +1,3 @@
-//! A frontend translates [`Key`] at its input boundary.
-
 /// Declaration order controls bind firing order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {

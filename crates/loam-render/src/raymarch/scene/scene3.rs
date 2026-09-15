@@ -1,6 +1,3 @@
-//! The depth-first walk emits children before their parent so referenced WGSL
-//! variables are always in scope.
-
 use std::boxed::Box;
 
 use glam::Vec3;

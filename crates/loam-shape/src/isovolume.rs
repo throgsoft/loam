@@ -95,7 +95,6 @@ impl<const D: usize> Isovolume<D> {
         self.occupied_cells
     }
 
-    /// Grid cell edge length.
     pub fn cell_size(&self) -> f32 {
         self.cell
     }
@@ -159,7 +158,6 @@ impl Isovolume<3> {
 }
 
 impl Isovolume<4> {
-    /// Same extrinsic-pose contract as the 3D form.
     pub fn colliders(&self) -> Vec<(Vec4, Shape)> {
         (0..self.boxes.len())
             .map(|i| {

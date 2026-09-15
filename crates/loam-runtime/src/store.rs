@@ -208,7 +208,6 @@ pub enum PartitionError {
 
 const NO_RECORD: u32 = u32::MAX;
 
-/// Stamped records keyed by entity, kept dense with a sparse position index.
 pub struct RecordBuffer<R> {
     rows: Vec<R>,
     entities: Vec<Entity>,
@@ -457,7 +456,6 @@ impl Tracking {
     }
 }
 
-/// Dense rows with a sparse index; a tracked store also keeps versions and bounded logs.
 pub struct Store<T> {
     scene: SceneId,
     dense: Vec<T>,

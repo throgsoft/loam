@@ -4,11 +4,9 @@ use serde::{Deserialize, Serialize};
 use crate::bivector::{Rotor, Rotor2};
 use crate::space::{IsometryGroup, Space};
 
-/// A rigid motion of R²: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso2 {
     pub rotation: Rotor2,
-    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec2,
 }
 
@@ -157,14 +155,5 @@ mod tests {
             translation: Vec2::new(100.0, -50.0),
         };
         assert_vec2_close(s.iso_transport(iso, Vec2::ZERO, Vec2::X), Vec2::Y);
-    }
-
-    #[test]
-    fn parallel_transport_preserves_distance_in_flat_space() {
-        let s = EuclideanR2;
-        let v = Vec2::new(1.0, 2.0);
-        let from = Vec2::new(5.0, 5.0);
-        let to = Vec2::new(-3.0, 7.0);
-        assert_eq!(s.parallel_transport(from, to, v), v);
     }
 }

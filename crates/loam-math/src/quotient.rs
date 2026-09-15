@@ -11,7 +11,6 @@ use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX
 use crate::spherical::Iso4;
 use crate::spherical_embedded::SphericalS3Embedded;
 
-/// A distance-preserving action on a quotient's covering space.
 pub trait CoveringSpace: Space {
     type CoverIso: Copy + Send + Sync + 'static;
 
@@ -31,15 +30,12 @@ pub trait CoveringSpace: Space {
     ) -> Self::Vector;
 }
 
-/// Cover actions select representatives; [`Self::face_pairings`] generate the deck group.
 pub trait QuotientSpace: CoveringSpace {
     /// Iteration order is part of the contract.
     fn face_pairings(&self) -> impl Iterator<Item = Self::CoverIso>;
 
-    /// Tests membership in the implementation's fundamental domain.
     fn in_fundamental_domain(&self, p: Self::Point) -> bool;
 
-    /// Returns a domain representative and the deck element that maps `p` to it.
     fn wrap_to_domain(&self, p: Self::Point) -> (Self::Point, Self::CoverIso);
 }
 
@@ -68,7 +64,6 @@ impl FlatTorus3 {
         self.cell
     }
 
-    /// Half the shortest lattice vector.
     pub fn injectivity_radius(&self) -> f32 {
         0.5 * self.cell.min_element()
     }
@@ -256,7 +251,6 @@ impl LensSpace {
         self.q
     }
 
-    /// `π/p`, half the shortest deck displacement.
     pub fn injectivity_radius(&self) -> f32 {
         PI / self.p as f32
     }
@@ -283,7 +277,6 @@ impl LensSpace {
         (step * k as f32, step * ((k * self.q as i64) % p) as f32)
     }
 
-    // At z1 = 0 the wedge does not select a unique orbit representative.
     fn wedge_parameter(&self, x: Vec4) -> f32 {
         x.y.atan2(x.x) * (self.p as f32 / TAU) + 0.5
     }

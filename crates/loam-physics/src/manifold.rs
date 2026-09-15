@@ -32,7 +32,6 @@ pub struct ContactPoint<S: PhysicsSpace> {
     /// Unit, from A toward B.
     pub normal: S::Vector,
     pub penetration: f32,
-    /// Persisted across frames; PGS clamps it to ≥ 0.
     pub normal_impulse: f32,
     /// Valid within one step only: the slide direction can flip.
     pub tangent_dir: S::Vector,
@@ -64,7 +63,6 @@ pub struct Manifold<S: PhysicsSpace> {
     pub body_b: BodyId,
     /// Set on first contact and kept.
     pub restitution: f32,
-    /// `len() ≤ MAX_POINTS`.
     pub points: Vec<ContactPoint<S>>,
 }
 

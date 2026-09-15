@@ -240,7 +240,6 @@ impl RayMarchNode {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }
 
-    /// Upload before recording to apply the current CPU uniforms.
     pub fn flush_uniforms(&self, queue: &Queue) {
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }

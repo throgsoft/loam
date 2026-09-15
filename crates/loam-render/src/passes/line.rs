@@ -18,7 +18,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A shared scene line pass with depth-tested blending.
 #[derive(Clone)]
 pub struct LinePass {
     name: &'static str,
@@ -40,7 +39,6 @@ impl LinePass {
         }
     }
 
-    /// Stores the eye and copies the segments; the record uploads them again only when they differ from the last publish or the device was rebuilt.
     pub fn publish(&self, eye: &Eye, segments: &[SegmentRecord]) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;

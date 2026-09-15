@@ -54,7 +54,6 @@ impl fmt::Display for DomainId {
     }
 }
 
-/// Names one domain of one session for typed access.
 pub struct DomainHandle<S> {
     id: DomainId,
     runtime: RuntimeId,
@@ -112,7 +111,6 @@ pub struct ChartPoint {
     pub coordinates: [f32; 4],
 }
 
-/// Heterogeneous commands; native systems use typed poses instead.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChartCommand {
     Place {
@@ -194,14 +192,11 @@ impl Instance {
     }
 }
 
-/// Where publication reads a segment's color; the default is the material's line color.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum EdgeShading {
     #[default]
     Material,
-    /// Two colors per prepared segment, its start then its end, in the prepared geometry's own order.
     Palette(PaletteId),
-    /// Reads `back` at `-extent` and `front` at `+extent` of an endpoint's last chart coordinate relative to the entity's origin, clamped between.
     Depth {
         back: [f32; 4],
         front: [f32; 4],
@@ -276,7 +271,6 @@ impl From<StoreError> for DomainError {
     }
 }
 
-/// A space a domain is built over, naming no isometry group; its poses cross the facade as chart data, and a space with a group implements `Homogeneous` as well.
 pub trait DomainSpace:
     Space<Vector: Mul<f32, Output = <Self as Space>::Vector>> + Send + Sync + Sized + 'static
 {
@@ -286,10 +280,8 @@ pub trait DomainSpace:
 
     fn origin(&self) -> Self::Point;
 
-    /// Names the first non-finite coordinate or reports the chart boundary; nothing is clamped.
     fn check(&self, point: Self::Point) -> Result<(), DomainError>;
 
-    /// The coordinates a chart point carries, 4 for R⁴ and 3 for R³ and H³.
     fn chart_dimension(&self) -> u32;
 
     fn chart_point(&self, point: Self::Point) -> ChartPoint;
@@ -311,36 +303,29 @@ pub trait DomainSpace:
 
     fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError>;
 
-    /// Metric distance across a chart radius `radius` around `at`; H³ converts at the chart origin whatever `at` is, so a displaced landmark's pick radius is the origin's.
     fn chart_reach(&self, at: Self::Point, radius: f32) -> f32;
 
     /// Arc length along `ray` into the metric ball of `radius` around `center`: zero from inside, `None` on a miss.
     fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32>;
 
-    /// What `place` needs from a pose, derived once per entity; a homogeneous space's isometry.
     fn prepare(&self, pose: &Pose<Self>) -> Self::Placement;
 
-    /// The checked point at `local` in the entity's frame, one isometry application per vertex on a homogeneous space.
     fn place(
         &self,
         placement: &Self::Placement,
         local: Self::Point,
     ) -> Result<Self::Point, DomainError>;
 
-    /// `point` in the entity's own frame; a blended chart refuses with `NoConvergence` when its log fails to converge and `ErrorBudget` when the metric error would exceed 1e-3, never returning a best guess.
     fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError>;
 
-    /// Homogeneous spaces cache the eye-relative isometry; blended spaces solve the local map per point.
     fn relative(&self, eye: &Pose<Self>, pose: &Pose<Self>) -> Result<Self::Relative, DomainError>;
 
-    /// `place` into the eye's frame through a prepared `relative`.
     fn place_relative(
         &self,
         relative: &Self::Relative,
         local: Self::Point,
     ) -> Result<Self::Point, DomainError>;
 
-    /// Transports `tangent`, given in the entity's frame, to the point at `local`, refusing a transport that does not converge with `NoConvergence`.
     fn carry(
         &self,
         pose: &Pose<Self>,
@@ -348,10 +333,8 @@ pub trait DomainSpace:
         tangent: Self::Vector,
     ) -> Result<Self::Vector, DomainError>;
 
-    /// The pose at `to` with the frame carried from the pose's point: transvection on a homogeneous space, per-column transport on a conformally flat chart.
     fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError>;
 
-    /// The pose after `dt` along `tangent`, read in the pose's frame at its point: `ChartBoundary` past the chart, `InvalidCoordinate` for a non-finite step, `NoConvergence` when a transport fails, and never a best guess.
     fn walk(
         &self,
         pose: &Pose<Self>,
@@ -365,13 +348,11 @@ pub trait DomainSpace:
     }
 }
 
-/// A domain space with an isometry group: `iso_of` and `pose_of` convert a pose to and from a group element, the `homogeneous_` helpers implement the capabilities through it, and the physics facility requires it.
 pub trait Homogeneous: DomainSpace + IsometryGroup {
     fn iso_of(&self, pose: &Pose<Self>) -> Self::Iso;
 
     fn pose_of(&self, iso: Self::Iso) -> Pose<Self>;
 
-    /// Moves the origin to `to` along their geodesic, carrying the frame by parallel transport.
     fn transvection(&self, to: Self::Point) -> Self::Iso;
 }
 
@@ -948,7 +929,6 @@ where
         self.conformal_factor(at).sqrt() * radius
     }
 
-    // Chart-flat: a straight chart ray against a chart-radius ball; no blended map lifts a ray yet, so nothing reaches it.
     fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32> {
         let unit = ray.direction.try_normalize()?;
         let chart_radius = radius / self.conformal_factor(center).sqrt();
@@ -1425,14 +1405,12 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
     }
 }
 
-/// A point and a frame orthonormal in the metric at that point, implying no isometry; a homogeneous space converts through `Homogeneous::iso_of`.
 pub struct Pose<S: Space> {
     pub point: S::Point,
     pub frame: S::Frame,
 }
 
 impl<S: Space> Pose<S> {
-    /// The space-defined reference frame at `point`.
     pub fn new(space: &S, point: S::Point) -> Self {
         Self {
             point,
@@ -1510,7 +1488,6 @@ pub trait Facility<S: DomainSpace>: Any + Send + 'static {
     }
 }
 
-/// A primitive, or an operator over the entities it lists.
 #[derive(Clone, Debug)]
 pub struct Field {
     pub kind: FieldKind,
@@ -1518,7 +1495,6 @@ pub struct Field {
     pub operands: Vec<Entity>,
 }
 
-/// Primitive buffer, postfix program, ball tree, and stack requirement for the fixed traverser.
 #[derive(Clone, Debug, Default)]
 pub struct FieldProgram {
     pub(crate) primitives: Vec<FieldPrimitive>,
@@ -1588,7 +1564,6 @@ struct TypedSnapshot<S: DomainSpace> {
     targets: Vec<ViewTarget>,
 }
 
-/// A domain read through the session; the lifetime hooks live on the crate-private owner trait.
 pub trait Domain: Send + 'static {
     fn id(&self) -> DomainId;
 
@@ -1643,7 +1618,6 @@ pub(crate) trait DomainOwner: Domain {
 
     fn snapshot(&self) -> DomainSnapshot;
 
-    /// Refuses whatever `restore` would refuse, changing nothing.
     fn check_restore(&self, from: &DomainSnapshot) -> Result<(), RestoreError>;
 
     fn restore(&mut self, from: &DomainSnapshot, scene: SceneId) -> Result<(), RestoreError>;
@@ -2043,7 +2017,6 @@ impl<S: DomainSpace> TypedDomain<S> {
             .remove(entity)
     }
 
-    /// `DomainSpace::walk` for `dt` along `velocity`, a tangent in the entity's frame at its point, with the frame carried by parallel transport.
     pub fn walk(
         &mut self,
         entity: Entity,
@@ -2055,7 +2028,6 @@ impl<S: DomainSpace> TypedDomain<S> {
         self.apply_pose(entity, next)
     }
 
-    /// `DomainSpace::moved` to `point`: transvection on a homogeneous space, per-column transport on a conformally flat chart.
     pub fn move_to(&mut self, entity: Entity, point: ChartPoint) -> Result<(), DomainError> {
         let target = self.space.point_from_chart(&point)?;
         if !self.poses.contains(entity) {
@@ -2635,7 +2607,6 @@ impl Domains {
         }
     }
 
-    /// Checks runtime, identity, and space once; the borrow scopes the typed traversal.
     pub fn typed<S: DomainSpace>(
         &mut self,
         handle: DomainHandle<S>,
@@ -2688,7 +2659,6 @@ impl Domains {
             .ok_or(DomainError::SpaceMismatch(handle.id))
     }
 
-    /// The nearest hit by the root eye's projective depth across every view whose image space reaches the root, lifted or not, each cast with the ray pulled into its space.
     pub fn pick(
         &self,
         views: &Views,
@@ -2698,7 +2668,6 @@ impl Domains {
         self.nearest(views, prepared, ndc, false)
     }
 
-    /// The same search as `pick` over only the views with a ray lift, so a grab lands on a view it can drag.
     pub fn pick_lifted(
         &self,
         views: &Views,

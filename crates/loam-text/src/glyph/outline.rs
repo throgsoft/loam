@@ -1,7 +1,3 @@
-//! `ab_glyph` hands back a flat `Vec<OutlineCurve>` with no contour separators:
-//! contours are delimited implicitly by a curve whose start point does not
-//! continue the previous curve's end.
-
 use ab_glyph::{OutlineCurve, Point};
 use glam::Vec2;
 

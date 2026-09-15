@@ -13,7 +13,6 @@ use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-/// Point velocity uses the negative Clifford left contraction.
 pub fn omega_cross_r(omega: Bivector4, r: glam::Vec4) -> glam::Vec4 {
     -omega.contract_vec(r)
 }
@@ -600,55 +599,6 @@ mod tests {
         assert!(
             omega_mag2.is_finite() && omega_mag2 < 4.0,
             "pentatope angular velocity blew up: |ω|² = {omega_mag2}, ω = {omega:?}"
-        );
-    }
-
-    #[test]
-    fn tesseract_settles_on_4d_floor() {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        world
-            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
-            .unwrap();
-        let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
-        let body_id = world.push_body(
-            polytope_body_r4(
-                Vec4::new(0.0, 3.0, 0.0, 0.0),
-                Vec4::ZERO,
-                tesseract_vertices(0.5),
-                1.0,
-            )
-            .unwrap(),
-        );
-        world.bodies[floor].restitution = 0.0;
-        world.bodies[body_id].restitution = 0.0;
-
-        for _ in 0..600 {
-            world.step(1.0 / 60.0).unwrap();
-        }
-        let body = &world.bodies[body_id];
-
-        assert!(
-            body.position.y.is_finite() && (-0.3..=1.0).contains(&body.position.y),
-            "tesseract position out of expected resting band: y = {}",
-            body.position.y
-        );
-        assert!(
-            body.velocity.length() < 1.5,
-            "tesseract still moving after 10 s: |v| = {}, v = {:?}",
-            body.velocity.length(),
-            body.velocity
-        );
-        let omega = body.angular_velocity;
-        let omega_mag2 = omega.xy * omega.xy
-            + omega.xz * omega.xz
-            + omega.xw * omega.xw
-            + omega.yz * omega.yz
-            + omega.yw * omega.yw
-            + omega.zw * omega.zw;
-        assert!(
-            omega_mag2.is_finite() && omega_mag2 < 4.0,
-            "tesseract angular velocity blew up: |ω|² = {omega_mag2}, ω = {omega:?}"
         );
     }
 

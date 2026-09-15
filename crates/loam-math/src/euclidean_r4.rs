@@ -1,5 +1,3 @@
-//! Rigid motions of R⁴ use rotors and translations; [`crate::Iso4`] acts on S³ instead.
-
 use std::borrow::Cow;
 
 use glam::Vec4;
@@ -11,9 +9,7 @@ use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX
 /// Rigid motion of R⁴; callers must keep the rotor unit length.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4Flat {
-    /// Applied before translation; composition does not renormalize.
     pub rotation: Rotor4,
-    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec4,
 }
 

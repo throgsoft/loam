@@ -1,5 +1,3 @@
-//! `cargo run --release -p loam-text --example glyph_collider_budget`.
-
 use std::time::Instant;
 
 use ab_glyph::FontRef;

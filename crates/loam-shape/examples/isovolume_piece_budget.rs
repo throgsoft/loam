@@ -1,5 +1,3 @@
-//! `cargo run --release -p loam-shape --example isovolume_piece_budget`.
-
 use std::time::Instant;
 
 use loam_shape::Isovolume;

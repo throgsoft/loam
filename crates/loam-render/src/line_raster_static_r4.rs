@@ -1,5 +1,3 @@
-//! For R⁴ line meshes uploaded once; the rotor and projection run on the GPU.
-
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
 use loam_math::Rotor4;

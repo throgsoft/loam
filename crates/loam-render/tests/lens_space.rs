@@ -1,7 +1,3 @@
-//! The lens space prelude through the real GPU chain: `loam-math` pins the
-//! quotient on the CPU, and this pins that the emitted WGSL is the same
-//! arithmetic, or the sim and the shader walk different manifolds.
-
 use glam::Vec4;
 use loam_math::{CoveringSpace, LensSpace, QuotientSpace, Space, SphericalS3Embedded};
 use loam_render::shader::{assemble_wgsl, validate_wgsl};

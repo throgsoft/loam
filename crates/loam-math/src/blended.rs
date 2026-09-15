@@ -30,7 +30,6 @@ pub trait ConformallyFlat: Space {
         -(4.0 / f_p) * (lap + 0.5 * grad_sq)
     }
 
-    /// Logarithm of the conformal factor: φ(p) = (1/2) ln f(p).
     fn conformal_log_half(&self, p: Vec3) -> f32 {
         0.5 * self.conformal_factor(p).ln()
     }
@@ -583,7 +582,6 @@ pub fn gauss_newton_log<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     gauss_newton_log_checked(space, from, to, n_steps, max_iters).0
 }
 
-/// Why `gauss_newton_log_checked` stopped short: a singular Jacobian at the cut locus, or no convergence within the iteration cap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogError {
     Singular,
@@ -862,7 +860,6 @@ fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {{
 
 pub const BLENDED_E3_H3_WGSL_RESIDUAL: f32 = 1.9e-2;
 
-/// WGSL distance and log approximate the CPU operations; the geodesic step integrates the same flow as `exp`.
 impl WgslSpace for BlendedSpace<crate::EuclideanR3, crate::HyperbolicH3, LinearBlendX> {
     fn wgsl_impl(&self) -> Cow<'static, str> {
         Cow::Owned(blended_e3_h3_linearx_wgsl(

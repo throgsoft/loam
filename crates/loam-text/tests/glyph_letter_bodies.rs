@@ -1,7 +1,3 @@
-//! A rigid body in `loam-physics` has one collider and no per-collider offset,
-//! which is what makes `GlyphSolid::colliders_4d`'s static-only contract a
-//! measurement rather than a caution.
-
 use ab_glyph::FontRef;
 use glam::{Vec2, Vec4, Vec4Swizzles};
 

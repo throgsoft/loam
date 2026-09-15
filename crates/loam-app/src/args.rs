@@ -37,7 +37,6 @@ impl Args {
         }
     }
 
-    /// Positionals are ignored, except the one right after a bare `--key`, which [`Args::bare_flag_value`] returns; the bare key itself is kept for [`Args::has_bare_flag`].
     pub fn from_argv<I, S>(argv: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -92,7 +91,6 @@ impl Args {
         }
     }
 
-    /// Always false on wasm32: the query surface has no bare form.
     pub fn has_bare_flag(&self, key: &str) -> bool {
         self.bare_flags.iter().any(|flag| flag == key)
     }
@@ -113,7 +111,6 @@ impl Args {
         self.get(key)?.parse().ok()
     }
 
-    /// Empty segments are filtered, so `?shapes=a,,b` yields `["a", "b"]`.
     pub fn get_many<'a>(&'a self, key: &str) -> Vec<&'a str> {
         match self.get(key) {
             Some(v) => v.split(',').filter(|s| !s.is_empty()).collect(),

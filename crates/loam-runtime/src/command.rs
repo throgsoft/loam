@@ -95,7 +95,6 @@ pub struct Reservation {
     pub entity: Entity,
 }
 
-/// App-defined; UI and scripts reach the session through these and the engine commands.
 pub trait AppCommand<A>: Send + 'static {
     fn name(&self) -> &'static str;
 

@@ -12,7 +12,6 @@ pub enum SceneNode4 {
     Leaf(Shape),
     Union(Box<SceneNode4>, Box<SceneNode4>),
     Intersection(Box<SceneNode4>, Box<SceneNode4>),
-    /// `max(left, −right)`: `right` is carved out of `left`.
     Difference(Box<SceneNode4>, Box<SceneNode4>),
 }
 

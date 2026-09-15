@@ -1,13 +1,10 @@
 use std::borrow::Cow;
 
-/// A metric and its connection in one coordinate representation.
 pub trait Space {
     type Point: Copy + Send + Sync + 'static;
     type Vector: Copy + Send + Sync + 'static;
-    /// An orthonormal frame at a point: a rotor or quaternion on a flat space, a group element whose translation column is the point on a curved homogeneous one, and a matrix over the conformal factor on a blended chart.
     type Frame: Copy + Send + Sync + 'static;
 
-    /// The space-defined orthonormal reference frame at `at`.
     fn frame_at(&self, at: Self::Point) -> Self::Frame;
 
     fn distance(&self, a: Self::Point, b: Self::Point) -> f32;
@@ -15,10 +12,8 @@ pub trait Space {
     /// Advances for unit time along the geodesic with initial velocity `v`.
     fn exp(&self, at: Self::Point, v: Self::Vector) -> Self::Point;
 
-    /// Inverse exponential map; each implementation defines its cut-locus behavior.
     fn log(&self, from: Self::Point, to: Self::Point) -> Self::Vector;
 
-    /// Uses the implementation's path; use [`Self::parallel_transport_along`] to specify a polyline.
     fn parallel_transport(
         &self,
         from: Self::Point,
@@ -47,7 +42,6 @@ pub trait Space {
     fn valid_point(&self, p: Self::Point) -> bool;
 }
 
-/// A distance-preserving group action, with tangent transport given by its differential.
 pub trait IsometryGroup: Space {
     type Iso: Copy + Send + Sync + 'static;
 

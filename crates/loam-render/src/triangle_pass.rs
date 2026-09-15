@@ -43,7 +43,6 @@ impl std::fmt::Display for GroundLocked {
 
 impl std::error::Error for GroundLocked {}
 
-/// The mesh and view drawn by the pass `pass` builds, plus a ground only when one was configured before the pass was built, which makes the pass a clearing Background pass; the mesh uploads once per `edit` and again after a device loss.
 #[derive(Clone, Default)]
 pub struct TriangleFeed {
     input: Rc<RefCell<Input>>,
@@ -79,7 +78,6 @@ impl TriangleFeed {
         Ok(())
     }
 
-    /// Bumps the revision, so the next record uploads the mesh.
     pub fn edit(&self, build: impl FnOnce(&mut TriangleMesh<3>)) {
         let mut input = self.input.borrow_mut();
         build(&mut input.mesh);

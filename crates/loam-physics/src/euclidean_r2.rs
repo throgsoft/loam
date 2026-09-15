@@ -187,8 +187,6 @@ fn sphere_sphere_r2(
     })
 }
 
-// SAT. Local vertices must be CCW, so outward edge normals are `(edge.y, −edge.x)`.
-
 use loam_math::Rotor;
 
 struct WorldPolygon<'a> {
@@ -420,7 +418,6 @@ pub fn regular_polygon_vertices(n: u32, r: f32) -> Vec<Vec2> {
         .collect()
 }
 
-/// `I = (m·r²/6)·(1 + 2·cos²(π/n))`.
 pub fn regular_polygon_inertia(mass: f32, n: u32, r: f32) -> f32 {
     use std::f32::consts::PI;
     let c = (PI / n as f32).cos();

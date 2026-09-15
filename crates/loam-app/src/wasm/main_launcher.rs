@@ -12,8 +12,6 @@ struct CanvasMetrics {
     scale: f32,
 }
 
-/// `host_id` is the `data-mode="manual"` container, `button_id` the overlay,
-/// `canvas_id` the `<canvas>` transferred via `transferControlToOffscreen`.
 type Pending<T> = Rc<RefCell<Option<T>>>;
 
 pub fn launch_on_click(host_id: &str, button_id: &str, canvas_id: &str) -> Result<()> {
@@ -268,7 +266,6 @@ fn dispatch_embed_activated(host_id: &str) {
     }
 }
 
-// Starts inactive until the launch click's broadcast.
 fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> Result<()> {
     let document = web_sys::window()
         .and_then(|w| w.document())

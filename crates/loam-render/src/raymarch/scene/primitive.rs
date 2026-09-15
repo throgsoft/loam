@@ -8,7 +8,6 @@ use loam_shape::Shape;
 use super::literal::wgsl_f32;
 use super::SENTINEL_DISTANCE;
 
-/// CPU evaluation and named WGSL functions share primitive support rules.
 pub trait Primitive {
     fn to_wgsl<S: WgslSpace>(&self, space: &S, name: &str) -> String;
 

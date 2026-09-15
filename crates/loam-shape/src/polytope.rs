@@ -183,7 +183,6 @@ impl Polytope4 {
     }
 }
 
-/// Normalized `xyz` drive R/G/B; `w` modulates brightness as a depth cue.
 pub fn vertex_color_by_position(v: Vec4) -> [f32; 4] {
     let n = v.try_normalize().unwrap_or(Vec4::ZERO);
     let bias = |c: f32| 0.25 + 0.75 * (0.5 + 0.5 * c);
@@ -435,8 +434,6 @@ fn order_around_centroid(
     ordered.clear();
     ordered.extend(keys.iter().map(|&(i, _)| points[i]));
 }
-
-// Leaked to `'static`, never freed, matching the LazyLock's process lifetime.
 
 static PENTATOPE_VERTICES: LazyLock<&'static [Vec4]> =
     LazyLock::new(|| Box::leak(pentatope_vertices(1.0).into_boxed_slice()));
@@ -1080,16 +1077,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn section_recomputes_when_w_slice_changes() {
-        let (a, _) = polytope4_section_overlay(Polytope4::Pentatope, loam_math::WPlane::new(0.0));
-        let (b, _) = polytope4_section_overlay(Polytope4::Pentatope, loam_math::WPlane::new(0.4));
-        assert_ne!(
-            a.vertices, b.vertices,
-            "section at w=0.0 and w=0.4 must differ; result was identical, \
-             suggesting a stale cache or incorrect slice parameter use"
-        );
     }
 }

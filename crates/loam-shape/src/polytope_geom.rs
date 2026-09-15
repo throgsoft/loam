@@ -16,7 +16,6 @@ pub fn pentatope_vertices(r: f32) -> Vec<Vec4> {
     ]
 }
 
-/// `(±r/2, ±r/2, ±r/2, ±r/2)` gives circumradius `r`.
 pub fn tesseract_vertices(r: f32) -> Vec<Vec4> {
     let a = r * 0.5;
     let mut v = Vec::with_capacity(16);
@@ -45,7 +44,6 @@ pub fn cell16_vertices(r: f32) -> Vec<Vec4> {
     ]
 }
 
-/// All 24 permutations of `(±r/√2, ±r/√2, 0, 0)`.
 pub fn cell24_vertices(r: f32) -> Vec<Vec4> {
     let k = r / 2.0_f32.sqrt();
     let mut v = Vec::with_capacity(24);
@@ -67,21 +65,20 @@ pub fn cell24_vertices(r: f32) -> Vec<Vec4> {
 fn even_permutations_4<T: Copy>(arr: [T; 4]) -> [[T; 4]; 12] {
     [
         [arr[0], arr[1], arr[2], arr[3]],
-        [arr[1], arr[2], arr[0], arr[3]], // (012)
-        [arr[2], arr[0], arr[1], arr[3]], // (021)
-        [arr[1], arr[3], arr[2], arr[0]], // (013)
-        [arr[3], arr[0], arr[2], arr[1]], // (031)
-        [arr[2], arr[1], arr[3], arr[0]], // (023)
-        [arr[3], arr[1], arr[0], arr[2]], // (032)
-        [arr[0], arr[2], arr[3], arr[1]], // (123)
-        [arr[0], arr[3], arr[1], arr[2]], // (132)
-        [arr[1], arr[0], arr[3], arr[2]], // (01)(23)
-        [arr[2], arr[3], arr[0], arr[1]], // (02)(13)
-        [arr[3], arr[2], arr[1], arr[0]], // (03)(12)
+        [arr[1], arr[2], arr[0], arr[3]],
+        [arr[2], arr[0], arr[1], arr[3]],
+        [arr[1], arr[3], arr[2], arr[0]],
+        [arr[3], arr[0], arr[2], arr[1]],
+        [arr[2], arr[1], arr[3], arr[0]],
+        [arr[3], arr[1], arr[0], arr[2]],
+        [arr[0], arr[2], arr[3], arr[1]],
+        [arr[0], arr[3], arr[1], arr[2]],
+        [arr[1], arr[0], arr[3], arr[2]],
+        [arr[2], arr[3], arr[0], arr[1]],
+        [arr[3], arr[2], arr[1], arr[0]],
     ]
 }
 
-// Wikipedia, 600-cell.
 /// Vertex set at circumradius 1 (Wikipedia "600-cell").
 pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
@@ -124,7 +121,6 @@ pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-// Wikipedia, 120-cell.
 /// Vertex set at circumradius `2√2` before rescaling (Wikipedia "120-cell").
 pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;

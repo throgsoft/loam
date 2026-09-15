@@ -1,6 +1,3 @@
-//! The `init` kind is handled by the worker entry instead: it carries an
-//! `OffscreenCanvas` transferable and triggers the one-time async wgpu setup.
-
 use anyhow::Result;
 use std::time::Duration;
 use wasm_bindgen::JsValue;

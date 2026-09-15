@@ -67,7 +67,6 @@ thread_local! {
     static FRAME_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Keep the scope on its recording thread until drop.
 #[cfg(feature = "frame-trace")]
 #[must_use = "Scope records on drop; binding it to `_` would record immediately"]
 pub struct Scope {

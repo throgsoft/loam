@@ -53,7 +53,6 @@ fn lock<A>(shared: &Shared<A>) -> MutexGuard<'_, State<A>> {
     shared.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-/// Queues commands for the next session boundary.
 pub struct CommandSender<A: Stores> {
     shared: Shared<A>,
     report: bool,

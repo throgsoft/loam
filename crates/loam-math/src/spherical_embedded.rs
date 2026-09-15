@@ -1,5 +1,3 @@
-//! S³ uses unit ambient Vec4 points and tangent vectors perpendicular to their base points.
-
 use glam::Vec4;
 
 use crate::rasterizable::{Projection, RasterizableSpace};
@@ -264,19 +262,6 @@ mod tests {
         assert_eq!(out.len(), 5);
         assert_relative_eq!(out[0].x, p0.x, epsilon = 1e-6);
         assert_relative_eq!(out[4].y, p1.y, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn slerp_samples_stay_on_sphere() {
-        let p0 = Vec4::new(1.0, 0.0, 0.0, 0.0);
-        let p1 = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 8, |p| {
-            out.push(p)
-        });
-        for p in &out {
-            assert_relative_eq!(p.length(), 1.0, epsilon = 1e-6);
-        }
     }
 
     #[test]

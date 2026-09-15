@@ -1,5 +1,3 @@
-//! Non-sRGB presentation uses an sRGB offscreen target and a final composite.
-
 use anyhow::Result;
 use std::fmt;
 use std::ops::Deref;
@@ -12,7 +10,6 @@ pub const GPU_TIMER_FEATURES: Features =
 #[derive(Clone, Debug)]
 pub struct FeatureRequest {
     pub required_features: Features,
-    /// Requested where the adapter has them; the rest are logged and skipped.
     pub optional_features: Features,
     pub required_limits: Limits,
 }
@@ -28,7 +25,6 @@ impl Default for FeatureRequest {
 }
 
 impl FeatureRequest {
-    /// The set to request: `required_features` plus the adapter's share of `optional_features`.
     pub fn resolve(
         &self,
         adapter_features: Features,
@@ -181,7 +177,6 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    /// `compatible_surface` is `None` for headless work.
     pub async fn new(
         instance: Instance,
         request: FeatureRequest,
@@ -205,7 +200,6 @@ impl GpuContext {
         })
     }
 
-    /// Poll at a frame boundary; a loss is reported once.
     pub fn take_device_loss(&self) -> Option<DeviceLoss> {
         self.loss.take_loss()
     }
@@ -365,7 +359,6 @@ impl RenderDevice {
         }
     }
 
-    /// Rebuilds the device and the presentation targets.
     pub async fn recover(&mut self) -> Result<()> {
         self.context.recover().await?;
         self.presentation.rebuild(&self.context.device, self.size);
