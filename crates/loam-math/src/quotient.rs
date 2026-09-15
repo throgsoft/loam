@@ -36,7 +36,6 @@ pub trait QuotientSpace: CoveringSpace {
     /// Iteration order is part of the contract.
     fn face_pairings(&self) -> impl Iterator<Item = Self::CoverIso>;
 
-    /// Tests membership in the implementation's fundamental domain.
     fn in_fundamental_domain(&self, p: Self::Point) -> bool;
 
     /// Returns a domain representative and the deck element that maps `p` to it.
@@ -283,7 +282,6 @@ impl LensSpace {
         (step * k as f32, step * ((k * self.q as i64) % p) as f32)
     }
 
-    // At z1 = 0 the wedge does not select a unique orbit representative.
     fn wedge_parameter(&self, x: Vec4) -> f32 {
         x.y.atan2(x.x) * (self.p as f32 / TAU) + 0.5
     }

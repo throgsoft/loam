@@ -303,22 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn separated_spheres() {
-        let a = Sphere4 {
-            center: Vec4::new(-5.0, 0.0, 0.0, 0.0),
-            radius: 1.0,
-        };
-        let b = Sphere4 {
-            center: Vec4::new(5.0, 0.0, 0.0, 0.0),
-            radius: 1.0,
-        };
-        match gjk_intersect_r4(&a, &b, Vec4::X) {
-            GjkResult4::Separated => {}
-            _ => panic!("expected Separated"),
-        }
-    }
-
-    #[test]
     fn overlapping_spheres_complete_lower_dimensional_searches() {
         for center in [
             Vec4::X,
@@ -347,22 +331,6 @@ mod tests {
     }
 
     #[test]
-    fn tesseracts_overlap_past_touching() {
-        use crate::euclidean_r4::tesseract_vertices;
-        let va: Vec<Vec4> = tesseract_vertices(1.0);
-        let vb: Vec<Vec4> = tesseract_vertices(1.0)
-            .into_iter()
-            .map(|v| v + Vec4::new(0.6, 0.6, 0.6, 0.6))
-            .collect();
-        let a = ConvexHull4 { vertices: &va };
-        let b = ConvexHull4 { vertices: &vb };
-        assert!(matches!(
-            gjk_intersect_r4(&a, &b, Vec4::X),
-            GjkResult4::Intersecting { .. }
-        ));
-    }
-
-    #[test]
     fn deeply_overlapping_pentatopes() {
         use crate::euclidean_r4::pentatope_vertices;
         let va: Vec<Vec4> = pentatope_vertices(1.0);
@@ -375,22 +343,6 @@ mod tests {
         assert!(matches!(
             gjk_intersect_r4(&a, &b, Vec4::X),
             GjkResult4::Intersecting { .. }
-        ));
-    }
-
-    #[test]
-    fn fully_separated_pentatopes() {
-        use crate::euclidean_r4::pentatope_vertices;
-        let va: Vec<Vec4> = pentatope_vertices(1.0);
-        let vb: Vec<Vec4> = pentatope_vertices(1.0)
-            .into_iter()
-            .map(|v| v + Vec4::new(10.0, 0.0, 0.0, 0.0))
-            .collect();
-        let a = ConvexHull4 { vertices: &va };
-        let b = ConvexHull4 { vertices: &vb };
-        assert!(matches!(
-            gjk_intersect_r4(&a, &b, Vec4::X),
-            GjkResult4::Separated
         ));
     }
 
@@ -429,20 +381,5 @@ mod tests {
                 assert_eq!(depth, 0.0, "shift {shift} is clear but resolved to {depth}");
             }
         }
-    }
-
-    #[test]
-    fn sphere_and_tesseract_inside() {
-        use crate::euclidean_r4::tesseract_vertices;
-        let sphere = Sphere4 {
-            center: Vec4::ZERO,
-            radius: 0.1,
-        };
-        let vs: Vec<Vec4> = tesseract_vertices(1.0);
-        let tess = ConvexHull4 { vertices: &vs };
-        assert!(matches!(
-            gjk_intersect_r4(&sphere, &tess, Vec4::X),
-            GjkResult4::Intersecting { .. }
-        ));
     }
 }

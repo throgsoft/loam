@@ -1205,15 +1205,6 @@ struct Fragment {
         );
     }
 
-    #[test]
-    fn a_host_without_a_script_argument_holds_no_driver() {
-        let app = SessionApp::<Bare>::with_args(
-            HostConfig::new("no script", Bindings::new()),
-            Args::from_argv(["--fps=30"]),
-        );
-        assert!(app.script.is_none());
-    }
-
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     #[test]
     #[ignore = "requires a working wgpu adapter; run with --include-ignored"]

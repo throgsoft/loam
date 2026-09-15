@@ -7,7 +7,6 @@ pub trait Space {
     /// An orthonormal frame at a point: a rotor or quaternion on a flat space, a group element whose translation column is the point on a curved homogeneous one, and a matrix over the conformal factor on a blended chart.
     type Frame: Copy + Send + Sync + 'static;
 
-    /// The space-defined orthonormal reference frame at `at`.
     fn frame_at(&self, at: Self::Point) -> Self::Frame;
 
     fn distance(&self, a: Self::Point, b: Self::Point) -> f32;

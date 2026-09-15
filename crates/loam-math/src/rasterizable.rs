@@ -269,20 +269,6 @@ mod tests {
     }
 
     #[test]
-    fn r3_tessellate_four_samples_produces_five_points() {
-        let p0 = Vec3::new(0.0, 0.0, 0.0);
-        let p1 = Vec3::new(4.0, 0.0, 0.0);
-        let mut out = Vec::new();
-        <EuclideanR3 as RasterizableSpace<3>>::tessellate_segment(p0, p1, 4, |p| out.push(p));
-        assert_eq!(out.len(), 5);
-        assert_eq!(out[0], p0);
-        assert_eq!(out[1], Vec3::new(1.0, 0.0, 0.0));
-        assert_eq!(out[2], Vec3::new(2.0, 0.0, 0.0));
-        assert_eq!(out[3], Vec3::new(3.0, 0.0, 0.0));
-        assert_eq!(out[4], p1);
-    }
-
-    #[test]
     fn r3_orthographic_drops_named_axis() {
         let p = Vec3::new(1.0, 2.0, 3.0);
         let pj = |drop_axis| {

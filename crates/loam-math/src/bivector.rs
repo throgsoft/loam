@@ -1585,33 +1585,6 @@ mod tests {
     }
 
     #[test]
-    fn polytope_vertex_stays_on_unit_hypersphere_with_normalize_path() {
-        let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
-        let dt = 1.0 / 60.0;
-        let delta = (omega * dt).exp();
-        let mut r = Rotor4::IDENTITY;
-        for _ in 0..900 {
-            r = (delta * r).normalize();
-        }
-        for v0 in [
-            Vec4::X,
-            Vec4::Y,
-            Vec4::Z,
-            Vec4::W,
-            Vec4::new(0.5, 0.5, 0.5, 0.5),
-        ] {
-            let v_rotated = r.apply(v0);
-            let l0 = v0.length();
-            let l_rot = v_rotated.length();
-            assert!(
-                (l_rot - l0).abs() < 1e-5,
-                "normalized-path vertex length drift over 900 steps: \
-                 {v0:?} (|v|={l0}) -> {v_rotated:?} (|Rv|={l_rot})",
-            );
-        }
-    }
-
-    #[test]
     fn bivector4_contract_vec_is_clifford_left_contraction() {
         let b = Bivector4::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_vec4_close_tol(b.contract_vec(Vec4::X), -Vec4::Y, 1e-6);

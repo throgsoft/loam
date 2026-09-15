@@ -149,7 +149,6 @@ pub struct StepCounters {
 struct ConstraintUnit {
     island: BodyId,
     key: PairKey,
-    /// Positions of `key.0` and `key.1`, in the key's order.
     dense: (usize, usize),
 }
 
@@ -171,7 +170,6 @@ pub struct World<S: PhysicsSpace> {
     fields: Vec<FieldEntry>,
     field_bindings: Vec<(BodyId, FieldId)>,
     geometry: GeometryStore,
-    /// PGS convergence depends on constraint order.
     pub(crate) manifolds: HashMap<PairKey, Manifold<S>>,
     manifold_order: Vec<PairKey>,
     manifold_pool: Vec<Manifold<S>>,
@@ -187,7 +185,6 @@ pub struct World<S: PhysicsSpace> {
     island_parent: Vec<u32>,
     island_labels: Vec<BodyId>,
     counters: StepCounters,
-    /// Same unit as [`SolveReport::residual`]: impulse, mass times speed.
     solver_tolerance: f32,
     report: SolveReport,
     scratch: Vec<IslandSolve<S>>,

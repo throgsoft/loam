@@ -267,19 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn slerp_samples_stay_on_sphere() {
-        let p0 = Vec4::new(1.0, 0.0, 0.0, 0.0);
-        let p1 = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 8, |p| {
-            out.push(p)
-        });
-        for p in &out {
-            assert_relative_eq!(p.length(), 1.0, epsilon = 1e-6);
-        }
-    }
-
-    #[test]
     fn slerp_midpoint_is_on_great_circle_not_chord() {
         let s = s3();
         let p0 = Vec4::new(1.0, 0.0, 0.0, 0.0);

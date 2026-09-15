@@ -44,10 +44,8 @@ pub struct ContactInfo {
 
 #[derive(Clone, Copy, Debug)]
 struct Face {
-    /// Wound so `normal` points outward.
     v: [usize; 3],
     normal: Vec3,
-    /// Origin to face plane, always ≥ 0.
     distance: f32,
 }
 
@@ -55,7 +53,6 @@ struct Polytope {
     vertices: Vec<MinkowskiPoint>,
     faces: Vec<Face>,
     horizon: Vec<(usize, usize)>,
-    /// Seed centroid; stays interior under every convex expansion.
     interior: glam::Vec3,
     thresholds: Thresholds,
 }

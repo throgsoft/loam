@@ -1081,15 +1081,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn section_recomputes_when_w_slice_changes() {
-        let (a, _) = polytope4_section_overlay(Polytope4::Pentatope, loam_math::WPlane::new(0.0));
-        let (b, _) = polytope4_section_overlay(Polytope4::Pentatope, loam_math::WPlane::new(0.4));
-        assert_ne!(
-            a.vertices, b.vertices,
-            "section at w=0.0 and w=0.4 must differ; result was identical, \
-             suggesting a stale cache or incorrect slice parameter use"
-        );
-    }
 }

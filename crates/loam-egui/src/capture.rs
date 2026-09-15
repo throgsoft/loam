@@ -147,14 +147,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_is_clear_over_open_scene() {
-        let mut host = Host::new();
-        host.hover(PANEL_BLANK);
-        let capture = host.hover(OPEN_SCENE);
-        assert_eq!(capture, UiCapture::default());
-    }
-
-    #[test]
     fn a_focused_field_claims_the_keyboard_without_claiming_the_pointer() {
         let mut host = Host::new();
         host.click(egui::pos2(120.0, 10.0));

@@ -81,7 +81,6 @@ fn even_permutations_4<T: Copy>(arr: [T; 4]) -> [[T; 4]; 12] {
     ]
 }
 
-// Wikipedia, 600-cell.
 /// Vertex set at circumradius 1 (Wikipedia "600-cell").
 pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
@@ -124,7 +123,6 @@ pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-// Wikipedia, 120-cell.
 /// Vertex set at circumradius `2√2` before rescaling (Wikipedia "120-cell").
 pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;

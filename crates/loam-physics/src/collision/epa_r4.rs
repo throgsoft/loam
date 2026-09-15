@@ -42,7 +42,6 @@ struct Polytope4 {
     vertices: Vec<MinkowskiPoint4>,
     faces: Vec<Face4>,
     horizon: Vec<Triangle>,
-    /// Seed centroid; stays interior since expansion only adds vertices.
     centroid: Vec4,
     thresholds: Thresholds,
 }

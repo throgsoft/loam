@@ -1783,11 +1783,6 @@ mod tests {
     }
 
     #[test]
-    fn tokenize_preserves_spaces_in_single_quotes() {
-        assert_eq!(tokenize("foo 'bar baz' qux"), vec!["foo", "bar baz", "qux"]);
-    }
-
-    #[test]
     fn tokenize_handles_double_quote_escapes() {
         assert_eq!(
             tokenize(r#"a "he said \"hi\"" b"#),

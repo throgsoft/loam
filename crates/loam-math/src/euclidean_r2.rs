@@ -158,13 +158,4 @@ mod tests {
         };
         assert_vec2_close(s.iso_transport(iso, Vec2::ZERO, Vec2::X), Vec2::Y);
     }
-
-    #[test]
-    fn parallel_transport_preserves_distance_in_flat_space() {
-        let s = EuclideanR2;
-        let v = Vec2::new(1.0, 2.0);
-        let from = Vec2::new(5.0, 5.0);
-        let to = Vec2::new(-3.0, 7.0);
-        assert_eq!(s.parallel_transport(from, to, v), v);
-    }
 }

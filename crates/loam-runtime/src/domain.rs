@@ -948,7 +948,6 @@ where
         self.conformal_factor(at).sqrt() * radius
     }
 
-    // Chart-flat: a straight chart ray against a chart-radius ball; no blended map lifts a ray yet, so nothing reaches it.
     fn hit_ball(&self, ray: &DomainRay<Self>, center: Self::Point, radius: f32) -> Option<f32> {
         let unit = ray.direction.try_normalize()?;
         let chart_radius = radius / self.conformal_factor(center).sqrt();

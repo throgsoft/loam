@@ -44,7 +44,6 @@ pub enum GlyphError {
 /// All lengths are world units except [`Self::flatten_tolerance_em`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlyphParams {
-    /// World size of one em.
     pub em_size: f32,
     /// Extent along `z`, centred on `z = 0`.
     pub depth: f32,
