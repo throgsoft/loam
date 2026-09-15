@@ -3,14 +3,11 @@ use std::borrow::Cow;
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
 
-/// A rigid motion of R³: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3 {
-    /// Applied before translation; composition does not renormalize.
     pub rotation: Quat,
-    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec3,
 }
 
@@ -41,6 +38,11 @@ pub struct EuclideanR3;
 impl Space for EuclideanR3 {
     type Point = Vec3;
     type Vector = Vec3;
+    type Frame = Quat;
+
+    fn frame_at(&self, _at: Vec3) -> Quat {
+        Quat::IDENTITY
+    }
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         (a - b).length()
@@ -60,6 +62,14 @@ impl Space for EuclideanR3 {
 
     fn is_chart_flat(&self) -> bool {
         true
+    }
+
+    fn chart_envelope(&self) -> f32 {
+        f32::INFINITY
+    }
+
+    fn valid_point(&self, p: Vec3) -> bool {
+        p.is_finite()
     }
 }
 
@@ -96,19 +106,27 @@ impl IsometryGroup for EuclideanR3 {
 
 impl WgslSpace for EuclideanR3 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Borrowed(WGSL_IMPL)
+        Cow::Owned(format!(
+            "const LOAM_MAX_ARC: f32 = {FLAT_CHART_MAX_ARC:?};{WGSL_IMPL}"
+        ))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
     }
 }
 
 // `from` is a WGSL reserved keyword (WGSL spec §3.2); use `p_from`/`p_to`.
 const WGSL_IMPL: &str = r#"
 // loam-math :: EuclideanR3 (v0 Space WGSL ABI)
-const LOAM_MAX_ARC: f32 = 1e9;
 fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 { return length(a - b); }
 fn loam_origin_distance(p: vec3<f32>) -> f32 { return length(p); }
 fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> { return at + v; }
 fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> { return p_to - p_from; }
-fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> { return v; }
+struct LoamGeodesicStep { p: vec3<f32>, v: vec3<f32> }
+fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {
+    return LoamGeodesicStep(loam_exp(p, v * s), v);
+}
 "#;
 
 #[cfg(test)]

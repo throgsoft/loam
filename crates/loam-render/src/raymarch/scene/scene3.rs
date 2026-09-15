@@ -1,0 +1,186 @@
+use std::boxed::Box;
+
+use glam::Vec3;
+
+use super::literal::wgsl_f32;
+use super::primitive::Primitive;
+use loam_math::{Space, WgslSpace};
+pub use loam_shape::Shape as PrimitiveKind;
+
+#[derive(Debug, Clone)]
+pub enum SceneNode {
+    Leaf(PrimitiveKind),
+    Union(Box<SceneNode>, Box<SceneNode>),
+    Intersection(Box<SceneNode>, Box<SceneNode>),
+    /// `max(left, -right)`: the right subtree is carved from the left.
+    Difference(Box<SceneNode>, Box<SceneNode>),
+    /// `k` is the blend radius in Space units.
+    SmoothUnion {
+        k: f32,
+        left: Box<SceneNode>,
+        right: Box<SceneNode>,
+    },
+}
+
+impl SceneNode {
+    pub fn sphere(center: Vec3, radius: f32) -> Self {
+        SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
+    }
+
+    /// Emits chart-coord `dot(p, n) - d` in flat charts and [`super::SENTINEL_DISTANCE`] in curved ones.
+    pub fn plane(normal: Vec3, offset: f32) -> Self {
+        SceneNode::Leaf(PrimitiveKind::HalfSpace { normal, offset })
+    }
+
+    pub fn box_(half_extents: Vec3) -> Self {
+        SceneNode::Leaf(PrimitiveKind::Box3 { half_extents })
+    }
+
+    pub fn cube(half_side: f32) -> Self {
+        SceneNode::Leaf(PrimitiveKind::Box3 {
+            half_extents: Vec3::splat(half_side),
+        })
+    }
+
+    pub fn union(self, other: SceneNode) -> Self {
+        SceneNode::Union(Box::new(self), Box::new(other))
+    }
+
+    pub fn intersect(self, other: SceneNode) -> Self {
+        SceneNode::Intersection(Box::new(self), Box::new(other))
+    }
+
+    pub fn subtract(self, other: SceneNode) -> Self {
+        SceneNode::Difference(Box::new(self), Box::new(other))
+    }
+
+    pub fn smooth_union(self, other: SceneNode, k: f32) -> Self {
+        SceneNode::SmoothUnion {
+            k,
+            left: Box::new(self),
+            right: Box::new(other),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Scene {
+    pub root: SceneNode,
+}
+
+impl Scene {
+    pub fn new(root: SceneNode) -> Self {
+        Self { root }
+    }
+
+    /// Emits `loam_scene_sdf` and helpers; prepend the space prelude.
+    pub fn to_wgsl<S: WgslSpace>(&self, space: &S) -> String {
+        let mut helpers = String::new();
+        let mut body = String::new();
+        let mut counter = 0u32;
+
+        let result_var = emit_node(&self.root, space, &mut counter, &mut helpers, &mut body);
+
+        format!(
+            "// ---- loam-scene scene (typed) ----\n\
+             {helpers}\
+             fn loam_scene_sdf(p: vec3<f32>) -> f32 {{\n\
+             {body}\
+             \treturn {result_var};\n\
+             }}\n"
+        )
+    }
+
+    /// Evaluates the scene without heap allocation.
+    pub fn eval<S: Space<Point = Vec3, Vector = Vec3>>(&self, space: &S, p: Vec3) -> f32 {
+        eval_node(&self.root, space, p)
+    }
+}
+
+fn emit_node<S: WgslSpace>(
+    node: &SceneNode,
+    space: &S,
+    counter: &mut u32,
+    helpers: &mut String,
+    body: &mut String,
+) -> String {
+    let idx = *counter;
+    *counter += 1;
+
+    match node {
+        SceneNode::Leaf(prim) => {
+            let fn_name = format!("sdf_p{idx}");
+            helpers.push_str(&prim.to_wgsl(space, &fn_name));
+            let var = format!("d{idx}");
+            body.push_str(&format!("\tlet {var} = {fn_name}(p);\n"));
+            var
+        }
+
+        SceneNode::Union(left, right) => {
+            let lv = emit_node(left, space, counter, helpers, body);
+            let rv = emit_node(right, space, counter, helpers, body);
+            let var = format!("d{idx}");
+            body.push_str(&format!("\tlet {var} = min({lv}, {rv});\n"));
+            var
+        }
+
+        SceneNode::Intersection(left, right) => {
+            let lv = emit_node(left, space, counter, helpers, body);
+            let rv = emit_node(right, space, counter, helpers, body);
+            let var = format!("d{idx}");
+            body.push_str(&format!("\tlet {var} = max({lv}, {rv});\n"));
+            var
+        }
+
+        SceneNode::Difference(left, right) => {
+            let lv = emit_node(left, space, counter, helpers, body);
+            let rv = emit_node(right, space, counter, helpers, body);
+            let var = format!("d{idx}");
+            body.push_str(&format!("\tlet {var} = max({lv}, -({rv}));\n"));
+            var
+        }
+
+        SceneNode::SmoothUnion { k, left, right } => {
+            let fn_name = format!("sdf_smin{idx}");
+            helpers.push_str(&smooth_min_fn(&fn_name, *k));
+            let lv = emit_node(left, space, counter, helpers, body);
+            let rv = emit_node(right, space, counter, helpers, body);
+            let var = format!("d{idx}");
+            body.push_str(&format!("\tlet {var} = {fn_name}({lv}, {rv});\n"));
+            var
+        }
+    }
+}
+
+fn smooth_min_fn(name: &str, k: f32) -> String {
+    let k = wgsl_f32(k);
+    format!(
+        "fn {name}(a: f32, b: f32) -> f32 {{\n\
+         \tlet h = clamp(0.5 + 0.5 * (b - a) / ({k}), 0.0, 1.0);\n\
+         \treturn mix(b, a, h) - ({k}) * h * (1.0 - h);\n\
+         }}\n",
+    )
+}
+
+fn eval_node<S: Space<Point = Vec3, Vector = Vec3>>(node: &SceneNode, space: &S, p: Vec3) -> f32 {
+    match node {
+        SceneNode::Leaf(prim) => prim.eval(space, p),
+
+        SceneNode::Union(left, right) => eval_node(left, space, p).min(eval_node(right, space, p)),
+
+        SceneNode::Intersection(left, right) => {
+            eval_node(left, space, p).max(eval_node(right, space, p))
+        }
+
+        SceneNode::Difference(left, right) => {
+            eval_node(left, space, p).max(-eval_node(right, space, p))
+        }
+
+        SceneNode::SmoothUnion { k, left, right } => {
+            let a = eval_node(left, space, p);
+            let b = eval_node(right, space, p);
+            let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
+            (b * (1.0 - h) + a * h) - k * h * (1.0 - h)
+        }
+    }
+}

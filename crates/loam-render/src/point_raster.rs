@@ -37,13 +37,12 @@ impl Default for PointRasterUniforms {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
-struct PointInstance {
-    pos: [f32; 3],
-    radius_px: f32,
-    color: [f32; 4],
+pub struct PointInstance {
+    pub pos: [f32; 3],
+    pub radius_px: f32,
+    pub color: [f32; 4],
 }
 
-/// Construct once per `RenderDevice`.
 pub struct PointRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -63,7 +62,7 @@ impl PointRasterNode {
         device: &Device,
         surface_format: TextureFormat,
         depth: crate::DepthMode,
-        sample_count: u32,
+        convention: crate::DepthConvention,
     ) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("point_raster shader"),
@@ -173,15 +172,9 @@ impl PointRasterNode {
                 topology: PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: depth.format().map(|format| DepthStencilState {
-                format,
-                depth_write_enabled: depth.writes(),
-                depth_compare: CompareFunction::LessEqual,
-                stencil: StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            depth_stencil: depth_state(depth, convention),
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,
@@ -221,7 +214,6 @@ impl PointRasterNode {
         }
     }
 
-    /// Call before [`Self::record`] each frame.
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4, viewport_size: Vec2) {
         let uniforms = PointRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -261,7 +253,9 @@ impl PointRasterNode {
             .zip(mesh.sizes.iter())
         {
             let p_native = S::array_to_point(*p);
-            let p3 = S::project_point(p_native, projection);
+            let Some(p3) = S::project_point(p_native, projection) else {
+                continue;
+            };
             if !p3.is_finite() {
                 continue;
             }
@@ -287,6 +281,13 @@ impl PointRasterNode {
             queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(instances));
         }
         self.instance_count = instances.len() as u32;
+    }
+
+    /// Draws `count` instances from `instances`; a later `upload` allocates its own buffer instead of writing into this one.
+    pub fn draw_buffer(&mut self, instances: Buffer, count: u32) {
+        self.instance_buf = instances;
+        self.instance_capacity = 0;
+        self.instance_count = count;
     }
 
     /// Records into the caller's encoder with `LoadOp::Load` on both attachments; `depth_view` is `Some` iff the pipeline has depth.
@@ -343,5 +344,76 @@ impl PointRasterNode {
         rp.set_vertex_buffer(1, self.instance_buf.slice(..));
         rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
         rp.draw_indexed(0..6, 0, 0..self.instance_count);
+    }
+}
+
+fn depth_state(
+    depth: crate::DepthMode,
+    convention: crate::DepthConvention,
+) -> Option<DepthStencilState> {
+    depth.format().map(|format| DepthStencilState {
+        format,
+        depth_write_enabled: depth.writes(),
+        depth_compare: convention.compare(CompareFunction::LessEqual),
+        stencil: StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use glam::Vec3;
+    use loam_math::Iso3;
+    use loam_runtime::Eye;
+
+    use crate::depth_passes;
+    use crate::view::{eye_relative, root_view_projection, DEPTH_FORMAT};
+    use crate::{DepthConvention, DepthMode};
+
+    #[test]
+    fn point_raster_hides_the_nearer_point_under_the_convention_its_pipeline_declares() {
+        let eye = Eye {
+            position: [0.0, 0.0, 3.0],
+            ..Eye::default()
+        };
+        let standing = Iso3 {
+            rotation: glam::Quat::IDENTITY,
+            translation: Vec3::from(eye.position),
+        };
+        let near_point = Vec3::new(0.2, -0.1, 0.0);
+        let far_point = Vec3::new(0.2, -0.1, -4.0);
+
+        for (convention, projection) in [
+            (DepthConvention::ReversedZ, root_view_projection(&eye)),
+            (
+                DepthConvention::StandardZ,
+                Mat4::perspective_rh(eye.fov_y, eye.aspect, eye.near, eye.far)
+                    * eye_relative(standing),
+            ),
+        ] {
+            let depth = |point: Vec3| {
+                let clip = projection * point.extend(1.0);
+                clip.z / clip.w
+            };
+            let state = depth_state(
+                DepthMode::ReadWrite {
+                    format: DEPTH_FORMAT,
+                },
+                convention,
+            )
+            .unwrap();
+            assert!(
+                depth_passes(state.depth_compare, depth(near_point), depth(far_point)),
+                "{convention:?} with {:?} hides the nearer point",
+                state.depth_compare
+            );
+            assert!(!depth_passes(
+                state.depth_compare,
+                depth(far_point),
+                depth(near_point)
+            ));
+        }
     }
 }

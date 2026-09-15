@@ -42,7 +42,6 @@ impl CommandQueue {
         }
     }
 
-    /// Draining retains the allocation for the next batch.
     pub fn drain(&mut self) -> std::vec::Drain<'_, CommandLine> {
         self.pending.drain(..)
     }

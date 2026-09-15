@@ -33,11 +33,10 @@ fn loam_march_geodesic(ro: vec3<f32>, rd: vec3<f32>, ball_scale: f32) -> vec4<f3
         if t_scene > 40.0 || t_arc > LOAM_MAX_ARC {
             return vec4<f32>(0.0, 0.0, 0.0, -1.0);
         }
-        let step   = max(d * 0.85, min_step);
-        let next_p = loam_exp(p, v * step);
-        let next_v = loam_parallel_transport(p, next_p, v);
-        p = next_p;
-        v       = select(v, next_v, dot(next_v, next_v) > 1e-12);
+        let step    = max(d * 0.85, min_step);
+        let stepped = loam_geodesic_step(p, v, step);
+        p = stepped.p;
+        v       = select(v, stepped.v, dot(stepped.v, stepped.v) > 1e-12);
         t_scene = t_scene + step / scale;
         t_arc   = t_arc   + step;
     }

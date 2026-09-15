@@ -1,9 +1,7 @@
-//! The summary carries a synthetic `unscoped` row: `frame` minus the sections
-//! the frame loop opens inside it (`crate::FRAME_LOOP_SECTIONS`, crate-private
-//! so not linkable from here).
-
 use loam_egui::{cmd, Console};
+use loam_render::pass::{GpuTime, Section};
 use loam_time::frame_trace;
+use std::sync::Mutex;
 use std::time::Duration;
 
 fn fmt_dur(d: std::time::Duration) -> String {
@@ -89,6 +87,57 @@ fn print_summary(out: &mut loam_egui::ConsoleWriter) {
     }
 }
 
+#[derive(Default)]
+struct Presentation {
+    sections: Vec<Section>,
+    uploads: u64,
+}
+
+static PRESENTATION: Mutex<Option<Presentation>> = Mutex::new(None);
+
+fn presentation<R>(read: impl FnOnce(&mut Option<Presentation>) -> R) -> R {
+    let mut held = match PRESENTATION.lock() {
+        Ok(held) => held,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    read(&mut held)
+}
+
+pub(crate) fn record_presentation(sections: &[Section], uploads: u64) {
+    presentation(|held| {
+        let held = held.get_or_insert_with(Presentation::default);
+        held.sections.clear();
+        held.sections.extend_from_slice(sections);
+        held.uploads = uploads;
+    });
+}
+
+fn print_passes(out: &mut loam_egui::ConsoleWriter) {
+    presentation(|held| {
+        let Some(held) = held.as_ref() else {
+            out.line("trace: the presenter has not recorded a frame yet");
+            return;
+        };
+        out.line(format!(
+            "trace passes ({} sections, {} record uploads):",
+            held.sections.len(),
+            held.uploads,
+        ));
+        for section in &held.sections {
+            let gpu = match section.gpu {
+                GpuTime::Measured(elapsed) => fmt_dur(elapsed),
+                GpuTime::Unavailable => "unavailable".to_owned(),
+            };
+            out.line(format!(
+                "  {:<18} cpu {:>10} gpu {:>12}",
+                truncate(section.name, 18),
+                fmt_dur(section.cpu),
+                gpu,
+            ));
+        }
+    });
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_owned()
@@ -145,8 +194,12 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
             "show CPU per-section frame timings (collected by loam-time::frame_trace)",
             |args, _ctx: &mut Ctx, out| {
                 match args.first().copied() {
-                    None | Some("summary") => print_summary(out),
+                    None | Some("summary") => {
+                        print_summary(out);
+                        print_passes(out);
+                    }
                     Some("last") => print_last(out),
+                    Some("passes") => print_passes(out),
                     Some("dump") => {
                         let summary = format_summary();
                         tracing::info!("\n{summary}");
@@ -173,14 +226,14 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
                     }
                     Some(other) => {
                         out.line(format!(
-                            "trace: unknown subcommand '{other}' (try summary | last | dump | clear | cap)"
+                            "trace: unknown subcommand '{other}' (try summary | last | passes | dump | clear | cap)"
                         ));
                     }
                 }
                 Ok(())
             },
         )
-        .with_args(&[&["summary", "last", "dump", "clear", "cap"]]),
+        .with_args(&[&["summary", "last", "passes", "dump", "clear", "cap"]]),
     );
 }
 
@@ -478,7 +531,6 @@ impl PerfOverlay {
     }
 }
 
-/// 256 samples × 16 B × three buffers is 12 KB of stack per `show`.
 pub const MAX_WINDOW: usize = 256;
 
 #[derive(Clone)]
@@ -609,8 +661,8 @@ mod tests {
 
     #[test]
     fn unscoped_ignores_sections_nested_inside_frame_loop_sections() {
-        let flat = frame_of(&[("frame", 4000), ("app-record", 130)]);
-        let nested = frame_of(&[("frame", 4000), ("app-record", 130), ("pp-sdf", 94)]);
+        let flat = frame_of(&[("frame", 4000), ("presentation", 130)]);
+        let nested = frame_of(&[("frame", 4000), ("presentation", 130), ("pp-sdf", 94)]);
         assert_eq!(unscoped(&nested), unscoped(&flat));
     }
 
@@ -618,7 +670,7 @@ mod tests {
     fn unscoped_ignores_the_sections_that_do_not_nest_in_the_frame() {
         let frame = frame_of(&[
             ("frame", 4000),
-            ("app-record", 130),
+            ("presentation", 130),
             ("between-frames", 4130),
             ("idle", 110),
             ("gpu-total", 800),
@@ -628,13 +680,13 @@ mod tests {
 
     #[test]
     fn unscoped_is_absent_for_a_frame_without_a_frame_section() {
-        let frame = frame_of(&[("app-record", 130), ("present", 40)]);
+        let frame = frame_of(&[("presentation", 130), ("present", 40)]);
         assert_eq!(unscoped(&frame), None);
     }
 
     #[test]
     fn unscoped_saturates_at_zero_when_the_children_overrun_the_parent() {
-        let frame = frame_of(&[("frame", 100), ("app-record", 130)]);
+        let frame = frame_of(&[("frame", 100), ("presentation", 130)]);
         assert_eq!(unscoped(&frame), Some(Duration::ZERO));
     }
 

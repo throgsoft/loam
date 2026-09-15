@@ -1,5 +1,3 @@
-//! Frame-indexed animation samples; callers decide how to apply them.
-
 use std::num::NonZeroU32;
 
 use glam::Vec4;
@@ -289,7 +287,6 @@ impl Playhead {
 #[must_use]
 pub enum Drive<T> {
     Host,
-    /// Overrides the host animation for this channel.
     Directed(T),
 }
 

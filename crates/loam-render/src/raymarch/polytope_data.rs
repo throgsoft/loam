@@ -1,5 +1,3 @@
-//! Convex distance bounds for unit-circumradius polytopes.
-
 use loam_shape::polytope::Polytope4;
 use std::fmt::Write;
 

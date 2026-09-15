@@ -3,9 +3,13 @@
 //! non-Latin text.
 
 pub mod glyph;
+pub mod pass;
+
+pub use pass::{TextDraw, TextPass};
 
 use std::collections::HashMap;
 
+pub use ab_glyph;
 use ab_glyph::{Font, FontRef, Glyph, GlyphId, Point, ScaleFont};
 use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
@@ -114,14 +118,12 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
-    /// `sample_count` must match the render target [`record`](TextRenderer::record) draws into, MSAA included.
     pub fn new(
         device: &Device,
         queue: &Queue,
         surface_format: TextureFormat,
         font_bytes: &[u8],
         bake_size_px: f32,
-        sample_count: u32,
     ) -> Result<Self> {
         validate_bake_size(bake_size_px)?;
         let font = FontRef::try_from_slice(font_bytes)
@@ -274,7 +276,7 @@ impl TextRenderer {
             },
             depth_stencil: None,
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,
@@ -317,7 +319,7 @@ impl TextRenderer {
         );
     }
 
-    /// Draws and clears the text queue; record the MSAA resolve after this pass.
+    /// Draws and clears the text queue.
     pub fn record(
         &mut self,
         device: &Device,
@@ -470,7 +472,6 @@ fn is_printable_ascii(c: char) -> bool {
     ('\u{20}'..='\u{7E}').contains(&c)
 }
 
-/// Accepts printable ASCII and newlines, matching the HUD layout.
 pub fn is_renderable(text: &str) -> bool {
     text.chars().all(|c| c == '\n' || is_printable_ascii(c))
 }

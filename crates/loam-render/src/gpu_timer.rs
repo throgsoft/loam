@@ -1,188 +1,154 @@
 //! wgpu rejects `MAP_READ | QUERY_RESOLVE` on one buffer and locks a whole
-//! buffer while any slice is mapped, so one resolve buffer feeds a map buffer
-//! per slot.
+//! buffer while any slice is mapped, so the resolve buffer copies into a map buffer.
 
-use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use wgpu::{
     Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Features, MapMode, QuerySet,
-    QuerySetDescriptor, QueryType, Queue, QUERY_RESOLVE_BUFFER_ALIGNMENT,
+    QuerySetDescriptor, QueryType, Queue,
 };
 
-const FRAMES_IN_FLIGHT: usize = 3;
+const MAX_SECTIONS: usize = 16;
 
-const BYTES_PER_SLOT: u64 = 16;
+const SECTION_BYTES: u64 = 16;
 
-const SLOT_STRIDE_BYTES: u64 = QUERY_RESOLVE_BUFFER_ALIGNMENT;
-
-struct SlotState {
-    in_flight: Arc<AtomicBool>,
-    map_buffer: Buffer,
-}
-
-pub struct GpuTimer {
+/// Sixteen sections per frame; a result arrives a frame late, and a frame whose map is still in flight measures nothing.
+pub struct SectionTimer {
     query_set: QuerySet,
     resolve_buffer: Buffer,
-    slots: [SlotState; FRAMES_IN_FLIGHT],
-    frame_index: u64,
+    map_buffer: Buffer,
     timestamp_period_ns: f32,
-    rx: Receiver<Duration>,
-    tx: SyncSender<Duration>,
-    started_slot: Cell<Option<usize>>,
-    resolved_slot: Cell<Option<usize>>,
+    open: usize,
+    resolved: Option<usize>,
+    names: [&'static str; MAX_SECTIONS],
+    in_flight: Arc<AtomicBool>,
+    last: Arc<Mutex<SectionResults>>,
 }
 
-impl GpuTimer {
+struct SectionResults {
+    names: [&'static str; MAX_SECTIONS],
+    elapsed: [Duration; MAX_SECTIONS],
+}
+
+impl SectionTimer {
     pub fn new(device: &Device, queue: &Queue) -> Option<Self> {
         let needed = Features::TIMESTAMP_QUERY | Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         if !device.features().contains(needed) {
             return None;
         }
         let query_set = device.create_query_set(&QuerySetDescriptor {
-            label: Some("loam-render::GpuTimer::query_set"),
+            label: Some("loam-render::SectionTimer::query_set"),
             ty: QueryType::Timestamp,
-            count: (FRAMES_IN_FLIGHT * 2) as u32,
+            count: (MAX_SECTIONS * 2) as u32,
         });
         let resolve_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("loam-render::GpuTimer::resolve_buffer"),
-            size: SLOT_STRIDE_BYTES * FRAMES_IN_FLIGHT as u64,
+            label: Some("loam-render::SectionTimer::resolve_buffer"),
+            size: SECTION_BYTES * MAX_SECTIONS as u64,
             usage: BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let slots = std::array::from_fn(|_| SlotState {
-            in_flight: Arc::new(AtomicBool::new(false)),
-            map_buffer: device.create_buffer(&BufferDescriptor {
-                label: Some("loam-render::GpuTimer::map_buffer"),
-                size: BYTES_PER_SLOT,
-                usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
+        let map_buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("loam-render::SectionTimer::map_buffer"),
+            size: SECTION_BYTES * MAX_SECTIONS as u64,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
-        let (tx, rx) = sync_channel(FRAMES_IN_FLIGHT);
         Some(Self {
             query_set,
             resolve_buffer,
-            slots,
-            frame_index: 0,
+            map_buffer,
             timestamp_period_ns: queue.get_timestamp_period(),
-            rx,
-            tx,
-            started_slot: Cell::new(None),
-            resolved_slot: Cell::new(None),
+            open: 0,
+            resolved: None,
+            names: [""; MAX_SECTIONS],
+            in_flight: Arc::new(AtomicBool::new(false)),
+            last: Arc::new(Mutex::new(SectionResults {
+                names: [""; MAX_SECTIONS],
+                elapsed: [Duration::ZERO; MAX_SECTIONS],
+            })),
         })
     }
 
-    fn current_slot(&self) -> usize {
-        (self.frame_index as usize) % FRAMES_IN_FLIGHT
+    pub fn begin_frame(&mut self) {
+        self.open = 0;
     }
 
-    fn slot_query_range(slot: usize) -> std::ops::Range<u32> {
-        let base = (slot * 2) as u32;
-        base..(base + 2)
+    pub fn open(&mut self, encoder: &mut CommandEncoder, name: &'static str) -> Option<usize> {
+        if self.open >= MAX_SECTIONS {
+            return None;
+        }
+        let slot = self.open;
+        encoder.write_timestamp(&self.query_set, (slot * 2) as u32);
+        self.names[slot] = name;
+        self.open += 1;
+        Some(slot)
     }
 
-    fn slot_byte_range(slot: usize) -> std::ops::Range<u64> {
-        let base = slot as u64 * SLOT_STRIDE_BYTES;
-        base..(base + BYTES_PER_SLOT)
+    pub fn close(&mut self, encoder: &mut CommandEncoder, slot: usize) {
+        encoder.write_timestamp(&self.query_set, (slot * 2 + 1) as u32);
     }
 
-    pub fn write_start(&self, encoder: &mut CommandEncoder) {
-        self.started_slot.set(None);
-        let slot = self.current_slot();
-        if self.slots[slot].in_flight.load(Ordering::Acquire) {
+    /// The last mapped result for `slot` while its section keeps the same name.
+    pub fn elapsed(&self, slot: usize) -> Option<Duration> {
+        let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        (last.names[slot] == self.names[slot]).then(|| last.elapsed[slot])
+    }
+
+    pub fn resolve(&mut self, encoder: &mut CommandEncoder) {
+        if self.open == 0 || self.in_flight.load(Ordering::Acquire) {
             return;
         }
-        let range = Self::slot_query_range(slot);
-        encoder.write_timestamp(&self.query_set, range.start);
-        self.started_slot.set(Some(slot));
-    }
-
-    pub fn write_end_and_resolve(&self, encoder: &mut CommandEncoder) {
-        let Some(slot) = self.started_slot.take() else {
-            return;
-        };
-        let query_range = Self::slot_query_range(slot);
-        let byte_range = Self::slot_byte_range(slot);
-        encoder.write_timestamp(&self.query_set, query_range.end - 1);
+        let bytes = SECTION_BYTES * self.open as u64;
         encoder.resolve_query_set(
             &self.query_set,
-            query_range,
+            0..(self.open * 2) as u32,
             &self.resolve_buffer,
-            byte_range.start,
-        );
-        encoder.copy_buffer_to_buffer(
-            &self.resolve_buffer,
-            byte_range.start,
-            &self.slots[slot].map_buffer,
             0,
-            BYTES_PER_SLOT,
         );
-        self.slots[slot].in_flight.store(true, Ordering::Release);
-        self.resolved_slot.set(Some(slot));
+        encoder.copy_buffer_to_buffer(&self.resolve_buffer, 0, &self.map_buffer, 0, bytes);
+        self.in_flight.store(true, Ordering::Release);
+        self.resolved = Some(self.open);
     }
 
-    /// Call once per redraw, after the end-of-frame queue submit.
-    pub fn tick(&mut self) {
-        self.frame_index = self.frame_index.wrapping_add(1);
-
-        while let Ok(duration) = self.rx.try_recv() {
-            loam_time::frame_trace::record_external("gpu-total", duration);
-        }
-
-        let Some(just_resolved_slot) = self.resolved_slot.take() else {
-            return;
+    pub fn after_submit(&mut self) -> bool {
+        let Some(open) = self.resolved.take() else {
+            return false;
         };
-        let buffer = self.slots[just_resolved_slot].map_buffer.clone();
-        let buffer_for_callback = buffer.clone();
+        let bytes = SECTION_BYTES * open as u64;
+        let names = self.names;
+        let buffer = self.map_buffer.clone();
+        let reader = buffer.clone();
         let period_ns = self.timestamp_period_ns;
-        let tx = self.tx.clone();
-        let flag = self.slots[just_resolved_slot].in_flight.clone();
-        buffer.slice(..).map_async(MapMode::Read, move |result| {
-            if result.is_ok() {
-                let view = buffer_for_callback.slice(..).get_mapped_range();
-                if let (Ok(start_bytes), Ok(end_bytes)) = (
-                    <[u8; 8]>::try_from(&view[0..8]),
-                    <[u8; 8]>::try_from(&view[8..16]),
-                ) {
-                    let start_ticks = u64::from_le_bytes(start_bytes);
-                    let end_ticks = u64::from_le_bytes(end_bytes);
-                    if let Some(delta_ticks) = end_ticks.checked_sub(start_ticks) {
-                        let delta_ns = (delta_ticks as f64 * period_ns as f64) as u64;
-                        let _ = tx.try_send(Duration::from_nanos(delta_ns));
+        let last = self.last.clone();
+        let flag = self.in_flight.clone();
+        buffer
+            .slice(0..bytes)
+            .map_async(MapMode::Read, move |result| {
+                if result.is_ok() {
+                    let view = reader.slice(0..bytes).get_mapped_range();
+                    let mut done = last.lock().unwrap_or_else(|e| e.into_inner());
+                    done.names = [""; MAX_SECTIONS];
+                    for (slot, name) in names.iter().enumerate().take(open) {
+                        let at = slot * SECTION_BYTES as usize;
+                        let (Ok(start), Ok(end)) = (
+                            <[u8; 8]>::try_from(&view[at..at + 8]),
+                            <[u8; 8]>::try_from(&view[at + 8..at + 16]),
+                        ) else {
+                            break;
+                        };
+                        let ticks =
+                            u64::from_le_bytes(end).saturating_sub(u64::from_le_bytes(start));
+                        let nanos = (ticks as f64 * period_ns as f64) as u64;
+                        done.names[slot] = name;
+                        done.elapsed[slot] = Duration::from_nanos(nanos);
                     }
+                    drop(done);
+                    drop(view);
+                    reader.unmap();
                 }
-                drop(view);
-                buffer_for_callback.unmap();
-            }
-            flag.store(false, Ordering::Release);
-        });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const _: () = assert!(SLOT_STRIDE_BYTES >= BYTES_PER_SLOT);
-
-    #[test]
-    fn slot_byte_range_is_aligned_and_disjoint() {
-        for slot in 0..FRAMES_IN_FLIGHT {
-            let range = GpuTimer::slot_byte_range(slot);
-            assert_eq!(
-                range.start % QUERY_RESOLVE_BUFFER_ALIGNMENT,
-                0,
-                "slot {slot} start not aligned"
-            );
-            assert_eq!(range.end - range.start, BYTES_PER_SLOT);
-        }
-        for slot in 0..FRAMES_IN_FLIGHT.saturating_sub(1) {
-            let a = GpuTimer::slot_byte_range(slot);
-            let b = GpuTimer::slot_byte_range(slot + 1);
-            assert!(a.end <= b.start);
-        }
+                flag.store(false, Ordering::Release);
+            });
+        true
     }
 }

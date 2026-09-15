@@ -38,7 +38,6 @@ impl Piece {
     }
 }
 
-/// World-space glyph geometry extruded along `z` and embedded in a `w` slab.
 #[derive(Clone, Debug)]
 pub struct GlyphSolid {
     ch: char,
@@ -52,7 +51,6 @@ pub struct GlyphSolid {
     field: Option<DistanceField2D>,
     pieces: Vec<Piece>,
     cover: Option<Isovolume<2>>,
-    // Counter-clockwise convex ring, empty for a blank.
     hull: Vec<Vec2>,
 }
 

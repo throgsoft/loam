@@ -35,7 +35,9 @@ pub const MULTI_ISLAND_STEPS: usize = 240;
 pub fn multi_island_world() -> World<EuclideanR3> {
     let mut world = World::new(EuclideanR3);
     register_narrowphase_r3(&mut world.narrowphase);
-    world.gravity = Some(Vec3::new(0.0, -GRAVITY_MAGNITUDE, 0.0));
+    world
+        .set_gravity(Some(Vec3::new(0.0, -GRAVITY_MAGNITUDE, 0.0)))
+        .unwrap();
     world.push_body(halfspace_body_r3(Vec3::Y, 0.0).unwrap());
     for (group, &size) in ISLAND_SIZES.iter().enumerate() {
         for level in 0..size {
@@ -117,7 +119,7 @@ fn drive_flick_chamber(
     let mut checkpoints = Vec::new();
     for tick in 0..ticks {
         apply_throw(&mut world, input(tick));
-        world.step(MULTI_ISLAND_DT);
+        world.step(MULTI_ISLAND_DT).unwrap();
         if (tick + 1).is_multiple_of(CHECKPOINT_PERIOD) {
             checkpoints.push(Checkpoint {
                 tick,

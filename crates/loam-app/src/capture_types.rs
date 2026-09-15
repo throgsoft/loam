@@ -1,5 +1,16 @@
 use std::path::PathBuf;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureUnavailable;
+
+impl std::fmt::Display for CaptureUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("capture is unavailable on this host")
+    }
+}
+
+impl std::error::Error for CaptureUnavailable {}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum CaptureStage {
     Pre,
@@ -16,13 +27,11 @@ pub enum CaptureFormat {
     Apng,
 }
 
-/// NeuQuant (Dekker, 1994) picks 256 colours; the mode controls what it trains on.
+/// NeuQuant (Dekker, 1994) picks 256 colors; the mode controls what it trains on.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum PaletteMode {
-    /// Per-frame: consecutive palettes differ, so gradients shimmer.
     #[default]
     Local,
-    /// One palette trained on the first `GIF_WARMUP_FRAMES` captures.
     Global,
 }
 

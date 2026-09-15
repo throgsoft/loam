@@ -1,12 +1,9 @@
-//! A quad straddling `y = 0` drawn after `SkyGroundNode`: the half on the
-//! camera's side must survive and the half behind the ground must not, from
-//! above and from below. The control arm turns the ground off.
-
 use glam::{Mat4, Vec3};
 use loam_math::{EuclideanR3, Projection};
+use loam_render::device::{FeatureRequest, GpuContext};
 use loam_render::{
-    DepthMode, FragmentShading, Ground, SkyGroundNode, SkyGroundUniforms, TriangleRasterNode,
-    Viewport,
+    DepthConvention, DepthMode, FragmentShading, Ground, SkyGroundNode, SkyGroundUniforms,
+    TriangleRasterNode, Viewport,
 };
 use loam_shape::TriangleMesh;
 use wgpu::*;
@@ -57,26 +54,18 @@ fn texel(pixels: &[u8], (x, y): (u32, u32)) -> [u8; 4] {
     [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
 }
 
-fn request_device() -> (Device, Queue) {
-    let instance = Instance::default();
-    let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
-        power_preference: PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: false,
-    }))
-    .expect("request_adapter");
-    pollster::block_on(adapter.request_device(&DeviceDescriptor {
-        label: Some("sky-ground-composite"),
-        required_features: Features::empty(),
-        required_limits: Limits::default(),
-        memory_hints: MemoryHints::default(),
-        trace: Trace::Off,
-        experimental_features: Default::default(),
-    }))
-    .expect("request_device")
+fn request_context() -> GpuContext {
+    pollster::block_on(GpuContext::new(
+        Instance::default(),
+        FeatureRequest::default(),
+        None,
+    ))
+    .expect("gpu context")
 }
 
-fn render(device: &Device, queue: &Queue, eye: Vec3, show_ground: bool) -> Vec<u8> {
+fn render(gpu: &GpuContext, eye: Vec3, show_ground: bool) -> Vec<u8> {
+    let device = &gpu.device;
+    let queue = &gpu.queue;
     let color = device.create_texture(&TextureDescriptor {
         label: Some("sky-ground-composite color"),
         size: Extent3d {
@@ -108,7 +97,12 @@ fn render(device: &Device, queue: &Queue, eye: Vec3, show_ground: bool) -> Vec<u
     let color_view = color.create_view(&TextureViewDescriptor::default());
     let depth_view = depth.create_view(&TextureViewDescriptor::default());
 
-    let background = SkyGroundNode::new(device, TARGET_FORMAT, DEPTH_FORMAT, 1);
+    let background = SkyGroundNode::new(
+        device,
+        TARGET_FORMAT,
+        DEPTH_FORMAT,
+        DepthConvention::StandardZ,
+    );
     background.set_uniforms(
         queue,
         &SkyGroundUniforms::new(
@@ -125,14 +119,15 @@ fn render(device: &Device, queue: &Queue, eye: Vec3, show_ground: bool) -> Vec<u
     );
 
     let mut quad = TriangleRasterNode::new(
-        device,
+        gpu,
         TARGET_FORMAT,
         DepthMode::ReadWrite {
             format: DEPTH_FORMAT,
         },
+        DepthConvention::StandardZ,
         FragmentShading::Flat,
-        1,
-    );
+    )
+    .expect("triangle material");
     quad.set_camera(queue, view_proj(eye));
     quad.upload::<EuclideanR3, 3>(device, queue, &straddling_quad(), &Projection::Identity);
 
@@ -191,13 +186,13 @@ const GROUND_RED_MAX: u8 = 120;
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn ground_occludes_raster_content_behind_the_plane_gpu_probe() {
-    let (device, queue) = request_device();
+    let gpu = request_context();
     for (eye, visible, occluded) in [
         (Vec3::new(0.0, 2.0, 4.0), ABOVE, BELOW),
         (Vec3::new(0.0, -2.0, 4.0), BELOW, ABOVE),
     ] {
         let vp = view_proj(eye);
-        let with_ground = render(&device, &queue, eye, true);
+        let with_ground = render(&gpu, eye, true);
         let seen = texel(&with_ground, pixel_of(vp, visible));
         let hidden = texel(&with_ground, pixel_of(vp, occluded));
         assert!(
@@ -211,7 +206,7 @@ fn ground_occludes_raster_content_behind_the_plane_gpu_probe() {
              be cut by its depth, got {hidden:?}"
         );
 
-        let without_ground = render(&device, &queue, eye, false);
+        let without_ground = render(&gpu, eye, false);
         let uncovered = texel(&without_ground, pixel_of(vp, occluded));
         assert!(
             uncovered[0] >= QUAD_RED_MIN,

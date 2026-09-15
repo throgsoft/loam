@@ -44,7 +44,6 @@ impl CalloutState {
     }
 }
 
-/// No-op while `state.open` is false.
 pub fn callout(
     ctx: &Context,
     id: &str,
@@ -78,7 +77,6 @@ pub fn callout(
         state.window_pos = rect.min;
     }
 
-    // Background order: under the window, over the scene.
     let painter_layer =
         egui::LayerId::new(egui::Order::Background, Id::new(id).with("callout-overlay"));
     let painter = Painter::new(ctx.clone(), painter_layer, ctx.content_rect());

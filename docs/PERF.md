@@ -14,3 +14,167 @@ CPU and GPU sections can overlap. Do not add their percentiles or subtract
 their medians to attribute frame time. Use `unscoped` to locate missing CPU
 instrumentation, then inspect the relevant frame or section. Display waits
 and scheduling delays need measurements that distinguish them.
+
+## Physics
+
+### Island solve, 2026-09-09, 32 logical cores, ecs 0ef4ee8 to unit4b-physics-persist 30d5660
+
+`cargo bench -p loam-app --bench island_solve` in release, with `LOAM_PAR=1`
+for the parallel column. The scene is columns of three stacked spheres on a
+half-space floor, one island per column, settled for 180 steps. Each cell is
+nanoseconds per `World::step`, the median of 15 batches of 20. The CPU
+model, OS, and compiler were not recorded.
+
+| islands | bodies | pgs_iters | ecs serial | branch serial | branch parallel |
+|---|---|---|---|---|---|
+| 64 | 193 | 8 | 87810 | 81630 | 83100 |
+| 64 | 193 | 64 | 382505 | 297265 | 291390 |
+| 256 | 769 | 8 | 555665 | 480365 | 488895 |
+| 256 | 769 | 64 | 2155895 | 1302335 | 1317445 |
+| 512 | 1537 | 8 | 1177115 | 975125 | 960955 |
+| 512 | 1537 | 64 | 4976110 | 2626305 | 1880030 |
+| 1024 | 3073 | 8 | 2819960 | 2045330 | 1804610 |
+| 1024 | 3073 | 64 | 12073055 | 5866640 | 3201985 |
+| 2048 | 6145 | 8 | 6597855 | 4584680 | 4843110 |
+| 2048 | 6145 | 64 | 32460725 | 11959480 | 8011430 |
+
+The serial column got faster on its own. The solve now gathers each island
+into scratch, which replaced a `BTreeMap` lookup per constraint per
+iteration; the gain runs from 7% at 64 islands and 8 iterations to 63% at
+2048 islands and 64 iterations. Below 512 islands the parallel path is the
+serial path. From 512 islands it is break-even to 12% faster at 8 iterations
+and 28% to 45% faster at 64, with one regression of 5.6% at 2048 islands and
+8 iterations that a persistent pool would remove. The first shape tried, one
+scoped thread per chunk, was 8x to 14x slower at 16 islands because each
+scoped thread costs 30 to 40 us to start, so the worker count scales with
+the island count through `ISLANDS_PER_SOLVE_WORKER`.
+
+### Broadphase sweep, same date, machine, and commits
+
+`cargo bench -p loam-physics --bench broadphase`, nanoseconds per sweep,
+ecs then branch: 101 bodies 8174 and 8610, 201 bodies 22416 and 20955,
+401 bodies 63043 and 62727.
+
+## Presentation
+
+### Edit to result, 2026-09-09, debug build, unit5b-materials 10c4862
+
+`cargo run -p examples --bin twospace -- --edit-latency`, a debug build,
+headless. The twospace binary was removed on 2026-09-14; this entry is a
+record of the measurement, not a runnable command. A Dispatch-phase system submits a command through
+`Commands::app_fn` that moves the R⁴ landmark; the host ticks and publishes
+until the published instance record moves. Over 128 samples the median was
+0 ticks and 0.0172 to 0.0173 ms of wall time across three runs, measured
+from the submission inside the system to the publish that shows the move.
+Zero ticks is the contract: a command a dispatch entry submits commits in
+the same boundary. `app_fn` boxes a closure per command; the typed path,
+`Domain::apply(&ChartCommand)`, is still `todo!()`. The CPU model and OS
+were not recorded.
+
+## Fields
+
+### Compile and traversal, 2026-09-09, debug build, unit6a-fields 72ba7c1
+
+The scene is 1000 spheres in a balanced union tree. `FieldCompiler::compile`
+reports these costs for one edit each, from a fixture that spawned the tree
+in a domain store and edited it in place:
+
+| edit | changed_inputs | affected_dependencies | program_layout | index_maintenance | full_rebuild |
+|---|---|---|---|---|---|
+| one primitive moved | 1 | 10 | 1 | 0 | no |
+| one operator's operand list changed | 1 | 0 | 2999 | 4 | no |
+| one primitive added | 1 | 0 | 3002 | 1998 | yes |
+
+Traversal on the same scene, `cargo test -p loam-render --test
+field_traversal -- --nocapture`, 16 rays: 336 steps and 336000 primitive
+evaluations for both the interpreter and loam-scene's specialized emit, 21
+steps per ray and 1000 evaluations per step; the interpreter retired 671664
+instructions and the hits agree to 1e-4. The two differ only in
+per-instruction dispatch, and both are linear in the population until a
+hierarchy prunes it. The CPU model and OS were not recorded.
+
+### Hierarchy, contact query, and build, 2026-09-09, unit6b-field-bounds d6ee385, specialized row and build costs 91cbbc7
+
+`cargo test -p loam-render --test field_traversal -- --nocapture` for the
+CPU rows, and the same with `--include-ignored --test-threads=1` for the
+GPU rows. Two scenes of 1000 spheres: the balanced union tree above, radius
+0.35, and a 100-unit cube, a 10 by 10 by 10 lattice with radius 4. CPU rows
+are 16 rays from the origin in a debug build; GPU rows are a 32 by 32
+counting kernel that the shipped kernel does not contain. Every count is
+per ray.
+
+| scene | path | hits | steps | evaluations | node visits | node skips |
+|---|---|---|---|---|---|---|
+| balanced, CPU | unculled | 16 of 16 | 21 | 21000 | | |
+| balanced, CPU | hierarchy | 16 of 16 | 21 | 784.4 | 6861.3 | 2656.7 |
+| cube, CPU | unculled | 14 of 16 | 27.44 | 27437.5 | | |
+| cube, CPU | hierarchy | 14 of 16 | 27.44 | 1041.9 | 9854.7 | 3899.1 |
+| balanced, GPU | unculled | 1014 pixels | | 26226.8 | | |
+| balanced, GPU | hierarchy | 1014 pixels | | 894.9 | 8112.3 | 3174.3 |
+| balanced, GPU | specialized | 1014 pixels | | 894.9 | 8112.3 | 3174.3 |
+| cube, GPU | unculled | 848 pixels | | 31988.2 | | |
+| cube, GPU | hierarchy | 848 pixels | | 1181.2 | 10766.6 | 4218.1 |
+
+The hit sets are identical culled and unculled on both interpreters, and
+the CPU values are bit-identical. Culling pays only when subtree balls are
+separated relative to the current best distance; the worst case is the
+unculled work plus 2n - 1 ball tests, with no O(log n) promise. The build
+is O(n log n) and runs on every compile that changes a pose: 1000
+primitives give 1999 nodes, a full compile reports changed_inputs 1999,
+program_layout 2999, and index_maintenance 3997 (1998 edges plus 1999 node
+writes), and a pose-only compile rewrites all 1999 nodes.
+
+A field contact query on the warmed balanced field, release build, median
+of 1000: 6.5 us (p90 7.3) for one distance plus the eight-sample gradient,
+against 47.7 us unculled; the `FieldNarrowphase::test` wrapper measured
+below the clock's resolution. These two timings came from throwaway tests
+the writer deleted, because no crate links both loam-physics with `r3` and
+loam-runtime; nothing in the tree reproduces them.
+
+The specialized kernel walks the same tree and matches the hierarchy
+interpreter bit for bit on the balanced scene, the `specialized` row
+above. Its build, in release, from throwaway tests the writer deleted:
+emit 68 us, 279 us, and 1.7 ms and pipeline build 1.17 s, 8.70 s, and
+55.7 s at 64, 256, and 1000 cuts, with module sizes 24.6 KB, 83 KB, and
+334 KB, growing about as n^1.4. A first draft that emitted the whole
+program as a 1000-term min chain took 154 s to build before the no-tree
+case was delegated to the interpreter's range function.
+
+## Domain capabilities
+
+### Publication after the capability split, 2026-09-09, ecs b890d3e to unit11-domain-capabilities e19cde2
+
+The playground's warmed frame is the overlay allocation test,
+`cargo test -p polytope_playground a_warmed_frame_with_every_overlay_on`,
+timed over its sixteen warmed frames, ten runs per build, medians with
+the range in brackets. The first head, a48e896, is the split before the
+eye-relative element was hoisted out of the vertex loop.
+
+| build | ecs b890d3e | a48e896 | e19cde2 |
+|---|---|---|---|
+| debug, ms per frame | 0.2315 (0.2212 to 0.2442) | 0.2498 (0.2400 to 0.2673) | 0.2428 (0.2330 to 0.4646; a second batch 0.2408) |
+| release, ms per frame | 0.0622 (0.0608 to 0.0650) | 0.0679 (0.0657 to 0.0708) | 0.0584 (0.0549 to 0.0648) |
+
+Release is faster than ecs and debug sits inside the before range. The
+first head regressed both builds because publication computed the
+eye-relative element for every vertex; `DomainSpace::relative` now
+prepares it once per entity, and `place_relative` applies it per vertex.
+
+`twospace --headless N` printed the publish timings, 64 samples per run,
+debug build, with the r4 landmark dirty (the binary was removed on
+2026-09-14; the same scene now runs as the `blend` cases of
+`cargo bench -p loam-runtime --bench publication`): ecs 39.5 us median, a48e896
+42.3 us, e19cde2 41.5 us over four runs (41.4, 41.6, 40.7, 43.3). The
+blended domain's publish, one entity with one segment, is 124 us median:
+each blended `local` runs one checked Gauss-Newton log, at most 12
+iterations of 7 integrations of 32 steps of 4 stages, 10752 right-hand
+side evaluations.
+
+Isometry applications per published entity are pinned by three tests in
+`crates/loam-runtime/src/domain.rs`, `cargo test -p loam-runtime
+costs_more_isometry_applications`, counting the `homogeneous_` helpers:
+a segment entity with S segments costs 3 + 6S (21 at S = 3, equal to
+ecs), a sectioned tesseract adds 3 + V for its V vertices (19, equal to
+ecs), and an entity under a nonlinear map costs 3 + 6S (21 against ecs's
+4 + 8S, 28), one application per vertex fewer. The CPU model and OS were
+not recorded.

@@ -9,17 +9,12 @@ Loam is an engine for exploring geometry beyond ordinary 3D space!
 I'm building Loam to provide tooling to build games where space is a gimmick. Higher dimensions, curved space, portals, weird topology, and compelling visual effects.
 
 
-
-
-
-
-
-
 ## Polytope Playground
 
 Rotate 4D shapes and watch their 3D cross-sections change.
 
 ![Regular 4-polytopes turning through a rotation plane while their 3D cross-sections change](assets/readme/rotate.webp)
+
 
 Or pick them up and throw them around the 4D Toybox, directly inspired by [Marc ten Bosch](https://marctenbosch.com/)'s [4D Toys](https://4dtoys.com/).
 
@@ -57,14 +52,7 @@ cd loam
 cargo run --release --locked -p polytope_playground
 ```
 
-Use the Demo menu to switch scenes. Space pauses rotation. Backtick opens the console.
-
-
-For the browser build:
-
-@@ -57,8 +57,6 @@ cargo install --locked trunk
-trunk serve crates/polytope_playground/index.html
-```
+Use the Demo menu to switch scenes.
 
 [API documentation](https://throgsoft.github.io/loam/)
 

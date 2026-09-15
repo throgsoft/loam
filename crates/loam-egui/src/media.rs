@@ -1,5 +1,3 @@
-//! egui's default font lacks the arrow glyphs, so the icons are painted shapes.
-
 use egui::{
     pos2, vec2, CornerRadius, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui, Vec2,
 };
@@ -218,7 +216,6 @@ pub fn chevron_button(ui: &mut Ui, size: Vec2, up: bool, hover: &str) -> Respons
     response.on_hover_text(hover)
 }
 
-/// 12×16 is the canonical size.
 pub fn dock_chevrons(ui: &mut Ui, size: Vec2, pointing_up: bool, hover: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let style = ui.style().interact(&response);

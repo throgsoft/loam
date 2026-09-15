@@ -1,0 +1,424 @@
+use std::collections::HashMap;
+
+use loam_shape::field::{DistanceField, FieldKind};
+
+use crate::body::RigidBody;
+use crate::collider::ColliderKind;
+use crate::geometry::GeometryStore;
+use crate::integrator::PhysicsSpace;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldRefusal {
+    /// No query is registered for the body's collider kind.
+    Collider(ColliderKind),
+    Dimension(u32),
+    /// The field's value is not an exact distance, so it is not a separation.
+    Kind(FieldKind),
+    Numerical,
+    DegenerateGradient,
+}
+
+/// `error` bounds the separation sample and the absolute field value at `witness`.
+pub struct FieldContact<S: PhysicsSpace> {
+    pub separation: f32,
+    pub normal: S::Vector,
+    pub witness: S::Point,
+    pub error: f32,
+}
+
+impl<S: PhysicsSpace> Clone for FieldContact<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: PhysicsSpace> Copy for FieldContact<S> {}
+
+pub type FieldContactFn<S> = fn(
+    body: &RigidBody<S>,
+    geometry: &GeometryStore,
+    field: &dyn DistanceField,
+    space: &S,
+) -> Result<FieldContact<S>, FieldRefusal>;
+
+pub struct FieldNarrowphase<S: PhysicsSpace> {
+    dispatch: HashMap<ColliderKind, FieldContactFn<S>>,
+    order: Vec<ColliderKind>,
+}
+
+impl<S: PhysicsSpace> Default for FieldNarrowphase<S> {
+    fn default() -> Self {
+        Self {
+            dispatch: HashMap::new(),
+            order: Vec::new(),
+        }
+    }
+}
+
+impl<S: PhysicsSpace> FieldNarrowphase<S> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&mut self, body: ColliderKind, query: FieldContactFn<S>) {
+        if self.dispatch.insert(body, query).is_none() {
+            self.order.push(body);
+        }
+    }
+
+    pub fn registrations(&self) -> &[ColliderKind] {
+        &self.order
+    }
+
+    pub fn test(
+        &self,
+        body: &RigidBody<S>,
+        geometry: &GeometryStore,
+        field: &dyn DistanceField,
+        space: &S,
+    ) -> Result<FieldContact<S>, FieldRefusal> {
+        let kind = body.collider().kind();
+        match self.dispatch.get(&kind) {
+            Some(&query) => query(body, geometry, field, space),
+            None => Err(FieldRefusal::Collider(kind)),
+        }
+    }
+}
+
+#[cfg(feature = "r3")]
+mod r3 {
+    use glam::Vec3;
+    use loam_math::EuclideanR3;
+    use loam_shape::field::{DistanceField, FieldKind, MIN_GRADIENT_NORM};
+
+    use super::{FieldContact, FieldNarrowphase, FieldRefusal};
+    use crate::body::RigidBody;
+    use crate::collider::{Collider, ColliderKind};
+    use crate::geometry::GeometryStore;
+
+    fn finite_upper(value: f64) -> Option<f32> {
+        if !value.is_finite() || value > f32::MAX as f64 {
+            return None;
+        }
+        let mut rounded = value as f32;
+        if (rounded as f64) < value {
+            rounded = rounded.next_up();
+        }
+        Some(rounded)
+    }
+
+    /// Separation is the field distance at the sphere's center minus its radius; the field must be an exact distance.
+    pub fn sphere_against_field(
+        body: &RigidBody<EuclideanR3>,
+        geometry: &GeometryStore,
+        field: &dyn DistanceField,
+        _space: &EuclideanR3,
+    ) -> Result<FieldContact<EuclideanR3>, FieldRefusal> {
+        let dimension = field.dimension();
+        if dimension != 3 {
+            return Err(FieldRefusal::Dimension(dimension));
+        }
+        if field.field_kind() != FieldKind::ExactDistance {
+            return Err(FieldRefusal::Kind(field.field_kind()));
+        }
+        let Some(&Collider::Sphere { radius, .. }) = geometry.get(body.collider()) else {
+            return Err(FieldRefusal::Collider(body.collider().kind()));
+        };
+        let center = body.position;
+        let point = [center.x, center.y, center.z, 0.0];
+        let distance = field.distance(point);
+        let distance_error = field.error_at(point);
+        if !distance.is_finite() || !distance_error.is_finite() || distance_error < 0.0 {
+            return Err(FieldRefusal::Numerical);
+        }
+        let gradient = field.gradient(point);
+        let direction = Vec3::new(gradient[0], gradient[1], gradient[2]);
+        let length = direction.length();
+        if !length.is_finite() {
+            return Err(FieldRefusal::Numerical);
+        }
+        if length < MIN_GRADIENT_NORM {
+            return Err(FieldRefusal::DegenerateGradient);
+        }
+        let normal = direction / length;
+        if !normal.is_finite() {
+            return Err(FieldRefusal::Numerical);
+        }
+        let separation = distance - radius;
+        let witness = center - normal * distance;
+        if !separation.is_finite() || !witness.is_finite() {
+            return Err(FieldRefusal::Numerical);
+        }
+        let separation_roundoff = (separation as f64 - (distance as f64 - radius as f64)).abs();
+        let Some(separation_error) = finite_upper(distance_error as f64 + separation_roundoff)
+        else {
+            return Err(FieldRefusal::Numerical);
+        };
+        let witness_point = [witness.x, witness.y, witness.z, 0.0];
+        let witness_distance = field.distance(witness_point);
+        let witness_error = field.error_at(witness_point);
+        if !witness_distance.is_finite() || !witness_error.is_finite() || witness_error < 0.0 {
+            return Err(FieldRefusal::Numerical);
+        }
+        let residual_bound = witness_distance.abs() as f64 + witness_error as f64;
+        let Some(witness_residual) = finite_upper(residual_bound) else {
+            return Err(FieldRefusal::Numerical);
+        };
+        let error = separation_error.max(witness_residual);
+        if !error.is_finite() {
+            return Err(FieldRefusal::Numerical);
+        }
+        Ok(FieldContact {
+            separation,
+            normal,
+            witness,
+            error,
+        })
+    }
+
+    pub fn register_field_contacts(narrowphase: &mut FieldNarrowphase<EuclideanR3>) {
+        narrowphase.register(ColliderKind::Sphere, sphere_against_field);
+    }
+}
+
+#[cfg(feature = "r3")]
+pub use r3::{register_field_contacts, sphere_against_field};
+
+#[cfg(all(test, feature = "r3"))]
+mod tests {
+    use glam::Vec3;
+    use loam_math::EuclideanR3;
+    use loam_shape::field::{DistanceField, FieldKind};
+
+    use super::*;
+    use crate::body::BodyId;
+    use crate::collider::Collider;
+    use crate::edit::EditError;
+    use crate::euclidean_r3::{halfspace_body_r3, sphere_body_r3};
+    use crate::manifold::PENETRATION_SLOP;
+    use crate::world::{FieldId, World};
+
+    struct Ground;
+
+    impl DistanceField for Ground {
+        fn field_kind(&self) -> FieldKind {
+            FieldKind::ExactDistance
+        }
+
+        fn dimension(&self) -> u32 {
+            3
+        }
+
+        fn distance(&self, point: [f32; 4]) -> f32 {
+            point[1]
+        }
+
+        fn error_at(&self, _point: [f32; 4]) -> f32 {
+            0.0
+        }
+    }
+
+    struct Bounded;
+
+    impl DistanceField for Bounded {
+        fn field_kind(&self) -> FieldKind {
+            FieldKind::ConservativeBound
+        }
+
+        fn dimension(&self) -> u32 {
+            3
+        }
+
+        fn distance(&self, point: [f32; 4]) -> f32 {
+            point[1] * 0.5
+        }
+
+        fn error_at(&self, _point: [f32; 4]) -> f32 {
+            1.0
+        }
+    }
+
+    struct UncertainGround;
+
+    impl DistanceField for UncertainGround {
+        fn field_kind(&self) -> FieldKind {
+            FieldKind::ExactDistance
+        }
+
+        fn dimension(&self) -> u32 {
+            3
+        }
+
+        fn distance(&self, point: [f32; 4]) -> f32 {
+            point[1]
+        }
+
+        fn error_at(&self, _point: [f32; 4]) -> f32 {
+            0.1
+        }
+    }
+
+    struct Shell;
+
+    impl DistanceField for Shell {
+        fn field_kind(&self) -> FieldKind {
+            FieldKind::ExactDistance
+        }
+
+        fn dimension(&self) -> u32 {
+            3
+        }
+
+        fn distance(&self, point: [f32; 4]) -> f32 {
+            (point[0] * point[0] + point[1] * point[1] + point[2] * point[2]).sqrt() - 1.0
+        }
+
+        fn error_at(&self, _point: [f32; 4]) -> f32 {
+            0.0
+        }
+    }
+
+    fn narrowphase() -> FieldNarrowphase<EuclideanR3> {
+        let mut np = FieldNarrowphase::new();
+        register_field_contacts(&mut np);
+        np
+    }
+
+    fn one_body(collider: Collider, at: Vec3) -> World<EuclideanR3> {
+        let mut world = World::new(EuclideanR3);
+        world.push_body(
+            crate::body::BodyDef::new(at, Vec3::ZERO, collider, 1.0, 1.0, &EuclideanR3)
+                .expect("body def"),
+        );
+        world
+    }
+
+    const RADIUS: f32 = 0.5;
+
+    fn ground_world() -> (World<EuclideanR3>, BodyId, FieldId, BodyId) {
+        let mut world = World::new(EuclideanR3);
+        register_field_contacts(&mut world.field_narrowphase);
+        world.set_gravity(Some(Vec3::new(0.0, -9.8, 0.0))).unwrap();
+        let anchor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0).expect("anchor"));
+        world.bodies[anchor].restitution = 0.0;
+        let field = world
+            .insert_field(anchor, Box::new(Ground))
+            .expect("field handle");
+        let ball = world.push_body(
+            sphere_body_r3(Vec3::new(0.0, 2.0, 0.0), Vec3::ZERO, RADIUS, 1.0).expect("ball"),
+        );
+        world.bodies[ball].restitution = 0.0;
+        (world, anchor, field, ball)
+    }
+
+    #[test]
+    fn a_certain_field_supports_a_sphere_while_an_uncertain_sign_creates_no_contact() {
+        let (mut world, anchor, field, ball) = ground_world();
+        assert_eq!(
+            world.bind_field(anchor, field),
+            Err(EditError::AnchorBindsOwnField)
+        );
+        world.bind_field(ball, field).expect("binding");
+
+        for _ in 0..600 {
+            world.step(1.0 / 240.0).unwrap();
+        }
+        let rest = world.bodies[ball].position.y;
+        assert!(
+            (rest - (RADIUS - PENETRATION_SLOP)).abs() < 1.0e-3,
+            "the ball rests at {rest}, not at radius minus the solver slop"
+        );
+
+        let mut uncertain = World::new(EuclideanR3);
+        register_field_contacts(&mut uncertain.field_narrowphase);
+        let anchor = uncertain.push_body(halfspace_body_r3(Vec3::Y, 0.0).expect("anchor"));
+        let field = uncertain
+            .insert_field(anchor, Box::new(UncertainGround))
+            .expect("field handle");
+        let ball = uncertain
+            .push_body(sphere_body_r3(Vec3::Y * 0.45, Vec3::ZERO, RADIUS, 1.0).expect("ball"));
+        uncertain.bind_field(ball, field).expect("binding");
+        uncertain.step(0.0).unwrap();
+        assert_eq!(uncertain.manifolds().len(), 0);
+    }
+
+    #[test]
+    fn a_binding_made_after_a_snapshot_is_gone_after_the_restore() {
+        let (mut world, _, field, ball) = ground_world();
+        let saved = world.snapshot();
+        world.bind_field(ball, field).expect("binding");
+        assert_eq!(world.field_bindings().len(), 1);
+        world.restore(&saved).expect("restore");
+        assert!(
+            world.field_bindings().is_empty(),
+            "the binding survived a restore that predates it"
+        );
+    }
+
+    #[test]
+    fn a_restore_whose_field_list_differs_is_refused_and_leaves_the_world_alone() {
+        let (mut world, _, field, ball) = ground_world();
+        world.bind_field(ball, field).expect("binding");
+        for _ in 0..60 {
+            world.step(1.0 / 240.0).unwrap();
+        }
+        let saved = world.snapshot();
+        let second = world.push_body(halfspace_body_r3(Vec3::Y, -8.0).expect("anchor"));
+        world
+            .insert_field(second, Box::new(Ground))
+            .expect("field handle");
+        let height = world.bodies[ball].position.y;
+
+        assert_eq!(world.restore(&saved), Err(EditError::FieldMismatch));
+        assert_eq!(world.bodies[ball].position.y, height);
+        assert_eq!(world.field_bindings().len(), 1);
+    }
+
+    #[test]
+    fn a_conservative_bound_field_refuses_a_sphere_and_names_the_field_kind() {
+        let world = one_body(Collider::sphere_at_origin(0.5), Vec3::new(0.0, 1.0, 0.0));
+        let id = world.bodies.id_at(0);
+        assert_eq!(
+            narrowphase()
+                .test(&world.bodies[id], world.geometry(), &Bounded, &EuclideanR3)
+                .err(),
+            Some(FieldRefusal::Kind(FieldKind::ConservativeBound))
+        );
+    }
+
+    #[test]
+    fn a_hull_body_refuses_an_exact_field_and_names_the_collider_kind() {
+        let corners: Vec<Vec3> = (0..8)
+            .map(|i| {
+                Vec3::new(
+                    if i & 1 == 0 { -0.5 } else { 0.5 },
+                    if i & 2 == 0 { -0.5 } else { 0.5 },
+                    if i & 4 == 0 { -0.5 } else { 0.5 },
+                )
+            })
+            .collect();
+        let world = one_body(
+            Collider::ConvexPolytope3D { vertices: corners },
+            Vec3::new(0.0, 1.0, 0.0),
+        );
+        let id = world.bodies.id_at(0);
+        assert_eq!(
+            narrowphase()
+                .test(&world.bodies[id], world.geometry(), &Ground, &EuclideanR3)
+                .err(),
+            Some(FieldRefusal::Collider(ColliderKind::ConvexPolytope3D))
+        );
+    }
+
+    #[test]
+    fn a_degenerate_gradient_refuses_rather_than_inventing_a_normal() {
+        let world = one_body(Collider::sphere_at_origin(0.5), Vec3::ZERO);
+        let id = world.bodies.id_at(0);
+        assert_eq!(
+            narrowphase()
+                .test(&world.bodies[id], world.geometry(), &Shell, &EuclideanR3)
+                .err(),
+            Some(FieldRefusal::DegenerateGradient)
+        );
+    }
+}

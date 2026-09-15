@@ -1,11 +1,12 @@
-//! Frame scripts automate demos through the command queue; they are not simulation replays.
-
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context as _, Result};
 
+use loam_console::CommandLine;
+use loam_runtime::Stores;
+
 use crate::args::Args;
-use crate::command::CommandLine;
+use crate::session::SessionConsole;
 
 // Captures must finish after the last scripted frame presents.
 const SETTLE_FRAMES: u64 = 60;
@@ -101,7 +102,6 @@ impl ScriptDriver {
         self.frame
     }
 
-    /// The sink receives owned commands without a window or global inbox.
     pub fn advance_with(&mut self, mut submit: impl FnMut(CommandLine)) -> ScriptStatus {
         while self
             .steps
@@ -120,6 +120,12 @@ impl ScriptDriver {
         self.frame = self.frame.saturating_add(1);
         status
     }
+
+    pub fn advance_console<A: Stores>(&mut self, console: &mut SessionConsole<A>) -> ScriptStatus {
+        self.advance_with(|command| {
+            console.execute(&loam_egui::render_line(&command.name, &command.arg_refs()));
+        })
+    }
 }
 
 pub fn driver_from_args(args: &Args) -> Result<Option<ScriptDriver>> {
@@ -135,7 +141,7 @@ pub fn driver_from_args(args: &Args) -> Result<Option<ScriptDriver>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::CommandQueue;
+    use loam_console::CommandQueue;
 
     #[test]
     fn invalid_frame_or_empty_command_is_rejected() {
@@ -196,5 +202,68 @@ mod tests {
             }
             assert_eq!(driver.advance_with(|_| {}), ScriptStatus::Finished);
         }
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use loam_runtime::{Bindings, HostConfig};
+
+    use super::*;
+    use crate::session::SessionApp;
+
+    loam_runtime::stores! {
+        #[derive(Default)]
+        pub struct Marked {
+            hits: Value<u32>,
+        }
+    }
+
+    fn host_marking(seen: &Rc<RefCell<Vec<Vec<String>>>>) -> SessionApp<Marked> {
+        let recorded = seen.clone();
+        SessionApp::with_args(HostConfig::new("script", Bindings::new()), Args::default()).command(
+            "mark",
+            "record a marker",
+            move |args, _submit, _out| {
+                recorded
+                    .borrow_mut()
+                    .push(args.iter().map(|arg| (*arg).to_string()).collect());
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn a_scripted_line_reaches_its_verb_at_its_own_frame() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut app = host_marking(&seen);
+        let mut driver =
+            ScriptDriver::new(Script::parse("0 mark boot\n2 mark second").expect("script"));
+
+        let mut dispatched = Vec::new();
+        for _ in 0..3 {
+            driver.advance_console(app.console_mut());
+            app.console_mut().dispatch_pending();
+            dispatched.push(seen.borrow().len());
+        }
+
+        assert_eq!(dispatched, [1, 1, 2]);
+        assert_eq!(*seen.borrow(), [vec!["boot"], vec!["second"]]);
+    }
+
+    #[test]
+    fn a_quoted_scripted_argument_stays_one_argument() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut app = host_marking(&seen);
+        let mut driver =
+            ScriptDriver::new(Script::parse("0 mark \"a b\" #ff8800").expect("script"));
+
+        driver.advance_console(app.console_mut());
+        app.console_mut().dispatch_pending();
+
+        assert_eq!(*seen.borrow(), [vec!["a b", "#ff8800"]]);
     }
 }

@@ -4,6 +4,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
 use loam_math::{Projection, RasterizableSpace};
+use loam_runtime::{Eye, SegmentRecord};
 use loam_shape::LineMesh;
 use wgpu::util::DeviceExt;
 use wgpu::{
@@ -40,20 +41,6 @@ impl Default for LineRasterUniforms {
     }
 }
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Default, Pod, Zeroable)]
-struct LineInstance {
-    start_pos: [f32; 3],
-    _pad0: f32,
-    end_pos: [f32; 3],
-    _pad1: f32,
-    start_color: [f32; 4],
-    end_color: [f32; 4],
-    width_px: f32,
-    _pad2: [f32; 3],
-}
-
-/// Construct once per `RenderDevice`.
 pub struct LineRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -65,7 +52,7 @@ pub struct LineRasterNode {
     instance_count: u32,
     instance_capacity: u32,
     has_depth: bool,
-    instances_scratch: Vec<LineInstance>,
+    instances_scratch: Vec<SegmentRecord>,
 }
 
 impl LineRasterNode {
@@ -73,7 +60,7 @@ impl LineRasterNode {
         device: &Device,
         surface_format: TextureFormat,
         depth: crate::DepthMode,
-        sample_count: u32,
+        convention: crate::DepthConvention,
     ) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("line_raster shader"),
@@ -154,7 +141,7 @@ impl LineRasterNode {
             },
         ];
         let instance_layout = VertexBufferLayout {
-            array_stride: std::mem::size_of::<LineInstance>() as u64,
+            array_stride: std::mem::size_of::<SegmentRecord>() as u64,
             step_mode: VertexStepMode::Instance,
             attributes: &instance_attrs,
         };
@@ -193,16 +180,9 @@ impl LineRasterNode {
                 topology: PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: depth.format().map(|format| DepthStencilState {
-                format,
-                depth_write_enabled: depth.writes(),
-                // Coplanar outlines must survive the filled surface's depth.
-                depth_compare: CompareFunction::LessEqual,
-                stencil: StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            depth_stencil: depth_state(depth, convention),
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,
@@ -243,7 +223,10 @@ impl LineRasterNode {
         }
     }
 
-    /// Call before [`Self::record`] each frame.
+    pub fn set_root_camera(&self, queue: &Queue, eye: &Eye, viewport_size: Vec2) {
+        self.set_camera(queue, crate::view::root_view_projection(eye), viewport_size);
+    }
+
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4, viewport_size: Vec2) {
         let uniforms = LineRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -266,24 +249,29 @@ impl LineRasterNode {
         let samples = samples_per_segment.max(1);
         build_line_instances::<S, N>(&mut self.instances_scratch, mesh, projection, samples);
 
-        let needed_capacity = self.instances_scratch.len() as u32;
+        let scratch = std::mem::take(&mut self.instances_scratch);
+        self.upload_segments(device, queue, &scratch);
+        self.instances_scratch = scratch;
+    }
+
+    pub fn segment_count(&self) -> u32 {
+        self.instance_count
+    }
+
+    pub fn upload_segments(&mut self, device: &Device, queue: &Queue, segments: &[SegmentRecord]) {
+        let needed_capacity = segments.len() as u32;
         if needed_capacity > self.instance_capacity {
             let new_cap = needed_capacity.next_power_of_two().max(16);
             self.instance_buf = device.create_buffer(&BufferDescriptor {
                 label: Some("line_raster instance buffer"),
-                size: (new_cap as u64) * (std::mem::size_of::<LineInstance>() as u64),
+                size: (new_cap as u64) * (std::mem::size_of::<SegmentRecord>() as u64),
                 usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
             self.instance_capacity = new_cap;
         }
-
-        if !self.instances_scratch.is_empty() {
-            queue.write_buffer(
-                &self.instance_buf,
-                0,
-                bytemuck::cast_slice(&self.instances_scratch),
-            );
+        if !segments.is_empty() {
+            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(segments));
         }
         self.instance_count = needed_capacity;
     }
@@ -349,8 +337,22 @@ impl LineRasterNode {
     }
 }
 
+fn depth_state(
+    depth: crate::DepthMode,
+    convention: crate::DepthConvention,
+) -> Option<DepthStencilState> {
+    depth.format().map(|format| DepthStencilState {
+        format,
+        depth_write_enabled: depth.writes(),
+        // Equal depth passes so coplanar outlines survive the filled surface.
+        depth_compare: convention.compare(CompareFunction::LessEqual),
+        stencil: StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    })
+}
+
 fn build_line_instances<S, const N: usize>(
-    out: &mut Vec<LineInstance>,
+    out: &mut Vec<SegmentRecord>,
     mesh: &LineMesh<N>,
     projection: &Projection<N>,
     samples: usize,
@@ -371,15 +373,15 @@ fn build_line_instances<S, const N: usize>(
         let mut previous = None;
         let mut index = 0;
         S::tessellate_segment(p0, p1, samples, |point| {
-            let q1 = S::project_point(point, projection);
+            let q1 = S::project_point(point, projection).unwrap_or(glam::Vec3::NAN);
             if let Some(q0) = previous {
                 let t0 = index as f32 / samples as f32;
                 let t1 = (index + 1) as f32 / samples as f32;
                 if glam::Vec3::is_finite(q0) && q1.is_finite() {
-                    out.push(LineInstance {
-                        start_pos: q0.to_array(),
+                    out.push(SegmentRecord {
+                        start: q0.to_array(),
                         _pad0: 0.0,
-                        end_pos: q1.to_array(),
+                        end: q1.to_array(),
                         _pad1: 0.0,
                         start_color: lerp_color(*color_a, *color_b, t0),
                         end_color: lerp_color(*color_a, *color_b, t1),
@@ -407,8 +409,69 @@ fn lerp_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
 mod tests {
     use super::*;
 
-    use loam_math::EuclideanR3;
+    use glam::Vec3;
+    use loam_math::{EuclideanR3, Iso3};
     use loam_shape::LineMesh;
+
+    use crate::depth_passes as passes;
+    use crate::view::{eye_relative, projective_depth, root_view_projection, DEPTH_FORMAT};
+    use crate::{DepthConvention, DepthMode};
+
+    #[test]
+    fn line_raster_hides_the_nearer_line_under_the_convention_its_pipeline_declares() {
+        let eye = Eye {
+            position: [0.0, 0.0, 3.0],
+            ..Eye::default()
+        };
+        let standing = Iso3 {
+            rotation: glam::Quat::IDENTITY,
+            translation: Vec3::from(eye.position),
+        };
+        let near_point = Vec3::new(0.2, -0.1, 0.0);
+        let far_point = Vec3::new(0.2, -0.1, -4.0);
+
+        for (convention, projection) in [
+            (DepthConvention::ReversedZ, root_view_projection(&eye)),
+            (
+                DepthConvention::StandardZ,
+                Mat4::perspective_rh(eye.fov_y, eye.aspect, eye.near, eye.far)
+                    * eye_relative(standing),
+            ),
+        ] {
+            let depth = |point: Vec3| {
+                let clip = projection * point.extend(1.0);
+                clip.z / clip.w
+            };
+            let state = depth_state(
+                DepthMode::ReadWrite {
+                    format: DEPTH_FORMAT,
+                },
+                convention,
+            )
+            .unwrap();
+            assert!(
+                passes(state.depth_compare, depth(near_point), depth(far_point)),
+                "{convention:?} with {:?} hides the nearer line",
+                state.depth_compare
+            );
+            assert!(!passes(
+                state.depth_compare,
+                depth(far_point),
+                depth(near_point)
+            ));
+        }
+
+        let reversed = root_view_projection(&eye);
+        for point in [near_point, far_point] {
+            let clip = reversed * point.extend(1.0);
+            let image = projective_depth(point - Vec3::from(eye.position), eye.near);
+            assert!(
+                (clip.z / clip.w - image).abs() <= 1e-6,
+                "{point} rasterizes at depth {}, not the image-space {image}",
+                clip.z / clip.w
+            );
+        }
+    }
 
     fn one_segment_mesh(a: [f32; 3], b: [f32; 3]) -> LineMesh<3> {
         LineMesh {
@@ -420,7 +483,7 @@ mod tests {
 
     #[test]
     fn upload_drops_non_finite_segments() {
-        let mut scratch: Vec<LineInstance> = Vec::new();
+        let mut scratch: Vec<SegmentRecord> = Vec::new();
 
         let finite = one_segment_mesh([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
         build_line_instances::<EuclideanR3, 3>(&mut scratch, &finite, &Projection::Identity, 1);
@@ -433,7 +496,7 @@ mod tests {
 
     #[test]
     fn upload_drops_non_finite_without_reallocating() {
-        let mut scratch: Vec<LineInstance> = Vec::new();
+        let mut scratch: Vec<SegmentRecord> = Vec::new();
 
         let mut many = LineMesh::<3>::default();
         for k in 0..8 {
@@ -458,7 +521,7 @@ mod tests {
 
     #[test]
     fn upload_drop_predicate_catches_infinity_not_just_nan() {
-        let mut scratch: Vec<LineInstance> = Vec::new();
+        let mut scratch: Vec<SegmentRecord> = Vec::new();
 
         let pos_inf = one_segment_mesh([0.0, 0.0, 0.0], [f32::INFINITY, 1.0, 1.0]);
         build_line_instances::<EuclideanR3, 3>(&mut scratch, &pos_inf, &Projection::Identity, 1);

@@ -1,5 +1,3 @@
-//! Capture reads the swapchain after the runner resolves and composites the selected stage.
-
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -11,14 +9,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context as _, Result};
 use wgpu::{
-    BufferDescriptor, BufferUsages, CommandEncoderDescriptor, Device, Extent3d, MapMode, Origin3d,
-    PollType, Queue, TexelCopyBufferInfo, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture,
+    Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Extent3d, MapMode, Origin3d,
+    PollType, TexelCopyBufferInfo, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture,
     TextureAspect, TextureFormat,
 };
 
-use loam_egui::Console;
-
-pub use crate::capture_types::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
+pub use crate::capture_types::{
+    CaptureFormat, CaptureRequest, CaptureStage, CaptureUnavailable, PaletteMode,
+};
 
 impl CaptureStage {
     fn wants_pre(self) -> bool {
@@ -51,7 +49,6 @@ fn interval_elapsed(since_last: Duration, interval: Duration) -> bool {
 pub(crate) struct Capture {
     default_dir: PathBuf,
     state: CaptureState,
-    /// Encoder threads still flushing after `stop`; joined at shutdown so trailers finish.
     pending: Vec<JoinHandle<()>>,
 }
 
@@ -64,7 +61,6 @@ enum CaptureState {
     Sequence {
         stage: CaptureStage,
         writer: SequenceWriter,
-        /// `None` = unlimited.
         fps_interval: Option<Duration>,
         last_capture_time: Option<Instant>,
         frame_count: u32,
@@ -75,19 +71,15 @@ enum SequenceWriter {
     Png {
         dir: PathBuf,
     },
-    /// Frames cross a bounded channel and drop under backpressure.
     Gif {
         worker: GifWorker,
         path: PathBuf,
-        /// First-frame delay in centiseconds; later frames use wall-clock delays.
         default_delay_cs: u16,
         scale: Option<u32>,
         palette_mode: PaletteMode,
-        /// `Some` during `Global`-mode warmup.
         warming: Option<WarmingState>,
         global_palette: Option<Arc<color_quant::NeuQuant>>,
     },
-    /// The `acTL` chunk needs the frame count up front, so every frame is buffered.
     Apng {
         worker: ApngWorker,
         path: PathBuf,
@@ -110,7 +102,6 @@ struct WarmupFrame {
 // ~1 s at 30 fps; ~57 MB at 800x600, released after training.
 const GIF_WARMUP_FRAMES: u32 = 30;
 
-// Dropping it closes the channel, joins the thread, and flushes the trailer.
 pub(crate) struct GifWorker {
     tx: Option<SyncSender<GifFrame>>,
     handle: Option<JoinHandle<()>>,
@@ -121,11 +112,9 @@ struct GifFrame {
     rgba: Vec<u8>,
     src_width: u32,
     src_height: u32,
-    /// Each delay is the gap to the previous encoded frame, so drops stretch the next.
     captured_at: Instant,
     default_delay_cs: u16,
     scale: Option<u32>,
-    /// `Some` indexes against the shared table; `None` quantizes per frame.
     global_palette: Option<Arc<color_quant::NeuQuant>>,
 }
 
@@ -208,7 +197,6 @@ fn encode_one_frame(
     let w_u16: u16 = out_w.try_into().context("gif width > 65535")?;
     let h_u16: u16 = out_h.try_into().context("gif height > 65535")?;
 
-    // Global mode seeds the LSD with the shared palette; local passes an empty one.
     let enc = match encoder {
         Some(e) => e,
         None => {
@@ -272,7 +260,6 @@ fn encode_one_frame(
     };
 
     let mut gif_frame = if let Some(nq) = &frame.global_palette {
-        // Normalize alpha the same way `train_global_palette` did.
         for px in buf.chunks_exact_mut(4) {
             if px[3] != 0 {
                 px[3] = 0xFF;
@@ -669,35 +656,6 @@ impl Capture {
         }
     }
 
-    pub(crate) fn status(&self) -> Option<String> {
-        match &self.state {
-            CaptureState::Idle => None,
-            CaptureState::OneShot { .. } => Some("snap".into()),
-            CaptureState::Sequence {
-                writer,
-                frame_count,
-                ..
-            } => {
-                if let SequenceWriter::Gif {
-                    warming: Some(w), ..
-                } = writer
-                {
-                    return Some(format!("WARMING {}/{}", w.buffer.len(), w.target_frames));
-                }
-                let dropped = match writer {
-                    SequenceWriter::Png { .. } => 0,
-                    SequenceWriter::Gif { worker, .. } => worker.dropped(),
-                    SequenceWriter::Apng { .. } => 0,
-                };
-                if dropped > 0 {
-                    Some(format!("REC {frame_count} ({dropped} dropped)"))
-                } else {
-                    Some(format!("REC {frame_count}"))
-                }
-            }
-        }
-    }
-
     pub(crate) fn wants_pre(&self) -> bool {
         match &self.state {
             CaptureState::Idle => false,
@@ -950,15 +908,23 @@ pub(crate) struct RawImage {
     pub rgba: Vec<u8>,
 }
 
-// Synchronous: it poll-waits on the map, so a capture frame may stutter.
-pub(crate) fn read_texture_rgba(
+pub(crate) struct TextureReadback {
+    buffer: Buffer,
+    width: u32,
+    height: u32,
+    unpadded_bpr: u32,
+    padded_bpr: u32,
+    format: TextureFormat,
+}
+
+pub(crate) fn record_texture_rgba(
     device: &Device,
-    queue: &Queue,
+    encoder: &mut CommandEncoder,
     texture: &Texture,
     width: u32,
     height: u32,
     format: TextureFormat,
-) -> Result<RawImage> {
+) -> Result<TextureReadback> {
     let unpadded_bpr = width.checked_mul(4).context("width * 4 overflows u32")?;
     let padded_bpr = unpadded_bpr.next_multiple_of(256);
     let buffer_size = (padded_bpr as u64) * (height as u64);
@@ -970,9 +936,6 @@ pub(crate) fn read_texture_rgba(
         mapped_at_creation: false,
     });
 
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("loam-app::capture-copy"),
-    });
     encoder.copy_texture_to_buffer(
         TexelCopyTextureInfo {
             texture,
@@ -994,45 +957,65 @@ pub(crate) fn read_texture_rgba(
             depth_or_array_layers: 1,
         },
     );
-    queue.submit(Some(encoder.finish()));
-
-    let slice = buffer.slice(..);
-    let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
-    slice.map_async(MapMode::Read, move |result| {
-        let _ = mapped_tx.send(result);
-    });
-    device
-        .poll(PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })
-        .context("device.poll on capture readback failed")?;
-
-    mapped_rx
-        .recv()
-        .context("capture map callback dropped")?
-        .context("capture buffer mapping failed")?;
-    let data = slice.get_mapped_range();
-    let mut rgba = Vec::with_capacity((unpadded_bpr * height) as usize);
-    for row in 0..height as usize {
-        let start = row * padded_bpr as usize;
-        let end = start + unpadded_bpr as usize;
-        rgba.extend_from_slice(&data[start..end]);
-    }
-    drop(data);
-    buffer.unmap();
-
-    if format_is_bgra(format) {
-        for px in rgba.chunks_exact_mut(4) {
-            px.swap(0, 2);
-        }
-    }
-
-    Ok(RawImage {
+    Ok(TextureReadback {
+        buffer,
         width,
         height,
-        rgba,
+        unpadded_bpr,
+        padded_bpr,
+        format,
     })
+}
+
+impl TextureReadback {
+    pub(crate) fn read(self, device: &Device) -> Result<RawImage> {
+        let Self {
+            buffer,
+            width,
+            height,
+            unpadded_bpr,
+            padded_bpr,
+            format,
+        } = self;
+
+        let slice = buffer.slice(..);
+        let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
+        slice.map_async(MapMode::Read, move |result| {
+            let _ = mapped_tx.send(result);
+        });
+        device
+            .poll(PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .context("device.poll on capture readback failed")?;
+
+        mapped_rx
+            .recv()
+            .context("capture map callback dropped")?
+            .context("capture buffer mapping failed")?;
+        let data = slice.get_mapped_range();
+        let mut rgba = Vec::with_capacity((unpadded_bpr * height) as usize);
+        for row in 0..height as usize {
+            let start = row * padded_bpr as usize;
+            let end = start + unpadded_bpr as usize;
+            rgba.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        buffer.unmap();
+
+        if format_is_bgra(format) {
+            for px in rgba.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+        }
+
+        Ok(RawImage {
+            width,
+            height,
+            rgba,
+        })
+    }
 }
 
 fn format_is_bgra(format: TextureFormat) -> bool {
@@ -1057,381 +1040,6 @@ fn write_png_bytes(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<
     )
     .with_context(|| format!("write png {}", path.display()))?;
     Ok(())
-}
-
-pub fn register_commands<Ctx: 'static>(console: &mut Console<Ctx>, runtime: &crate::Runtime) {
-    let stage_choices: &[&'static str] = &["pre", "post", "both"];
-    let png_kv: &[&'static str] = &["fps=", "scale="];
-    let gif_kv: &[&'static str] = &["fps=", "palette=", "scale="];
-    let palette_values: &[&'static str] = &["local", "global"];
-
-    let cap = loam_egui::subcommands::<Ctx>("capture", capture_help())
-        .custom("png", "one-shot PNG capture", &[stage_choices], &[], {
-            let runtime = runtime.clone();
-            move |_, rest, out| {
-                let p = parse_capture_args(rest)?;
-                runtime.capture(CaptureRequest::OneShot {
-                    stage: p.stage,
-                    dir: p.dir,
-                    name: None,
-                });
-                out.line(format!("queued one-shot ({:?})", p.stage));
-                Ok(())
-            }
-        })
-        .custom(
-            "frames",
-            "PNG frame sequence (per-frame .png files)",
-            &[stage_choices, png_kv, png_kv],
-            &[],
-            {
-                let runtime = runtime.clone();
-                move |_, rest, out| {
-                    let p = parse_capture_args(rest)?;
-                    runtime.capture(CaptureRequest::StartSequence {
-                        format: CaptureFormat::Png,
-                        stage: p.stage,
-                        dir: p.dir,
-                        name: None,
-                        fps: p.fps,
-                        scale: None,
-                        palette: PaletteMode::default(),
-                    });
-                    out.line(format!("started PNG sequence ({:?})", p.stage));
-                    Ok(())
-                }
-            },
-        )
-        .custom(
-            "gif",
-            "GIF sequence (256 colours)",
-            &[stage_choices, gif_kv, gif_kv, gif_kv],
-            &[("palette", palette_values)],
-            {
-                let runtime = runtime.clone();
-                move |_, rest, out| {
-                    let p = parse_capture_args(rest)?;
-                    runtime.capture(CaptureRequest::StartSequence {
-                        format: CaptureFormat::Gif,
-                        stage: p.stage,
-                        dir: p.dir,
-                        name: None,
-                        fps: p.fps,
-                        scale: p.scale,
-                        palette: p.palette,
-                    });
-                    out.line(format!(
-                        "started GIF stream ({:?}, fps={}, scale={}, palette={:?})",
-                        p.stage,
-                        p.fps.map_or("default".into(), |f| f.to_string()),
-                        p.scale.map_or("native".into(), |s| s.to_string()),
-                        p.palette,
-                    ));
-                    Ok(())
-                }
-            },
-        )
-        .custom(
-            "apng",
-            "APNG sequence (true-color, larger than GIF)",
-            &[stage_choices, png_kv, png_kv],
-            &[],
-            {
-                let runtime = runtime.clone();
-                move |_, rest, out| {
-                    let p = parse_capture_args(rest)?;
-                    runtime.capture(CaptureRequest::StartSequence {
-                        format: CaptureFormat::Apng,
-                        stage: p.stage,
-                        dir: p.dir,
-                        name: None,
-                        fps: p.fps,
-                        scale: p.scale,
-                        palette: PaletteMode::default(),
-                    });
-                    out.line(format!(
-                        "started APNG stream ({:?}, fps={}, scale={})",
-                        p.stage,
-                        p.fps.map_or("default".into(), |f| f.to_string()),
-                        p.scale.map_or("native".into(), |s| s.to_string()),
-                    ));
-                    Ok(())
-                }
-            },
-        )
-        .custom(
-            "toggle",
-            "start/stop a sequence in one command (format + args)",
-            &[
-                &["png", "frames", "gif", "apng"],
-                stage_choices,
-                gif_kv,
-                gif_kv,
-            ],
-            &[("palette", palette_values)],
-            {
-                let runtime = runtime.clone();
-                move |_, rest, out| {
-                    let (format, after_format) = parse_format(rest);
-                    let p = parse_capture_args(after_format)?;
-                    runtime.capture(CaptureRequest::Toggle {
-                        format,
-                        stage: p.stage,
-                        dir: p.dir,
-                        name: None,
-                        fps: p.fps,
-                        scale: p.scale,
-                        palette: p.palette,
-                    });
-                    out.line(format!("toggle queued ({format:?}, {:?})", p.stage));
-                    Ok(())
-                }
-            },
-        )
-        .custom("stop", "stop the active sequence", &[], &[], {
-            let runtime = runtime.clone();
-            move |_, _rest, out| {
-                runtime.capture(CaptureRequest::Stop);
-                out.line("stop queued");
-                Ok(())
-            }
-        })
-        .custom("panel", "toggle the capture parameters panel", &[], &[], {
-            let runtime = runtime.clone();
-            move |_, _rest, out| {
-                let now_open = !runtime.0.capture_panel.get();
-                runtime.0.capture_panel.set(now_open);
-                out.line(if now_open {
-                    "panel opened"
-                } else {
-                    "panel closed"
-                });
-                Ok(())
-            }
-        });
-    console.register(cap);
-}
-
-fn capture_help() -> &'static str {
-    "capture <png|frames|gif|apng|toggle|stop|panel> [pre|post|both] [dir] [fps=N] \
-     [scale=W] [palette=local|global]"
-}
-
-struct ParsedCaptureArgs {
-    stage: CaptureStage,
-    dir: Option<PathBuf>,
-    fps: Option<u16>,
-    scale: Option<u32>,
-    palette: PaletteMode,
-}
-
-impl Default for ParsedCaptureArgs {
-    fn default() -> Self {
-        Self {
-            stage: CaptureStage::Post,
-            dir: None,
-            fps: None,
-            scale: None,
-            palette: PaletteMode::default(),
-        }
-    }
-}
-
-fn parse_capture_args(args: &[&str]) -> Result<ParsedCaptureArgs> {
-    let mut p = ParsedCaptureArgs::default();
-    for arg in args {
-        if let Some(v) = arg.strip_prefix("fps=") {
-            let fps: u16 = v.parse().context("fps must be a positive integer")?;
-            anyhow::ensure!(fps > 0, "fps must be positive");
-            p.fps = Some(fps);
-        } else if let Some(v) = arg.strip_prefix("scale=") {
-            let width: u32 = v.parse().context("scale must be a positive width")?;
-            anyhow::ensure!(width > 0, "scale must be positive");
-            p.scale = Some(width);
-        } else if let Some(v) = arg.strip_prefix("palette=") {
-            match v {
-                "local" => p.palette = PaletteMode::Local,
-                "global" => p.palette = PaletteMode::Global,
-                _ => anyhow::bail!("palette must be local or global"),
-            }
-        } else {
-            match *arg {
-                "pre" => p.stage = CaptureStage::Pre,
-                "post" => p.stage = CaptureStage::Post,
-                "both" => p.stage = CaptureStage::Both,
-                other => p.dir = Some(PathBuf::from(other)),
-            }
-        }
-    }
-    Ok(p)
-}
-
-fn parse_format<'a>(args: &'a [&'a str]) -> (CaptureFormat, &'a [&'a str]) {
-    match args.split_first() {
-        Some((&"png", rest)) | Some((&"frames", rest)) => (CaptureFormat::Png, rest),
-        Some((&"gif", rest)) => (CaptureFormat::Gif, rest),
-        Some((&"apng", rest)) => (CaptureFormat::Apng, rest),
-        _ => (CaptureFormat::Gif, args),
-    }
-}
-
-pub fn bind_default_hotkeys<Ctx: 'static>(console: &mut Console<Ctx>) {
-    console.bind(loam_egui::Key::F12, "capture png post");
-    console.bind(loam_egui::Key::F9, "capture toggle gif post");
-    console.bind(loam_egui::Key::F11, "capture panel");
-}
-
-pub struct CapturePanel {
-    pub open: bool,
-    output_dir: String,
-    name: String,
-    format: CaptureFormat,
-    stage: CaptureStage,
-    fps: u16,
-    scale_enabled: bool,
-    scale_width: u32,
-    palette_mode: PaletteMode,
-}
-
-impl Default for CapturePanel {
-    fn default() -> Self {
-        Self {
-            open: false,
-            output_dir: "captures".into(),
-            name: String::new(),
-            format: CaptureFormat::Gif,
-            stage: CaptureStage::Post,
-            fps: 30,
-            scale_enabled: false,
-            scale_width: 720,
-            palette_mode: PaletteMode::default(),
-        }
-    }
-}
-
-impl CapturePanel {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn toggle(&mut self, runtime: &crate::Runtime) {
-        self.open = !self.open;
-        runtime.0.capture_panel.set(self.open);
-    }
-
-    pub fn show(&mut self, ctx: &loam_egui::egui::Context, runtime: &crate::Runtime) {
-        let global = runtime.0.capture_panel.get();
-        if global != self.open {
-            self.open = global;
-        }
-        if !self.open {
-            return;
-        }
-        let mut open_flag = self.open;
-        loam_egui::egui::Window::new("capture")
-            .open(&mut open_flag)
-            .resizable(true)
-            .default_width(280.0)
-            .show(ctx, |ui| self.body(ui, runtime));
-        if open_flag != self.open {
-            self.open = open_flag;
-            runtime.0.capture_panel.set(self.open);
-        }
-    }
-
-    fn body(&mut self, ui: &mut loam_egui::egui::Ui, runtime: &crate::Runtime) {
-        let recording_status = runtime.capture_status();
-        let recording = recording_status.is_some();
-
-        ui.label(format!(
-            "Status: {}",
-            recording_status.as_deref().unwrap_or("Idle")
-        ));
-        ui.separator();
-
-        ui.horizontal(|ui| {
-            ui.label("Dir:");
-            ui.add(
-                loam_egui::egui::TextEdit::singleline(&mut self.output_dir).desired_width(180.0),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.label("Name:");
-            ui.add(loam_egui::egui::TextEdit::singleline(&mut self.name).desired_width(160.0));
-            if self.name.is_empty() {
-                ui.weak("(auto)");
-            }
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("Format:");
-            ui.radio_value(&mut self.format, CaptureFormat::Png, "PNG");
-            ui.radio_value(&mut self.format, CaptureFormat::Gif, "GIF");
-            ui.radio_value(&mut self.format, CaptureFormat::Apng, "APNG");
-        });
-
-        let stage_enabled = self.format == CaptureFormat::Png;
-        ui.add_enabled_ui(stage_enabled, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Stage:");
-                ui.radio_value(&mut self.stage, CaptureStage::Pre, "pre");
-                ui.radio_value(&mut self.stage, CaptureStage::Post, "post");
-                ui.radio_value(&mut self.stage, CaptureStage::Both, "both");
-            });
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("FPS:");
-            ui.add(loam_egui::egui::Slider::new(&mut self.fps, 1..=60));
-        });
-
-        let scale_supported = matches!(self.format, CaptureFormat::Gif | CaptureFormat::Apng);
-        ui.add_enabled_ui(scale_supported, |ui| {
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.scale_enabled, "Scale:");
-                ui.add_enabled(
-                    self.scale_enabled,
-                    loam_egui::egui::Slider::new(&mut self.scale_width, 240..=2160).suffix(" px"),
-                );
-            });
-        });
-
-        ui.add_enabled_ui(self.format == CaptureFormat::Gif, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Palette:");
-                ui.radio_value(&mut self.palette_mode, PaletteMode::Local, "local");
-                ui.radio_value(&mut self.palette_mode, PaletteMode::Global, "global");
-            });
-        });
-
-        ui.separator();
-
-        ui.horizontal(|ui| {
-            if ui.button("Screenshot").clicked() {
-                runtime.capture(CaptureRequest::OneShot {
-                    stage: CaptureStage::Both,
-                    dir: Some(PathBuf::from(&self.output_dir)),
-                    name: (!self.name.is_empty()).then(|| self.name.clone()),
-                });
-            }
-            let label = if recording { "Stop" } else { "Start" };
-            if ui.button(label).clicked() {
-                if recording {
-                    runtime.capture(CaptureRequest::Stop);
-                } else {
-                    runtime.capture(CaptureRequest::StartSequence {
-                        format: self.format,
-                        stage: self.stage,
-                        dir: Some(PathBuf::from(&self.output_dir)),
-                        name: (!self.name.is_empty()).then(|| self.name.clone()),
-                        fps: Some(self.fps),
-                        scale: self.scale_enabled.then_some(self.scale_width),
-                        palette: self.palette_mode,
-                    });
-                }
-            }
-        });
-    }
 }
 
 #[cfg(test)]
@@ -1466,12 +1074,5 @@ mod tests {
         assert!(scaled_dims(1920, 1080, Some(0)).is_err());
         assert!(scaled_dims(0, 1080, Some(720)).is_err());
         assert!(scaled_dims(1920, 0, Some(720)).is_err());
-    }
-
-    #[test]
-    fn malformed_capture_parameters_are_rejected() {
-        for arg in ["fps=abc", "fps=0", "scale=xyz", "scale=0", "palette=nope"] {
-            assert!(parse_capture_args(&[arg]).is_err(), "{arg}");
-        }
     }
 }

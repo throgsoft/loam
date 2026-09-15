@@ -13,7 +13,7 @@ fn draw_hud_frame(
     view: &TextureView,
     font_bytes: &[u8],
 ) -> anyhow::Result<()> {
-    let mut text = TextRenderer::new(device, queue, TARGET_FORMAT, font_bytes, 48.0, 1)?;
+    let mut text = TextRenderer::new(device, queue, TARGET_FORMAT, font_bytes, 48.0)?;
     text.queue("fps 240", [16.0, 16.0], 32.0, [1.0, 1.0, 1.0, 1.0]);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("hud-chain-smoke frame"),
@@ -49,7 +49,7 @@ async fn request_device() -> Result<(Device, Queue), String> {
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn hud_frame_renders_into_an_offscreen_target_gpu_probe() {
-    let font_bytes = include_bytes!("../../hero/fonts/lmroman10-bold.otf");
+    let font_bytes = include_bytes!("../../examples/fonts/lmroman10-bold.otf");
     let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
 
     let target = device.create_texture(&wgpu::TextureDescriptor {

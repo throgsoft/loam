@@ -46,7 +46,9 @@ fn settled_scene(count: usize) -> World<EuclideanR3> {
     let mut rng = Xorshift::new(SEED);
     let mut world = World::new(EuclideanR3);
     register_default_narrowphase(&mut world.narrowphase);
-    world.gravity = Some(Vec3::new(0.0, GRAVITY_Y, 0.0));
+    world
+        .set_gravity(Some(Vec3::new(0.0, GRAVITY_Y, 0.0)))
+        .unwrap();
     world.push_body(halfspace_body_r3(Vec3::Y, 0.0).unwrap());
 
     for _ in 0..count {
@@ -62,23 +64,23 @@ fn settled_scene(count: usize) -> World<EuclideanR3> {
                 box_body(position, Vec3::ZERO, Vec3::splat(rng.range(0.2, 0.6)), 1.0).unwrap(),
             )
         };
-        world.bodies[id].restitution = 0.0;
+        world.set_restitution(id, 0.0).unwrap();
     }
     for _ in 0..SETTLE_STEPS {
-        world.step(DT);
+        world.step(DT).unwrap();
     }
     world
 }
 
-fn bounding_radius(collider: &Collider) -> f32 {
+fn bounding_radius(collider: Option<&Collider>) -> f32 {
     match collider {
-        Collider::Sphere { radius, .. } => *radius,
-        Collider::ConvexPolytope3D { vertices } => vertices
+        Some(Collider::Sphere { radius, .. }) => *radius,
+        Some(Collider::ConvexPolytope3D { vertices }) => vertices
             .iter()
             .map(|v| v.length_squared())
             .fold(0.0_f32, f32::max)
             .sqrt(),
-        Collider::HalfSpace { .. } => f32::INFINITY,
+        Some(Collider::HalfSpace { .. }) => f32::INFINITY,
         other => unreachable!("the scene builds spheres, boxes and one half-space, not {other:?}"),
     }
 }
@@ -87,20 +89,20 @@ fn scan(world: &World<EuclideanR3>, radii: &mut Vec<f32>, pairs: &mut Vec<PairKe
     radii.clear();
     radii.extend(
         world
-            .bodies
+            .bodies()
             .iter()
-            .map(|body| bounding_radius(body.collider())),
+            .map(|body| bounding_radius(world.collider(body))),
     );
     pairs.clear();
-    let n = world.bodies.len();
+    let n = world.bodies().len();
     for i in 0..n {
         for j in (i + 1)..n {
-            let (a, b) = (&world.bodies[i], &world.bodies[j]);
+            let (a, b) = (&world.bodies()[i], &world.bodies()[j]);
             if a.inv_mass() == 0.0 && b.inv_mass() == 0.0 {
                 continue;
             }
-            if world.space.distance(a.position, b.position) <= radii[i] + radii[j] {
-                pairs.push(canonical(world.bodies.id_at(i), world.bodies.id_at(j)));
+            if world.space().distance(a.position, b.position) <= radii[i] + radii[j] {
+                pairs.push(canonical(world.bodies().id_at(i), world.bodies().id_at(j)));
             }
         }
     }
@@ -151,7 +153,7 @@ fn main() {
         });
         println!(
             "{} {} {sweep_ns:.0} {scan_ns:.0}",
-            world.bodies.len(),
+            world.bodies().len(),
             sweep_out.len()
         );
     }

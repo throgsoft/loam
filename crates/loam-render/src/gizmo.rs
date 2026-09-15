@@ -1,5 +1,3 @@
-//! Ten handles: six [`crate::hypergimbal`] rings and four shafts.
-
 use glam::{Vec3, Vec4};
 use loam_math::{Bivector, Plane4, Rotor4};
 use loam_shape::LineMesh;
@@ -77,7 +75,6 @@ impl Shaft {
         self.origin + self.direction * along
     }
 
-    /// The head is the handle; the stem is a rail.
     pub fn head_start(&self) -> f32 {
         self.outer - self.head
     }
@@ -166,7 +163,6 @@ pub enum TransformDelta {
 }
 
 impl TransformDelta {
-    /// Identity for a translation.
     pub fn rotor(self) -> Rotor4 {
         match self {
             Self::Rotate { plane, angle } => (plane.unit_bivector() * angle).exp(),

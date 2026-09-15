@@ -1,1215 +1,2374 @@
-use anyhow::{anyhow, Result};
-use glam::{Mat4, Vec2, Vec3, Vec4};
-use loam_app::{args::Args, egui, Camera, FrameCtx, OrbitController, RunConfig, SetupCtx};
-use loam_egui::{Console, ConsoleUi};
-use loam_math::WPlane;
-use loam_math::{Bivector4, EuclideanR3, Rotor, Rotor4};
-use loam_render::{
-    device::RenderDevice,
-    raymarch::{
-        polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
-    },
-    DepthBuffer, DepthMode, LineRasterNode, PointRasterNode, SkyGroundNode, SkyGroundUniforms,
-    TriangleRasterNode, Viewport,
-};
-use loam_shape::polytope::{
-    polytope_section_faces_append, polytope_section_perimeter_append, vertex_color_by_position,
-    SectionScratch,
-};
+use std::sync::Arc;
 
-// 24-bit depth cracks the 600-cell's densely-packed caps.
-const SECTION_FACES_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-
-// Shared by the marched half-space and the background ground, or the swap shows a seam.
-const FLOOR_Y: f32 = 0.0;
-
-use loam_scene::{Scene4, SceneNode4};
-use loam_shape::LineMesh;
-use winit::window::WindowAttributes;
-
-mod active;
-mod catalog;
-mod color;
-mod composer;
-mod console;
-mod consts;
-mod director;
-mod filmstrip;
-mod hud;
-mod hypergimbal;
-mod physics;
-mod projections;
-mod render;
-mod sections;
-mod shapes;
-mod shell;
-mod spins;
-mod state;
-mod toybox;
-mod ui;
-mod verbs;
-mod wireframe_geom;
-
-// At the crate root: `#[global_allocator]` is a per-binary singleton (E0152).
+use glam::Vec4;
+use loam::app::args::Args;
+use loam::app::session::{launch_or_headless, look, FrameHook, Orbit, SessionApp};
+use loam::math::{Bivector, Bivector4, EuclideanR4};
+use loam::render::pass::FramePass;
+use loam::render::raymarch::BodyUniform;
+use loam::render::{HyperslicePass, LinePass, PointPass, SkyGroundPass};
+use loam::runtime::host::run_headless;
+use loam::runtime::host::{HostConfig, HostError};
 #[cfg(test)]
-pub(crate) mod alloc_probe {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
-
-    // try_with skips destroyed TLS; the const Cell initializer and callbacks cannot panic.
-    thread_local! {
-        static BYTES: Cell<usize> = const { Cell::new(0) };
-    }
-
-    pub struct Counting;
-
-    // SAFETY: Methods preserve System contracts; const TLS and wrapping Cell updates cannot unwind.
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(layout.size())));
-            // SAFETY: The caller supplies a valid nonzero allocation layout.
-            unsafe { System.alloc(layout) }
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-            // SAFETY: The caller supplies a live System allocation and its original layout.
-            unsafe { System.dealloc(ptr, layout) }
-        }
-
-        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            let _ = BYTES.try_with(|bytes| bytes.set(bytes.get().wrapping_add(new_size)));
-            // SAFETY: The caller supplies a live System allocation, its layout, and a valid new size.
-            unsafe { System.realloc(ptr, layout, new_size) }
-        }
-    }
-
-    pub fn bytes_allocated_by(body: impl FnOnce()) -> usize {
-        let before = BYTES.with(Cell::get);
-        body();
-        BYTES.with(Cell::get).wrapping_sub(before)
-    }
-}
+use loam::runtime::Input;
+use loam::runtime::{
+    ActionId, AppCommand, Bindings, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle,
+    Domains, Entity, Eye, Instance, Key, LogCapacity, Material, MaterialId, Outcome, Phase,
+    Pointer, PointerButton, PointerPhase, Pose, PreparedGeometry, PreparedId, Rejection, Section4,
+    Session, SimConfig, SpawnBundle, ViewId, ViewSpec,
+};
 
 #[cfg(test)]
 #[global_allocator]
-static COUNTING_ALLOCATOR: alloc_probe::Counting = alloc_probe::Counting;
+static COUNTING_ALLOCATOR: loam_time::alloc::CountingAllocator<std::alloc::System> =
+    loam_time::alloc::CountingAllocator::new(std::alloc::System);
 
-use active::combo_name;
-use catalog::{parse_row, SHAPE_CATALOG};
-use color::{unique_edge_palette, w_depth_color};
-use consts::SPACE_TESSELLATION_SAMPLES;
-use consts::{
-    BODY_SIZE, BODY_Y, HYPERSLICE_MIN_THICKNESS, T_SCRUB_RATE, T_SLIDER_INITIAL, W_SCRUB_RATE,
-};
-use director::Playback;
-#[cfg(test)]
-use loam_math::Bivector;
-use loam_time::Director;
-use physics::PlaygroundPhysics;
-use state::{
-    set_if_changed, Demo, RotationMode, RowFrame, SurfaceMode, ViewMode, WireframeColorMode,
-};
-use verbs::WireframeControls;
-use wireframe_geom::*;
+mod camera;
+mod catalog;
+mod color;
+mod console;
+mod consts;
+mod display;
+mod gimbal;
+mod guides;
+mod hud;
+mod mode;
+mod projection;
+mod row;
+mod scene;
+mod strip;
+mod toy;
+mod ui;
 
-fn compute_cell_strengths(
-    cells: &[&[u32]],
-    local_vertices: &[Vec4],
-    w_slice: f32,
-    out: &mut Vec<f32>,
-) {
-    out.clear();
-    out.extend(cells.iter().map(|cell| {
-        let (w_min, w_max) = cell_w_range(cell, local_vertices);
-        let half_extent = (w_max - w_min) * 0.5;
-        if half_extent <= 0.0 {
-            return 0.0;
-        }
-        let mid = (w_min + w_max) * 0.5;
-        let dist = (w_slice - mid).abs();
-        (1.0 - dist / half_extent).clamp(0.0, 1.0)
-    }));
+use catalog::ShapeEntry;
+use color::{ColorMode, Shades};
+use consts::{BODY_SIZE, BODY_X_SPACING, BODY_Y, W_SCRUB_RATE};
+use display::{Display, Surface};
+use gimbal::Gimbal;
+use mode::{Mode, Spin};
+use projection::Family;
+use strip::{Cell, Strip};
+
+const SPIN: ActionId = ActionId(0);
+const SLICE_UP: ActionId = ActionId(1);
+const SLICE_DOWN: ActionId = ActionId(2);
+const NEXT_MODE: ActionId = ActionId(3);
+const RESET: ActionId = ActionId(4);
+const GIMBAL: ActionId = ActionId(5);
+const STRIP: ActionId = ActionId(6);
+const CONTROLS: ActionId = ActionId(7);
+const PLANE: [ActionId; 6] = [
+    ActionId(10),
+    ActionId(11),
+    ActionId(12),
+    ActionId(13),
+    ActionId(14),
+    ActionId(15),
+];
+
+const SECTION_COLOR: [f32; 4] = [1.0, 0.85, 0.35, 1.0];
+const SECTION_WIDTH_PX: f32 = 2.0;
+const EDGE_WIDTH_PX: f32 = display::DEFAULT_WIREFRAME_WIDTH_PX;
+const HEADLESS_STEPS: u32 = 8;
+const HEADLESS_FRAME: (u32, u32) = (1280, 720);
+const CAMERA_DISTANCE: f32 = 8.0;
+const DOMAIN_NAME: &str = "r4";
+
+#[derive(Clone, Copy)]
+pub(crate) struct Slot {
+    pub(crate) index: usize,
+    pub(crate) entry: ShapeEntry,
+    pub(crate) rest: Vec4,
 }
 
-// `content_rect` does not shrink for a panel and would seat under the menu bar.
-fn formula_popup_seat(ctx: &egui::Context) -> egui::Pos2 {
-    const RIGHT_INSET: f32 = 280.0;
-    const TOP_INSET: f32 = 16.0;
-    let area = ctx.available_rect();
-    egui::pos2(area.right() - RIGHT_INSET, area.top() + TOP_INSET)
+#[derive(Clone, Copy)]
+pub(crate) struct Wall;
+
+#[derive(Clone, Copy)]
+pub(crate) struct Toy {
+    pub(crate) rest_anchor: Vec4,
+    pub(crate) rest_time: f32,
 }
 
-fn shader_source() -> String {
-    let scene = Scene4::new(SceneNode4::halfspace(Vec4::Y, FLOOR_Y));
-    format!(
-        "{kernel}\n{polytope}\n{scene}\n",
-        kernel = HYPERSLICE_KERNEL_WGSL,
-        polytope = polytope_extended_sdfs_wgsl(),
-        scene = scene.to_hyperslice_wgsl_gated("u.w_slice", "u.params.x"),
-    )
+#[derive(Clone, Copy)]
+pub(crate) struct HiddenSlot {
+    pub(crate) slot: Slot,
+    pub(crate) instance: Option<Instance>,
 }
 
-struct DemoNodes {
-    marcher: Hyperslice4DNode,
-    section_edges: LineRasterNode,
-    parent_wireframe: LineRasterNode,
-    gimbal: LineRasterNode,
-    points: PointRasterNode,
-    section_faces: TriangleRasterNode,
-    section_faces_translucent: TriangleRasterNode,
+#[derive(Clone, Copy)]
+pub(crate) struct Control {
+    orbit: Orbit,
+    gimbal: Gimbal,
+    latest: Option<Pointer>,
+    center: glam::Vec3,
+    camera_focus: Option<(bool, usize, Mode)>,
+    filmstrip_return: Option<Orbit>,
 }
 
-fn build_nodes(device: &wgpu::Device, format: wgpu::TextureFormat, samples: u32) -> DemoNodes {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("polytope_playground shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source().into()),
-    });
-    DemoNodes {
-        marcher: Hyperslice4DNode::new(device, format, &module, samples),
-        section_edges: LineRasterNode::new(
-            device,
-            format,
-            DepthMode::ReadOnly {
-                format: SECTION_FACES_DEPTH_FORMAT,
-            },
-            samples,
-        ),
-        parent_wireframe: LineRasterNode::new(
-            device,
-            format,
-            DepthMode::ReadOnly {
-                format: SECTION_FACES_DEPTH_FORMAT,
-            },
-            samples,
-        ),
-        gimbal: LineRasterNode::new(device, format, DepthMode::Off, samples),
-        // A depth test hides a vertex behind its own cap under drop-w.
-        points: PointRasterNode::new(device, format, DepthMode::Off, samples),
-        section_faces: TriangleRasterNode::new(
-            device,
-            format,
-            DepthMode::ReadWrite {
-                format: SECTION_FACES_DEPTH_FORMAT,
-            },
-            loam_render::FragmentShading::FaceNormalLambert,
-            samples,
-        ),
-        section_faces_translucent: TriangleRasterNode::new(
-            device,
-            format,
-            DepthMode::ReadOnly {
-                format: SECTION_FACES_DEPTH_FORMAT,
-            },
-            loam_render::FragmentShading::FaceNormalLambert,
-            samples,
-        ),
-    }
-}
-
-impl Demo {
-    pub(crate) fn new(ctx: &mut SetupCtx<'_>) -> Result<Self> {
-        let row = parse_row(&Args::current())?;
-
-        let DemoNodes {
-            marcher: mut node,
-            section_edges,
-            parent_wireframe,
-            gimbal: gimbal_node,
-            points: points_node,
-            section_faces,
-            section_faces_translucent,
-        } = build_nodes(
-            &ctx.rd.device,
-            ctx.rd.target_format(),
-            ctx.rd.sample_count(),
-        );
-
-        let surface_mode = SurfaceMode::default();
-        let row_len = row.len();
-        let physics = PlaygroundPhysics::new(row_len, BODY_SIZE)
-            .ok_or_else(|| anyhow::anyhow!("invalid playground body configuration"))?;
-        let bodies: Vec<BodyUniform> = row
-            .iter()
-            .enumerate()
-            .map(|(slot, entry)| {
-                state::sdf_body_uniform(
-                    &physics,
-                    entry,
-                    slot,
-                    row.len(),
-                    Rotor4::IDENTITY,
-                    BODY_SIZE,
-                    surface_mode,
-                )
-            })
-            .collect();
-        node.set_bodies(&bodies);
-
-        let mut camera = Camera::<EuclideanR3>::at_origin();
-        camera.position = Vec3::new(0.0, 3.0, 9.0);
-        camera.near = 0.1;
-        let mut orbit: OrbitController<EuclideanR3> = OrbitController::default();
-        orbit.set_orbit(8.0, -0.25);
-
-        let initial_w = 0.0;
-
-        Ok(Self {
-            physics,
-            left_was_down: false,
-            gimbal: hypergimbal::GimbalUi::default(),
-            gimbal_node,
-            camera,
+impl Default for Control {
+    fn default() -> Self {
+        let mut orbit = Orbit::around([0.0; 3], CAMERA_DISTANCE);
+        orbit.pitch = -0.25;
+        Self {
             orbit,
-            rig: loam_app::camera_rig::CameraRig::default(),
-            node,
-            sky_ground: SkyGroundNode::new(
-                &ctx.rd.device,
-                ctx.rd.target_format(),
-                SECTION_FACES_DEPTH_FORMAT,
-                ctx.rd.sample_count(),
-            ),
-            sdf_upload_pending: true,
-            uploaded_rotors: Vec::new(),
-            section_edges,
-            parent_wireframe,
-            wireframe: WireframeControls::default(),
-            wireframe_nearest_active: true,
-            cross_section: state::SectionLayer::CROSS_SECTION_DEFAULT,
-            projected_cap: state::SectionLayer::PROJECTED_CAP_DEFAULT,
-            wireframe_color_mode: WireframeColorMode::default(),
-            schlegel_params: None,
-            stereographic_pole: state::STEREOGRAPHIC_DEFAULT_POLE,
-            wireframe_hyperslice: false,
-            wireframe_hyperslice_thickness: consts::HYPERSLICE_DEFAULT_THICKNESS,
-            unique_edge_palette_cache: std::collections::HashMap::new(),
-            cell_centers_cache: std::collections::HashMap::new(),
-            surface_scale: 1.0,
-            environment: loam_app::environment::Environment::default(),
-            section_faces,
-            section_faces_translucent,
-            section_faces_projected_scratch: loam_shape::TriangleMesh::<3>::default(),
-            section_clip_projected_scratch: Vec::new(),
-            points_node,
-            points_enabled: false,
-            points_show_vertices: true,
-            points_show_cell_centers: true,
-            points_size_px: 4.0,
-            points_mesh_scratch: loam_shape::PointMesh::<3>::default(),
-            section_faces_depth: None,
-            section_world_vertices_scratch: Vec::new(),
-            section_faces_mesh_scratch: loam_shape::TriangleMesh::<3>::default(),
-            body_uniform_scratch: Vec::new(),
-            strip_cells_scratch: Vec::new(),
-            wireframe_section_edges_scratch: LineMesh::<3>::default(),
-            body_perimeter_scratch: LineMesh::<3>::default(),
-            section_cap_scratch: SectionScratch::default(),
-            wireframe_parent_lines_scratch: LineMesh::<3>::default(),
-            overlay_local_vertices_scratch: Vec::new(),
-            overlay_center_locals_scratch: Vec::new(),
-            overlay_cell_strengths_scratch: Vec::new(),
-            surface_mode,
-            row,
-            w_slice: initial_w,
-            slider_up_held: false,
-            slider_down_held: false,
-            slider_left_held: false,
-            slider_right_held: false,
-            rotate: false,
-            spins: spins::SlotSpins::new(row_len),
-            playback: load_director(&Args::current(), row_len)?,
-            rate_scale: 1.0,
-            rot_time: 0.0,
-            t_slider_max: T_SLIDER_INITIAL,
-            expanded: false,
-            show_help: false,
-            show_render_panel: false,
-            example_callout: loam_egui::CalloutState {
-                window_pos: egui::Pos2::new(220.0, 120.0),
-                open: false,
-            },
-            mode_annotation_open: loam_egui::CalloutState {
-                window_pos: egui::Pos2::new(220.0, 300.0),
-                open: false,
-            },
-            show_formula: false,
-            show_controls: true,
-            show_text_hud: false,
-            view_mode: ViewMode::Shapes,
-            strip_w: true,
-            strip_t: false,
-            strip_swap_axes: false,
-            strip_count_w: 11,
-            strip_count_t: 5,
-            strip_t_extent: T_SLIDER_INITIAL,
-            strip_subject: SHAPE_CATALOG[3],
-            rotation_mode: RotationMode::Active,
-            pending_mode: None,
-            pending_view_mode: None,
-            pending_actions: Vec::new(),
-            seq: Vec::new(),
-            draft: Vec::new(),
-            formula_input: String::new(),
-            formula_error: None,
-        })
+            gimbal: Gimbal::default(),
+            latest: None,
+            center: glam::Vec3::ZERO,
+            camera_focus: None,
+            filmstrip_return: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Card {
+    geometry: Option<PreparedId>,
+    toy_geometry: Option<PreparedId>,
+    material: MaterialId,
+    cut: MaterialId,
+    shades: Option<Shades>,
+}
+
+impl Card {
+    fn dressed(&self, geometry: PreparedId) -> Instance {
+        Instance::new(geometry, self.material).sectioned(self.cut)
     }
 
-    pub(crate) fn tick(&mut self, dt: f32) {
-        self.apply_pending_gimbal();
-        let dir = (self.slider_up_held as i32 - self.slider_down_held as i32) as f32;
-        let host_owns_w = !self
-            .playback
-            .as_ref()
-            .is_some_and(director::Playback::owns_w_slice);
-        if dir != 0.0 && host_owns_w {
-            let w_range = self.effective_w_range();
-            self.w_slice = (self.w_slice + dir * W_SCRUB_RATE * dt).clamp(-w_range, w_range);
-        }
+    pub(crate) fn body(&self) -> Option<Instance> {
+        self.geometry.map(|geometry| self.dressed(geometry))
+    }
 
-        let t_dir = (self.slider_right_held as i32 - self.slider_left_held as i32) as f32;
-        if t_dir != 0.0 {
-            self.rot_time = (self.rot_time + t_dir * T_SCRUB_RATE * dt).max(0.0);
-            const T_SLIDER_CAP: f32 = 1.0e6;
-            if self.rot_time > self.t_slider_max {
-                let new_max = (self.rot_time * 2.0).min(T_SLIDER_CAP);
-                self.t_slider_max = new_max;
-                if self.rot_time > T_SLIDER_CAP {
-                    self.rot_time = T_SLIDER_CAP;
+    pub(crate) fn toy(&self) -> Option<Instance> {
+        self.toy_geometry.map(|geometry| self.dressed(geometry))
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Catalog {
+    cards: Arc<[Card]>,
+}
+
+loam::runtime::stores! {
+    #[derive(Default)]
+    pub struct Playground {
+        slots: Store<Slot>,
+        walls: Store<Wall>,
+        toys: Store<Toy>,
+        hidden: Store<HiddenSlot>,
+        mode: Value<Mode>,
+        spin: Value<Spin>,
+        active: Value<usize>,
+        slice: Value<f32>,
+        projection: Value<Family>,
+        gimbal: Value<bool>,
+        hud: Value<bool>,
+        color: Value<ColorMode>,
+        strip: Value<Strip>,
+        environment: Value<loam::app::environment::Environment>,
+        display: Value<Display>,
+        time: Value<f32>,
+        angles: Value<[f32; 6]>,
+        controls: Value<bool>,
+        formula: Value<bool>,
+        camera: Value<camera::Camera>,
+        control: Value<Control>,
+        catalog: Value<Catalog>,
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Action {
+    Mode(Mode),
+    Active(usize),
+    Slice(f32),
+    ExactSlice(f32),
+    Plane(usize),
+    Gimbal(Option<bool>),
+    Running(Option<bool>),
+    Projection(Family),
+    NextProjection,
+    Color(ColorMode),
+    NextColor,
+    Hud(Option<bool>),
+    Shape(usize, usize),
+    AddShape(usize),
+    RemoveShape(usize),
+    ReorderShape { from: usize, to: usize },
+    Controls(Option<bool>),
+    Formula(Option<bool>),
+    Strip(Strip),
+    Rate(f32),
+    Display(Display),
+    Reset,
+    Time(f32),
+    PlaneAngle(usize, f32),
+    Throw(Entity, [f32; 3]),
+}
+
+pub(crate) struct Boot {
+    pub(crate) session: Session<Playground>,
+    pub(crate) domain: DomainHandle<EuclideanR4>,
+}
+
+fn rest_of(index: usize, len: usize) -> Vec4 {
+    let center = (len.max(1) - 1) as f32 * 0.5;
+    Vec4::new((index as f32 - center) * BODY_X_SPACING, BODY_Y, 0.0, 0.0)
+}
+
+pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
+    let mut session = Session::new(
+        Playground {
+            slots: loam::runtime::Store::tracked(LogCapacity::default()),
+            ..Playground::default()
+        },
+        SimConfig::default(),
+    );
+    let domain = session.register_domain(
+        DomainBuilder::new(DOMAIN_NAME, EuclideanR4)
+            .tracked(LogCapacity::default())
+            .physics(toy::physics_config())
+            .map_err(|error| HostError::Setup(Rejection::Edit(error)))?,
+    );
+    let root = session.views().root();
+
+    let layers = session.dispatch(|d| -> Result<Layers, Rejection> {
+        let cut = d.add_material(Material::lines(SECTION_COLOR, SECTION_WIDTH_PX));
+        let cards: Arc<[Card]> = prepare_catalog(d, cut).into();
+        for (index, entry) in row.iter().enumerate() {
+            let rest = rest_of(index, row.len());
+            let mut bundle = SpawnBundle::new().at(domain, Pose::at(rest)).row(Slot {
+                index,
+                entry: *entry,
+                rest,
+            });
+            if let Some(instance) = card_of(entry).and_then(|card| cards[card].body()) {
+                bundle = bundle.instance(instance);
+            }
+            d.spawn(bundle)?;
+        }
+        let eye = d.spawn(SpawnBundle::new().at(domain, Pose::at(Vec4::ZERO)))?;
+        let r4 = d.domains.typed(domain)?;
+        let section = r4.add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))?;
+        let projection = r4.add_view(ViewSpec::new(root, eye, Family::default().mapping(0.0)))?;
+        d.app.catalog.set(Catalog { cards });
+        Ok(Layers {
+            section,
+            projection,
+        })
+    })?;
+    session.views_mut().root_mut().eye =
+        Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
+    session.app.controls.set(true);
+
+    let cards = session.app.catalog.get().cards.clone();
+    install_systems(&mut session, domain, layers, cards);
+    session.set_initial()?;
+    Ok(Boot { session, domain })
+}
+
+#[derive(Clone, Copy)]
+struct Layers {
+    section: ViewId,
+    projection: ViewId,
+}
+
+fn card_of(entry: &ShapeEntry) -> Option<usize> {
+    catalog::SHAPE_CATALOG.iter().position(|held| held == entry)
+}
+
+fn prepare_catalog(dispatch: &mut Dispatch<'_, Playground>, cut: MaterialId) -> Vec<Card> {
+    catalog::SHAPE_CATALOG
+        .iter()
+        .map(|entry| {
+            let [r, g, b] = entry.body_color;
+            let material = dispatch.add_material(Material::lines([r, g, b, 1.0], EDGE_WIDTH_PX));
+            let polytope = entry.shape.polytope4();
+            Card {
+                geometry: polytope.map(|polytope| {
+                    dispatch.prepare(PreparedGeometry::Polytope4 {
+                        polytope,
+                        scale: BODY_SIZE,
+                    })
+                }),
+                toy_geometry: polytope.map(|polytope| {
+                    dispatch.prepare(PreparedGeometry::Polytope4 {
+                        polytope,
+                        scale: toy::BODY_SIZE,
+                    })
+                }),
+                material,
+                cut,
+                shades: polytope.map(|polytope| {
+                    let topology = polytope.topology();
+                    Shades {
+                        gradient: dispatch.add_palette(color::vertex_gradient_colors(topology)),
+                        unique: dispatch.add_palette(color::unique_edge_colors(topology.edges)),
+                        extent: color::w_extent(topology, BODY_SIZE),
+                    }
+                }),
+            }
+        })
+        .collect()
+}
+
+fn install_systems(
+    session: &mut Session<Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    layers: Layers,
+    cards: Arc<[Card]>,
+) {
+    session.system(
+        Phase::Dispatch,
+        "controls",
+        move |mut ctx: Ctx<'_, Playground>| {
+            control_camera(&mut ctx, domain);
+            control_primary(&mut ctx, domain);
+            if ctx.input.pressed(SPIN) && *ctx.app.mode.get() == Mode::Rotate {
+                let running = ctx.app.spin.get().running;
+                ctx.commands.app(Action::Running(Some(!running)));
+            }
+            if ctx.input.pressed(NEXT_MODE) {
+                let next = match *ctx.app.mode.get() {
+                    Mode::Rotate => Mode::Toybox,
+                    Mode::Toybox => Mode::Rotate,
+                };
+                ctx.commands.app(Action::Mode(next));
+            }
+            if ctx.input.pressed(RESET) {
+                ctx.commands.app(Action::Reset);
+            }
+            if ctx.input.pressed(GIMBAL) {
+                ctx.commands.app(Action::Gimbal(None));
+            }
+            if ctx.input.pressed(CONTROLS) {
+                ctx.commands.app(Action::Controls(None));
+            }
+            if ctx.input.pressed(STRIP) {
+                let mut strip = *ctx.app.strip.get();
+                strip.on = !strip.on;
+                ctx.commands.app(Action::Strip(strip));
+            }
+            for (index, action) in PLANE.into_iter().enumerate() {
+                if ctx.input.pressed(action) {
+                    ctx.commands.app(Action::Plane(index));
                 }
             }
-            self.recompose_spins_at(self.rot_time);
-        }
+            Ok(())
+        },
+    );
 
-        let dt_animation = if self.rotate {
-            dt * self.rate_scale
-        } else {
-            0.0
-        };
-        let omega = match self.rotation_mode {
-            RotationMode::Active => Bivector4::ZERO,
-            RotationMode::Composer => self.omega_animation(),
-        };
-        director::step_row_rotation(
-            self.playback.as_mut(),
-            &mut self.spins,
-            &mut self.w_slice,
-            &mut self.rot_time,
-            dt_animation,
-            self.rotation_mode,
-            omega,
-        );
-        const T_SLIDER_CAP: f32 = 1.0e6;
-        if self.rot_time > self.t_slider_max {
-            let new_max = (self.rot_time * 2.0).min(T_SLIDER_CAP);
-            self.t_slider_max = new_max;
-            if self.rot_time > T_SLIDER_CAP {
-                self.rot_time = T_SLIDER_CAP;
+    let mut applied = None;
+    session.system(
+        Phase::Publication,
+        "slice view",
+        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
+            let w = *ctx.app.slice.get();
+            let revision = ctx.app.slice.version();
+            if Some(revision) == applied {
+                return Ok(());
             }
-        }
-        // Sync before the step, so the tick collides this frame's rotor.
-        self.sync_physics_row();
-        let bodies_moving = !self.physics.at_rest();
-        self.physics.tick(dt);
-        self.sdf_upload_pending |= bodies_moving;
-    }
+            let r4 = ctx.domains.typed(domain)?;
+            let spec = r4
+                .view_mut(layers.section)
+                .ok_or(DomainError::Unsupported("section view"))?;
+            spec.set_mapping(Section4 { w });
+            applied = Some(revision);
+            Ok(())
+        },
+    );
 
-    pub(crate) fn update(&mut self, ctx: &mut FrameCtx<'_>) {
-        let viewport = {
-            let cfg = &ctx.rd.surface_bundle.config;
-            (cfg.width, cfg.height)
-        };
-
-        self.camera.aspect = viewport.0 as f32 / viewport.1.max(1) as f32;
-        let pointer_free = !ctx.ui_capture.pointer && !self.rig.is_flying();
-        self.update_gimbal(pointer_free, &ctx.input, viewport);
-
-        if self.sdf_upload_pending || self.spins.rotors_differ_from(&self.uploaded_rotors) {
-            self.rebuild_bodies();
-        }
-
-        let lift_orbit = self.view_mode == ViewMode::Filmstrip && self.strip_w && self.strip_t;
-        self.orbit.target.y = if lift_orbit { BODY_Y } else { 0.0 };
-        self.rig.advance(
-            loam_app::orbit_on_right(ctx.input),
-            ctx.ui_capture,
-            &mut self.camera,
-            &mut self.orbit,
-            ctx.dt,
-            ctx.runtime,
-        );
-        let view = self.camera.view();
-
-        // No flush here: the viewport is only known in `render`, which flushes once.
-        let cfg = &ctx.rd.surface_bundle.config;
-        {
-            let mut changed = false;
-            let u = self.node.uniforms_mut();
-            changed |= set_if_changed(&mut u.camera_pos, view.position.to_array());
-            changed |= set_if_changed(&mut u.camera_forward, view.forward.to_array());
-            changed |= set_if_changed(&mut u.camera_right, view.right.to_array());
-            changed |= set_if_changed(&mut u.camera_up, view.up.to_array());
-            changed |= set_if_changed(&mut u.fov_y_tan, (60.0_f32.to_radians() * 0.5).tan());
-            changed |= set_if_changed(&mut u.resolution, [cfg.width as f32, cfg.height as f32]);
-            changed |= set_if_changed(&mut u.w_slice, self.w_slice);
-            changed |= set_if_changed(
-                &mut u.params[0],
-                if self.environment.floor_visible {
-                    1.0
-                } else {
-                    0.0
-                },
+    let mut styled = None;
+    let mut styled_slots = loam::runtime::Cursor::default();
+    session.system(
+        Phase::Publication,
+        "shading",
+        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
+            let app = &mut *ctx.app;
+            let revision = (
+                app.color.version(),
+                app.strip.version(),
+                app.display.version(),
+                app.active.version(),
             );
-            // Outside the change test: a clock tick must not upload.
-            u.time = ctx.time;
-            u.tick = ctx.tick as f32;
-            self.sdf_upload_pending |= changed;
-        }
-
-        // After every reader of the press edge.
-        self.left_was_down = ctx.input.buttons.left.down;
-    }
-
-    pub(crate) fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
-        // Keyboard zoom changes PPP under a native-resolution surface and letter-boxes the scene.
-        ctx.options_mut(|o| o.zoom_with_keyboard = false);
-
-        const MENU_BAR_PAD: f32 = 24.0;
-        const LABEL_INSET: f32 = 14.0;
-        let build_label = format!("build: {}{}", env!("BUILD_HASH"), env!("BUILD_DIRTY"),);
-        egui::Area::new(egui::Id::new("polytope-playground-build"))
-            .anchor(
-                egui::Align2::RIGHT_TOP,
-                [-LABEL_INSET, MENU_BAR_PAD + LABEL_INSET],
-            )
-            .show(ctx, |ui| {
-                ui.add(egui::Label::new(
-                    egui::RichText::new(build_label)
-                        .monospace()
-                        .size(11.0)
-                        .color(egui::Color32::from_gray(140)),
-                ));
-            });
-
-        if self.show_formula {
-            let formula = self.formula_string();
-            let name = if self.rotation_mode == RotationMode::Active {
-                combo_name(&self.spins.spin().active)
+            let slots_changed = app.slots.changed_since(&mut styled_slots);
+            if !slots_changed && styled == Some(revision) {
+                return Ok(());
+            }
+            let mode = *app.color.get();
+            let strip = app.strip.get().on;
+            let display = *app.display.get();
+            let active = *app.active.get();
+            let subject = if display.single {
+                app.slots
+                    .iter()
+                    .find(|(_, slot)| slot.index == active)
+                    .map(|(entity, _)| entity)
             } else {
                 None
             };
-            let bivec = self.spins.row_rotor().log();
-            let default_pos = formula_popup_seat(ctx);
-            let popup_frame = egui::Frame::popup(&ctx.style()).inner_margin(8.0);
-            const FORMULA_POPUP_W: f32 = 320.0;
-            egui::Window::new("formula")
-                .id(egui::Id::new("polytope-playground-formula"))
-                .title_bar(false)
-                .resizable(false)
-                .collapsible(false)
-                .movable(true)
-                .default_pos(default_pos)
-                .default_width(FORMULA_POPUP_W)
-                .max_width(FORMULA_POPUP_W)
-                .frame(popup_frame)
-                .show(ctx, |ui| {
-                    ui.set_max_width(FORMULA_POPUP_W);
-                    if !formula.is_empty() {
-                        ui.add(egui::Label::new(egui::RichText::new(&formula).monospace()).wrap());
-                    }
-                    if let Some(n) = name {
-                        ui.add(egui::Label::new(
-                            egui::RichText::new(n).color(egui::Color32::from_rgb(255, 217, 140)),
-                        ));
-                    }
-                    ui.separator();
-                    ui.label(egui::RichText::new("log(R) bivector").small().weak());
-                    loam_egui::bivector_matrix(ui, &bivec);
-                });
-        }
+            let r4 = ctx.domains.typed(domain)?;
+            r4.set_view_subject(layers.section, subject)?;
+            r4.set_view_subject(layers.projection, subject)?;
+            let spec = r4
+                .view_mut(layers.section)
+                .ok_or(DomainError::Unsupported("section view"))?;
+            spec.enabled = !strip;
+            spec.edges = false;
+            spec.section_edges = display.wireframe && display.section_perimeter;
+            spec.section_faces = display.surface == Surface::Raster;
+            let spec = r4
+                .view_mut(layers.projection)
+                .ok_or(DomainError::Unsupported("projection view"))?;
+            spec.enabled = display.wireframe && !strip;
+            spec.section_edges = false;
+            spec.section_faces = false;
+            for (entity, slot) in app.slots.iter() {
+                let Some(card) = card_of(&slot.entry).map(|index| cards[index]) else {
+                    continue;
+                };
+                let Some(shades) = card.shades else {
+                    continue;
+                };
+                if let Some(instance) = r4.instance_mut(entity) {
+                    instance.shading = shades.of(mode);
+                    instance.section = (!strip).then_some(card.cut);
+                    instance.line_width_px = Some(display.wireframe_width_px);
+                    instance.line_opacity = Some(display.wireframe_opacity);
+                }
+            }
+            styled = Some(revision);
+            app.slots.catch_up(&mut styled_slots);
+            Ok(())
+        },
+    );
 
-        if self.view_mode == ViewMode::Filmstrip {
-            self.render_filmstrip_cell_labels(ctx);
-        }
+    let mut shown = None;
+    session.system(
+        Phase::Publication,
+        "projection view",
+        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
+            let family = *ctx.app.projection.get();
+            let slice = *ctx.app.slice.get();
+            let revision = (ctx.app.projection.version(), ctx.app.slice.version());
+            if shown == Some(revision) {
+                return Ok(());
+            }
+            let r4 = ctx.domains.typed(domain)?;
+            let spec = r4
+                .view_mut(layers.projection)
+                .ok_or(DomainError::Unsupported("projection view"))?;
+            spec.set_mapping(family.mapping(slice));
+            shown = Some(revision);
+            Ok(())
+        },
+    );
 
-        if self.show_controls {
-            self.render_overlay(ctx, frame.runtime);
-        }
+    session.system(
+        Phase::Simulation,
+        "slice scrub",
+        |ctx: Ctx<'_, Playground>| {
+            if ctx.app.camera.get().mode != camera::CameraMode::Orbit {
+                return Ok(());
+            }
+            let scrub =
+                f32::from(ctx.input.is_held(SLICE_UP)) - f32::from(ctx.input.is_held(SLICE_DOWN));
+            if scrub == 0.0 {
+                return Ok(());
+            }
+            let next = *ctx.app.slice.get() + scrub * W_SCRUB_RATE * ctx.step.dt;
+            let next = match *ctx.app.mode.get() {
+                Mode::Rotate => next.clamp(-consts::W_RANGE, consts::W_RANGE),
+                Mode::Toybox => next,
+            };
+            ctx.app.slice.set(next);
+            Ok(())
+        },
+    );
+    session.system(
+        Phase::Simulation,
+        "spin",
+        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
+            if !ctx.app.spin.get().running || *ctx.app.mode.get() == Mode::Toybox {
+                return Ok(());
+            }
+            let time = *ctx.app.time.get() + ctx.step.dt * ctx.app.spin.get().rate;
+            display::seek(ctx.app, ctx.domains, domain, time)?;
+            Ok(())
+        },
+    );
+    session.system(
+        Phase::Simulation,
+        "free camera",
+        |ctx: Ctx<'_, Playground>| {
+            if ctx.app.camera.get().mode == camera::CameraMode::Freecam && ctx.input.cursor_locked {
+                let axes = [
+                    f32::from(ctx.input.is_held(camera::RIGHT))
+                        - f32::from(ctx.input.is_held(camera::LEFT)),
+                    f32::from(ctx.input.is_held(SLICE_UP))
+                        - f32::from(ctx.input.is_held(SLICE_DOWN)),
+                    f32::from(ctx.input.is_held(camera::FORWARD))
+                        - f32::from(ctx.input.is_held(camera::BACKWARD)),
+                ];
+                let camera = ctx.app.camera.get_mut();
+                camera.free.travel(axes, camera.speed * ctx.step.dt);
+                look(ctx.views, camera.free.eye);
+            }
+            Ok(())
+        },
+    );
+    session.system(
+        Phase::Simulation,
+        "toy settle",
+        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
+            toy::settle(ctx.app, ctx.domains, domain, ctx.step)
+        },
+    );
+}
 
-        self.render_help_window(ctx);
-        self.render_render_panel(ctx);
-        self.render_example_callout(ctx, frame);
-        self.render_mode_annotation(ctx, frame);
+impl AppCommand<Playground> for Action {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Mode(mode) => mode.name(),
+            Self::Active(_) => "active",
+            Self::Slice(_) | Self::ExactSlice(_) => "slice",
+            Self::Plane(_) => "plane",
+            Self::Gimbal(None) => "gimbal",
+            Self::Gimbal(Some(_)) => "handles",
+            Self::Running(_) => "spin",
+            Self::Projection(family) => family.name(),
+            Self::NextProjection => "wireframe perspective",
+            Self::Color(mode) => mode.name(),
+            Self::NextColor => "wireframe color",
+            Self::Hud(_) => "hud",
+            Self::Shape(_, card) => catalog::SHAPE_CATALOG
+                .get(*card)
+                .map_or("shape", |entry| entry.label),
+            Self::AddShape(_) => "add shape",
+            Self::RemoveShape(_) => "remove shape",
+            Self::ReorderShape { .. } => "reorder shape",
+            Self::Controls(_) => "controls",
+            Self::Formula(_) => "formula",
+            Self::Strip(_) => "strip",
+            Self::Rate(_) => "rate",
+            Self::Display(_) => "display",
+            Self::Reset => "reset",
+            Self::Time(_) => "time",
+            Self::PlaneAngle(_, _) => "plane angle",
+            Self::Throw(_, _) => "throw toy",
+        }
     }
 
-    fn render_mode_annotation(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
-        if !self.mode_annotation_open.open {
-            return;
+    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
+        let domain = dispatch.domains.named::<EuclideanR4>(DOMAIN_NAME)?;
+        let Catalog { cards } = dispatch.app.catalog.get().clone();
+        match *self {
+            Action::Mode(mode) => mode::set_mode(dispatch, domain, &cards, mode)?,
+            Action::Active(slot) => {
+                if slot >= dispatch.app.slots.len() {
+                    return Err(Rejection::Unsupported("no such slot"));
+                }
+                dispatch.app.active.set(slot);
+            }
+            Action::ReorderShape { from, to } => {
+                row::reorder_shape(dispatch, domain, from, to)?;
+            }
+            Action::Slice(w) => {
+                if !w.is_finite() {
+                    return Err(Rejection::Unsupported("slice is not finite"));
+                }
+                let w = if *dispatch.app.mode.get() == Mode::Toybox {
+                    w
+                } else {
+                    w.clamp(-consts::W_RANGE, consts::W_RANGE)
+                };
+                dispatch.app.slice.set(w);
+            }
+            Action::ExactSlice(w) => {
+                if *dispatch.app.mode.get() == Mode::Rotate
+                    && !(-consts::W_RANGE..=consts::W_RANGE).contains(&w)
+                {
+                    return Err(Rejection::Unsupported("slice is outside the rotate range"));
+                }
+                if !w.is_finite() {
+                    return Err(Rejection::Unsupported("slice is not finite"));
+                }
+                dispatch.app.slice.set(w);
+            }
+            Action::Plane(plane) => mode::toggle_plane(dispatch, plane)?,
+            Action::Gimbal(setting) => {
+                let shown = *dispatch.app.gimbal.get();
+                dispatch.app.gimbal.set(setting.unwrap_or(!shown));
+            }
+            Action::Running(setting) => {
+                if *dispatch.app.mode.get() == Mode::Toybox {
+                    return Err(Rejection::Unsupported("rotation belongs to Rotate"));
+                }
+                let running = dispatch.app.spin.get_mut();
+                running.running = setting.unwrap_or(!running.running);
+            }
+            Action::Projection(family) => {
+                dispatch.app.projection.set(family);
+                if family == Family::Stereographic {
+                    dispatch.app.display.get_mut().wireframe = true;
+                }
+            }
+            Action::NextProjection => {
+                let held = *dispatch.app.projection.get();
+                let at = Family::ALL
+                    .iter()
+                    .position(|family| *family == held)
+                    .unwrap_or(0);
+                let family = Family::ALL[(at + 1) % Family::ALL.len()];
+                dispatch.app.projection.set(family);
+                if family == Family::Stereographic {
+                    dispatch.app.display.get_mut().wireframe = true;
+                }
+            }
+            Action::Color(mode) => dispatch.app.color.set(mode),
+            Action::NextColor => {
+                let held = *dispatch.app.color.get();
+                let at = ColorMode::ALL
+                    .iter()
+                    .position(|mode| *mode == held)
+                    .unwrap_or(0);
+                dispatch
+                    .app
+                    .color
+                    .set(ColorMode::ALL[(at + 1) % ColorMode::ALL.len()]);
+            }
+            Action::Hud(setting) => {
+                let shown = *dispatch.app.hud.get();
+                dispatch.app.hud.set(setting.unwrap_or(!shown));
+            }
+            Action::Strip(strip) => mode::set_strip(dispatch.app, strip)?,
+            Action::Rate(rate) => {
+                if !rate.is_finite() {
+                    return Err(Rejection::Unsupported("the rate is not finite"));
+                }
+                dispatch.app.spin.get_mut().rate = rate.clamp(0.0, consts::MAX_RATE);
+            }
+            Action::Display(display) => display::set(dispatch.app, display)?,
+            Action::Reset => mode::reset(dispatch, domain, &cards)?,
+            Action::Controls(setting) => {
+                let visible = *dispatch.app.controls.get();
+                dispatch.app.controls.set(setting.unwrap_or(!visible));
+            }
+            Action::Formula(setting) => {
+                let visible = *dispatch.app.formula.get();
+                dispatch.app.formula.set(setting.unwrap_or(!visible));
+            }
+            Action::Time(time) => {
+                display::seek(dispatch.app, dispatch.domains, domain, time)
+                    .map_err(Rejection::Domain)?;
+            }
+            Action::PlaneAngle(plane, angle) => {
+                display::set_plane_angle(dispatch, domain, plane, angle)?;
+            }
+            Action::Shape(slot, card) => {
+                let Some(entry) = catalog::SHAPE_CATALOG.get(card) else {
+                    return Ok(Outcome::Done);
+                };
+                mode::set_shape(dispatch, domain, slot, *entry, cards[card])?;
+            }
+            Action::AddShape(card) => {
+                let Some(entry) = catalog::SHAPE_CATALOG.get(card) else {
+                    return Ok(Outcome::Done);
+                };
+                row::add_shape(dispatch, domain, *entry, cards[card])?;
+            }
+            Action::RemoveShape(slot) => row::remove_shape(dispatch, domain, slot)?,
+            Action::Throw(entity, velocity) => {
+                mode::throw_toy(dispatch, domain, entity, velocity)?;
+            }
         }
-        let Some(annotation) = state::mode_annotation(self.wireframe.projection) else {
-            return;
-        };
+        Ok(Outcome::Done)
+    }
+}
 
-        let row_frame = self.row_frame();
-        let Some((slot, _entry)) = row_frame
-            .row
+pub(crate) fn bindings() -> Bindings {
+    let mut bound = Bindings::new()
+        .key(Key::Space, SPIN)
+        .key(Key::Letter('t'), SPIN)
+        .key(Key::Letter('m'), NEXT_MODE)
+        .key(Key::Letter('r'), RESET)
+        .key(Key::Letter('g'), GIMBAL)
+        .key(Key::Letter('f'), STRIP)
+        .key(Key::Letter('h'), CONTROLS)
+        .key(Key::Letter('d'), camera::RIGHT)
+        .key(Key::Letter('a'), camera::LEFT)
+        .key(Key::Letter('w'), camera::FORWARD)
+        .key(Key::Letter('s'), camera::BACKWARD)
+        .key(Key::Letter('e'), SLICE_UP)
+        .key(Key::Letter('q'), SLICE_DOWN);
+    for (index, action) in PLANE.into_iter().enumerate() {
+        bound = bound.key(Key::Digit(index as u8 + 1), action);
+    }
+    bound
+}
+
+pub(crate) struct Frame {
+    sky: SkyGroundPass,
+    hyperslice: HyperslicePass,
+    rings: LinePass,
+    guides: LinePass,
+    grab_point: PointPass,
+    hud: loam::text::TextPass,
+}
+
+impl Frame {
+    pub(crate) fn new() -> Self {
+        Self {
+            sky: SkyGroundPass::new(scene::ground(true)),
+            hyperslice: HyperslicePass::new(scene::shader_source()),
+            rings: LinePass::new("gimbal"),
+            guides: LinePass::new("toybox-guides"),
+            grab_point: PointPass::new("grab-point"),
+            hud: hud::pass(),
+        }
+    }
+
+    fn passes(&self) -> Vec<Box<dyn FramePass>> {
+        vec![
+            Box::new(self.sky.clone()),
+            Box::new(self.hyperslice.clone()),
+            Box::new(self.rings.clone()),
+            Box::new(self.guides.clone()),
+            Box::new(self.grab_point.clone()),
+            Box::new(self.hud.clone()),
+        ]
+    }
+}
+
+struct Scratch {
+    center: glam::Vec3,
+    slots: Vec<(Entity, ShapeEntry, f32)>,
+    bodies: Vec<BodyUniform>,
+    cells: Vec<Cell>,
+    strip: Vec<(loam::render::Viewport, f32, BodyUniform)>,
+    subject: loam::math::Rotor4,
+    anchors: Vec<(usize, &'static str, glam::Vec3)>,
+    depths: Vec<toy::DepthBand>,
+}
+
+impl Scratch {
+    fn new() -> Self {
+        Self {
+            center: glam::Vec3::ZERO,
+            slots: Vec::new(),
+            bodies: Vec::new(),
+            cells: Vec::new(),
+            strip: Vec::new(),
+            subject: loam::math::Rotor4::IDENTITY,
+            anchors: Vec::new(),
+            depths: Vec::with_capacity(5),
+        }
+    }
+}
+
+fn collect(
+    session: &Session<Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    scratch: &mut Scratch,
+) {
+    let active = *session.app.active.get();
+    let display = *session.app.display.get();
+    scratch.slots.clear();
+    scratch.slots.extend(
+        session
+            .app
+            .slots
             .iter()
-            .enumerate()
-            .find(|(_, e)| e.shape.polytope4().is_some())
-        else {
-            return;
+            .filter(|(_, slot)| !display.single || slot.index == active)
+            .map(|(entity, slot)| {
+                let size = if session.app.toys.get(entity).is_some() {
+                    toy::BODY_SIZE
+                } else {
+                    BODY_SIZE
+                };
+                (entity, slot.entry, size)
+            }),
+    );
+    scratch.anchors.clear();
+    scratch.anchors.extend(
+        session
+            .app
+            .slots
+            .iter()
+            .filter(|(_, slot)| !display.single || slot.index == active)
+            .map(|(_, slot)| (slot.index, slot.entry.label, glam::Vec3::ZERO)),
+    );
+    scratch.bodies.clear();
+    scratch.subject = loam::math::Rotor4::IDENTITY;
+    let mut sum = glam::Vec3::ZERO;
+    let Ok(r4) = session.domains().read(domain) else {
+        return;
+    };
+    for (at, (entity, entry, size)) in scratch.slots.iter().enumerate() {
+        let Some(pose) = r4.poses().get(*entity) else {
+            continue;
         };
-        let world_pos = row_frame.pose(slot).position_r3();
+        if scratch.anchors.get(at).is_some_and(|held| held.0 == active) {
+            scratch.subject = pose.frame;
+        }
+        let center = pose.point.truncate();
+        sum += center;
+        if let Some(anchor) = scratch.anchors.get_mut(at) {
+            anchor.2 = center;
+        }
+        if display.surface == Surface::Sdf
+            || (display.surface == Surface::Raster && entry.shape.polytope4().is_none())
+        {
+            scratch.bodies.push(scene::body_of(entry, pose, *size));
+        }
+    }
+    scratch.center = sum / scratch.slots.len().max(1) as f32;
+}
 
-        let cfg = &frame.rd.surface_bundle.config;
-        let ppp = ctx.pixels_per_point();
-        let vp_w = (cfg.width as f32 / ppp).round() as u32;
-        let vp_h = (cfg.height as f32 / ppp).round() as u32;
-        let Some(screen_pos) =
-            loam_egui::world_to_screen(&self.camera, world_pos, (vp_w, vp_h), &EuclideanR3)
-        else {
-            return;
+fn main() -> Result<(), HostError> {
+    launch_or_headless(interactive, headless)
+}
+
+fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground>), HostError> {
+    let row = catalog::parse_row(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
+    let booted = boot(&row)?;
+    let frame = Frame::new();
+    let config = HostConfig::new("polytope playground", bindings());
+
+    let sky = frame.sky.clone();
+    let hyperslice = frame.hyperslice.clone();
+    let rings = frame.rings.clone();
+    let guide_pass = frame.guides.clone();
+    let grab_point = frame.grab_point.clone();
+    let mut guides = guides::Guides::default();
+    let readout = frame.hud.clone();
+    let mut lines = String::new();
+    let mut gimbal_renderer = gimbal::GimbalRenderer::default();
+    let domain = booted.domain;
+    let mut scratch = Scratch::new();
+    let mut panel = ui::Panel::default();
+    let mut app = SessionApp::with_args(config, args).recover_on_fault(RESET);
+    for pass in frame.passes() {
+        app = app.pass(pass);
+    }
+    app = console::install(app).on_frame(move |hook: &mut FrameHook<'_, Playground>| {
+        let camera = *hook.session.app.camera.get();
+        hook.capture_cursor(
+            camera.mode == camera::CameraMode::Freecam
+                && !hook
+                    .ui
+                    .is_some_and(|context| context.wants_keyboard_input()),
+            camera.cursor_policy,
+        );
+        collect(hook.session, domain, &mut scratch);
+        let eye = hook
+            .session
+            .views()
+            .get(hook.session.views().root())
+            .map_or(Eye::default(), |root| root.eye);
+        let strip = *hook.session.app.strip.get();
+
+        let slice = *hook.session.app.slice.get();
+        let environment = *hook.session.app.environment.get();
+        let floor = environment.floor_visible;
+        sky.publish(&eye, environment.ground(consts::FLOOR_Y, floor));
+        hyperslice.set_enabled(strip.on || !scratch.bodies.is_empty());
+        hyperslice.publish(scene::uniforms(&eye, slice, floor), &scratch.bodies);
+        fill_strip(
+            &strip,
+            turn_of(hook.session),
+            hook.size,
+            slice,
+            &mut scratch,
+        );
+        hyperslice.publish_strip(&scratch.strip);
+        rings.publish(
+            &eye,
+            gimbal_renderer.rings(&hook.session.app.control.get().gimbal, scratch.center),
+        );
+        guides.update(hook.session, domain);
+        guide_pass.publish(&eye, &guides.lines);
+        grab_point.publish(&eye, &guides.points);
+        let shown = *hook.session.app.hud.get();
+        let seat = hook.ui.map_or(hud::Seat::default(), |context| {
+            hud::Seat::in_panel(context.available_rect(), context.pixels_per_point())
+        });
+        hud::publish(
+            &readout,
+            shown.then(|| readout_of(hook.session)).as_ref(),
+            seat,
+            &mut lines,
+        );
+        if let Some(context) = hook.ui {
+            toy::fill_depth_bands(hook.session, domain, &mut scratch.depths);
+            ui::draw(
+                context,
+                hook.session,
+                &mut panel,
+                hook.sender,
+                scratch.subject,
+                &scratch.depths,
+            );
+            if panel.show_callouts && !strip.on {
+                ui::callouts(context, hook.session, &scratch.anchors);
+            }
+            ui::strip_labels(context, hook.session, &scratch.cells);
+        }
+    });
+    Ok((booted.session, app))
+}
+
+fn focus_camera(
+    orbit: &mut Orbit,
+    camera_focus: &mut Option<(bool, usize, Mode)>,
+    filmstrip_return: &mut Option<Orbit>,
+    strip: Strip,
+    focus: (bool, usize, Mode),
+    center: glam::Vec3,
+) {
+    if strip.on {
+        if filmstrip_return.is_none() {
+            let mut centered = Orbit::around([0.0; 3], orbit.distance);
+            centered.yaw = orbit.yaw;
+            centered.pitch = orbit.pitch;
+            *filmstrip_return = Some(std::mem::replace(orbit, centered));
+            *camera_focus = Some(focus);
+        }
+        orbit.target[1] = if strip.w && strip.t { BODY_Y } else { 0.0 };
+        return;
+    }
+    if let Some(returned) = filmstrip_return.take() {
+        *orbit = returned;
+    }
+    if *camera_focus == Some(focus) {
+        return;
+    }
+    let reset =
+        camera_focus.is_some_and(|previous| previous.2 != focus.2 || previous.0 && !focus.0);
+    let target = [center.x, 0.0, center.z];
+    if reset {
+        *orbit = Orbit::around(target, CAMERA_DISTANCE);
+        orbit.pitch = -0.25;
+    } else {
+        orbit.target = target;
+    }
+    *camera_focus = Some(focus);
+}
+
+fn readout_of(session: &Session<Playground>) -> hud::Readout {
+    hud::Readout {
+        slice: *session.app.slice.get(),
+        rate: session.app.spin.get().rate,
+        bodies: session.app.slots.len(),
+        planes: session.app.spin.get().planes,
+    }
+}
+
+fn turn_of(session: &Session<Playground>) -> Bivector4 {
+    match *session.app.mode.get() {
+        Mode::Rotate => session.app.spin.get().omega(),
+        Mode::Toybox => Bivector4::ZERO,
+    }
+}
+
+fn fill_strip(
+    strip: &Strip,
+    omega: Bivector4,
+    frame: (u32, u32),
+    slice: f32,
+    scratch: &mut Scratch,
+) {
+    scratch.strip.clear();
+    if !strip.on {
+        scratch.cells.clear();
+        return;
+    }
+    strip.cells([frame.0, frame.1], slice, BODY_SIZE, &mut scratch.cells);
+    let entry = catalog::SHAPE_CATALOG[strip.subject()];
+    for cell in &scratch.cells {
+        let rotor = ((omega * cell.t).exp() * scratch.subject).normalize();
+        scratch.strip.push((
+            cell.viewport,
+            cell.w,
+            BodyUniform::polytope_with_rotor(
+                [0.0, BODY_Y, 0.0, 0.0],
+                entry.shape.shape_id(),
+                BODY_SIZE,
+                rotor,
+                entry.body_color,
+            ),
+        ));
+    }
+}
+
+fn scene_center(
+    app: &Playground,
+    domains: &Domains,
+    domain: DomainHandle<EuclideanR4>,
+) -> glam::Vec3 {
+    let active = *app.active.get();
+    let single = app.display.get().single;
+    let Ok(r4) = domains.read(domain) else {
+        return glam::Vec3::ZERO;
+    };
+    let mut sum = glam::Vec3::ZERO;
+    let mut count = 0;
+    for (entity, slot) in app.slots.iter() {
+        if single && slot.index != active {
+            continue;
+        }
+        let Some(pose) = r4.poses().get(entity) else {
+            continue;
         };
+        sum += pose.point.truncate();
+        count += 1;
+    }
+    sum / count.max(1) as f32
+}
 
-        loam_egui::callout(
-            ctx,
-            "polytope-playground-mode-annotation",
-            screen_pos,
-            &mut self.mode_annotation_open,
-            annotation.title,
-            |ui| {
-                ui.label(&annotation.body);
-            },
+fn control_camera(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR4>) {
+    let center = scene_center(ctx.app, ctx.domains, domain);
+    let focus = (
+        ctx.app.display.get().single,
+        *ctx.app.active.get(),
+        *ctx.app.mode.get(),
+    );
+    let strip = *ctx.app.strip.get();
+    {
+        let control = ctx.app.control.get_mut();
+        for pointer in &ctx.input.pointers {
+            control.latest = Some(*pointer);
+        }
+        control.center = center;
+        focus_camera(
+            &mut control.orbit,
+            &mut control.camera_focus,
+            &mut control.filmstrip_return,
+            strip,
+            focus,
+            center,
         );
     }
-
-    fn render_example_callout(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
-        if !self.example_callout.open {
-            return;
+    let mode = ctx.app.camera.get().mode;
+    let eye = match mode {
+        camera::CameraMode::Orbit => {
+            let control = ctx.app.control.get_mut();
+            control.orbit.apply(ctx.input);
+            control.orbit.eye()
         }
-        let row_frame = self.row_frame();
-        let Some((slot, entry)) = row_frame
-            .row
-            .iter()
-            .enumerate()
-            .find(|(_, e)| e.shape.polytope4().is_some())
-        else {
-            return;
-        };
-        let polytope = entry.shape.polytope4().expect("filter guarantees Some");
-        let label = entry.label;
-        let world_pos = row_frame.anchor_r3(slot, polytope.topology().vertices[0]);
+        camera::CameraMode::Freecam => {
+            let camera = ctx.app.camera.get_mut();
+            if ctx.input.cursor_locked {
+                camera.free.look(ctx.input.look);
+            }
+            camera.free.eye
+        }
+    };
+    look(ctx.views, eye);
+}
 
-        let cfg = &frame.rd.surface_bundle.config;
-        let ppp = ctx.pixels_per_point();
-        let vp_w = (cfg.width as f32 / ppp).round() as u32;
-        let vp_h = (cfg.height as f32 / ppp).round() as u32;
-        let Some(screen_pos) =
-            loam_egui::world_to_screen(&self.camera, world_pos, (vp_w, vp_h), &EuclideanR3)
-        else {
-            return;
-        };
-
-        let title = format!("{label} vertex 0");
-        loam_egui::callout(
-            ctx,
-            "polytope-playground-example-callout",
-            screen_pos,
-            &mut self.example_callout,
-            &title,
-            |ui| {
-                ui.label(
-                    "This line tracks vertex 0 as the shape rotates. Drag the panel to move the label.",
-                );
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Anchor coordinates").strong());
-                ui.label(format!(
-                    "world R³: ({:.2}, {:.2}, {:.2})",
-                    world_pos.x, world_pos.y, world_pos.z
-                ));
-            },
-        );
+fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR4>) {
+    if ctx.dragging().is_some_and(|drag| {
+        *ctx.app.mode.get() != Mode::Toybox || !ctx.app.toys.contains(drag.entity)
+    }) {
+        ctx.cancel_drag();
     }
-
-    pub(crate) fn on_key(
-        &mut self,
-        kc: winit::keyboard::KeyCode,
-        state: winit::event::ElementState,
-        ctx: &mut FrameCtx<'_>,
-    ) {
-        use winit::event::ElementState;
-        use winit::keyboard::KeyCode;
-        let pressed = state == ElementState::Pressed;
-        match kc {
-            KeyCode::ArrowUp => self.slider_up_held = pressed,
-            KeyCode::ArrowDown => self.slider_down_held = pressed,
-            KeyCode::ArrowLeft => self.slider_left_held = pressed,
-            KeyCode::ArrowRight => self.slider_right_held = pressed,
-            KeyCode::KeyH if pressed => self.show_controls = !self.show_controls,
-            KeyCode::KeyT if pressed => {
-                self.rotate = !self.rotate;
+    let (latest, center, mut gimbal) = {
+        let control = ctx.app.control.get();
+        (control.latest, control.center, control.gimbal)
+    };
+    gimbal.enabled =
+        *ctx.app.gimbal.get() && *ctx.app.mode.get() == Mode::Rotate && !ctx.app.strip.get().on;
+    let root = ctx.views.root();
+    let ray = latest.and_then(|pointer| ctx.views.ray(root, pointer.ndc));
+    if gimbal.enabled {
+        gimbal.aim(ray.as_ref(), center);
+    } else {
+        gimbal.release();
+    }
+    for index in 0..ctx.input.pointers.len() {
+        let pointer = ctx.input.pointers[index];
+        if pointer.button != Some(PointerButton::Primary) {
+            continue;
+        }
+        match pointer.phase {
+            PointerPhase::Began => {
+                let ring = gimbal.enabled
+                    && ctx
+                        .views
+                        .ray(root, pointer.ndc)
+                        .is_some_and(|ray| gimbal.press(&ray, center));
+                if !ring && *ctx.app.mode.get() == Mode::Toybox && !ctx.app.strip.get().on {
+                    let _ = ctx.grab(pointer.ndc, pointer.time);
+                }
             }
-            KeyCode::Space if pressed && !self.rig.is_flying() => {
-                self.rotate = !self.rotate;
+            PointerPhase::Moved if gimbal.held() => {
+                let turn = ctx
+                    .views
+                    .ray(root, pointer.ndc)
+                    .and_then(|ray| gimbal.turn(&ray));
+                if let Some(rotor) = turn {
+                    let _ = mode::turn_row(ctx.app, ctx.domains, domain, rotor);
+                }
             }
-            KeyCode::AltLeft | KeyCode::AltRight if self.rig.is_flying() => {
-                self.rig.freecam.on_alt(pressed, ctx.runtime);
+            PointerPhase::Moved
+                if ctx.dragging().is_some() && ctx.drag(pointer.ndc, pointer.time).is_err() =>
+            {
+                ctx.cancel_drag();
             }
-            KeyCode::Digit1 | KeyCode::Numpad1 if pressed => self.toggle_plane(0),
-            KeyCode::Digit2 | KeyCode::Numpad2 if pressed => self.toggle_plane(1),
-            KeyCode::Digit3 | KeyCode::Numpad3 if pressed => self.toggle_plane(2),
-            KeyCode::Digit4 | KeyCode::Numpad4 if pressed => self.toggle_plane(3),
-            KeyCode::Digit5 | KeyCode::Numpad5 if pressed => self.toggle_plane(4),
-            KeyCode::Digit6 | KeyCode::Numpad6 if pressed => self.toggle_plane(5),
+            PointerPhase::Ended if gimbal.held() => gimbal.release(),
+            PointerPhase::Ended if ctx.dragging().is_some() => {
+                if let Some(release) = ctx.release_at(pointer.time) {
+                    ctx.commands
+                        .app(Action::Throw(release.entity, release.velocity));
+                }
+            }
+            PointerPhase::Cancelled => {
+                gimbal.release();
+                ctx.cancel_drag();
+            }
             _ => {}
         }
     }
-
-    pub(crate) fn title(&self, _fps: f32) -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("polytope playground")
-    }
+    ctx.app.control.get_mut().gimbal = gimbal;
 }
 
-// Not a field on `Demo`: `apply_command` borrows the console and the demo at once.
-pub(crate) struct RotateScene {
-    demo: Demo,
-    console: Console<Demo>,
-    text_hud: hud::TextHud,
-    hud_seat: hud::HudSeat,
+fn report(booted: &mut Boot, config: &HostConfig) -> Result<Vec<String>, HostError> {
+    let publication = run_headless(&mut booted.session, config, HEADLESS_STEPS, &[])?;
+    let active = *booted.session.app.active.get();
+    let entry = booted
+        .session
+        .app
+        .slots
+        .iter()
+        .find(|(_, slot)| slot.index == active)
+        .map(|(_, slot)| slot.entry);
+    let edges = entry
+        .and_then(|entry| entry.shape.polytope4())
+        .map_or(0, |polytope| polytope.edge_count());
+    Ok(vec![
+        format!(
+            "active: {} with {edges} edges",
+            entry.map_or("none", |entry| entry.label)
+        ),
+        format!(
+            "published segments: {}",
+            publication
+                .views
+                .iter()
+                .map(|view| view.records.segments().len())
+                .sum::<usize>()
+        ),
+        format!(
+            "section fills: {} triangles",
+            publication
+                .views
+                .iter()
+                .map(|view| view.records.triangles().len())
+                .sum::<usize>()
+        ),
+        strip_line(&mut Scratch::new(), *booted.session.app.strip.get()),
+    ])
 }
 
-const SECTION_ALPHA_MIN_VISIBLE: f32 = 0.05;
+fn strip_line(scratch: &mut Scratch, strip: Strip) -> String {
+    let mut shown = strip;
+    shown.on = true;
+    fill_strip(&shown, Bivector4::ZERO, HEADLESS_FRAME, 0.0, scratch);
+    let (cols, rows, _) = shown.grid();
+    format!("filmstrip: {} cells, {cols} by {rows}", scratch.strip.len())
+}
 
-fn run_section_alpha(
-    layer_name: &str,
-    layer: &mut state::SectionLayer,
-    args: &[&str],
-    out: &mut loam_egui::console::ConsoleWriter,
-) -> anyhow::Result<()> {
-    match args.first().copied() {
-        None => {
-            let state = if layer.fill_visible() {
-                if layer.surface_alpha >= 1.0 {
-                    "opaque"
-                } else {
-                    "translucent"
-                }
-            } else {
-                "off"
-            };
-            out.line(format!(
-                "section {layer_name}-alpha: {:.3} ({state})",
-                layer.surface_alpha
-            ));
-        }
-        Some(token) => {
-            let parsed: f32 = token
-                .parse()
-                .map_err(|e| anyhow!("invalid alpha `{token}`: {e}"))?;
-            let valid = parsed == 0.0 || (SECTION_ALPHA_MIN_VISIBLE..=1.0).contains(&parsed);
-            if !valid {
-                return Err(anyhow!(
-                    "section {layer_name}-alpha {parsed} out of range; expected 0 (off) or {SECTION_ALPHA_MIN_VISIBLE}..=1.0"
-                ));
-            }
-            layer.surface_alpha = parsed;
-            out.line(format!(
-                "section {layer_name}-alpha: set to {parsed:.3}{}",
-                if parsed == 0.0 { " (off)" } else { "" }
-            ));
-        }
+fn headless(args: Args) -> Result<(), HostError> {
+    let row = catalog::parse_row(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
+    let mut booted = boot(&row)?;
+    let config = HostConfig::new("polytope playground", bindings());
+    for line in report(&mut booted, &config)? {
+        println!("{line}");
     }
     Ok(())
 }
 
-impl RotateScene {
-    pub(crate) fn new(
-        ctx: &mut SetupCtx<'_>,
-        control: &loam_app::shell::SceneControl,
-    ) -> Result<Self> {
-        Ok(Self {
-            demo: Demo::new(ctx)?,
-            console: Self::build_console(ctx.runtime, control),
-            text_hud: hud::TextHud::new(
-                &ctx.rd.device,
-                &ctx.rd.queue,
-                ctx.rd.target_format(),
-                ctx.rd.sample_count(),
-            )?,
-            hud_seat: hud::HudSeat::default(),
-        })
-    }
-}
+#[cfg(test)]
+mod tests {
+    use loam::math::Rotor;
+    use loam::render::raymarch::RaymarchShape;
+    use loam::runtime::{AppCommand, ChartCommand, ChartPoint, Command, Records};
+    use loam::shape::polytope::Polytope4;
 
-fn load_director(args: &Args, slots: usize) -> Result<Option<Playback>> {
-    if args.has_bare_flag("director") {
-        return Err(anyhow!(
-            "--director needs its path attached: --director=path/to/timeline.ron"
-        ));
-    }
-    let Some(path) = args.get("director") else {
-        return Ok(None);
+    use super::*;
+
+    const CELL24: ShapeEntry = ShapeEntry {
+        shape: RaymarchShape::Polytope(Polytope4::Cell24),
+        body_color: [0.95, 0.45, 0.85],
+        label: "24-cell",
+        long_name: "icositetrachoron",
+        category: catalog::Category::RegularPolychoron,
     };
-    let text =
-        std::fs::read_to_string(path).map_err(|e| anyhow!("reading timeline `{path}`: {e}"))?;
-    let director =
-        Director::from_ron(&text).map_err(|e| anyhow!("parsing timeline `{path}`: {e}"))?;
-    Ok(Some(Playback::new(director, slots)?))
-}
 
-impl loam_app::shell::Scene for RotateScene {
-    fn tick(&mut self, dt: f32, _ctx: &mut loam_app::TickCtx) {
-        self.demo.tick(dt);
+    const EYE_BACK: f32 = 5.0;
+
+    fn one_slot() -> Boot {
+        let mut booted = boot(&[CELL24]).expect("the session boots");
+        booted.session.views_mut().root_mut().eye =
+            Eye::looking_at([0.0, BODY_Y, EYE_BACK], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
+        booted.session.app.spin.get_mut().running = false;
+        booted
     }
 
-    fn menus(&mut self, ui: &mut egui::Ui) {
-        self.demo.menu_contents(ui);
+    pub(crate) fn send(booted: &mut Boot, action: Action) {
+        booted.session.submit(Command::App(Box::new(action)));
     }
 
-    fn apply_command(
-        &mut self,
-        cmd: &loam_app::command::CommandLine,
-        _ctx: &mut loam_app::command::CommandCtx<'_>,
-    ) -> Result<()> {
-        self.console
-            .dispatch(&cmd.name, &cmd.arg_refs(), &mut self.demo);
-        Ok(())
-    }
-
-    fn update(&mut self, ctx: &mut FrameCtx<'_>) {
-        self.demo.update(ctx);
-    }
-
-    fn ui(&mut self, ctx: &egui::Context, frame: &mut FrameCtx<'_>) {
-        self.hud_seat = hud::hud_seat(ctx.available_rect(), ctx.pixels_per_point());
-        self.demo.ui(ctx, frame);
-        loam_app::log::pump_into(&mut self.console);
-        frame.runtime.pump_console(&mut self.console);
-        self.console.ui(ctx);
-        // After the console UI, so a line typed this frame is drained next frame.
-        frame.runtime.forward_console(&mut self.console);
-    }
-
-    fn on_key(
-        &mut self,
-        code: winit::keyboard::KeyCode,
-        state: winit::event::ElementState,
-        ctx: &mut FrameCtx<'_>,
-    ) {
-        if !ctx.ui_capture.keyboard {
-            self.demo.on_key(code, state, ctx);
-        }
-    }
-
-    fn record(&mut self, ctx: &mut loam_app::RenderCtx<'_>) -> Result<()> {
-        self.demo.record(ctx.rd, ctx.encoder, ctx.view)?;
-        self.text_hud.record(ctx, &self.demo, self.hud_seat);
-        Ok(())
-    }
-
-    fn title(&self, fps: f32) -> std::borrow::Cow<'static, str> {
-        self.demo.title(fps)
-    }
-}
-
-fn main() -> Result<()> {
-    loam_app::run::<loam_app::shell::SceneShell<shell::Playground>>(RunConfig {
-        window: WindowAttributes::default()
-            .with_title("polytope playground")
-            .with_visible(false),
-        ..RunConfig::default()
-    })
-}
-
-#[cfg(test)]
-mod color_tests {
-    use super::*;
-
-    #[test]
-    fn cell_strength_vanishes_at_both_ends_and_for_flat_cells() {
-        let cells: [&[u32]; 2] = [&[0, 1], &[2, 3]];
-        let vertices = [Vec4::W * -0.5, Vec4::W * 0.5, Vec4::ZERO, Vec4::X];
-        let mut strengths = vec![99.0; 4];
-        for (slice, expected) in [(-5.0, 0.0), (-0.5, 0.0), (0.0, 1.0), (0.5, 0.0), (5.0, 0.0)] {
-            compute_cell_strengths(&cells, &vertices, slice, &mut strengths);
-            assert_eq!(strengths, [expected, 0.0], "slice {slice}");
-        }
-    }
-}
-
-#[cfg(test)]
-mod section_command_tests {
-    use super::*;
-    use loam_egui::console::ConsoleWriter;
-
-    #[test]
-    fn section_alpha_sets_off_and_visible_rejects_faint_and_bad() {
-        let run = |start: f32, args: &[&str]| -> (f32, bool) {
-            let mut layer = state::SectionLayer {
-                perimeter: true,
-                surface_alpha: start,
-            };
-            let mut out = ConsoleWriter::new();
-            let ok = run_section_alpha("cross", &mut layer, args, &mut out).is_ok();
-            (layer.surface_alpha, ok)
-        };
-
-        assert_eq!(run(1.0, &["0.5"]), (0.5, true), "in-range alpha is set");
-        assert_eq!(run(0.5, &["1.0"]), (1.0, true), "opaque alpha is set");
-        assert_eq!(run(0.85, &["0"]), (0.0, true), "0 turns the layer off");
-        let (val, ok) = run(0.85, &["0.01"]);
-        assert!(!ok, "faint (0, MIN) alpha must be rejected");
-        assert_eq!(val, 0.85, "rejected faint alpha leaves the field untouched");
-        assert_eq!(run(0.85, &["2.0"]).0, 0.85, "over-range alpha is rejected");
-        assert_eq!(
-            run(0.85, &["notafloat"]).0,
-            0.85,
-            "unparseable alpha is rejected"
-        );
-        assert_eq!(run(0.7, &[]), (0.7, true), "bare query leaves the field");
-    }
-}
-
-#[cfg(test)]
-mod director_arg_tests {
-    use super::*;
-
-    const DEFAULT_SLOTS: usize = 4;
-
-    #[test]
-    fn no_director_argument_leaves_the_row_on_the_ui_clock() {
-        assert!(load_director(&Args::default(), DEFAULT_SLOTS)
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
-    fn the_shipped_timeline_loads_through_the_flag_and_leaves_the_row_its_tail() {
-        let args = Args::from_pairs([("director", "timelines/row-sweep.ron")]);
-        let playback = load_director(&args, DEFAULT_SLOTS)
-            .expect("the committed timeline loads")
-            .expect("the flag yields a playback");
-        assert_eq!(playback.directed(), [true, false, false, false]);
-        assert!(playback.owns_w_slice());
-    }
-
-    #[test]
-    fn the_space_separated_director_form_is_diagnosed_rather_than_ignored() {
-        let args = Args::from_argv(["--director", "timelines/row-sweep.ron"]);
-        let err =
-            load_director(&args, DEFAULT_SLOTS).expect_err("a bare --director is not a default");
-        assert!(format!("{err:#}").contains("--director="), "{err:#}");
-    }
-
-    #[test]
-    fn an_unreadable_timeline_path_fails_setup() {
-        let args = Args::from_pairs([("director", "no-such-directory-for-a-timeline/x.ron")]);
-        let err = load_director(&args, DEFAULT_SLOTS).expect_err("missing file");
-        assert!(format!("{err:#}").contains("x.ron"), "{err:#}");
-    }
-
-    #[test]
-    fn a_timeline_the_booted_row_cannot_host_fails_setup() {
-        let args = Args::from_pairs([("director", "timelines/row-sweep.ron")]);
-        assert!(
-            load_director(&args, 1).is_ok(),
-            "slot 0 fits a one-slot row"
-        );
-        let err = load_director(&args, 0).expect_err("no slot 0 in an empty row");
-        assert!(format!("{err:#}").contains("0-slot row"), "{err:#}");
-    }
-}
-
-#[cfg(test)]
-mod formula_popup_tests {
-    use super::*;
-
-    #[test]
-    fn formula_popup_seats_below_the_menu_bar_panel() {
-        let ctx = egui::Context::default();
-        let mut seat = None;
-        let mut bar_bottom = 0.0;
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            bar_bottom = egui::TopBottomPanel::top("shell-menu-bar")
-                .exact_height(64.0)
-                .show(ctx, |ui| {
-                    ui.label("bar");
-                })
-                .response
-                .rect
-                .bottom();
-            seat = Some(formula_popup_seat(ctx));
-        });
-        let seat = seat.expect("run closure sets the seat");
-        assert!(
-            seat.y >= bar_bottom,
-            "popup seat y {} must clear the menu bar bottom {bar_bottom}",
-            seat.y
-        );
-    }
-}
-
-#[cfg(test)]
-mod hyperslice_filter_tests {
-    use super::*;
-
-    #[test]
-    fn slab_overlap_includes_touching_ends_and_clamps_nonpositive_thickness() {
-        for (lo, hi, slice, thickness, expected) in [
-            (0.8, 0.9, 0.0, 0.2, false),
-            (-0.9, -0.8, 0.0, 0.2, false),
-            (-0.5, 0.5, 0.0, 0.2, true),
-            (-0.05, 0.05, 0.0, 0.2, true),
-            (0.45, 0.55, 0.5, 0.2, true),
-            (-0.6, -0.5, 0.0, 1.0, true),
-            (0.5, 0.6, 0.0, 1.0, true),
-            (-0.3, 0.3, 0.0, 0.0, true),
-            (0.1, 0.3, 0.0, 0.0, false),
-            (0.0, 0.3, 0.0, 0.0, true),
-            (-0.3, 0.3, 0.0, -5.0, true),
-            (0.1, 0.3, 0.0, -5.0, false),
-        ] {
-            assert_eq!(
-                slab_overlaps(lo, hi, slice, thickness),
-                expected,
-                "[{lo}, {hi}], {slice}, {thickness}"
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-mod section_cap_projection_tests {
-    use super::*;
-
-    #[test]
-    fn section_cap_matches_wireframe_under_perspective4d() {
-        let focal = 2.0;
-        let w_slice = 0.4;
-        let proj = loam_math::Projection::Perspective4D {
-            focal_distance: focal,
-        };
-        let body_pos = Vec3::new(1.3, -0.7, 0.2);
-        let scale = perspective_scale_at_w(w_slice, &proj);
-        assert!(scale.is_some(), "Perspective4D must take the affine shim");
-        for cap_r3 in [[0.5, 0.0, 0.0], [0.0, 0.3, -0.2], [-0.4, 0.1, 0.6]] {
-            let via_shim =
-                cap_vertex_projected_and_world(cap_r3, w_slice, scale, &proj, body_pos).1;
-            let p4 = Vec4::new(cap_r3[0], cap_r3[1], cap_r3[2], w_slice);
-            let via_wireframe = (project_to_world(p4, &proj, body_pos)).to_array();
-            for k in 0..3 {
-                assert!(
-                    (via_shim[k] - via_wireframe[k]).abs() < 1e-5,
-                    "cap {cap_r3:?} component {k}: shim {} vs wireframe {}",
-                    via_shim[k],
-                    via_wireframe[k]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn section_cap_per_vertex_finite_under_stereographic() {
-        let w_slice = 0.0;
-        let proj = loam_math::Projection::Stereographic { pole: Vec4::W };
-        let body_pos = Vec3::new(0.5, 0.0, -0.3);
-        let scale = perspective_scale_at_w(w_slice, &proj);
-        assert_eq!(scale, None, "Stereographic must take the per-vertex path");
-        for cap_r3 in [
-            [0.5, 0.0, 0.0],
-            [0.0, -0.4, 0.3],
-            [0.95, 0.0, 0.0],
-            [0.02, -0.01, 0.015],
-        ] {
-            let world = cap_vertex_projected_and_world(cap_r3, w_slice, scale, &proj, body_pos).1;
-            for (k, c) in world.iter().enumerate() {
-                assert!(
-                    c.is_finite(),
-                    "cap {cap_r3:?} produced non-finite world component {k}: {c}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn affine_wireframe_keeps_single_segment_and_caps_land_on_it() {
-        let proj = loam_math::Projection::Perspective4D {
-            focal_distance: 2.0,
-        };
-        let body_pos = Vec3::ZERO;
-        let w_slice = 0.0;
-        let a = Vec4::new(0.5, 0.4, -0.3, 0.5);
-        let b = Vec4::new(0.5, 0.4, -0.3, -0.5);
-        let mut mesh = LineMesh::<3>::default();
-        let white = [1.0, 1.0, 1.0, 1.0];
-        push_blended_edge(
-            &mut mesh,
-            a,
-            b,
-            Vec4::ZERO,
-            white,
-            white,
-            1.0,
-            0.0,
-            &proj,
-            body_pos,
-            SPACE_TESSELLATION_SAMPLES,
-            STEREOGRAPHIC_VIEW_RADIUS,
-        );
-        assert_eq!(
-            mesh.segments.len(),
-            1,
-            "affine flat edge must stay a single segment"
-        );
-        let mid = a.lerp(b, 0.5);
-        let cap_r3 = [mid.x, mid.y, mid.z];
-        let scale = perspective_scale_at_w(w_slice, &proj);
-        let cap = Vec3::from_array(
-            cap_vertex_projected_and_world(cap_r3, w_slice, scale, &proj, body_pos).1,
-        );
-        let (s, e) = mesh.segments[0];
-        let gap = point_to_segment_distance(cap, Vec3::from_array(s), Vec3::from_array(e));
-        assert!(
-            gap < 1e-5,
-            "affine cap must lie on its single-segment edge, gap {gap}"
-        );
-    }
-
-    #[test]
-    fn honest_section_cap_is_projection_invariant_projected_cap_is_not() {
-        let body_pos = Vec3::new(0.7, -0.2, 0.4);
-        let w_slice = 0.3;
-        let cap_r3 = [0.4, -0.25, 0.15];
-        let actives = [
-            loam_math::Projection::Identity,
-            loam_math::Projection::Perspective4D {
-                focal_distance: 2.0,
-            },
-            loam_math::Projection::Stereographic { pole: Vec4::W },
-            loam_math::Projection::schlegel(Vec4::W, 0.5, 0.9),
-        ];
-
-        let honest_reference = {
-            let proj = state::section_layer_projection(true, loam_math::Projection::Identity);
-            let scale = perspective_scale_at_w(w_slice, &proj);
-            cap_vertex_projected_and_world(cap_r3, w_slice, scale, &proj, body_pos).1
-        };
-        let mut projected_caps = Vec::new();
-        for active in actives {
-            let honest_proj = state::section_layer_projection(true, active);
-            assert_eq!(
-                honest_proj,
-                loam_math::Projection::Identity,
-                "honest layer must stay drop-w under {active:?}"
-            );
-            let honest_scale = perspective_scale_at_w(w_slice, &honest_proj);
-            let honest = cap_vertex_projected_and_world(
-                cap_r3,
-                w_slice,
-                honest_scale,
-                &honest_proj,
-                body_pos,
-            )
-            .1;
-            for k in 0..3 {
-                assert!(
-                    (honest[k] - honest_reference[k]).abs() < 1e-6,
-                    "honest cap drifted under {active:?}: {honest:?} vs {honest_reference:?}"
-                );
-            }
-
-            let cap_proj = state::section_layer_projection(false, active);
-            assert_eq!(cap_proj, active, "projected layer must follow {active:?}");
-            let cap_scale = perspective_scale_at_w(w_slice, &cap_proj);
-            projected_caps.push(
-                cap_vertex_projected_and_world(cap_r3, w_slice, cap_scale, &cap_proj, body_pos).1,
-            );
-        }
-
-        let moved = projected_caps
+    fn slot_entity(booted: &Boot) -> Entity {
+        booted
+            .session
+            .app
+            .slots
             .iter()
-            .any(|c| (0..3).any(|k| (c[k] - honest_reference[k]).abs() > 1e-4));
+            .map(|(entity, _)| entity)
+            .next()
+            .expect("the row has a slot")
+    }
+
+    fn published<R>(
+        session: &mut Session<Playground>,
+        records: &mut Records,
+        read: impl FnOnce(&loam::runtime::Publication) -> R,
+    ) -> R {
+        records.publish(session).expect("published");
+        let publication = records.lend().expect("the buffer is free");
+        let value = read(&publication);
+        records.release(publication);
+        value
+    }
+
+    #[test]
+    fn a_reset_before_any_action_leaves_every_action_working() {
+        let mut booted = one_slot();
+        booted.session.submit(Command::Reset);
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the reset applied");
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        assert_eq!(*booted.session.app.mode.get(), Mode::Toybox);
         assert!(
-            moved,
-            "projected cap must move under at least one active projection; \
-             got {projected_caps:?} all equal to honest {honest_reference:?}"
+            booted.session.results()[0].outcome.is_ok(),
+            "the first action after a reset was refused: {:?}",
+            booted.session.results()[0].outcome
         );
     }
 
-    fn point_to_segment_distance(p: Vec3, s: Vec3, e: Vec3) -> f32 {
-        let d = e - s;
-        let len_sq = d.length_squared();
-        if len_sq < 1e-20 {
-            return (p - s).length();
+    #[test]
+    fn spin_is_refused_in_toybox_instead_of_reporting_done() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        send(&mut booted, Action::Running(Some(true)));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let outcome = &booted.session.results()[0].outcome;
+        assert!(
+            matches!(outcome, Err(Rejection::Unsupported(_))),
+            "spin in Toybox reported {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_mode_command_lands_in_the_store_at_the_next_boundary() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        assert_eq!(
+            *booted.session.app.mode.get(),
+            Mode::Rotate,
+            "an intent changed the store before any boundary applied it"
+        );
+
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        assert_eq!(*booted.session.app.mode.get(), Mode::Toybox);
+        assert_eq!(
+            booted.session.results().len(),
+            1,
+            "the boundary applied {} commands, not the one mode change",
+            booted.session.results().len()
+        );
+        assert!(booted.session.results()[0].outcome.is_ok());
+    }
+
+    #[test]
+    fn wireframe_and_perimeter_toggles_control_separate_edge_layers() {
+        let mut booted = one_slot();
+        booted.session.boundary(Input::default()).expect("boundary");
+        let mut records = Records::default();
+        for reset in [false, true] {
+            if reset {
+                send(&mut booted, Action::Reset);
+                booted.session.boundary(Input::default()).expect("reset");
+            }
+            published(&mut booted.session, &mut records, |publication| {
+                assert!(publication
+                    .views
+                    .iter()
+                    .all(|view| view.records.segments().is_empty()));
+                assert!(!publication.views[0].records.triangles().is_empty());
+            });
         }
-        let t = ((p - s).dot(d) / len_sq).clamp(0.0, 1.0);
-        (p - (s + t * d)).length()
-    }
-
-    fn cap_projected(cap_r3: [f32; 3], w_slice: f32, proj: &loam_math::Projection<4>) -> Vec3 {
-        let scale = perspective_scale_at_w(w_slice, proj);
-        cap_vertex_projected_and_world(cap_r3, w_slice, scale, proj, Vec3::ZERO).0
-    }
-
-    #[test]
-    fn cap_fill_triangle_dropped_near_pole() {
-        let r = STEREOGRAPHIC_VIEW_RADIUS;
-        let projected = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(r * 2.0, 0.0, 0.0),
-        ];
-        let mut indices = vec![[0u32, 1, 2], [0u32, 1, 1]];
-        retain_in_radius_triangles(&mut indices, 0, 0, &projected, Some(r));
-        assert_eq!(
-            indices,
-            vec![[0u32, 1, 1]],
-            "the triangle touching the near-pole vertex must be dropped, the far one kept"
+        send(
+            &mut booted,
+            Action::Display(Display {
+                wireframe: true,
+                ..Display::default()
+            }),
         );
-
-        let all_far = [
-            Vec3::new(0.0, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(0.5, 0.5, 0.0),
-        ];
-        let mut far_indices = vec![[0u32, 1, 2]];
-        retain_in_radius_triangles(&mut far_indices, 0, 0, &all_far, Some(r));
-        assert_eq!(
-            far_indices,
-            vec![[0u32, 1, 2]],
-            "a fan entirely within the radius must keep every triangle"
-        );
-
-        let mut affine_indices = vec![[0u32, 1, 2]];
-        retain_in_radius_triangles(&mut affine_indices, 0, 0, &projected, None);
-        assert_eq!(
-            affine_indices,
-            vec![[0u32, 1, 2]],
-            "no clip (affine) must keep every triangle even past the radius"
-        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let counts = published(&mut booted.session, &mut records, |publication| {
+            publication
+                .views
+                .iter()
+                .map(|view| view.records.segments().len())
+                .collect::<Vec<_>>()
+        });
+        assert!(counts[0] > 0);
+        assert_eq!(counts[1], 96);
+        let mut display = *booted.session.app.display.get();
+        display.section_perimeter = false;
+        send(&mut booted, Action::Display(display));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("perimeter off");
+        published(&mut booted.session, &mut records, |publication| {
+            assert!(publication.views[0].records.segments().is_empty());
+            assert_eq!(publication.views[1].records.segments().len(), 96);
+        });
     }
 
     #[test]
-    fn cap_fill_matches_perimeter_clip() {
-        let proj = loam_math::Projection::Stereographic { pole: Vec4::W };
-        let clip = stereographic_clip_radius(&proj, STEREOGRAPHIC_VIEW_RADIUS);
-        let near = cap_projected([0.05, 0.02, 0.01], 0.999, &proj);
-        let far = cap_projected([0.5, 0.0, 0.0], 0.0, &proj);
-        let perimeter_keeps_near = sample_in_radius(near, clip);
-        let perimeter_keeps_far = sample_in_radius(far, clip);
+    fn an_unmoved_row_under_an_unchanged_view_is_not_republished() {
+        let mut booted = one_slot();
+        let mut records = Records::default();
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let built = |session: &mut Session<Playground>, records: &mut Records| {
+            published(session, records, |publication| {
+                publication.views[0].records.built()
+            })
+        };
+        built(&mut booted.session, &mut records);
+        let first = built(&mut booted.session, &mut records);
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let idle = built(&mut booted.session, &mut records);
+        assert_eq!(first, idle, "publication rebuilt records nothing changed");
+
+        send(&mut booted, Action::Slice(0.4));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let moved = built(&mut booted.session, &mut records);
+        assert_ne!(
+            idle, moved,
+            "a new slice left the view's records at their old build"
+        );
+    }
+
+    #[test]
+    fn toybox_mode_parks_the_rotation_row_and_spawns_five_floor_cleared_toys() {
+        let mut booted = one_slot();
+        let original = slot_entity(&booted);
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        assert!(booted.session.app.hidden.contains(original));
+        assert!(!booted.session.app.slots.contains(original));
+        assert_eq!(booted.session.app.slots.len(), 5);
+        assert_eq!(booted.session.app.toys.len(), 5);
+        assert_eq!(booted.session.app.walls.len(), 5);
+        let expected = [
+            Polytope4::Cell24,
+            Polytope4::Tesseract,
+            Polytope4::Pentatope,
+            Polytope4::Cell16,
+            Polytope4::Tesseract,
+        ];
+        let slots: Vec<(Entity, Slot)> = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .map(|(entity, slot)| (entity, *slot))
+            .collect();
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain");
+        for &(entity, slot) in &slots {
+            assert_eq!(slot.entry.collider_polytope(), Some(expected[slot.index]));
+            let pose = r4.poses().get(entity).expect("the toy has a pose");
+            let polytope = expected[slot.index];
+            let lowest = polytope
+                .topology()
+                .vertices
+                .iter()
+                .map(|vertex| (pose.point + pose.frame.apply(*vertex * toy::BODY_SIZE)).y)
+                .fold(f32::INFINITY, f32::min);
+            assert!((lowest - consts::FLOOR_Y - 0.20).abs() < 1e-5);
+            assert!(r4
+                .physics()
+                .and_then(|physics| physics.body(entity))
+                .is_some());
+        }
+        for _ in 0..600 {
+            booted.session.tick().expect("the tick ran");
+        }
+        let toys: Vec<Entity> = booted
+            .session
+            .app
+            .toys
+            .iter()
+            .map(|(entity, _)| entity)
+            .collect();
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain");
+        let physics = r4.physics().expect("the domain has physics");
+        assert!(toys.iter().all(|entity| physics
+            .body(*entity)
+            .and_then(|body| physics.world().body(body))
+            .is_some_and(|body| body.is_sleeping())));
+        for (entity, slot) in slots {
+            let body = physics
+                .world()
+                .body(physics.body(entity).expect("body"))
+                .expect("body row");
+            let lowest = slot
+                .entry
+                .collider_polytope()
+                .expect("polytope")
+                .topology()
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    (body.position + body.orientation.rotation.apply(*vertex * toy::BODY_SIZE)).y
+                })
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                (consts::FLOOR_Y..=consts::FLOOR_Y + loam::physics::manifold::PENETRATION_SLOP)
+                    .contains(&lowest),
+                "{} rests at y={lowest}",
+                slot.entry.label
+            );
+        }
+    }
+
+    #[test]
+    fn row_edits_preserve_rotation_and_reset_keeps_authored_shapes() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::PlaneAngle(0, 0.4));
+        send(&mut booted, Action::AddShape(4));
+        send(&mut booted, Action::AddShape(6));
+        send(&mut booted, Action::RemoveShape(0));
+        booted.session.boundary(Input::default()).expect("edit row");
+        assert!(booted.session.results().iter().all(|r| r.outcome.is_ok()));
+        let active = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .find(|(_, slot)| slot.index == *booted.session.app.active.get())
+            .expect("active shape")
+            .0;
+        let frame = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(active)
+            .expect("pose")
+            .frame;
+        send(&mut booted, Action::ReorderShape { from: 0, to: 2 });
+        booted.session.boundary(Input::default()).expect("reorder");
+        assert!(booted.session.results().iter().all(|r| r.outcome.is_ok()));
+        assert_eq!(booted.session.app.active.get(), &0);
+        assert_eq!(
+            booted
+                .session
+                .app
+                .slots
+                .get(active)
+                .expect("active shape")
+                .index,
+            0
+        );
+        let rows: Vec<_> = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .map(|(entity, slot)| (entity, *slot))
+            .collect();
+        assert_eq!(rows.len(), 2);
+        let domain = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain");
+        for (entity, slot) in &rows {
+            assert_eq!(slot.rest, rest_of(slot.index, 2));
+            let pose = domain.poses().get(*entity).expect("pose");
+            assert_ne!(pose.frame, loam::math::Rotor4::IDENTITY);
+            assert_eq!(pose.frame, frame);
+            assert_eq!(pose.point, slot.rest);
+            assert_eq!(domain.instances().contains(*entity), slot.index == 1);
+        }
+        send(&mut booted, Action::Reset);
+        booted.session.boundary(Input::default()).expect("reset");
+        assert_eq!(booted.session.app.slots.len(), 2);
+        let domain = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain");
+        for (entity, slot) in rows {
+            let pose = domain.poses().get(entity).expect("same entity");
+            assert_eq!(pose.point, slot.rest);
+            assert_eq!(pose.frame, loam::math::Rotor4::IDENTITY);
+        }
+    }
+
+    #[test]
+    fn rotate_pointer_drag_cannot_pick_or_translate_a_shape() {
+        let mut booted = one_slot();
+        booted.session.boundary(Input::default()).expect("boundary");
+        let entity = slot_entity(&booted);
+        let before = *booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(entity)
+            .expect("pose");
+        for (phase, ndc) in [
+            (PointerPhase::Began, [0.0, 0.0]),
+            (PointerPhase::Moved, [0.5, 0.0]),
+            (PointerPhase::Ended, [0.5, 0.0]),
+        ] {
+            let pointer = Pointer {
+                id: 0,
+                button: Some(PointerButton::Primary),
+                ndc,
+                delta: [0.5, 0.0],
+                phase,
+                time: 1.0,
+            };
+            booted
+                .session
+                .boundary(Input {
+                    pointers: vec![pointer],
+                    ..Input::default()
+                })
+                .expect("boundary");
+        }
+        assert!(booted.session.dragging().is_none());
+        let after = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(entity)
+            .expect("pose");
+        assert_eq!(after.point, before.point);
+        assert_eq!(after.frame, before.frame);
+    }
+
+    #[test]
+    fn a_warmed_frame_with_every_overlay_on_asks_the_allocator_for_nothing() {
+        let mut booted = one_slot();
+        booted
+            .session
+            .dispatch(|dispatch| Action::Gimbal(None).apply(dispatch))
+            .expect("handles");
+        booted
+            .session
+            .dispatch(|dispatch| Action::Hud(None).apply(dispatch))
+            .expect("readout");
+        send(&mut booted, Action::Color(ColorMode::WDepth));
+        send(
+            &mut booted,
+            Action::Strip(Strip {
+                on: true,
+                w: true,
+                t: true,
+                ..Strip::default()
+            }),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        assert!(booted.session.results().iter().all(|r| r.outcome.is_ok()));
+
+        let mut records = Records::default();
+        let mut scratch = Scratch::new();
+        let mut gimbal = Gimbal::default();
+        gimbal.enabled = true;
+        let mut gimbal_renderer = gimbal::GimbalRenderer::default();
+        let mut lines = String::new();
+        let frame = |booted: &mut Boot,
+                     records: &mut Records,
+                     scratch: &mut Scratch,
+                     gimbal_renderer: &mut gimbal::GimbalRenderer,
+                     lines: &mut String| {
+            booted
+                .session
+                .boundary(Input::default())
+                .expect("the boundary ran");
+            booted.session.tick().expect("the tick ran");
+            records.publish(&mut booted.session).expect("published");
+            let publication = records.lend().expect("the buffer is free");
+            records.release(publication);
+            collect(&booted.session, booted.domain, scratch);
+            fill_strip(
+                &{ *booted.session.app.strip.get() },
+                turn_of(&booted.session),
+                HEADLESS_FRAME,
+                0.0,
+                scratch,
+            );
+            gimbal_renderer.rings(&gimbal, scratch.center);
+            hud::write_readout(lines, &readout_of(&booted.session));
+        };
+        for _ in 0..16 {
+            frame(
+                &mut booted,
+                &mut records,
+                &mut scratch,
+                &mut gimbal_renderer,
+                &mut lines,
+            );
+        }
+
+        let bytes = loam_time::alloc::bytes_allocated_by(|| {
+            for _ in 0..16 {
+                frame(
+                    &mut booted,
+                    &mut records,
+                    &mut scratch,
+                    &mut gimbal_renderer,
+                    &mut lines,
+                );
+            }
+        })
+        .expect("the counting allocator is installed");
+        assert_eq!(
+            bytes, 0,
+            "sixteen warmed frames of boundary, tick, publication, collection, strip, gimbal, and readout asked the allocator for {bytes} bytes"
+        );
+    }
+
+    #[test]
+    fn reset_restyles_replacement_toys_even_when_the_row_count_does_not_change() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        send(&mut booted, Action::Color(ColorMode::UniqueEdge));
+        send(
+            &mut booted,
+            Action::Display(Display {
+                wireframe: true,
+                wireframe_width_px: 4.0,
+                wireframe_opacity: 0.2,
+                ..Display::default()
+            }),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("style toys");
+        let mut records = Records::default();
+        published(&mut booted.session, &mut records, |_| ());
+        let instances = |booted: &Boot| {
+            booted
+                .session
+                .domains()
+                .read(booted.domain)
+                .expect("domain")
+                .instances()
+                .iter()
+                .map(|(_, instance)| *instance)
+                .collect::<Vec<_>>()
+        };
+        let before = instances(&booted);
+        assert_eq!(before.len(), 5);
+        assert!(before
+            .iter()
+            .all(|i| i.line_width_px == Some(4.0) && i.line_opacity == Some(0.2)));
+        send(&mut booted, Action::Reset);
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("reset toys");
+        published(&mut booted.session, &mut records, |_| ());
+        assert_eq!(instances(&booted), before);
+    }
+
+    #[test]
+    fn a_stationary_pointer_release_clears_the_spring_carry_velocity() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted.session.boundary(Input::default()).expect("toybox");
+        let entity = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .find(|(_, slot)| slot.index == 2)
+            .map(|(entity, _)| entity)
+            .expect("middle toy");
+        let center = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(entity)
+            .expect("pose")
+            .point
+            .truncate();
+        booted.session.views_mut().root_mut().eye = Eye::looking_at(
+            [center.x, center.y, EYE_BACK],
+            center.to_array(),
+            [0.0, 1.0, 0.0],
+        );
+        booted.session.grab([0.0; 2], 0.0).expect("grab");
+        booted.session.boundary(Input::default()).expect("hold");
+        let physics = booted
+            .session
+            .domains_mut()
+            .typed(booted.domain)
+            .expect("domain")
+            .physics_mut()
+            .expect("physics");
+        physics
+            .set_velocity(entity, Vec4::Y, Bivector4::ZERO)
+            .expect("carry velocity");
+        let pointer = Pointer {
+            id: 0,
+            button: Some(PointerButton::Primary),
+            ndc: [0.0; 2],
+            delta: [0.0; 2],
+            phase: PointerPhase::Ended,
+            time: 1.0,
+        };
+        booted
+            .session
+            .boundary(Input {
+                pointers: vec![pointer],
+                ..Input::default()
+            })
+            .expect("drop");
+        let physics = booted
+            .session
+            .domains_mut()
+            .typed(booted.domain)
+            .expect("domain")
+            .physics()
+            .expect("physics");
+        let body = physics.body(entity).expect("body");
+        assert_eq!(
+            physics.world().body(body).expect("body row").velocity,
+            Vec4::ZERO
+        );
+    }
+
+    #[test]
+    fn a_primary_grab_does_not_block_secondary_orbit_or_wheel_zoom() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted.session.boundary(Input::default()).expect("toybox");
+        let center = toy::pose_at(Polytope4::Pentatope, 0.0).point.truncate();
+        booted.session.app.control.get_mut().orbit = Orbit::around(center.to_array(), EYE_BACK);
+        let mut input = loam::app::session::input::InputMap::default();
+        input.resize(800, 600, 1.0);
+        input.button([0.0; 2], PointerButton::Primary, true);
+        booted.session.boundary(input.take()).expect("grab");
+        let picked = booted.session.dragging().expect("grab");
+        booted.session.boundary(Input::default()).expect("hold");
+
+        input.button([0.0; 2], PointerButton::Secondary, true);
+        input.moved([0.05, 0.05]);
+        input.wheel([0.0, 1.0]);
+        let movement = input.take();
+        booted.session.boundary(movement).expect("move");
+        let orbit = booted.session.app.control.get().orbit;
+        let root = booted.session.views().root();
+        let eye = booted.session.views().get(root).expect("root view").eye;
+        assert!(orbit.yaw < -0.1 && orbit.pitch > 0.08);
+        assert!(orbit.distance < EYE_BACK);
+        let held = booted.session.dragging().expect("still grabbed");
+        assert_eq!(held.entity, picked.entity);
+        let clip = loam::render::view::root_view_projection(&eye)
+            * glam::Vec3::from(held.image_point()).extend(1.0);
+        assert!((clip.x / clip.w - 0.05).abs() < 1e-5);
+        assert!((clip.y / clip.w - 0.05).abs() < 1e-5);
+        let physics = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain");
+        assert!(physics.physics().expect("physics").is_held(picked.entity));
+    }
+
+    #[test]
+    fn a_toybox_drag_stays_held_between_samples_and_reports_its_guides() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let entity = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .find(|(_, slot)| slot.index == 2)
+            .map(|(entity, _)| entity)
+            .expect("the center toy is live");
+        let center = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain")
+            .poses()
+            .get(entity)
+            .expect("the center toy has a pose")
+            .point
+            .truncate();
+        booted.session.views_mut().root_mut().eye = Eye::looking_at(
+            [center.x, center.y, EYE_BACK],
+            center.to_array(),
+            [0.0, 1.0, 0.0],
+        );
+        let picked = booted
+            .session
+            .grab([0.0, 0.0], 0.0)
+            .expect("the ray through the slot center picks it");
+        assert_eq!(picked.entity, entity);
+        booted.session.boundary(Input::default()).expect("hold");
+        let mut guides = guides::Guides::default();
+        guides.update(&booted.session, booted.domain);
+        assert_eq!(guides.points.len(), 1);
+        assert_eq!(guides.lines.len(), 8);
+        let anchor = guides.points[0].position;
+
+        let target = booted
+            .session
+            .drag([0.0, 0.28], 1.0)
+            .expect("the drag meets its plane");
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary applied the move");
+        guides.update(&booted.session, booted.domain);
+        assert_eq!(guides.points[0].position, anchor);
+        let refusal = booted
+            .session
+            .dispatch(|dispatch| {
+                dispatch.apply(Command::Chart(
+                    booted.domain.id(),
+                    ChartCommand::Move {
+                        entity: picked.entity,
+                        point: ChartPoint {
+                            chart: target.chart,
+                            coordinates: [f32::NAN, 0.0, 0.0, 0.0],
+                        },
+                    },
+                ))
+            })
+            .expect_err("a held body accepted a nonfinite target");
+        assert!(matches!(
+            refusal,
+            Rejection::Domain(loam::runtime::DomainError::InvalidCoordinate("x"))
+        ));
+        for _ in 0..120 {
+            booted.session.tick().expect("the tick ran");
+        }
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain");
+        let pose = r4.poses().get(picked.entity).expect("pose").point;
         assert!(
-            !perimeter_keeps_near,
-            "near-pole cap projected to {near:?} (|.| = {}) must fail the clip",
-            near.length()
+            (pose.y - target.coordinates[1]).abs() < 0.1,
+            "the held body stopped following at y {} before target {}",
+            pose.y,
+            target.coordinates[1]
         );
-        assert!(perimeter_keeps_far, "far cap must pass the clip");
-        let projected = [Vec3::ZERO, far, near];
-        let mut indices = vec![[0u32, 1, 2]];
-        retain_in_radius_triangles(&mut indices, 0, 0, &projected, clip);
-        let fill_keeps = !indices.is_empty();
+
+        let release = booted.session.release_at(1.05).expect("the drag was live");
+        guides.update(&booted.session, booted.domain);
+        assert!(guides.points.is_empty());
+        assert_eq!(guides.lines.len(), 4);
+        send(&mut booted, Action::Throw(release.entity, release.velocity));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the release and throw landed");
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain");
+        let physics = r4.physics().expect("the domain has physics");
+        let body = physics.body(release.entity).expect("the toy has a body");
+        assert!(physics.world().body(body).expect("body row").velocity.y > 0.0);
+        for _ in 0..600 {
+            booted.session.tick().expect("the tick ran");
+        }
+        let polytope = booted
+            .session
+            .app
+            .slots
+            .get(release.entity)
+            .and_then(|slot| slot.entry.collider_polytope())
+            .expect("the released toy has a polytope");
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain");
+        let physics = r4.physics().expect("the domain has physics");
+        let body = physics.body(release.entity).expect("the toy has a body");
+        let body = physics.world().body(body).expect("body row");
+        let slice_reach = polytope
+            .topology()
+            .vertices
+            .iter()
+            .map(|vertex| {
+                (body.orientation.rotation.apply(*vertex * toy::BODY_SIZE))
+                    .w
+                    .abs()
+            })
+            .fold(0.0f32, f32::max);
+        assert!(
+            body.position.w.abs() <= slice_reach,
+            "the released toy left its slice reach {slice_reach} at w {} with velocity {}",
+            body.position.w,
+            body.velocity.w
+        );
+        assert!(body.is_sleeping());
+    }
+
+    #[test]
+    fn a_shape_card_respawns_the_slot_in_place_with_the_new_polytopes_edges() {
+        let mut booted = one_slot();
+        send(
+            &mut booted,
+            Action::Display(Display {
+                wireframe: true,
+                ..Display::default()
+            }),
+        );
+        send(&mut booted, Action::Slice(consts::W_RANGE));
+        let rest = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .map(|(_, slot)| slot.rest)
+            .next()
+            .expect("the row has a slot");
+
+        send(&mut booted, Action::Shape(0, 0));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        let held: Vec<Slot> = booted.session.app.slots.iter().map(|(_, s)| *s).collect();
+        assert_eq!(held.len(), 1, "the swap left {} slots", held.len());
+        assert_eq!(held[0].entry.label, "5-cell");
+        assert_eq!(held[0].index, 0);
         assert_eq!(
-            fill_keeps,
-            perimeter_keeps_near && perimeter_keeps_far,
-            "fill triangle keep/drop must match the perimeter's endpoint test"
+            held[0].rest, rest,
+            "the replacement moved off the slot's rest"
         );
-        assert!(!fill_keeps, "the near-pole fan must be dropped");
+
+        let mut records = Records::default();
+        let counts = published(&mut booted.session, &mut records, |publication| {
+            publication
+                .views
+                .iter()
+                .map(|view| view.records.segments().len())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            counts,
+            [0, 10],
+            "the swapped slot still publishes the old polytope's edges"
+        );
+    }
+
+    #[test]
+    fn held_slice_motion_uses_fixed_ticks_while_authored_spin_is_paused() {
+        const TICKS: usize = 8;
+
+        let scrubbed = |boundaries: usize| {
+            let mut booted = one_slot();
+            booted.session.app.spin.get_mut().running = false;
+            for boundary in 0..boundaries {
+                let held = if boundary == 0 || boundaries > 1 {
+                    vec![SLICE_UP]
+                } else {
+                    Vec::new()
+                };
+                booted
+                    .session
+                    .boundary(Input {
+                        held,
+                        ..Input::default()
+                    })
+                    .expect("the boundary ran");
+                for _ in 0..TICKS / boundaries {
+                    booted.session.tick().expect("the tick ran");
+                }
+            }
+            *booted.session.app.slice.get()
+        };
+
+        assert!((scrubbed(1) - scrubbed(TICKS)).abs() < 1e-6);
+        assert!(scrubbed(1) > 0.0);
+    }
+
+    #[test]
+    fn the_gimbal_rotor_turns_the_row_by_the_angle_its_ring_names() {
+        use loam::math::{Bivector, Plane4, Rotor};
+
+        let mut booted = one_slot();
+        const ANGLE: f32 = 0.4;
+        let domain = booted.domain;
+        booted.session.dispatch(|d| {
+            mode::turn_row(
+                d.app,
+                d.domains,
+                domain,
+                (Plane4::Xw.unit_bivector() * ANGLE).exp(),
+            )
+            .expect("the turn applies")
+        });
+
+        let entity = slot_entity(&booted);
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain");
+        let turned = r4.poses().get(entity).expect("pose").frame.apply(Vec4::X);
+        let expected = Vec4::new(ANGLE.cos(), 0.0, 0.0, ANGLE.sin());
+        assert!(
+            (turned - expected).length() < 1e-5,
+            "the ring's rotor sent x to {turned} rather than the analytic {expected}"
+        );
+    }
+
+    #[test]
+    fn a_press_on_a_ring_turns_the_row_only_while_the_filmstrip_is_off() {
+        fn press_and_drag(booted: &mut Boot, ndc: [f32; 2]) -> bool {
+            let mut at = |phase, ndc, time| {
+                let pointer = Pointer {
+                    id: 0,
+                    button: Some(PointerButton::Primary),
+                    ndc,
+                    delta: [0.0; 2],
+                    phase,
+                    time,
+                };
+                booted
+                    .session
+                    .boundary(Input {
+                        pointers: vec![pointer],
+                        ..Input::default()
+                    })
+                    .expect("pointer boundary");
+                booted.session.app.control.get().gimbal.held()
+            };
+            let taken = at(PointerPhase::Began, ndc, 0.0);
+            at(PointerPhase::Moved, [ndc[0] + 0.2, ndc[1] + 0.2], 1.0);
+            taken
+        }
+
+        let mut booted = one_slot();
+        booted
+            .session
+            .dispatch(|dispatch| Action::Gimbal(None).apply(dispatch))
+            .expect("handles");
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let on_ring = gimbal::widget(glam::Vec3::new(0.0, BODY_Y, 0.0)).rings()[0].point(0.0);
+        let ndc = booted
+            .session
+            .views()
+            .ndc(on_ring.to_array())
+            .expect("the ring is in front of the eye");
+
+        assert!(
+            press_and_drag(&mut booted, ndc),
+            "the press missed the ring, so the strip has nothing to mask"
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let entity = slot_entity(&booted);
+        let turned = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain")
+            .poses()
+            .get(entity)
+            .expect("pose")
+            .frame;
+        assert_ne!(
+            turned,
+            loam::math::Rotor4::IDENTITY,
+            "the ring drag never turned the row, so the check below proves nothing"
+        );
+
+        send(
+            &mut booted,
+            Action::Strip(Strip {
+                on: true,
+                ..Strip::default()
+            }),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        assert!(
+            !press_and_drag(&mut booted, ndc),
+            "the gimbal took a press while the filmstrip covered it"
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let held = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain")
+            .poses()
+            .get(entity)
+            .expect("pose")
+            .frame;
+        assert_eq!(
+            held, turned,
+            "an invisible gimbal turned the row under the filmstrip"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_pointer_releases_a_live_grab() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let entity = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .find(|(_, slot)| slot.index == 2)
+            .map(|(entity, _)| entity)
+            .expect("middle toy");
+        let center = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(entity)
+            .expect("pose")
+            .point
+            .truncate();
+        booted.session.views_mut().root_mut().eye = Eye::looking_at(
+            [center.x, center.y, EYE_BACK],
+            center.to_array(),
+            [0.0, 1.0, 0.0],
+        );
+        booted
+            .session
+            .grab([0.0, 0.0], 0.0)
+            .expect("the ray through the slot center picks it");
+        let pointer = Pointer {
+            id: 0,
+            button: Some(PointerButton::Primary),
+            ndc: [0.0, 0.0],
+            delta: [0.0; 2],
+            phase: PointerPhase::Cancelled,
+            time: 1.0,
+        };
+        let hover = Pointer {
+            button: None,
+            phase: PointerPhase::Moved,
+            ..pointer
+        };
+        let input = Input {
+            pointers: vec![pointer, hover],
+            ..Input::default()
+        };
+        booted.session.boundary(input).expect("cancel boundary");
+
+        assert!(booted.session.dragging().is_none());
+        assert!(
+            booted.session.drag([0.5, 0.0], 2.0).is_err(),
+            "the grab survived the focus change that cancelled the pointer"
+        );
+    }
+
+    #[test]
+    fn a_raster_cut_is_duplicated_in_the_projection_layer() {
+        const TESSERACT: ShapeEntry = ShapeEntry {
+            shape: RaymarchShape::Polytope(Polytope4::Tesseract),
+            body_color: [0.30, 0.55, 0.95],
+            label: "8-cell",
+            long_name: "tesseract",
+            category: catalog::Category::RegularPolychoron,
+        };
+        let mut booted = boot(&[TESSERACT]).expect("the session boots");
+        booted.session.boundary(Input::default()).expect("boundary");
+        let mut records = Records::default();
+        published(&mut booted.session, &mut records, |publication| {
+            assert_eq!(publication.views[0].records.triangles().len(), 24);
+            assert!(publication.views[1].records.triangles().is_empty());
+        });
+    }
+
+    #[test]
+    fn filmstrip_recenters_after_single_and_restores_the_single_camera() {
+        let focus = (true, 0, Mode::Rotate);
+        let single_target = [-2.4, 0.0, 0.0];
+        let mut orbit = Orbit::around(single_target, 5.0);
+        orbit.yaw = 0.3;
+        orbit.pitch = -0.4;
+        let mut camera_focus = Some(focus);
+        let mut filmstrip_return = None;
+        let strip = Strip {
+            on: true,
+            ..Strip::default()
+        };
+
+        focus_camera(
+            &mut orbit,
+            &mut camera_focus,
+            &mut filmstrip_return,
+            strip,
+            focus,
+            glam::Vec3::from(single_target),
+        );
+        assert_eq!(orbit.target, [0.0; 3]);
+        assert_eq!((orbit.yaw, orbit.pitch, orbit.distance), (0.3, -0.4, 5.0));
+
+        focus_camera(
+            &mut orbit,
+            &mut camera_focus,
+            &mut filmstrip_return,
+            Strip { t: true, ..strip },
+            focus,
+            glam::Vec3::from(single_target),
+        );
+        assert_eq!(orbit.target, [0.0, BODY_Y, 0.0]);
+
+        focus_camera(
+            &mut orbit,
+            &mut camera_focus,
+            &mut filmstrip_return,
+            Strip { on: false, ..strip },
+            focus,
+            glam::Vec3::from(single_target),
+        );
+        assert_eq!(orbit.target, single_target);
+        assert_eq!((orbit.yaw, orbit.pitch, orbit.distance), (0.3, -0.4, 5.0));
+    }
+
+    #[test]
+    fn the_marcher_takes_one_strip_cell_per_grid_rectangle_and_none_once_the_strip_is_off() {
+        let mut scratch = Scratch::new();
+        let strip = Strip {
+            on: true,
+            w: true,
+            t: true,
+            count_w: 5,
+            count_t: 3,
+            ..Strip::default()
+        };
+        fill_strip(&strip, Bivector4::ZERO, HEADLESS_FRAME, 0.25, &mut scratch);
+        assert_eq!(scratch.strip.len(), 15, "a 5 by 3 grid is fifteen draws");
+        let covered: u64 = scratch
+            .strip
+            .iter()
+            .map(|(viewport, _, _)| u64::from(viewport.width) * u64::from(viewport.height))
+            .sum();
+        assert_eq!(
+            covered,
+            u64::from(HEADLESS_FRAME.0) * u64::from(HEADLESS_FRAME.1),
+            "the cells the marcher draws leave a gap or overlap"
+        );
+        let slices: Vec<f32> = scratch.strip.iter().map(|(_, w, _)| *w).collect();
+        assert!(
+            (slices[0] - (0.25 - BODY_SIZE)).abs() < 1e-6
+                && (slices[14] - (0.25 + BODY_SIZE)).abs() < 1e-6,
+            "the strip does not span the body around the slider: {slices:?}"
+        );
+
+        fill_strip(
+            &Strip { on: false, ..strip },
+            Bivector4::ZERO,
+            HEADLESS_FRAME,
+            0.25,
+            &mut scratch,
+        );
+        assert!(
+            scratch.strip.is_empty(),
+            "a stale strip kept the filmstrip on screen after it was switched off"
+        );
     }
 }

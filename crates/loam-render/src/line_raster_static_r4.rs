@@ -1,5 +1,3 @@
-//! For R⁴ line meshes uploaded once; the rotor and projection run on the GPU.
-
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
 use loam_math::Rotor4;
@@ -9,12 +7,12 @@ use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState,
     Buffer, BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
-    CompareFunction, DepthStencilState, Device, FragmentState, LoadOp, MultisampleState,
-    Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
-    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
-    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
-    StencilState, StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
-    VertexState, VertexStepMode,
+    DepthStencilState, Device, FragmentState, LoadOp, MultisampleState, Operations,
+    PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue, RenderPassColorAttachment,
+    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
+    RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages, StencilState,
+    StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState,
+    VertexStepMode,
 };
 
 const SHADER_WGSL: &str = include_str!("line_raster_static_r4.wgsl");
@@ -71,7 +69,7 @@ impl LineRasterStaticR4Node {
         device: &Device,
         surface_format: TextureFormat,
         depth: crate::DepthMode,
-        sample_count: u32,
+        convention: crate::DepthConvention,
     ) -> Self {
         let module = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("line_raster_static_r4 shader"),
@@ -162,7 +160,10 @@ impl LineRasterStaticR4Node {
             layout: Some(&pipeline_layout),
             vertex: VertexState {
                 module: &module,
-                entry_point: Some("vs_main"),
+                entry_point: Some(match convention {
+                    crate::DepthConvention::StandardZ => "vs_main",
+                    crate::DepthConvention::ReversedZ => "vs_reversed_z",
+                }),
                 buffers: &[corner_layout, instance_layout],
                 compilation_options: Default::default(),
             },
@@ -194,12 +195,12 @@ impl LineRasterStaticR4Node {
             depth_stencil: depth.format().map(|format| DepthStencilState {
                 format,
                 depth_write_enabled: depth.writes(),
-                depth_compare: CompareFunction::LessEqual,
+                depth_compare: convention.compare(wgpu::CompareFunction::LessEqual),
                 stencil: StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: MultisampleState {
-                count: sample_count,
+                count: 1,
                 ..Default::default()
             },
             multiview: None,

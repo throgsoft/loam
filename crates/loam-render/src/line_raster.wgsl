@@ -5,6 +5,8 @@ struct CameraUniform {
 };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
+const NEAR_W: f32 = 1.0e-4;
+
 struct VsOut {
     @builtin(position) clip:        vec4<f32>,
     @location(0)       coverage_t:  f32,
@@ -26,8 +28,8 @@ fn vs_main(
     var ca = start_color;
     var cb = end_color;
 
-    // Clip to the near plane before the divide; behind the eye `w <= 0` flips NDC.
-    if (a.z < 0.0 && b.z < 0.0) {
+    // Both conventions put the eye distance in w, so one w test clips under either projection.
+    if (a.w < NEAR_W && b.w < NEAR_W) {
         var culled: VsOut;
         culled.clip       = vec4<f32>(0.0, 0.0, -1.0, 1.0);
         culled.coverage_t = 0.0;
@@ -35,12 +37,12 @@ fn vs_main(
         culled.color      = vec4<f32>(0.0);
         return culled;
     }
-    if (a.z < 0.0) {
-        let t = a.z / (a.z - b.z);
+    if (a.w < NEAR_W) {
+        let t = (NEAR_W - a.w) / (b.w - a.w);
         a  = mix(a,  b,  t);
         ca = mix(ca, cb, t);
-    } else if (b.z < 0.0) {
-        let t = b.z / (b.z - a.z);
+    } else if (b.w < NEAR_W) {
+        let t = (NEAR_W - b.w) / (a.w - b.w);
         b  = mix(b,  a,  t);
         cb = mix(cb, ca, t);
     }

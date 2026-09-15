@@ -1,14 +1,21 @@
 use anyhow::{anyhow, Context, Result};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlCanvasElement, MessageEvent, Worker, WorkerOptions, WorkerType};
 
-/// `host_id` is the `data-mode="manual"` container, `button_id` the overlay,
-/// `canvas_id` the `<canvas>` transferred via `transferControlToOffscreen`.
+#[derive(Clone, Copy)]
+struct CanvasMetrics {
+    width: u32,
+    height: u32,
+    scale: f32,
+}
+
+type Pending<T> = Rc<RefCell<Option<T>>>;
+
 pub fn launch_on_click(host_id: &str, button_id: &str, canvas_id: &str) -> Result<()> {
-    super::worker::install_logging_idempotent();
+    super::install_logging_idempotent();
 
     spawn_worker_for_preview(canvas_id, host_id, button_id)?;
     Ok(())
@@ -38,8 +45,15 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
     let dpr = window.device_pixel_ratio() as f32;
     let css_w = canvas.client_width().max(1) as f32;
     let css_h = canvas.client_height().max(1) as f32;
-    let width = (css_w * dpr).round() as u32;
-    let height = (css_h * dpr).round() as u32;
+    #[cfg(feature = "measure")]
+    let max_pixels = crate::args::Args::current()
+        .parse::<u32>("max-pixels")
+        .filter(|pixels| *pixels > 0);
+    #[cfg(not(feature = "measure"))]
+    let max_pixels: Option<u32> = None;
+    let metrics = canvas_metrics(&canvas, dpr, max_pixels);
+    let width = metrics.width;
+    let height = metrics.height;
     if width == 0 || height == 0 {
         return Err(anyhow!(
             "canvas '{canvas_id}' has zero displayed dimensions ({css_w}x{css_h}); \
@@ -49,7 +63,8 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
     canvas.set_width(width);
     canvas.set_height(height);
     tracing::info!(
-        "loam_app::wasm::worker: canvas sized to {width}x{height} (CSS {css_w}x{css_h} × DPR {dpr})"
+        "loam_app::wasm::worker: canvas sized to {width}x{height} (scale {})",
+        metrics.scale
     );
 
     let offscreen = canvas
@@ -57,7 +72,12 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
         .map_err(|e| anyhow!("transfer_control_to_offscreen: {e:?}"))?;
 
     let js_url = read_wasm_bundle_url()?;
-    let wasm_url = js_url.strip_suffix(".js").unwrap_or(&js_url).to_string() + "_bg.wasm";
+    let (js_path, query) = js_url.split_once('?').unwrap_or((js_url.as_str(), ""));
+    let wasm_url = format!(
+        "{}_bg.wasm{}{query}",
+        js_path.strip_suffix(".js").unwrap_or(js_path),
+        if query.is_empty() { "" } else { "?" }
+    );
     tracing::info!("loam_app::wasm::worker: spawning worker (js={js_url}, wasm={wasm_url})");
 
     let bootstrap_js =
@@ -78,6 +98,7 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
 
     let worker_for_ready = worker.clone();
     let offscreen_for_ready = offscreen.clone();
+    let button_for_ready = button_id.to_string();
     let bootstrap_url = blob_url;
     let on_ready = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
@@ -105,7 +126,7 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
         let _ = js_sys::Reflect::set(
             &msg,
             &JsValue::from_str("dpr"),
-            &JsValue::from_f64(dpr as f64),
+            &JsValue::from_f64(metrics.scale as f64),
         );
         let (search, hash) = web_sys::window()
             .map(|w| {
@@ -122,13 +143,14 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
             &JsValue::from_str(&search),
         );
         let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("hash"), &JsValue::from_str(&hash));
-
         let transfer = js_sys::Array::new();
         transfer.push(&offscreen_for_ready);
 
         if let Err(e) = worker_for_ready.post_message_with_transfer(&msg, &transfer) {
-            tracing::error!("loam_app::wasm::worker: postMessage init failed: {e:?}");
-            return;
+            show_worker_failure(
+                &format!("worker initialization message failed: {e:?}"),
+                &button_for_ready,
+            );
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     worker
@@ -136,12 +158,14 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
         .map_err(|e| anyhow!("worker.addEventListener('message'): {e:?}"))?;
     on_ready.forget();
 
-    install_dom_input_forwarders(&worker, &canvas).context("install_dom_input_forwarders")?;
+    install_cursor_control(&worker, &canvas).context("install_cursor_control")?;
+    install_dom_input_forwarders(&worker, &canvas, max_pixels)
+        .context("install_dom_input_forwarders")?;
 
-    install_host_action_handler(&worker, &canvas).context("install_host_action_handler")?;
-
-    install_preview_progress_handler(&worker)?;
     install_preview_ready_handler(&worker, button_id)?;
+    install_worker_failure_handler(&worker, button_id)?;
+    #[cfg(feature = "measure")]
+    install_measurement_result_handler(&worker, host_id)?;
 
     install_embed_lifecycle(&worker, host_id, button_id).context("install_embed_lifecycle")?;
 
@@ -183,6 +207,48 @@ fn spawn_worker_for_preview(canvas_id: &str, host_id: &str, button_id: &str) -> 
     Ok(())
 }
 
+fn canvas_metrics(
+    canvas: &HtmlCanvasElement,
+    device_scale: f32,
+    max_pixels: Option<u32>,
+) -> CanvasMetrics {
+    let css_width = canvas.client_width().max(1) as u32;
+    let css_height = canvas.client_height().max(1) as u32;
+    let native_width = (css_width as f64 * f64::from(device_scale)).round() as u32;
+    let native_height = (css_height as f64 * f64::from(device_scale)).round() as u32;
+    let Some(max_pixels) = max_pixels else {
+        return CanvasMetrics {
+            width: native_width,
+            height: native_height,
+            scale: device_scale,
+        };
+    };
+    if u64::from(native_width) * u64::from(native_height) <= u64::from(max_pixels) {
+        return CanvasMetrics {
+            width: native_width,
+            height: native_height,
+            scale: device_scale,
+        };
+    }
+
+    let css_area = f64::from(css_width) * f64::from(css_height);
+    let scale = device_scale.min((f64::from(max_pixels) / css_area).sqrt() as f32);
+    let mut width = (css_width as f64 * f64::from(scale)).floor().max(1.0) as u32;
+    let mut height = (css_height as f64 * f64::from(scale)).floor().max(1.0) as u32;
+    if u64::from(width) * u64::from(height) > u64::from(max_pixels) {
+        if width >= height {
+            width = (max_pixels / height).max(1);
+        } else {
+            height = (max_pixels / width).max(1);
+        }
+    }
+    CanvasMetrics {
+        width,
+        height,
+        scale,
+    }
+}
+
 // Dispatched on `document` when an embed activates; detail = host id.
 const EMBED_ACTIVATED_EVENT: &str = "loam-embed-activated";
 
@@ -200,7 +266,6 @@ fn dispatch_embed_activated(host_id: &str) {
     }
 }
 
-// Starts inactive until the launch click's broadcast.
 fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> Result<()> {
     let document = web_sys::window()
         .and_then(|w| w.document())
@@ -302,7 +367,147 @@ fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> R
     Ok(())
 }
 
-fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
+fn install_cursor_control(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
+    let document = web_sys::window()
+        .and_then(|window| window.document())
+        .ok_or_else(|| anyhow!("no document on global window"))?;
+    let wanted = Rc::new(Cell::new(false));
+
+    {
+        let worker = worker.clone();
+        let worker_for_callback = worker.clone();
+        let canvas = canvas.clone();
+        let document = document.clone();
+        let wanted = wanted.clone();
+        let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
+            let data: JsValue = event.data();
+            let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
+                .ok()
+                .and_then(|value| value.as_string());
+            if kind.as_deref() != Some("cursor_lock") {
+                return;
+            }
+            let locked = js_sys::Reflect::get(&data, &JsValue::from_str("locked"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            wanted.set(locked);
+            if locked {
+                request_pointer_lock(&canvas);
+            } else if document
+                .pointer_lock_element()
+                .as_ref()
+                .is_some_and(|element| element == canvas.as_ref())
+            {
+                document.exit_pointer_lock();
+            } else {
+                let message = build_msg("pointer_lock_changed");
+                set_msg_bool(&message, "locked", false);
+                set_msg_bool(&message, "released", false);
+                let _ = worker_for_callback.post_message(&message);
+            }
+        }) as Box<dyn FnMut(MessageEvent)>);
+        worker
+            .add_event_listener_with_callback("message", callback.as_ref().unchecked_ref())
+            .map_err(|error| anyhow!("cursor lock message listener: {error:?}"))?;
+        callback.forget();
+    }
+
+    for event_name in ["pointerlockchange", "pointerlockerror"] {
+        let release_event = event_name == "pointerlockchange";
+        let worker = worker.clone();
+        let canvas = canvas.clone();
+        let document_for_event = document.clone();
+        let wanted = wanted.clone();
+        let callback = Closure::wrap(Box::new(move || {
+            let locked = document_for_event
+                .pointer_lock_element()
+                .as_ref()
+                .is_some_and(|element| element == canvas.as_ref());
+            let released = release_event && !locked && wanted.replace(false);
+            if locked && !wanted.get() {
+                document_for_event.exit_pointer_lock();
+            }
+            let message = build_msg("pointer_lock_changed");
+            set_msg_bool(&message, "locked", locked);
+            set_msg_bool(&message, "released", released);
+            let _ = worker.post_message(&message);
+        }) as Box<dyn FnMut()>);
+        document
+            .add_event_listener_with_callback(event_name, callback.as_ref().unchecked_ref())
+            .map_err(|error| anyhow!("{event_name} listener: {error:?}"))?;
+        callback.forget();
+    }
+
+    {
+        let canvas = canvas.clone();
+        let canvas_for_callback = canvas.clone();
+        let document = document.clone();
+        let wanted = wanted.clone();
+        let callback = Closure::wrap(Box::new(move || {
+            let locked = document
+                .pointer_lock_element()
+                .as_ref()
+                .is_some_and(|element| element == canvas_for_callback.as_ref());
+            if wanted.get() && !locked {
+                request_pointer_lock(&canvas_for_callback);
+            }
+        }) as Box<dyn FnMut()>);
+        canvas
+            .add_event_listener_with_callback("mousedown", callback.as_ref().unchecked_ref())
+            .map_err(|error| anyhow!("cursor lock mousedown listener: {error:?}"))?;
+        callback.forget();
+    }
+
+    {
+        let canvas = canvas.clone();
+        let document_for_event = document.clone();
+        let wanted = wanted.clone();
+        let callback = Closure::wrap(Box::new(move || {
+            let locked = document_for_event
+                .pointer_lock_element()
+                .as_ref()
+                .is_some_and(|element| element == canvas.as_ref());
+            if wanted.get() && !locked {
+                request_pointer_lock(&canvas);
+            }
+        }) as Box<dyn FnMut()>);
+        document
+            .add_event_listener_with_callback("keydown", callback.as_ref().unchecked_ref())
+            .map_err(|error| anyhow!("cursor lock keydown listener: {error:?}"))?;
+        callback.forget();
+    }
+
+    Ok(())
+}
+
+fn request_pointer_lock(canvas: &HtmlCanvasElement) {
+    let Ok(method) =
+        js_sys::Reflect::get(canvas.as_ref(), &JsValue::from_str("requestPointerLock"))
+            .and_then(|value| value.dyn_into::<js_sys::Function>())
+    else {
+        tracing::warn!("loam_app::wasm::worker: requestPointerLock is unavailable");
+        return;
+    };
+    let Ok(result) = method.call0(canvas.as_ref()) else {
+        tracing::warn!("loam_app::wasm::worker: requestPointerLock failed");
+        return;
+    };
+    let Ok(promise) = result.dyn_into::<js_sys::Promise>() else {
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await {
+            tracing::warn!("loam_app::wasm::worker: requestPointerLock rejected: {error:?}");
+        }
+    });
+}
+
+fn install_dom_input_forwarders(
+    worker: &Worker,
+    canvas: &HtmlCanvasElement,
+    max_pixels: Option<u32>,
+) -> Result<()> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
     let document = window
         .document()
@@ -310,15 +515,18 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
 
     const RESIZE_DEBOUNCE_FRAMES: u32 = 6;
     {
-        let pending: Rc<RefCell<Option<(u32, u32, f32, u32)>>> = Rc::new(RefCell::new(None));
+        let pending: Pending<(u32, u32, f32, u32)> = Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
         let canvas_for_listener = canvas.clone();
         let window_for_listener = window.clone();
         let cb = Closure::wrap(Box::new(move || {
-            let dpr = window_for_listener.device_pixel_ratio() as f32;
-            let w = (canvas_for_listener.client_width() as f32 * dpr).max(1.0) as u32;
-            let h = (canvas_for_listener.client_height() as f32 * dpr).max(1.0) as u32;
-            *pending_for_listener.borrow_mut() = Some((w, h, dpr, 0));
+            let metrics = canvas_metrics(
+                &canvas_for_listener,
+                window_for_listener.device_pixel_ratio() as f32,
+                max_pixels,
+            );
+            *pending_for_listener.borrow_mut() =
+                Some((metrics.width, metrics.height, metrics.scale, 0));
         }) as Box<dyn FnMut()>);
         window
             .add_event_listener_with_callback("resize", cb.as_ref().unchecked_ref())
@@ -328,7 +536,7 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         let worker_for_raf = worker.clone();
         let pending_for_raf = pending.clone();
         let window_for_raf = window.clone();
-        let raf_cb: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+        let raf_cb: Pending<Closure<dyn FnMut()>> = Rc::new(RefCell::new(None));
         let raf_cb_for_closure = raf_cb.clone();
         *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move || {
             let commit = {
@@ -368,12 +576,12 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
     }
 
     {
-        let pending: Rc<RefCell<Option<(f32, f32, u32, f32, f32)>>> = Rc::new(RefCell::new(None));
+        let pending: Pending<(f32, f32, u32, f32, f32, f64)> = Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
         let cb = Closure::wrap(Box::new(move |ev: web_sys::MouseEvent| {
             let mut p = pending_for_listener.borrow_mut();
             let (sum_dx, sum_dy) = match *p {
-                Some((_, _, _, dx, dy)) => (dx, dy),
+                Some((_, _, _, dx, dy, _)) => (dx, dy),
                 None => (0.0, 0.0),
             };
             *p = Some((
@@ -382,6 +590,7 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
                 ev.buttons() as u32,
                 sum_dx + ev.movement_x() as f32,
                 sum_dy + ev.movement_y() as f32,
+                ev.time_stamp(),
             ));
         }) as Box<dyn FnMut(web_sys::MouseEvent)>);
         canvas
@@ -392,16 +601,17 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         let worker_for_raf = worker.clone();
         let pending_for_raf = pending.clone();
         let window_for_raf = window.clone();
-        let raf_cb: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+        let raf_cb: Pending<Closure<dyn FnMut()>> = Rc::new(RefCell::new(None));
         let raf_cb_for_closure = raf_cb.clone();
         *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move || {
-            if let Some((x, y, buttons, dx, dy)) = pending_for_raf.borrow_mut().take() {
+            if let Some((x, y, buttons, dx, dy, time)) = pending_for_raf.borrow_mut().take() {
                 let msg = build_msg("mouse_move");
                 set_msg_f32(&msg, "x", x);
                 set_msg_f32(&msg, "y", y);
                 set_msg_u32(&msg, "buttons", buttons);
                 set_msg_f32(&msg, "dx", dx);
                 set_msg_f32(&msg, "dy", dy);
+                set_msg_f64(&msg, "time", time);
                 let _ = worker_for_raf.post_message(&msg);
             }
             let cb_ref = raf_cb_for_closure.borrow();
@@ -430,8 +640,34 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
             set_msg_f32(&msg, "y", ev.offset_y() as f32);
             set_msg_u32(&msg, "button", ev.button() as u32);
             set_msg_bool(&msg, "pressed", pressed);
+            set_msg_f64(&msg, "time", ev.time_stamp());
             let _ = worker.post_message(&msg);
         }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+        canvas
+            .add_event_listener_with_callback(event_name, cb.as_ref().unchecked_ref())
+            .map_err(|e| anyhow!("{event_name} listener: {e:?}"))?;
+        cb.forget();
+    }
+
+    let _ = canvas.style().set_property("touch-action", "none");
+    for event_name in ["pointerdown", "pointermove", "pointerup", "pointercancel"] {
+        let worker = worker.clone();
+        let canvas_for_capture = canvas.clone();
+        let cb = Closure::wrap(Box::new(move |ev: web_sys::PointerEvent| {
+            if event_name == "pointerdown" {
+                let _ = canvas_for_capture.set_pointer_capture(ev.pointer_id());
+            }
+            if ev.pointer_type() == "mouse" {
+                return;
+            }
+            let msg = build_msg("pointer");
+            set_msg_f64(&msg, "id", f64::from(ev.pointer_id()));
+            set_msg_f32(&msg, "x", ev.offset_x() as f32);
+            set_msg_f32(&msg, "y", ev.offset_y() as f32);
+            set_msg_string(&msg, "phase", event_name);
+            set_msg_f64(&msg, "time", ev.time_stamp());
+            let _ = worker.post_message(&msg);
+        }) as Box<dyn FnMut(web_sys::PointerEvent)>);
         canvas
             .add_event_listener_with_callback(event_name, cb.as_ref().unchecked_ref())
             .map_err(|e| anyhow!("{event_name} listener: {e:?}"))?;
@@ -448,7 +684,6 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         cb.forget();
     }
 
-    // Normalize WheelEvent's per-mode delta to lines, the loam-input convention.
     {
         let worker = worker.clone();
         let cb = Closure::wrap(Box::new(move |ev: web_sys::WheelEvent| {
@@ -506,7 +741,6 @@ fn install_dom_input_forwarders(worker: &Worker, canvas: &HtmlCanvasElement) -> 
         cb.forget();
     }
 
-    // Focus / blur on window for loam-input's release-on-focus-loss.
     for (event_name, focused) in [("focus", true), ("blur", false)] {
         let worker = worker.clone();
         let cb = Closure::wrap(Box::new(move || {
@@ -549,7 +783,11 @@ fn set_msg_u32(obj: &js_sys::Object, key: &str, v: u32) {
 }
 
 fn set_msg_f32(obj: &js_sys::Object, key: &str, v: f32) {
-    let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_f64(v as f64));
+    set_msg_f64(obj, key, f64::from(v));
+}
+
+fn set_msg_f64(obj: &js_sys::Object, key: &str, v: f64) {
+    let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_f64(v));
 }
 
 fn set_msg_bool(obj: &js_sys::Object, key: &str, v: bool) {
@@ -558,45 +796,6 @@ fn set_msg_bool(obj: &js_sys::Object, key: &str, v: bool) {
 
 fn set_msg_string(obj: &js_sys::Object, key: &str, v: &str) {
     let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_str(v));
-}
-
-// Bar markup lives in `crates/loam-app/static/page_loader.html`.
-fn install_preview_progress_handler(worker: &Worker) -> Result<()> {
-    let cb = Closure::wrap(Box::new(move |event: MessageEvent| {
-        let data: JsValue = event.data();
-        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-            .ok()
-            .and_then(|v| v.as_string());
-        if kind.as_deref() != Some("preview_progress") {
-            return;
-        }
-        let pct = js_sys::Reflect::get(&data, &JsValue::from_str("pct"))
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0);
-        let percent = pct * 100.0;
-        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
-            return;
-        };
-        if let Some(fill) = document.get_element_by_id("loam-page-loader-fill") {
-            let _ = fill.dyn_into::<web_sys::HtmlElement>().map(|el| {
-                let _ = el.style().set_property("width", &format!("{percent}%"));
-            });
-        }
-        if let Some(track) = document
-            .query_selector("#loam-page-loader .loam-progress-track")
-            .ok()
-            .flatten()
-        {
-            let _ = track.set_attribute("aria-valuenow", &format!("{}", percent.round() as i32));
-        }
-    }) as Box<dyn FnMut(MessageEvent)>);
-    worker
-        .add_event_listener_with_callback("message", cb.as_ref().unchecked_ref())
-        .map_err(|e| anyhow!("worker.addEventListener('message') for preview_progress: {e:?}"))?;
-    cb.forget();
-    Ok(())
 }
 
 fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()> {
@@ -613,7 +812,7 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
             return;
         };
         if let Some(loader) = document.get_element_by_id("loam-page-loader") {
-            loader.remove();
+            let _ = loader.set_attribute("hidden", "");
         }
         if let Some(overlay) = document.get_element_by_id(&button_id_owned) {
             overlay.set_class_name("loam-demo-launch ready");
@@ -626,108 +825,111 @@ fn install_preview_ready_handler(worker: &Worker, button_id: &str) -> Result<()>
     Ok(())
 }
 
-fn install_host_action_handler(worker: &Worker, canvas: &HtmlCanvasElement) -> Result<()> {
-    let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
-    let document = window
-        .document()
-        .ok_or_else(|| anyhow!("no document on window"))?;
-
-    let want_locked: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
-
-    {
-        let canvas_for_dispatch = canvas.clone();
-        let document_for_dispatch = document.clone();
-        let want_locked_for_dispatch = want_locked.clone();
-        let cb = Closure::wrap(Box::new(move |event: MessageEvent| {
-            let data: JsValue = event.data();
-            let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-                .ok()
-                .and_then(|v| v.as_string());
-            if kind.as_deref() != Some("host_action") {
-                return;
-            }
-            let actions = match js_sys::Reflect::get(&data, &JsValue::from_str("actions")) {
-                Ok(arr) => arr,
-                Err(_) => return,
-            };
-            let arr = match actions.dyn_into::<js_sys::Array>() {
-                Ok(a) => a,
-                Err(_) => return,
-            };
-            for i in 0..arr.length() {
-                let item = arr.get(i);
-                let action_kind = js_sys::Reflect::get(&item, &JsValue::from_str("kind"))
-                    .ok()
-                    .and_then(|v| v.as_string());
-                match action_kind.as_deref() {
-                    Some("pointer_lock_request") => {
-                        *want_locked_for_dispatch.borrow_mut() = true;
-                        canvas_for_dispatch.request_pointer_lock();
-                    }
-                    Some("pointer_lock_release") => {
-                        *want_locked_for_dispatch.borrow_mut() = false;
-                        document_for_dispatch.exit_pointer_lock();
-                    }
-                    Some(other) => {
-                        tracing::warn!(
-                            "loam_app::wasm: unknown host_action kind '{other}'; dropping"
-                        );
-                    }
-                    None => {
-                        tracing::warn!("loam_app::wasm: host_action item missing 'kind'");
-                    }
-                }
-            }
-        }) as Box<dyn FnMut(MessageEvent)>);
-        worker
-            .add_event_listener_with_callback("message", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("worker.addEventListener('message') for host_action: {e:?}"))?;
-        cb.forget();
-    }
-
-    {
-        let worker_for_change = worker.clone();
-        let document_for_change = document.clone();
-        let canvas_for_change = canvas.clone();
-        let cb = Closure::wrap(Box::new(move || {
-            let locked = document_for_change
-                .pointer_lock_element()
-                .as_ref()
-                .map(|el| el == canvas_for_change.as_ref())
-                .unwrap_or(false);
-            let msg = build_msg("pointer_lock_changed");
-            set_msg_bool(&msg, "locked", locked);
-            let _ = worker_for_change.post_message(&msg);
-        }) as Box<dyn FnMut()>);
-        document
-            .add_event_listener_with_callback("pointerlockchange", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("pointerlockchange listener: {e:?}"))?;
-        cb.forget();
-    }
-
-    {
-        let canvas_for_click = canvas.clone();
-        let document_for_click = document.clone();
-        let want_locked_for_click = want_locked.clone();
-        let cb = Closure::wrap(Box::new(move |_ev: web_sys::MouseEvent| {
-            if !*want_locked_for_click.borrow() {
-                return;
-            }
-            let already_locked = document_for_click
-                .pointer_lock_element()
-                .as_ref()
-                .map(|el| el == canvas_for_click.as_ref())
-                .unwrap_or(false);
-            if already_locked {
-                return;
-            }
-            canvas_for_click.request_pointer_lock();
-        }) as Box<dyn FnMut(web_sys::MouseEvent)>);
-        canvas
-            .add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("canvas click listener: {e:?}"))?;
-        cb.forget();
-    }
-
+#[cfg(feature = "measure")]
+fn install_measurement_result_handler(worker: &Worker, host_id: &str) -> Result<()> {
+    let host_id = host_id.to_owned();
+    let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
+        let data: JsValue = event.data();
+        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
+            .ok()
+            .and_then(|value| value.as_string());
+        if kind.as_deref() != Some("measurement") {
+            return;
+        }
+        let Some(result) = js_sys::Reflect::get(&data, &JsValue::from_str("result"))
+            .ok()
+            .and_then(|value| value.as_string())
+        else {
+            return;
+        };
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        let Some(host) = document.get_element_by_id(&host_id) else {
+            return;
+        };
+        let Ok(panel) = document.create_element("pre") else {
+            return;
+        };
+        panel.set_text_content(Some(&result));
+        let _ = panel.set_attribute("tabindex", "0");
+        let _ = panel.set_attribute("role", "status");
+        let _ = panel.set_attribute(
+            "style",
+            "position:fixed;inset:1rem;z-index:2147483647;margin:0;padding:1rem;overflow:auto;white-space:pre-wrap;background:#111;color:#eee;font:14px/1.45 monospace;user-select:text;-webkit-user-select:text;touch-action:auto",
+        );
+        let _ = host.append_child(&panel);
+    }) as Box<dyn FnMut(MessageEvent)>);
+    worker
+        .add_event_listener_with_callback("message", callback.as_ref().unchecked_ref())
+        .map_err(|error| anyhow!("measurement result listener: {error:?}"))?;
+    callback.forget();
     Ok(())
+}
+
+fn install_worker_failure_handler(worker: &Worker, button_id: &str) -> Result<()> {
+    let button_for_message = button_id.to_string();
+    let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
+        let data: JsValue = event.data();
+        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
+            .ok()
+            .and_then(|v| v.as_string());
+        if kind.as_deref() != Some("error") {
+            return;
+        }
+        let message = js_sys::Reflect::get(&data, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "worker error".to_owned());
+        show_worker_failure(&message, &button_for_message);
+    }) as Box<dyn FnMut(MessageEvent)>);
+    worker
+        .add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref())
+        .map_err(|e| anyhow!("worker.addEventListener('message') for error: {e:?}"))?;
+    on_message.forget();
+
+    // A panic traps the worker; the trap arrives here without the panic text.
+    let button_for_error = button_id.to_string();
+    let on_error = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let message = js_sys::Reflect::get(event.as_ref(), &JsValue::from_str("message"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| "worker stopped without an error message".to_owned());
+        show_worker_failure(&format!("worker error: {message}"), &button_for_error);
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    worker
+        .add_event_listener_with_callback("error", on_error.as_ref().unchecked_ref())
+        .map_err(|e| anyhow!("worker.addEventListener('error'): {e:?}"))?;
+    on_error.forget();
+    Ok(())
+}
+
+fn show_worker_failure(message: &str, button_id: &str) {
+    tracing::error!("loam_app::wasm: {message}");
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(text) = document.get_element_by_id("loam-page-loader-message") else {
+        return;
+    };
+    if !text.has_attribute("hidden") {
+        return;
+    }
+    text.set_text_content(Some(message));
+    let _ = text.remove_attribute("hidden");
+    if let Some(track) = document
+        .query_selector("#loam-page-loader .loam-progress-track")
+        .ok()
+        .flatten()
+    {
+        let _ = track.set_attribute("hidden", "");
+    }
+    if let Some(loader) = document.get_element_by_id("loam-page-loader") {
+        let _ = loader.remove_attribute("hidden");
+        let _ = loader.set_attribute("aria-busy", "false");
+    }
+    if let Some(overlay) = document.get_element_by_id(button_id) {
+        overlay.remove();
+    }
 }

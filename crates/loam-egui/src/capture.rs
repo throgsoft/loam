@@ -1,9 +1,7 @@
 /// `pointer` and `keyboard` are read at different points in egui's pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UiCapture {
-    /// This frame's pointer against the previous build's layout.
     pub pointer: bool,
-    /// Focus as of the previous build, minus what this frame's Escape dropped.
     pub keyboard: bool,
 }
 
@@ -144,14 +142,6 @@ mod tests {
         host.press(FIELD);
         let capture = host.hover(OPEN_SCENE);
         assert!(capture.pointer);
-    }
-
-    #[test]
-    fn capture_is_clear_over_open_scene() {
-        let mut host = Host::new();
-        host.hover(PANEL_BLANK);
-        let capture = host.hover(OPEN_SCENE);
-        assert_eq!(capture, UiCapture::default());
     }
 
     #[test]

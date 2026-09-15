@@ -1,5 +1,3 @@
-//! `cargo run --release -p loam-text --example glyph_collider_budget`.
-
 use std::time::Instant;
 
 use ab_glyph::FontRef;
@@ -7,7 +5,7 @@ use anyhow::{Context, Result};
 use glam::Vec4;
 use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
-use loam_physics::{RigidBody, World};
+use loam_physics::{BodyDef, World};
 use loam_shape::Shape;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
 
@@ -141,11 +139,13 @@ fn hull_area(letter: &GlyphSolid) -> f32 {
 fn time_word(letters: &[GlyphSolid]) -> Result<(usize, f64)> {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
-    world.gravity = Some(Vec4::new(0.0, 0.0, -9.8, 0.0));
+    world
+        .set_gravity(Some(Vec4::new(0.0, 0.0, -9.8, 0.0)))
+        .expect("valid gravity");
 
     for letter in letters {
         for (centre, hull) in letter.colliders_4d() {
-            let body = RigidBody::fixed(centre, hull, 1.0, &EuclideanR4)
+            let body = BodyDef::fixed(centre, hull, 1.0, &EuclideanR4)
                 .with_context(|| format!("invalid collider for glyph {:?}", letter.ch()))?;
             world.push_body(body);
         }
@@ -169,12 +169,12 @@ fn time_word(letters: &[GlyphSolid]) -> Result<(usize, f64)> {
 
     let dt = 1.0 / FIXED_HZ;
     for _ in 0..SETTLE_STEPS {
-        world.step(dt);
+        world.step(dt).expect("valid timestep");
     }
     let started = Instant::now();
     for _ in 0..TIMED_STEPS {
-        world.step(dt);
+        world.step(dt).expect("valid timestep");
     }
     let micros = started.elapsed().as_secs_f64() * 1.0e6 / TIMED_STEPS as f64;
-    Ok((world.bodies.iter().count(), micros))
+    Ok((world.bodies().iter().count(), micros))
 }

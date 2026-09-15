@@ -2,10 +2,11 @@ use glam::{Quat, Vec3};
 
 use loam_math::{Bivector, Bivector3, EuclideanR3, Iso3};
 
-use crate::body::RigidBody;
+use crate::body::{BodyDef, RigidBody};
 use crate::collider::{Collider, ColliderKind};
 use crate::collision::{epa, gjk_intersect, GjkResult, PosedHull, Sphere as GjkSphere};
-use crate::integrator::PhysicsSpace;
+use crate::geometry::GeometryStore;
+use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
@@ -46,6 +47,10 @@ impl PhysicsSpace for EuclideanR3 {
     type AngVel = Bivector3;
     type Inertia = f32;
 
+    fn broadphase_bound(&self) -> BroadphaseBound {
+        BroadphaseBound::Certified
+    }
+
     fn supports_collider(&self, kind: ColliderKind) -> bool {
         matches!(
             kind,
@@ -53,12 +58,24 @@ impl PhysicsSpace for EuclideanR3 {
         )
     }
 
-    fn valid_initial_state(&self, position: Vec3, velocity: Vec3, inertia: f32) -> bool {
-        position.is_finite()
-            && velocity.is_finite()
-            && inertia.is_finite()
-            && inertia >= 0.0
-            && (inertia == 0.0 || inertia.recip().is_finite())
+    fn valid_vector(&self, vector: Vec3) -> bool {
+        vector.is_finite()
+    }
+
+    fn valid_orientation(&self, orientation: Iso3) -> bool {
+        orientation.rotation.is_finite()
+            && (orientation.rotation.length_squared() - 1.0).abs() <= 1e-4
+            && orientation.translation.is_finite()
+    }
+
+    fn valid_angular_velocity(&self, angular_velocity: Bivector3) -> bool {
+        angular_velocity.xy.is_finite()
+            && angular_velocity.yz.is_finite()
+            && angular_velocity.zx.is_finite()
+    }
+
+    fn valid_inertia(&self, inertia: f32) -> bool {
+        inertia.is_finite() && inertia >= 0.0 && (inertia == 0.0 || inertia.recip().is_finite())
     }
 
     fn integrate_orientation(&self, iso: Iso3, omega: Bivector3, dt: f32) -> Iso3 {
@@ -133,12 +150,13 @@ impl PhysicsSpace for EuclideanR3 {
 fn sphere_sphere_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
+    geometry: &GeometryStore,
     space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::Sphere { radius: ra, .. } = *a.collider() else {
+    let Some(&Collider::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::Sphere { radius: rb, .. } = *b.collider() else {
+    let Some(&Collider::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -167,14 +185,17 @@ fn sphere_sphere_r3(
 fn sphere_halfspace_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
+    geometry: &GeometryStore,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::Sphere { radius, .. } = *a.collider() else {
+    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::HalfSpace { normal, offset } = *b.collider() else {
+    let Some(&Collider::HalfSpace { normal, offset }) = geometry.get(b.collider()) else {
         return None;
     };
+    let normal = b.orientation.rotation * normal;
+    let offset = offset + normal.dot(b.position);
     let signed = a.position.dot(normal) - offset;
     let penetration = radius - signed;
     if penetration <= 0.0 {
@@ -225,12 +246,13 @@ fn polytope_bounding_radius(local_vertices: &[Vec3]) -> f32 {
 fn polytope_polytope_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
+    geometry: &GeometryStore,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::ConvexPolytope3D { vertices: va_local } = a.collider() else {
+    let Some(Collider::ConvexPolytope3D { vertices: va_local }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::ConvexPolytope3D { vertices: vb_local } = b.collider() else {
+    let Some(Collider::ConvexPolytope3D { vertices: vb_local }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -265,12 +287,13 @@ fn polytope_polytope_r3(
 fn sphere_polytope_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
+    geometry: &GeometryStore,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::Sphere { radius, .. } = *a.collider() else {
+    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::ConvexPolytope3D { vertices: vb_local } = b.collider() else {
+    let Some(Collider::ConvexPolytope3D { vertices: vb_local }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -303,18 +326,21 @@ fn sphere_polytope_r3(
 fn polytope_halfspace_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
+    geometry: &GeometryStore,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Collider::ConvexPolytope3D { vertices: va_local } = a.collider() else {
+    let Some(Collider::ConvexPolytope3D { vertices: va_local }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::HalfSpace {
+    let Some(&Collider::HalfSpace {
         normal: plane_n,
         offset,
-    } = *b.collider()
+    }) = geometry.get(b.collider())
     else {
         return None;
     };
+    let plane_n = b.orientation.rotation * plane_n;
+    let offset = offset + plane_n.dot(b.position);
 
     let mut deepest = Vec3::ZERO;
     let mut deepest_depth = 0.0_f32;
@@ -373,8 +399,8 @@ pub fn sphere_body_r3(
     velocity: Vec3,
     radius: f32,
     mass: f32,
-) -> Option<RigidBody<EuclideanR3>> {
-    RigidBody::new(
+) -> Option<BodyDef<EuclideanR3>> {
+    BodyDef::new(
         position,
         velocity,
         Collider::sphere_at_origin(radius),
@@ -385,9 +411,9 @@ pub fn sphere_body_r3(
 }
 
 /// `normal` points to the side the world is on; the plane is `dot(p, normal) = offset`.
-pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> Option<RigidBody<EuclideanR3>> {
+pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> Option<BodyDef<EuclideanR3>> {
     let n = normal.try_normalize()?;
-    RigidBody::fixed(
+    BodyDef::fixed(
         Vec3::ZERO,
         Collider::HalfSpace { normal: n, offset },
         1.0,
@@ -423,8 +449,8 @@ pub fn box_body(
     velocity: Vec3,
     half_extents: Vec3,
     mass: f32,
-) -> Option<RigidBody<EuclideanR3>> {
-    RigidBody::new(
+) -> Option<BodyDef<EuclideanR3>> {
+    BodyDef::new(
         position,
         velocity,
         Collider::ConvexPolytope3D {
@@ -442,13 +468,13 @@ pub fn polytope_body(
     velocity: Vec3,
     vertices: Vec<Vec3>,
     mass: f32,
-) -> Option<RigidBody<EuclideanR3>> {
+) -> Option<BodyDef<EuclideanR3>> {
     let bounding_r_sq = vertices
         .iter()
         .map(|v| v.length_squared())
         .fold(0.0, f32::max);
     let inertia = (2.0 / 5.0) * mass * bounding_r_sq;
-    RigidBody::new(
+    BodyDef::new(
         position,
         velocity,
         Collider::ConvexPolytope3D { vertices },
@@ -541,6 +567,7 @@ pub fn dodecahedron_vertices(r: f32) -> Vec<Vec3> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::world::World;
 
     fn assert_close(a: f32, b: f32, tol: f32) {
@@ -575,7 +602,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 120.0);
+            world.step(1.0 / 120.0).unwrap();
         }
         let a = &world.bodies[0];
         let b = &world.bodies[1];
@@ -602,7 +629,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 240.0);
+            world.step(1.0 / 240.0).unwrap();
         }
 
         let target_omega = world.bodies[target_id].angular_velocity.magnitude();

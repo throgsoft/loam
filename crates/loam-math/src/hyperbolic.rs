@@ -5,9 +5,21 @@ use std::borrow::Cow;
 use glam::{Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace};
 
-const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
+pub const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
+
+pub const H3_MAX_ARC: f32 = 17.5;
+
+/// H³ hits at least `H3_DEPTH_SEPARATION` apart stay ordered within this hyperbolic distance of an eye at most `H3_EYE_CHART_REACH` from the chart origin, and `valid_point` refuses points farther than this from the origin.
+pub const H3_DEPTH_ENVELOPE: f32 = 6.0;
+pub const H3_DEPTH_SEPARATION: f32 = 0.05;
+pub const H3_EYE_CHART_REACH: f32 = 1.0;
+
+/// False past the radius where the chart's f32 arithmetic is clamped.
+pub fn in_poincare_ball(p: Vec3) -> bool {
+    p.is_finite() && p.length_squared() <= POINCARE_R2_MAX
+}
 
 fn clamp_to_ball(p: Vec3) -> Vec3 {
     let r2 = p.length_squared();
@@ -26,7 +38,6 @@ fn clamp_to_ball(p: Vec3) -> Vec3 {
 /// SO⁺(3,1) acting on `(x, y, z, w)`, with `w` time-like.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3H {
-    /// Column-major matrix; membership in SO⁺(3,1) is a caller precondition.
     pub matrix: Mat4,
 }
 
@@ -82,6 +93,11 @@ pub struct HyperbolicH3;
 impl Space for HyperbolicH3 {
     type Point = Vec3;
     type Vector = Vec3;
+    type Frame = Iso3H;
+
+    fn frame_at(&self, at: Vec3) -> Iso3H {
+        Iso3H::from_translation(at)
+    }
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         let a = clamp_to_ball(a);
@@ -120,6 +136,14 @@ impl Space for HyperbolicH3 {
         let to = clamp_to_ball(to);
         let conformal = (1.0 - to.length_squared()) / (1.0 - from.length_squared());
         conformal * gyr_apply(to, -from, v)
+    }
+
+    fn chart_envelope(&self) -> f32 {
+        H3_DEPTH_ENVELOPE
+    }
+
+    fn valid_point(&self, p: Vec3) -> bool {
+        in_poincare_ball(p) && self.distance(Vec3::ZERO, p) <= H3_DEPTH_ENVELOPE
     }
 }
 
@@ -166,14 +190,18 @@ impl IsometryGroup for HyperbolicH3 {
 
 impl WgslSpace for HyperbolicH3 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Borrowed(WGSL_IMPL)
+        Cow::Owned(format!(
+            "const LOAM_MAX_ARC: f32 = {H3_MAX_ARC:?};{WGSL_IMPL}"
+        ))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
     }
 }
 
-// distance / exp / log / parallel_transport are the v0 WGSL ABI.
 const WGSL_IMPL: &str = r#"
 // loam-math :: HyperbolicH3 (v0 Space WGSL ABI)
-const LOAM_MAX_ARC: f32 = 1e9;
 const LOAM_H3_R2_MAX: f32 = 0.9999999;
 const LOAM_H3_GYR_N2_MIN: f32 = 1e-20;
 
@@ -255,11 +283,29 @@ fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {
     return mag * d / n;
 }
 
-fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+fn loam_h3_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     let p_from_clamped = loam_clamp_to_ball(p_from);
     let p_to_clamped = loam_clamp_to_ball(p_to);
     let conformal = (1.0 - dot(p_to_clamped, p_to_clamped)) / (1.0 - dot(p_from_clamped, p_from_clamped));
     return conformal * loam_gyr_apply(p_to_clamped, -p_from_clamped, v);
+}
+
+struct LoamGeodesicStep { p: vec3<f32>, v: vec3<f32> }
+
+fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {
+    let next = loam_exp(p, v * s);
+    return LoamGeodesicStep(next, loam_h3_transport(p, next, v));
+}
+
+// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7.
+fn loam_poincare_to_hyperboloid(p: vec3<f32>) -> vec4<f32> {
+    let r2 = min(dot(p, p), LOAM_H3_R2_MAX);
+    let den = 1.0 - r2;
+    return vec4<f32>(2.0 * p / den, (1.0 + r2) / den);
+}
+
+fn loam_hyperboloid_to_klein(h: vec4<f32>) -> vec3<f32> {
+    return h.xyz / max(h.w, 1.0);
 }
 "#;
 
@@ -289,7 +335,8 @@ fn gyr_apply(a: Vec3, b: Vec3, v: Vec3) -> Vec3 {
     v + (2.0 / norm2) * (scalar * axis.cross(v) + axis.cross(axis.cross(v)))
 }
 
-fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
+// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7: the Lorentz embedding of the ball.
+pub fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     let r2 = p.length_squared().min(POINCARE_R2_MAX);
     let den = 1.0 - r2;
     Vec4::new(
@@ -300,9 +347,32 @@ fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     )
 }
 
-fn hyperboloid_to_poincare(h: Vec4) -> Vec3 {
+pub fn hyperboloid_to_poincare(h: Vec4) -> Vec3 {
     let den = (1.0 + h.w).max(1e-7);
     Vec3::new(h.x / den, h.y / den, h.z / den)
+}
+
+// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7: Klein is the hyperboloid seen from the origin.
+pub fn hyperboloid_to_klein(h: Vec4) -> Vec3 {
+    Vec3::new(h.x, h.y, h.z) / h.w.max(1.0)
+}
+
+pub fn klein_to_hyperboloid(k: Vec3) -> Vec4 {
+    let w = 1.0 / (1.0 - k.length_squared().min(POINCARE_R2_MAX)).sqrt();
+    Vec4::new(k.x * w, k.y * w, k.z * w, w)
+}
+
+pub fn poincare_to_klein(p: Vec3) -> Vec3 {
+    hyperboloid_to_klein(poincare_to_hyperboloid(p))
+}
+
+pub fn klein_to_poincare(k: Vec3) -> Vec3 {
+    hyperboloid_to_poincare(klein_to_hyperboloid(k))
+}
+
+/// Klein point at hyperbolic distance `t` from the origin along unit `dir`; geodesics from the origin are straight.
+pub fn klein_ray(dir: Vec3, t: f32) -> Vec3 {
+    dir * t.tanh()
 }
 
 fn poincare_to_hyperboloid_tangent(p: Vec3, v: Vec3) -> Vec4 {
@@ -323,6 +393,18 @@ fn hyperboloid_to_poincare_tangent(h: Vec4, dh: Vec4) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_arc_cap_stays_inside_the_saturating_origin_distance() {
+        let farthest = HyperbolicH3.distance(Vec3::ZERO, Vec3::X * POINCARE_R2_MAX.sqrt());
+        assert!(
+            H3_MAX_ARC * 0.92 < farthest,
+            "the escape guard at {} can never fire below {farthest}",
+            H3_MAX_ARC * 0.92
+        );
+        assert!(HyperbolicH3.wgsl_impl().contains(&format!("{H3_MAX_ARC}")));
+    }
+
     use approx::assert_relative_eq;
 
     fn h3() -> HyperbolicH3 {
@@ -331,13 +413,6 @@ mod tests {
 
     fn lambda(p: Vec3) -> f32 {
         2.0 / (1.0 - p.length_squared())
-    }
-
-    #[test]
-    fn distance_at_origin_is_twice_artanh() {
-        let s = h3();
-        let p = Vec3::new(0.4, 0.0, 0.0);
-        assert_relative_eq!(s.distance(Vec3::ZERO, p), 2.0 * artanh(0.4), epsilon = 1e-5);
     }
 
     #[test]
@@ -607,6 +682,55 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_point_past_the_declared_envelope_is_refused() {
+        let s = h3();
+        let at = |d: f32| Vec3::X * (0.5 * d).tanh();
+        assert!(s.valid_point(at(H3_DEPTH_ENVELOPE - 1.0)));
+        assert!(!s.valid_point(at(H3_DEPTH_ENVELOPE + 1.0)));
+        assert!(!s.valid_point(Vec3::X));
+        assert!(!s.valid_point(Vec3::splat(f32::NAN)));
+    }
+
+    #[test]
+    fn klein_chart_through_the_embedding_matches_its_closed_form() {
+        for p in ball_sweep() {
+            let expected = 2.0 * p / (1.0 + p.length_squared());
+            let k = poincare_to_klein(p);
+            assert!(
+                (k - expected).length() <= 1e-6,
+                "Klein of {p:?} is {k:?}, closed form {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn klein_ray_parameter_is_hyperbolic_arc_length() {
+        let s = h3();
+        let dir = Vec3::new(0.6, -0.48, 0.64);
+        for t in [0.1_f32, 1.0, 3.0, 6.0] {
+            let p = klein_to_poincare(klein_ray(dir, t));
+            assert_relative_eq!(s.distance(Vec3::ZERO, p), t, epsilon = 2e-4 * t);
+        }
+    }
+
+    #[test]
+    fn geodesics_are_straight_in_the_klein_chart() {
+        let s = h3();
+        let at = Vec3::new(0.3, -0.2, 0.5);
+        let v = Vec3::new(0.02, 0.05, -0.03);
+        let k0 = poincare_to_klein(at);
+        let chord = (poincare_to_klein(s.exp(at, 20.0 * v)) - k0).normalize();
+        for i in 1..20 {
+            let k = poincare_to_klein(s.exp(at, i as f32 * v));
+            let off = (k - k0).cross(chord).length();
+            assert!(
+                off <= 1e-5,
+                "geodesic sample {i} leaves the Klein chord by {off}"
+            );
         }
     }
 

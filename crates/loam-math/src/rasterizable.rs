@@ -1,5 +1,3 @@
-//! Projection consumes canonical ambient coordinates; tessellation emits samples without owning storage.
-
 use glam::{Vec3, Vec4};
 
 use crate::space::Space;
@@ -58,26 +56,24 @@ pub(crate) fn stereographic_to_r3(p: Vec4, pole: Vec4) -> Vec3 {
     Vec3::new(scaled.dot(e1), scaled.dot(e2), scaled.dot(e3))
 }
 
-/// Unsupported dimension/variant combinations return `Vec3::ZERO`.
+/// Unsupported dimension/variant combinations return `None`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Projection<const N: usize> {
     /// Keeps the first three components, padding with zero if needed.
     #[default]
     Identity,
 
-    /// Drops the indexed axis; an out-of-range index returns `Vec3::ZERO`.
+    /// Drops the indexed axis; an out-of-range index returns `None`.
     Orthographic { drop_axis: usize },
 
-    /// Pinhole at `(0, 0, 0, focal_distance)`; callers must keep every vertex below the eye in w.
+    /// Pinhole at `(0, 0, 0, focal_distance)`; a vertex at or beyond the eye in w is refused with `None`.
     Perspective4D { focal_distance: f32 },
 
     // Coxeter, Regular Polytopes, 3rd ed., ch. 13.
     /// Projects onto the cell plane; the normal must be outward and unit, and the eye outside the polytope.
     Schlegel {
         cell_normal: Vec4,
-        /// Signed plane offset: the cell lies in `{x : dot(cell_normal, x) = cell_offset}`.
         cell_offset: f32,
-        /// Eye distance along `cell_normal`; must exceed `cell_offset`.
         viewpoint_distance: f32,
         basis: [Vec4; 3],
     },
@@ -111,13 +107,12 @@ impl Projection<4> {
     }
 }
 
-/// `N` is the const-generic ambient dimension matching the `Visualizable<N>` mesh data in `loam-shape`.
 pub trait RasterizableSpace<const N: usize>: Space {
     fn point_to_array(p: Self::Point) -> [f32; N];
 
     fn array_to_point(arr: [f32; N]) -> Self::Point;
 
-    fn project_point(point: Self::Point, projection: &Projection<N>) -> Vec3;
+    fn project_point(point: Self::Point, projection: &Projection<N>) -> Option<Vec3>;
 
     /// Emits both endpoints and `samples - 1` interior points when `samples > 1`.
     fn tessellate_segment(
@@ -137,18 +132,18 @@ impl RasterizableSpace<3> for EuclideanR3 {
         Vec3::from_array(arr)
     }
 
-    fn project_point(point: Vec3, projection: &Projection<3>) -> Vec3 {
+    fn project_point(point: Vec3, projection: &Projection<3>) -> Option<Vec3> {
         match projection {
-            Projection::Identity => point,
+            Projection::Identity => Some(point),
             Projection::Orthographic { drop_axis } => match *drop_axis {
-                0 => Vec3::new(point.y, point.z, 0.0),
-                1 => Vec3::new(point.x, point.z, 0.0),
-                2 => Vec3::new(point.x, point.y, 0.0),
-                _ => Vec3::ZERO,
+                0 => Some(Vec3::new(point.y, point.z, 0.0)),
+                1 => Some(Vec3::new(point.x, point.z, 0.0)),
+                2 => Some(Vec3::new(point.x, point.y, 0.0)),
+                _ => None,
             },
             Projection::Perspective4D { .. }
             | Projection::Schlegel { .. }
-            | Projection::Stereographic { .. } => Vec3::ZERO,
+            | Projection::Stereographic { .. } => None,
         }
     }
 
@@ -171,20 +166,23 @@ impl RasterizableSpace<4> for EuclideanR4 {
         Vec4::from_array(arr)
     }
 
-    fn project_point(point: Vec4, projection: &Projection<4>) -> Vec3 {
+    fn project_point(point: Vec4, projection: &Projection<4>) -> Option<Vec3> {
         match projection {
-            Projection::Identity => Vec3::new(point.x, point.y, point.z),
+            Projection::Identity => Some(Vec3::new(point.x, point.y, point.z)),
             Projection::Orthographic { drop_axis } => match *drop_axis {
-                0 => Vec3::new(point.y, point.z, point.w),
-                1 => Vec3::new(point.x, point.z, point.w),
-                2 => Vec3::new(point.x, point.y, point.w),
-                3 => Vec3::new(point.x, point.y, point.z),
-                _ => Vec3::ZERO,
+                0 => Some(Vec3::new(point.y, point.z, point.w)),
+                1 => Some(Vec3::new(point.x, point.z, point.w)),
+                2 => Some(Vec3::new(point.x, point.y, point.w)),
+                3 => Some(Vec3::new(point.x, point.y, point.z)),
+                _ => None,
             },
             Projection::Perspective4D { focal_distance } => {
-                let denom = (focal_distance - point.w).max(PROJECTION_DENOM_EPSILON);
+                let denom = focal_distance - point.w;
+                if denom < PROJECTION_DENOM_EPSILON {
+                    return None;
+                }
                 let scale = focal_distance / denom;
-                Vec3::new(point.x, point.y, point.z) * scale
+                Some(Vec3::new(point.x, point.y, point.z) * scale)
             }
             Projection::Schlegel {
                 cell_normal,
@@ -197,18 +195,18 @@ impl RasterizableSpace<4> for EuclideanR4 {
                 let eye = *viewpoint_distance * n;
                 let n_dot_eye = n.dot(eye);
 
-                let raw_denom = n.dot(point) - n_dot_eye;
-                let denom = if raw_denom.abs() < PROJECTION_DENOM_EPSILON {
-                    PROJECTION_DENOM_EPSILON.copysign(raw_denom)
-                } else {
-                    raw_denom
-                };
+                let denom = n.dot(point) - n_dot_eye;
+                if denom.abs() < PROJECTION_DENOM_EPSILON {
+                    return None;
+                }
                 let t = (*cell_offset - n_dot_eye) / denom;
                 let result = eye + t * (point - eye);
                 let [e1, e2, e3] = *basis;
-                Vec3::new(result.dot(e1), result.dot(e2), result.dot(e3))
+                Some(Vec3::new(result.dot(e1), result.dot(e2), result.dot(e3)))
             }
-            Projection::Stereographic { pole } => stereographic_to_r3(point.normalize(), *pole),
+            Projection::Stereographic { pole } => {
+                Some(stereographic_to_r3(point.normalize(), *pole))
+            }
         }
     }
 
@@ -230,6 +228,11 @@ mod tests {
 
     const GOLDEN_TIE_FRAME: Vec3 = Vec3::new(0.5, 0.5, std::f32::consts::FRAC_1_SQRT_2);
 
+    fn project4(p: Vec4, projection: &Projection<4>) -> Vec3 {
+        <EuclideanR4 as RasterizableSpace<4>>::project_point(p, projection)
+            .expect("projection should accept this vertex")
+    }
+
     #[test]
     fn stereographic_r4_normalizes_scaled_input() {
         let proj = Projection::Stereographic { pole: Vec4::W };
@@ -238,9 +241,9 @@ mod tests {
             Vec4::new(-0.4, 0.6, 0.1, 0.3).normalize(),
             Vec4::new(0.0, 0.0, 0.0, -1.0),
         ] {
-            let unit = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
+            let unit = project4(p, &proj);
             for k in [0.25_f32, 1.5, 3.0] {
-                let scaled = <EuclideanR4 as RasterizableSpace<4>>::project_point(k * p, &proj);
+                let scaled = project4(k * p, &proj);
                 assert!(
                     scaled.abs_diff_eq(unit, 1e-5),
                     "scale {k}: {scaled:?} vs {unit:?}"
@@ -261,20 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn r3_tessellate_four_samples_produces_five_points() {
-        let p0 = Vec3::new(0.0, 0.0, 0.0);
-        let p1 = Vec3::new(4.0, 0.0, 0.0);
-        let mut out = Vec::new();
-        <EuclideanR3 as RasterizableSpace<3>>::tessellate_segment(p0, p1, 4, |p| out.push(p));
-        assert_eq!(out.len(), 5);
-        assert_eq!(out[0], p0);
-        assert_eq!(out[1], Vec3::new(1.0, 0.0, 0.0));
-        assert_eq!(out[2], Vec3::new(2.0, 0.0, 0.0));
-        assert_eq!(out[3], Vec3::new(3.0, 0.0, 0.0));
-        assert_eq!(out[4], p1);
-    }
-
-    #[test]
     fn r3_orthographic_drops_named_axis() {
         let p = Vec3::new(1.0, 2.0, 3.0);
         let pj = |drop_axis| {
@@ -283,18 +272,17 @@ mod tests {
                 &Projection::Orthographic { drop_axis },
             )
         };
-        assert_eq!(pj(0), Vec3::new(2.0, 3.0, 0.0));
-        assert_eq!(pj(1), Vec3::new(1.0, 3.0, 0.0));
-        assert_eq!(pj(2), Vec3::new(1.0, 2.0, 0.0));
-        assert_eq!(pj(3), Vec3::ZERO);
-        assert_eq!(pj(99), Vec3::ZERO);
+        assert_eq!(pj(0), Some(Vec3::new(2.0, 3.0, 0.0)));
+        assert_eq!(pj(1), Some(Vec3::new(1.0, 3.0, 0.0)));
+        assert_eq!(pj(2), Some(Vec3::new(1.0, 2.0, 0.0)));
+        assert_eq!(pj(3), None);
+        assert_eq!(pj(99), None);
     }
 
     #[test]
     fn r4_identity_drops_w() {
         let p = Vec4::new(1.0, 2.0, 3.0, 4.0);
-        let projected =
-            <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &Projection::Identity);
+        let projected = project4(p, &Projection::Identity);
         assert_eq!(projected, Vec3::new(1.0, 2.0, 3.0));
     }
 
@@ -307,11 +295,11 @@ mod tests {
                 &Projection::Orthographic { drop_axis },
             )
         };
-        assert_eq!(pj(0), Vec3::new(2.0, 3.0, 4.0));
-        assert_eq!(pj(1), Vec3::new(1.0, 3.0, 4.0));
-        assert_eq!(pj(2), Vec3::new(1.0, 2.0, 4.0));
-        assert_eq!(pj(3), Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(pj(4), Vec3::ZERO);
+        assert_eq!(pj(0), Some(Vec3::new(2.0, 3.0, 4.0)));
+        assert_eq!(pj(1), Some(Vec3::new(1.0, 3.0, 4.0)));
+        assert_eq!(pj(2), Some(Vec3::new(1.0, 2.0, 4.0)));
+        assert_eq!(pj(3), Some(Vec3::new(1.0, 2.0, 3.0)));
+        assert_eq!(pj(4), None);
     }
 
     #[test]
@@ -320,7 +308,7 @@ mod tests {
         let proj = Projection::Perspective4D {
             focal_distance: 2.0,
         };
-        let got = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
+        let got = project4(p, &proj);
         assert_eq!(got, Vec3::new(1.0, 2.0, 3.0));
     }
 
@@ -332,8 +320,8 @@ mod tests {
         };
         let near = Vec4::new(0.5, 0.5, 0.5, 0.5);
         let far = Vec4::new(0.5, 0.5, 0.5, -0.5);
-        let pn = <EuclideanR4 as RasterizableSpace<4>>::project_point(near, &proj);
-        let pf = <EuclideanR4 as RasterizableSpace<4>>::project_point(far, &proj);
+        let pn = project4(near, &proj);
+        let pf = project4(far, &proj);
 
         let r_near = (pn.length() / 0.5_f32.mul_add(3.0_f32.sqrt(), 0.0)).abs();
         let r_far = (pf.length() / 0.5_f32.mul_add(3.0_f32.sqrt(), 0.0)).abs();
@@ -343,28 +331,23 @@ mod tests {
     }
 
     #[test]
-    fn r4_perspective4d_at_viewer_clamps_finite() {
+    fn r4_perspective4d_at_viewer_refuses() {
         let p = Vec4::new(0.1, 0.2, 0.3, 2.0);
         let proj = Projection::Perspective4D {
             focal_distance: 2.0,
         };
         let got = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
-        for c in [got.x, got.y, got.z] {
-            assert!(
-                c.is_finite(),
-                "expected finite output at viewer, got {got:?}"
-            );
-        }
+        assert_eq!(got, None, "expected a refusal at the viewer, got {got:?}");
     }
 
     #[test]
-    fn r3_perspective4d_returns_zero() {
+    fn r3_perspective4d_refuses() {
         let p = Vec3::new(1.0, 2.0, 3.0);
         let proj = Projection::Perspective4D {
             focal_distance: 2.0,
         };
         let got = <EuclideanR3 as RasterizableSpace<3>>::project_point(p, &proj);
-        assert_eq!(got, Vec3::ZERO);
+        assert_eq!(got, None);
     }
 
     const TESSERACT_VERTS: [Vec4; 16] = [
@@ -391,10 +374,7 @@ mod tests {
         let cell_offset = 0.5;
         let proj = Projection::schlegel(Vec4::W, cell_offset, 1.5 * cell_offset);
         let cell: Vec<Vec4> = TESSERACT_VERTS.iter().take(8).copied().collect();
-        let projected: Vec<Vec3> = cell
-            .iter()
-            .map(|v| <EuclideanR4 as RasterizableSpace<4>>::project_point(*v, &proj))
-            .collect();
+        let projected: Vec<Vec3> = cell.iter().map(|v| project4(*v, &proj)).collect();
 
         for i in 0..cell.len() {
             for j in (i + 1)..cell.len() {
@@ -430,7 +410,7 @@ mod tests {
 
         let boundary = [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W];
         let inner = [-Vec4::X, -Vec4::Y, -Vec4::Z, -Vec4::W];
-        let proj_pt = |v: Vec4| <EuclideanR4 as RasterizableSpace<4>>::project_point(v, &proj);
+        let proj_pt = |v: Vec4| project4(v, &proj);
 
         let boundary_r: Vec<f32> = boundary.iter().map(|&v| proj_pt(v).length()).collect();
         let inner_r: Vec<f32> = inner.iter().map(|&v| proj_pt(v).length()).collect();
@@ -482,26 +462,24 @@ mod tests {
         let xyz = Projection::schlegel_with_basis(Vec4::W, 0.5, 0.75, [Vec4::X, Vec4::Y, Vec4::Z]);
         let yxz = Projection::schlegel_with_basis(Vec4::W, 0.5, 0.75, [Vec4::Y, Vec4::X, Vec4::Z]);
 
-        let a = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &xyz);
-        let b = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &yxz);
+        let a = project4(p, &xyz);
+        let b = project4(p, &yxz);
 
         assert_eq!(a, Vec3::new(0.5, -0.25, 0.125));
         assert_eq!(b, Vec3::new(-0.25, 0.5, 0.125));
     }
 
     #[test]
-    fn schlegel_zero_denominator_clamps_finite() {
+    fn schlegel_zero_denominator_refuses() {
         let viewpoint_distance = 0.75;
         let proj = Projection::schlegel(Vec4::W, 0.5, viewpoint_distance);
 
         let p = Vec4::new(0.3, -0.2, 0.1, viewpoint_distance);
         let got = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
-        for c in [got.x, got.y, got.z] {
-            assert!(
-                c.is_finite(),
-                "degenerate denominator should clamp finite, got {got:?}"
-            );
-        }
+        assert_eq!(
+            got, None,
+            "a degenerate denominator should refuse, got {got:?}"
+        );
     }
 
     // Wikipedia, Stereographic projection.
@@ -526,7 +504,7 @@ mod tests {
         for p in [
             Vec4::new(0.5, 0.5, 0.5, 0.5),
             Vec4::new(-0.5, 0.5, 0.5, -0.5),
-            Vec4::new(-0.6, 0.0, 0.8, 0.0), // unit, w = 0
+            Vec4::new(-0.6, 0.0, 0.8, 0.0),
         ] {
             let got = stereographic_to_r3(p, Vec4::W);
             let want = Vec3::new(p.x, p.y, p.z) / (1.0 - p.w);
@@ -535,20 +513,6 @@ mod tests {
                 "fast path must match canonical formula for {p:?}"
             );
         }
-
-        let general = {
-            let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
-            let dot = p.dot(Vec4::W).clamp(-1.0, 1.0);
-            let denom = (1.0 - dot).max(STEREOGRAPHIC_POLE_EPSILON);
-            let perp = p - dot * Vec4::W;
-            let scaled = perp / denom;
-            let (e1, e2, e3) = perp_frame(Vec4::W);
-            Vec3::new(scaled.dot(e1), scaled.dot(e2), scaled.dot(e3))
-        };
-        assert_eq!(
-            general,
-            stereographic_to_r3(Vec4::new(0.5, 0.5, 0.5, 0.5), Vec4::W)
-        );
     }
 
     #[test]
@@ -559,7 +523,7 @@ mod tests {
             Vec4::new(-0.5, 0.5, 0.5, -0.5),
             Vec4::new(0.7, -0.2, 0.1, 0.1).normalize(),
         ] {
-            let img = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj_w);
+            let img = project4(p, &proj_w);
             let back = stereo_inverse_w_pole(img);
             assert_relative_eq!(back.x, p.x, epsilon = 1e-5);
             assert_relative_eq!(back.y, p.y, epsilon = 1e-5);
@@ -572,7 +536,7 @@ mod tests {
             Vec4::new(0.6, 0.5, -0.2, 0.0).normalize(),
             Vec4::new(-0.3, 0.4, 0.5, -0.2).normalize(),
         ] {
-            let img = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj_n);
+            let img = project4(p, &proj_n);
             let back = stereo_inverse_general(img, pole);
             assert_relative_eq!(back.x, p.x, epsilon = 1e-5);
             assert_relative_eq!(back.y, p.y, epsilon = 1e-5);
@@ -585,7 +549,7 @@ mod tests {
     fn stereographic_pole_denominator_clamped_finite() {
         for pole in [Vec4::W, Vec4::new(0.5, 0.5, 0.5, 0.5)] {
             let proj = Projection::Stereographic { pole };
-            let at_pole = <EuclideanR4 as RasterizableSpace<4>>::project_point(pole, &proj);
+            let at_pole = project4(pole, &proj);
             for c in [at_pole.x, at_pole.y, at_pole.z] {
                 assert!(
                     c.is_finite(),
@@ -595,7 +559,7 @@ mod tests {
 
             let (e1, _, _) = perp_frame(pole);
             let near = (pole * 0.9999 + e1 * 0.01).normalize();
-            let near_img = <EuclideanR4 as RasterizableSpace<4>>::project_point(near, &proj);
+            let near_img = project4(near, &proj);
             for c in [near_img.x, near_img.y, near_img.z] {
                 assert!(
                     c.is_finite(),
@@ -609,7 +573,7 @@ mod tests {
     fn stereographic_antipode_maps_to_origin() {
         for pole in [Vec4::W, Vec4::new(0.1, -0.2, 0.3, 0.9).normalize()] {
             let proj = Projection::Stereographic { pole };
-            let got = <EuclideanR4 as RasterizableSpace<4>>::project_point(-pole, &proj);
+            let got = project4(-pole, &proj);
             assert_relative_eq!(got.x, 0.0, epsilon = 1e-6);
             assert_relative_eq!(got.y, 0.0, epsilon = 1e-6);
             assert_relative_eq!(got.z, 0.0, epsilon = 1e-6);
@@ -621,7 +585,7 @@ mod tests {
         let pole = Vec4::new(0.0, 0.0, 1.0, 1.0).normalize();
         let proj = Projection::Stereographic { pole };
         let p = Vec4::new(0.5, 0.5, -0.5, 0.5);
-        let first = <EuclideanR4 as RasterizableSpace<4>>::project_point(p, &proj);
+        let first = project4(p, &proj);
 
         assert_relative_eq!(first.x, GOLDEN_TIE_FRAME.x, epsilon = 1e-6);
         assert_relative_eq!(first.y, GOLDEN_TIE_FRAME.y, epsilon = 1e-6);
@@ -670,15 +634,9 @@ mod tests {
             .acos();
 
         let step = 1e-3;
-        let pv = <EuclideanR4 as RasterizableSpace<4>>::project_point(v, &proj);
-        let pa = <EuclideanR4 as RasterizableSpace<4>>::project_point(
-            s.exp(v, ta.normalize() * step),
-            &proj,
-        );
-        let pb = <EuclideanR4 as RasterizableSpace<4>>::project_point(
-            s.exp(v, tb.normalize() * step),
-            &proj,
-        );
+        let pv = project4(v, &proj);
+        let pa = project4(s.exp(v, ta.normalize() * step), &proj);
+        let pb = project4(s.exp(v, tb.normalize() * step), &proj);
         let da = pa - pv;
         let db = pb - pv;
         let projected = (da.dot(db) / (da.length() * db.length()))

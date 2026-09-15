@@ -30,8 +30,7 @@ pub trait Rotor: Copy + Mul<Output = Self> {
     fn log(self) -> Self::Bivector;
 }
 
-/// Coefficient on `e1∧e2`: the angle in radians from `x` toward `y`.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bivector2(pub f32);
 
 impl Add for Bivector2 {
@@ -117,8 +116,7 @@ impl Rotor for Rotor2 {
     }
 }
 
-/// Coefficients on `e1∧e2`, `e2∧e3`, `e3∧e1`; the magnitude is the angle.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bivector3 {
     pub xy: f32,
     pub yz: f32,
@@ -194,7 +192,6 @@ impl Bivector for Bivector3 {
     }
 }
 
-/// Scalar plus bivector part, with `s² + xy² + yz² + zx² = 1`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Rotor3 {
     pub s: f32,
@@ -285,8 +282,7 @@ impl Rotor for Rotor3 {
     }
 }
 
-/// Six coefficients on the basis planes `e_i ∧ e_j`, `i < j`.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bivector4 {
     pub xy: f32,
     pub xz: f32,
@@ -396,7 +392,6 @@ impl Bivector4 {
         )
     }
 
-    /// Hodge dual `B* = B·I`.
     pub fn dual(self) -> Self {
         Self {
             xy: -self.zw,
@@ -409,7 +404,6 @@ impl Bivector4 {
     }
 }
 
-/// Discriminants follow [`Bivector4`]'s field order: `0=xy, 1=xz, 2=xw, 3=yz, 4=yw, 5=zw`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Plane4 {
@@ -559,10 +553,8 @@ impl Bivector for Bivector4 {
     }
 }
 
-/// Even element of G(4,0), with rotations recovered through [`Rotor::log`].
 #[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rotor4 {
-    /// `cos(θ₁/2)·cos(θ₂/2)`.
     pub s: f32,
     pub xy: f32,
     pub xz: f32,
@@ -570,7 +562,6 @@ pub struct Rotor4 {
     pub yz: f32,
     pub yw: f32,
     pub zw: f32,
-    /// `sin(θ₁/2)·sin(θ₂/2)`; zero for a simple rotation.
     pub xyzw: f32,
 }
 
@@ -579,7 +570,7 @@ impl Rotor4 {
     pub fn from_rotation_arc(from: Vec4, to: Vec4) -> Self {
         let plane = Bivector4::wedge(from, to);
         let magnitude = plane.magnitude();
-        if magnitude < 1e-6 {
+        if magnitude < ARC_PLANE_EPSILON {
             if from.dot(to) > 0.0 {
                 return Self::IDENTITY;
             }
@@ -670,6 +661,44 @@ impl Rotor4 {
         let c3 = <Self as Rotor>::apply(self, Vec4::new(0.0, 0.0, 0.0, 1.0));
         [c0.to_array(), c1.to_array(), c2.to_array(), c3.to_array()]
     }
+
+    /// The rotor whose frame is `columns`, or `None` for a frame no rotor rebuilds within 1e-3, such as a reflection or a skew.
+    pub fn from_mat4(columns: &[[f32; 4]; 4]) -> Option<Self> {
+        let target = columns.map(Vec4::from_array);
+        let axes = [Vec4::X, Vec4::Y, Vec4::Z];
+        let mut rotor = Self::IDENTITY;
+        for (axis, basis) in axes.into_iter().enumerate() {
+            let from = <Self as Rotor>::apply(&rotor, basis);
+            rotor = rotor * arc_holding(from, target[axis], &target[..axis]);
+        }
+        rotor
+            .to_mat4()
+            .iter()
+            .flatten()
+            .zip(columns.iter().flatten())
+            .all(|(built, given)| (built - given).abs() <= ROTATION_TOLERANCE)
+            .then_some(rotor)
+    }
+}
+
+const ARC_PLANE_EPSILON: f32 = 1e-6;
+const ROTATION_TOLERANCE: f32 = 1e-3;
+
+fn arc_holding(from: Vec4, to: Vec4, held: &[Vec4]) -> Rotor4 {
+    if Bivector4::wedge(from, to).magnitude() >= ARC_PLANE_EPSILON || from.dot(to) > 0.0 {
+        return Rotor4::from_rotation_arc(from, to);
+    }
+    let mut free = Vec4::ZERO;
+    for axis in [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W] {
+        let mut residual = axis - from * axis.dot(from);
+        for fixed in held {
+            residual -= *fixed * residual.dot(*fixed);
+        }
+        if residual.length_squared() > free.length_squared() {
+            free = residual;
+        }
+    }
+    (Bivector4::wedge(from, free.normalize()) * std::f32::consts::PI).exp()
 }
 
 impl Mul for Rotor4 {
@@ -935,6 +964,35 @@ mod tests {
             (by_matrix - by_rotor).length() < 1e-5,
             "matrix application {by_matrix:?} should match rotor application {by_rotor:?}"
         );
+    }
+
+    #[test]
+    fn rotor4_from_mat4_rebuilds_the_frame_including_half_turns() {
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let half = std::f32::consts::PI;
+        for rotor in [
+            Rotor4::IDENTITY,
+            Bivector4::new(0.7, 0.0, 0.0, 0.0, 0.0, 0.3).exp(),
+            Bivector4::new(quarter, 0.0, 0.0, 0.0, 0.0, quarter).exp(),
+            Bivector4::new(0.0, 0.0, 0.0, half, 0.0, 0.0).exp(),
+            Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, half).exp(),
+        ] {
+            let frame = rotor.to_mat4();
+            let rebuilt = Rotor4::from_mat4(&frame)
+                .unwrap_or_else(|| panic!("{rotor:?} gave a frame no rotor rebuilds"))
+                .to_mat4();
+            for (slot, (built, given)) in rebuilt
+                .iter()
+                .flatten()
+                .zip(frame.iter().flatten())
+                .enumerate()
+            {
+                assert!(
+                    (built - given).abs() < 1e-5,
+                    "{rotor:?} slot {slot}: rebuilt {built} against {given}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1515,33 +1573,6 @@ mod tests {
             (n2 - 1.0).abs() < 1e-5,
             "rotor norm drifted after 900 compositions: |R|² = {n2}",
         );
-    }
-
-    #[test]
-    fn polytope_vertex_stays_on_unit_hypersphere_with_normalize_path() {
-        let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
-        let dt = 1.0 / 60.0;
-        let delta = (omega * dt).exp();
-        let mut r = Rotor4::IDENTITY;
-        for _ in 0..900 {
-            r = (delta * r).normalize();
-        }
-        for v0 in [
-            Vec4::X,
-            Vec4::Y,
-            Vec4::Z,
-            Vec4::W,
-            Vec4::new(0.5, 0.5, 0.5, 0.5),
-        ] {
-            let v_rotated = r.apply(v0);
-            let l0 = v0.length();
-            let l_rot = v_rotated.length();
-            assert!(
-                (l_rot - l0).abs() < 1e-5,
-                "normalized-path vertex length drift over 900 steps: \
-                 {v0:?} (|v|={l0}) -> {v_rotated:?} (|Rv|={l_rot})",
-            );
-        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Demos opt into click-to-start by marking the host element in `index.html`.
 
 use anyhow::{anyhow, Result};
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::JsCast;
 use web_sys::{HtmlButtonElement, HtmlStyleElement};
 
 const LAUNCH_OVERLAY_CSS: &str = r#"
@@ -62,8 +62,6 @@ pub fn inject_launch_overlay(host_id: &str, button_id: &str) -> Result<HtmlButto
     overlay_button(host_id, button_id, "loam-demo-launch", "Launch demo")
 }
 
-/// The paused-state affordance (`.ready.resume`: immediately clickable, a paused
-/// demo is warm).
 pub fn show_resume_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonElement> {
     overlay_button(
         host_id,
@@ -124,41 +122,4 @@ fn overlay_button(
     host.append_child(&button)
         .map_err(|e| anyhow!("append button to host: {e:?}"))?;
     Ok(button)
-}
-
-/// False on a missing element, missing attribute, or any other value, which is
-/// the auto-launch default.
-pub fn is_manual_mode(host_id: &str) -> bool {
-    let Some(window) = web_sys::window() else {
-        return false;
-    };
-    let Some(document) = window.document() else {
-        return false;
-    };
-    let Some(el) = document.get_element_by_id(host_id) else {
-        return false;
-    };
-    el.get_attribute("data-mode")
-        .map(|m| m == "manual")
-        .unwrap_or(false)
-}
-
-/// `None` where `performance.memory.usedJSHeapSize` is absent: Chromium exposes
-/// it as a non-standard extension, Firefox and Safari do not, and `web-sys` does
-/// not surface it, hence `js_sys::Reflect`.
-pub fn js_heap_sampler() -> Option<u64> {
-    let window = web_sys::window()?;
-    let performance = window.performance()?;
-    let perf_val: &JsValue = performance.as_ref();
-    let memory = js_sys::Reflect::get(perf_val, &JsValue::from_str("memory")).ok()?;
-    if memory.is_undefined() || memory.is_null() {
-        return None;
-    }
-    let used = js_sys::Reflect::get(&memory, &JsValue::from_str("usedJSHeapSize")).ok()?;
-    let bytes = used.as_f64()?;
-    if bytes.is_finite() && bytes >= 0.0 {
-        Some(bytes as u64)
-    } else {
-        None
-    }
 }

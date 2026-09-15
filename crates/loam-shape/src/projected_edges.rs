@@ -1,5 +1,3 @@
-//! Edge tessellation and radial clipping in the projected body frame.
-
 use crate::LineMesh;
 use glam::{Vec3, Vec4};
 
@@ -138,7 +136,8 @@ fn push_clipped_subsegment(
 // Coxeter, Introduction to Geometry, 1969, §6.9.
 pub fn stereographic_view_point(p: Vec4, projection: &loam_math::Projection<4>) -> Vec3 {
     let proj =
-        <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(p, projection);
+        <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(p, projection)
+            .unwrap_or(Vec3::NAN);
     let loam_math::Projection::Stereographic { pole } = projection else {
         return proj;
     };
@@ -157,7 +156,6 @@ pub fn stereographic_view_point(p: Vec4, projection: &loam_math::Projection<4>) 
     }
 }
 
-/// Removes appended triangles with any vertex outside the projected radius.
 pub fn retain_in_radius_triangles(
     indices: &mut Vec<[u32; 3]>,
     start_i: usize,

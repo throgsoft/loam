@@ -1,6 +1,5 @@
 use egui::{vec2, Button, CursorIcon, DragValue, RichText, Slider, SliderClamping, Ui};
 
-/// `dragged` is user-on-the-slider this frame; `changed` also covers the popup.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct SliderInteraction {
     pub changed: bool,

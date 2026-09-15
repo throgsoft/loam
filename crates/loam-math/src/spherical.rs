@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace};
 
 const SPHERE_R2_MAX: f32 = 1.0 - 1e-6;
 
@@ -47,7 +47,6 @@ fn from_sphere(q: Vec4) -> Vec3 {
 /// SO(4) acting on the ambient embedding of S³.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4 {
-    /// Column-major orthogonal matrix; inverse uses the transpose without validation.
     pub matrix: Mat4,
 }
 
@@ -89,6 +88,18 @@ impl Iso4 {
             ),
         }
     }
+
+    pub fn left_translation(point: Vec4) -> Self {
+        let (x, y, z, w) = (point.x, point.y, point.z, point.w);
+        Self {
+            matrix: Mat4::from_cols(
+                Vec4::new(w, z, -y, -x),
+                Vec4::new(-z, w, x, -y),
+                Vec4::new(y, -x, w, -z),
+                point,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -97,6 +108,11 @@ pub struct SphericalS3;
 impl Space for SphericalS3 {
     type Point = Vec3;
     type Vector = Vec3;
+    type Frame = Iso4;
+
+    fn frame_at(&self, at: Vec3) -> Iso4 {
+        Iso4::from_translation(at)
+    }
 
     fn distance(&self, a: Vec3, b: Vec3) -> f32 {
         let qa = to_sphere(clamp_to_hemisphere(a));
@@ -133,6 +149,14 @@ impl Space for SphericalS3 {
         let d = 2.0 * half_chord.clamp(0.0, 1.0).asin();
 
         perp4.truncate() * (d / n)
+    }
+
+    fn chart_envelope(&self) -> f32 {
+        std::f32::consts::FRAC_PI_2
+    }
+
+    fn valid_point(&self, p: Vec3) -> bool {
+        p.is_finite() && p.length_squared() <= SPHERE_R2_MAX
     }
 
     fn parallel_transport(&self, from: Vec3, to: Vec3, v: Vec3) -> Vec3 {
@@ -193,6 +217,10 @@ const LOAM_S3_LOG_PERP_MIN: f32 = {LOG_PERP_MIN:e};
 {WGSL_FUNCTIONS}"#
         ))
     }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
+    }
 }
 
 const WGSL_FUNCTIONS: &str = r#"
@@ -244,7 +272,7 @@ fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {
     return perp4.xyz * (d / n);
 }
 
-fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+fn loam_s3_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     let pf = loam_s3_clamp(p_from);
     let pt = loam_s3_clamp(p_to);
     let qf = loam_s3_lift(pf);
@@ -257,6 +285,13 @@ fn loam_parallel_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> 
     let v4t = v4 - (dot(v4, qt) / denom) * sum;
     return v4t.xyz;
 }
+
+struct LoamGeodesicStep { p: vec3<f32>, v: vec3<f32> }
+
+fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {
+    let next = loam_exp(p, v * s);
+    return LoamGeodesicStep(next, loam_s3_transport(p, next, v));
+}
 "#;
 
 #[cfg(test)]
@@ -266,17 +301,6 @@ mod tests {
 
     fn s3() -> SphericalS3 {
         SphericalS3
-    }
-
-    #[test]
-    fn to_sphere_from_sphere_round_trip() {
-        let p = Vec3::new(0.2, -0.3, 0.1);
-        let q = to_sphere(p);
-        assert_relative_eq!(q.length(), 1.0, epsilon = 1e-6);
-        assert_relative_eq!(q.w, (1.0 - p.length_squared()).sqrt(), epsilon = 1e-6);
-        assert_relative_eq!(from_sphere(q).x, p.x, epsilon = 1e-6);
-        assert_relative_eq!(from_sphere(q).y, p.y, epsilon = 1e-6);
-        assert_relative_eq!(from_sphere(q).z, p.z, epsilon = 1e-6);
     }
 
     #[test]

@@ -1,6 +1,3 @@
-//! Ground colours, fog density and floor visibility shared by every scene that
-//! records [`loam_render::SkyGroundNode`], with the verbs that edit them live.
-
 use anyhow::{anyhow, Result};
 use loam_egui::Console;
 use loam_render::sky_ground::{DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
@@ -93,7 +90,6 @@ impl Environment {
     }
 }
 
-/// Solves `1 − exp(−t·density) = 1/2` for t.
 pub fn half_blend_distance(fog_per_unit: f32) -> f32 {
     if fog_per_unit <= 0.0 {
         return f32::INFINITY;
@@ -145,7 +141,7 @@ pub fn register_ground_command<Ctx: 'static>(
     console.register(
         loam_egui::cmd::<Ctx, _>(
             "ground",
-            "background checker colours and fog density (bare reads all three)",
+            "background checker colors and fog density (bare reads all three)",
             move |args, ctx, out| {
                 let line = reach(ctx).apply(args)?;
                 out.line(line);
@@ -155,9 +151,9 @@ pub fn register_ground_command<Ctx: 'static>(
         .with_args(&[&["dark", "light", "fog", "reset"]])
         .with_long_help(
             "ground                     read all three\n\
-             ground dark                read the dark checker colour\n\
+             ground dark                read the dark checker color\n\
              ground dark <r> <g> <b>    set it, each channel in [0, 1]\n\
-             ground light <r> <g> <b>   the light checker colour\n\
+             ground light <r> <g> <b>   the light checker color\n\
              ground fog                 read the density\n\
              ground fog <density>       sky blended per world unit, in [0, 1];\n\
              \x20                          half the sky is mixed in at ln2/density\n\

@@ -1,23 +1,5 @@
-//! Two tables because winit and egui name keys differently. Unmapped codes
-//! return `None` and the caller drops the event.
-
 use loam_egui::egui;
-use winit::event::MouseButton;
-use winit::keyboard::KeyCode;
 
-/// `button` is `MouseEvent.button` per the DOM spec.
-pub fn mouse_button_winit(button: u8) -> MouseButton {
-    match button {
-        0 => MouseButton::Left,
-        1 => MouseButton::Middle,
-        2 => MouseButton::Right,
-        3 => MouseButton::Back,
-        4 => MouseButton::Forward,
-        other => MouseButton::Other(other as u16),
-    }
-}
-
-/// `None` for buttons egui does not model.
 pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
     match button {
         0 => Some(egui::PointerButton::Primary),
@@ -25,48 +7,6 @@ pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
         2 => Some(egui::PointerButton::Secondary),
         3 => Some(egui::PointerButton::Extra1),
         4 => Some(egui::PointerButton::Extra2),
-        _ => None,
-    }
-}
-
-pub fn keycode_winit(code: &str) -> Option<KeyCode> {
-    if let Some(k) = letter_winit(code) {
-        return Some(k);
-    }
-    if let Some(k) = digit_winit(code) {
-        return Some(k);
-    }
-    if let Some(k) = function_winit(code) {
-        return Some(k);
-    }
-    match code {
-        "Space" => Some(KeyCode::Space),
-        "Enter" => Some(KeyCode::Enter),
-        "Escape" => Some(KeyCode::Escape),
-        "Tab" => Some(KeyCode::Tab),
-        "Backspace" => Some(KeyCode::Backspace),
-        "Delete" => Some(KeyCode::Delete),
-        "Backquote" => Some(KeyCode::Backquote),
-        "Minus" => Some(KeyCode::Minus),
-        "Equal" => Some(KeyCode::Equal),
-        "BracketLeft" => Some(KeyCode::BracketLeft),
-        "BracketRight" => Some(KeyCode::BracketRight),
-        "Semicolon" => Some(KeyCode::Semicolon),
-        "Quote" => Some(KeyCode::Quote),
-        "Comma" => Some(KeyCode::Comma),
-        "Period" => Some(KeyCode::Period),
-        "Slash" => Some(KeyCode::Slash),
-        "Backslash" => Some(KeyCode::Backslash),
-        "ShiftLeft" => Some(KeyCode::ShiftLeft),
-        "ShiftRight" => Some(KeyCode::ShiftRight),
-        "ControlLeft" => Some(KeyCode::ControlLeft),
-        "ControlRight" => Some(KeyCode::ControlRight),
-        "AltLeft" => Some(KeyCode::AltLeft),
-        "AltRight" => Some(KeyCode::AltRight),
-        "ArrowUp" => Some(KeyCode::ArrowUp),
-        "ArrowDown" => Some(KeyCode::ArrowDown),
-        "ArrowLeft" => Some(KeyCode::ArrowLeft),
-        "ArrowRight" => Some(KeyCode::ArrowRight),
         _ => None,
     }
 }
@@ -99,72 +39,6 @@ pub fn keycode_egui(code: &str) -> Option<egui::Key> {
         "Backquote" => Some(egui::Key::Backtick),
         "Minus" => Some(egui::Key::Minus),
         "Equal" => Some(egui::Key::Equals),
-        _ => None,
-    }
-}
-
-fn letter_winit(code: &str) -> Option<KeyCode> {
-    match code {
-        "KeyA" => Some(KeyCode::KeyA),
-        "KeyB" => Some(KeyCode::KeyB),
-        "KeyC" => Some(KeyCode::KeyC),
-        "KeyD" => Some(KeyCode::KeyD),
-        "KeyE" => Some(KeyCode::KeyE),
-        "KeyF" => Some(KeyCode::KeyF),
-        "KeyG" => Some(KeyCode::KeyG),
-        "KeyH" => Some(KeyCode::KeyH),
-        "KeyI" => Some(KeyCode::KeyI),
-        "KeyJ" => Some(KeyCode::KeyJ),
-        "KeyK" => Some(KeyCode::KeyK),
-        "KeyL" => Some(KeyCode::KeyL),
-        "KeyM" => Some(KeyCode::KeyM),
-        "KeyN" => Some(KeyCode::KeyN),
-        "KeyO" => Some(KeyCode::KeyO),
-        "KeyP" => Some(KeyCode::KeyP),
-        "KeyQ" => Some(KeyCode::KeyQ),
-        "KeyR" => Some(KeyCode::KeyR),
-        "KeyS" => Some(KeyCode::KeyS),
-        "KeyT" => Some(KeyCode::KeyT),
-        "KeyU" => Some(KeyCode::KeyU),
-        "KeyV" => Some(KeyCode::KeyV),
-        "KeyW" => Some(KeyCode::KeyW),
-        "KeyX" => Some(KeyCode::KeyX),
-        "KeyY" => Some(KeyCode::KeyY),
-        "KeyZ" => Some(KeyCode::KeyZ),
-        _ => None,
-    }
-}
-
-fn digit_winit(code: &str) -> Option<KeyCode> {
-    match code {
-        "Digit0" => Some(KeyCode::Digit0),
-        "Digit1" => Some(KeyCode::Digit1),
-        "Digit2" => Some(KeyCode::Digit2),
-        "Digit3" => Some(KeyCode::Digit3),
-        "Digit4" => Some(KeyCode::Digit4),
-        "Digit5" => Some(KeyCode::Digit5),
-        "Digit6" => Some(KeyCode::Digit6),
-        "Digit7" => Some(KeyCode::Digit7),
-        "Digit8" => Some(KeyCode::Digit8),
-        "Digit9" => Some(KeyCode::Digit9),
-        _ => None,
-    }
-}
-
-fn function_winit(code: &str) -> Option<KeyCode> {
-    match code {
-        "F1" => Some(KeyCode::F1),
-        "F2" => Some(KeyCode::F2),
-        "F3" => Some(KeyCode::F3),
-        "F4" => Some(KeyCode::F4),
-        "F5" => Some(KeyCode::F5),
-        "F6" => Some(KeyCode::F6),
-        "F7" => Some(KeyCode::F7),
-        "F8" => Some(KeyCode::F8),
-        "F9" => Some(KeyCode::F9),
-        "F10" => Some(KeyCode::F10),
-        "F11" => Some(KeyCode::F11),
-        "F12" => Some(KeyCode::F12),
         _ => None,
     }
 }

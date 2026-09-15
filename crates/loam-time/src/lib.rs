@@ -2,6 +2,7 @@ pub mod alloc;
 pub mod director;
 mod fixed_timestep;
 pub mod frame_trace;
+pub mod par;
 pub mod replay;
 
 pub use director::{Director, Drive, Playhead, Timeline, TimelineError, Track};

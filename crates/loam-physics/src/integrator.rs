@@ -4,19 +4,39 @@ use loam_math::{Bivector, IsometryGroup, Space};
 
 use crate::body::RigidBody;
 
-pub trait PhysicsSpace: Space + IsometryGroup {
-    type AngVel: Bivector;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BroadphaseBound {
+    /// Chart distance is a lower bound on separation everywhere, seams and identifications included.
+    Certified,
+    /// No distance pruning; every pair that passes the static and mask filters is a candidate.
+    Unknown,
+}
 
-    type Inertia: Copy;
+pub trait PhysicsSpace: Space + IsometryGroup + Send + Sync {
+    type AngVel: Bivector + Send + Sync;
+
+    type Inertia: Copy + Send + Sync;
+
+    fn broadphase_bound(&self) -> BroadphaseBound;
 
     fn supports_collider(&self, kind: crate::ColliderKind) -> bool;
+
+    fn valid_vector(&self, vector: Self::Vector) -> bool;
+
+    fn valid_inertia(&self, inertia: Self::Inertia) -> bool;
+
+    fn valid_orientation(&self, orientation: Self::Iso) -> bool;
+
+    fn valid_angular_velocity(&self, angular_velocity: Self::AngVel) -> bool;
 
     fn valid_initial_state(
         &self,
         position: Self::Point,
         velocity: Self::Vector,
         inertia: Self::Inertia,
-    ) -> bool;
+    ) -> bool {
+        self.valid_point(position) && self.valid_vector(velocity) && self.valid_inertia(inertia)
+    }
 
     fn integrate_orientation(&self, iso: Self::Iso, omega: Self::AngVel, dt: f32) -> Self::Iso;
 
@@ -72,19 +92,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body::BodyDef;
     use crate::collider::Collider;
+    use crate::geometry::GeometryStore;
     use glam::Vec3;
     use loam_math::EuclideanR3;
 
+    fn row(def: BodyDef<EuclideanR3>) -> RigidBody<EuclideanR3> {
+        def.into_row(&mut GeometryStore::default(), &EuclideanR3)
+    }
+
     #[test]
     fn static_body_skips_integration() {
-        let mut body = RigidBody::<EuclideanR3>::fixed(
+        let mut body = row(BodyDef::<EuclideanR3>::fixed(
             Vec3::ZERO,
             Collider::sphere_at_origin(0.5),
             1.0,
             &EuclideanR3,
         )
-        .unwrap();
+        .unwrap());
         body.velocity = Vec3::new(10.0, 0.0, 0.0);
         integrate_body(&EuclideanR3, &mut body, 1.0);
         assert_eq!(body.position, Vec3::ZERO);
@@ -92,7 +118,7 @@ mod tests {
 
     #[test]
     fn dynamic_body_in_e3_moves_linearly() {
-        let mut body = RigidBody::<EuclideanR3>::new(
+        let mut body = row(BodyDef::<EuclideanR3>::new(
             Vec3::ZERO,
             Vec3::new(1.0, 2.0, -3.0),
             Collider::sphere_at_origin(0.1),
@@ -100,7 +126,7 @@ mod tests {
             0.1,
             &EuclideanR3,
         )
-        .unwrap();
+        .unwrap());
         integrate_body(&EuclideanR3, &mut body, 0.5);
         assert_eq!(body.position, Vec3::new(0.5, 1.0, -1.5));
         assert_eq!(body.velocity, Vec3::new(1.0, 2.0, -3.0));
@@ -108,7 +134,7 @@ mod tests {
 
     #[test]
     fn zero_dt_does_not_advance_state() {
-        let mut body = RigidBody::<EuclideanR3>::new(
+        let mut body = row(BodyDef::<EuclideanR3>::new(
             Vec3::new(2.0, 3.0, 5.0),
             Vec3::new(7.0, 11.0, 13.0),
             Collider::sphere_at_origin(0.1),
@@ -116,7 +142,7 @@ mod tests {
             0.1,
             &EuclideanR3,
         )
-        .unwrap();
+        .unwrap());
         let before = (body.position, body.velocity);
         integrate_body(&EuclideanR3, &mut body, 0.0);
         assert_eq!((body.position, body.velocity), before);

@@ -1,5 +1,3 @@
-//! Stereographic images of the six coordinate great circles of S³.
-
 use glam::{Vec3, Vec4};
 use loam_math::{Bivector, Plane4, Rotor4};
 use loam_shape::LineMesh;
@@ -49,7 +47,6 @@ fn wrap_pi(angle: f32) -> f32 {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Hypergimbal {
     pub center: Vec3,
-    /// World length of one unit of the image; rings come out at radius `√2·scale`.
     pub scale: f32,
 }
 
@@ -109,7 +106,6 @@ impl Hypergimbal {
         best.map(|(_, ring)| ring)
     }
 
-    /// Existing contents are kept, so the widget can share a mesh.
     pub fn append_line_mesh(&self, style: &RingStyle, out: &mut LineMesh<3>) {
         let step = std::f32::consts::TAU / style.segments as f32;
         for ring in self.rings() {
@@ -130,19 +126,14 @@ impl Hypergimbal {
 pub struct Ring {
     pub plane: Plane4,
     pub center: Vec3,
-    /// In-plane unit axis `χ` is measured from.
     pub u: Vec3,
-    /// In-plane unit axis `χ` is measured toward.
     pub v: Vec3,
     pub radius: f32,
-    /// `ρ`, the eccentricity of the ring-angle to arc-angle map.
     pub pole_overlap: f32,
-    /// `φ`: great-circle parameter of the ring's `χ = 0` point.
     pub phase: f32,
 }
 
 impl Ring {
-    /// `u × v`, so `χ` runs counter-clockwise looking down it.
     pub fn normal(&self) -> Vec3 {
         self.u.cross(self.v)
     }
@@ -151,20 +142,17 @@ impl Ring {
         self.center + (self.u * chi.cos() + self.v * chi.sin()) * self.radius
     }
 
-    /// Ring angle `χ` of a world point, projected onto the circle's plane.
     pub fn ring_angle(&self, world: Vec3) -> f32 {
         let offset = world - self.center;
         offset.dot(self.v).atan2(offset.dot(self.u))
     }
 
-    /// Great-circle parameter `θ` at ring angle `χ`.
     // Danby, Fundamentals of Celestial Mechanics (1992), section 6.3.
     pub fn arc_angle(&self, chi: f32) -> f32 {
         let s = (1.0 - self.pole_overlap * self.pole_overlap).sqrt();
         (s * chi.sin()).atan2(chi.cos() + self.pole_overlap) + self.phase
     }
 
-    /// `None` behind the eye or within 0.6° of parallel.
     pub fn ray_hit(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<Vec3> {
         let normal = self.normal();
         let incidence = ray_direction.dot(normal);
@@ -175,12 +163,10 @@ impl Ring {
         (t > 0.0).then(|| ray_origin + ray_direction * t)
     }
 
-    /// Wrapped to `(−π, π]`; only each point's bearing from the centre matters.
     pub fn drag_angle(&self, grab: Vec3, cursor: Vec3) -> f32 {
         wrap_pi(self.arc_angle(self.ring_angle(cursor)) - self.arc_angle(self.ring_angle(grab)))
     }
 
-    /// A delta for the caller to compose; nothing here holds a pose.
     pub fn drag_rotor(&self, grab: Vec3, cursor: Vec3) -> Rotor4 {
         (self.plane.unit_bivector() * self.drag_angle(grab, cursor)).exp()
     }

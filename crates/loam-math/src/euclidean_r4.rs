@@ -1,19 +1,15 @@
-//! Rigid motions of R⁴ use rotors and translations; [`crate::Iso4`] acts on S³ instead.
-
 use std::borrow::Cow;
 
 use glam::Vec4;
 use serde::{Deserialize, Serialize};
 
 use crate::bivector::{Rotor, Rotor4};
-use crate::space::{IsometryGroup, Space, WgslSpace};
+use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
 
 /// Rigid motion of R⁴; callers must keep the rotor unit length.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4Flat {
-    /// Applied before translation; composition does not renormalize.
     pub rotation: Rotor4,
-    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec4,
 }
 
@@ -50,6 +46,11 @@ pub struct EuclideanR4;
 impl Space for EuclideanR4 {
     type Point = Vec4;
     type Vector = Vec4;
+    type Frame = Rotor4;
+
+    fn frame_at(&self, _at: Vec4) -> Rotor4 {
+        Rotor4::IDENTITY
+    }
 
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {
         (a - b).length()
@@ -69,6 +70,14 @@ impl Space for EuclideanR4 {
 
     fn is_chart_flat(&self) -> bool {
         true
+    }
+
+    fn chart_envelope(&self) -> f32 {
+        f32::INFINITY
+    }
+
+    fn valid_point(&self, p: Vec4) -> bool {
+        p.is_finite()
     }
 }
 
@@ -105,18 +114,26 @@ impl IsometryGroup for EuclideanR4 {
 
 impl WgslSpace for EuclideanR4 {
     fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Borrowed(WGSL_IMPL)
+        Cow::Owned(format!(
+            "const LOAM_MAX_ARC: f32 = {FLAT_CHART_MAX_ARC:?};{WGSL_IMPL}"
+        ))
+    }
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy {
+        WgslAccuracy::Exact
     }
 }
 
 const WGSL_IMPL: &str = r#"
 // loam-math :: EuclideanR4 (v0 Space WGSL ABI)
-const LOAM_MAX_ARC: f32 = 1e9;
 fn loam_distance(a: vec4<f32>, b: vec4<f32>) -> f32 { return length(a - b); }
 fn loam_origin_distance(p: vec4<f32>) -> f32 { return length(p); }
 fn loam_exp(at: vec4<f32>, v: vec4<f32>) -> vec4<f32> { return at + v; }
 fn loam_log(p_from: vec4<f32>, p_to: vec4<f32>) -> vec4<f32> { return p_to - p_from; }
-fn loam_parallel_transport(p_from: vec4<f32>, p_to: vec4<f32>, v: vec4<f32>) -> vec4<f32> { return v; }
+struct LoamGeodesicStep { p: vec4<f32>, v: vec4<f32> }
+fn loam_geodesic_step(p: vec4<f32>, v: vec4<f32>, s: f32) -> LoamGeodesicStep {
+    return LoamGeodesicStep(loam_exp(p, v * s), v);
+}
 "#;
 
 #[cfg(test)]

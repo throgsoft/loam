@@ -13,3 +13,11 @@ pub struct Contact<S: PhysicsSpace> {
 
     pub restitution: f32,
 }
+
+impl<S: PhysicsSpace> Clone for Contact<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: PhysicsSpace> Copy for Contact<S> {}

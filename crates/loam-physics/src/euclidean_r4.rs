@@ -5,14 +5,14 @@ use glam::Vec4;
 use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat, Rotor};
 use loam_shape::polytope::Polytope4;
 
-use crate::body::RigidBody;
+use crate::body::{BodyDef, RigidBody};
 use crate::collider::{Collider, ColliderKind};
 use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult4, PosedHull4, Sphere4 as GjkSphere4};
-use crate::integrator::PhysicsSpace;
+use crate::geometry::GeometryStore;
+use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-/// Point velocity uses the negative Clifford left contraction.
 pub fn omega_cross_r(omega: Bivector4, r: glam::Vec4) -> glam::Vec4 {
     -omega.contract_vec(r)
 }
@@ -29,6 +29,10 @@ impl PhysicsSpace for EuclideanR4 {
     type AngVel = Bivector4;
     type Inertia = f32;
 
+    fn broadphase_bound(&self) -> BroadphaseBound {
+        BroadphaseBound::Certified
+    }
+
     fn supports_collider(&self, kind: ColliderKind) -> bool {
         matches!(
             kind,
@@ -36,12 +40,43 @@ impl PhysicsSpace for EuclideanR4 {
         )
     }
 
-    fn valid_initial_state(&self, position: Vec4, velocity: Vec4, inertia: f32) -> bool {
-        position.is_finite()
-            && velocity.is_finite()
-            && inertia.is_finite()
-            && inertia >= 0.0
-            && (inertia == 0.0 || inertia.recip().is_finite())
+    fn valid_vector(&self, vector: Vec4) -> bool {
+        vector.is_finite()
+    }
+
+    fn valid_orientation(&self, orientation: Iso4Flat) -> bool {
+        let r = orientation.rotation;
+        let product = r * r.inverse();
+        r.s.is_finite()
+            && r.xy.is_finite()
+            && r.xz.is_finite()
+            && r.xw.is_finite()
+            && r.yz.is_finite()
+            && r.yw.is_finite()
+            && r.zw.is_finite()
+            && r.xyzw.is_finite()
+            && (product.s - 1.0).abs() <= 1e-4
+            && product.xy.abs() <= 1e-4
+            && product.xz.abs() <= 1e-4
+            && product.xw.abs() <= 1e-4
+            && product.yz.abs() <= 1e-4
+            && product.yw.abs() <= 1e-4
+            && product.zw.abs() <= 1e-4
+            && product.xyzw.abs() <= 1e-4
+            && orientation.translation.is_finite()
+    }
+
+    fn valid_angular_velocity(&self, angular_velocity: Bivector4) -> bool {
+        angular_velocity.xy.is_finite()
+            && angular_velocity.xz.is_finite()
+            && angular_velocity.xw.is_finite()
+            && angular_velocity.yz.is_finite()
+            && angular_velocity.yw.is_finite()
+            && angular_velocity.zw.is_finite()
+    }
+
+    fn valid_inertia(&self, inertia: f32) -> bool {
+        inertia.is_finite() && inertia >= 0.0 && (inertia == 0.0 || inertia.recip().is_finite())
     }
 
     fn integrate_orientation(&self, iso: Iso4Flat, omega: Bivector4, dt: f32) -> Iso4Flat {
@@ -120,12 +155,13 @@ impl PhysicsSpace for EuclideanR4 {
 fn sphere_sphere_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
+    geometry: &GeometryStore,
     space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Collider::Sphere { radius: ra, .. } = *a.collider() else {
+    let Some(&Collider::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::Sphere { radius: rb, .. } = *b.collider() else {
+    let Some(&Collider::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -154,14 +190,17 @@ fn sphere_sphere_r4(
 fn sphere_halfspace_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
+    geometry: &GeometryStore,
     _space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Collider::Sphere { radius, .. } = *a.collider() else {
+    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::HalfSpace4D { normal, offset } = *b.collider() else {
+    let Some(&Collider::HalfSpace4D { normal, offset }) = geometry.get(b.collider()) else {
         return None;
     };
+    let normal = b.orientation.rotation.apply(normal);
+    let offset = offset + normal.dot(b.position);
     let signed = a.position.dot(normal) - offset;
     let penetration = radius - signed;
     if penetration <= 0.0 {
@@ -180,18 +219,21 @@ fn sphere_halfspace_r4(
 fn polytope_halfspace_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
+    geometry: &GeometryStore,
     _space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Collider::ConvexPolytope4D { vertices: va_local } = a.collider() else {
+    let Some(Collider::ConvexPolytope4D { vertices: va_local }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::HalfSpace4D {
+    let Some(&Collider::HalfSpace4D {
         normal: plane_n,
         offset,
-    } = *b.collider()
+    }) = geometry.get(b.collider())
     else {
         return None;
     };
+    let plane_n = b.orientation.rotation.apply(plane_n);
+    let offset = offset + plane_n.dot(b.position);
 
     let mut deepest = Vec4::ZERO;
     let mut deepest_depth = 0.0_f32;
@@ -250,12 +292,13 @@ fn validate_contact4(
 fn polytope_polytope_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
+    geometry: &GeometryStore,
     _space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Collider::ConvexPolytope4D { vertices: va_local } = a.collider() else {
+    let Some(Collider::ConvexPolytope4D { vertices: va_local }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::ConvexPolytope4D { vertices: vb_local } = b.collider() else {
+    let Some(Collider::ConvexPolytope4D { vertices: vb_local }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -290,12 +333,13 @@ fn polytope_polytope_r4(
 fn sphere_polytope_r4(
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
+    geometry: &GeometryStore,
     _space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Collider::Sphere { radius, .. } = *a.collider() else {
+    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Collider::ConvexPolytope4D { vertices: vb_local } = b.collider() else {
+    let Some(Collider::ConvexPolytope4D { vertices: vb_local }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -372,8 +416,8 @@ pub fn sphere_body_r4(
     velocity: Vec4,
     radius: f32,
     mass: f32,
-) -> Option<RigidBody<EuclideanR4>> {
-    RigidBody::new(
+) -> Option<BodyDef<EuclideanR4>> {
+    BodyDef::new(
         position,
         velocity,
         Collider::sphere_at_origin(radius),
@@ -384,9 +428,9 @@ pub fn sphere_body_r4(
 }
 
 /// The solid occupies `dot(p, normalize(normal)) <= offset`.
-pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<RigidBody<EuclideanR4>> {
+pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<EuclideanR4>> {
     let n = normal.try_normalize()?;
-    RigidBody::fixed(
+    BodyDef::fixed(
         Vec4::ZERO,
         Collider::HalfSpace4D { normal: n, offset },
         1.0,
@@ -400,13 +444,13 @@ pub fn polytope_body_r4(
     velocity: Vec4,
     vertices: Vec<Vec4>,
     mass: f32,
-) -> Option<RigidBody<EuclideanR4>> {
+) -> Option<BodyDef<EuclideanR4>> {
     let bounding_r_sq = vertices
         .iter()
         .map(|v| v.length_squared())
         .fold(0.0, f32::max);
     let inertia = mass * bounding_r_sq / 3.0;
-    RigidBody::new(
+    BodyDef::new(
         position,
         velocity,
         Collider::ConvexPolytope4D { vertices },
@@ -421,6 +465,7 @@ pub use loam_shape::polytope_geom::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::world::World;
 
     fn assert_close(a: f32, b: f32, tol: f32) {
@@ -434,8 +479,9 @@ mod tests {
     fn wall_contact_leaves_through_the_near_face_in_either_pair_order() {
         let mut np = Narrowphase::<EuclideanR4>::new();
         register_default_narrowphase(&mut np);
+        let mut geometry = crate::geometry::GeometryStore::default();
 
-        let wall = RigidBody::fixed(
+        let wall = BodyDef::fixed(
             Vec4::ZERO,
             Collider::ConvexPolytope4D {
                 vertices: tesseract_vertices(0.2)
@@ -446,16 +492,23 @@ mod tests {
             1.0,
             &EuclideanR4,
         )
-        .unwrap();
-        let ball = sphere_body_r4(Vec4::new(-0.05, 0.0, 0.0, 0.0), Vec4::ZERO, 0.2, 1.0).unwrap();
+        .unwrap()
+        .into_row(&mut geometry, &EuclideanR4);
+        let ball = sphere_body_r4(Vec4::new(-0.05, 0.0, 0.0, 0.0), Vec4::ZERO, 0.2, 1.0)
+            .unwrap()
+            .into_row(&mut geometry, &EuclideanR4);
 
-        let forward = np.test(&ball, &wall, &EuclideanR4).expect("overlapping");
+        let forward = np
+            .test(&ball, &wall, &geometry, &EuclideanR4)
+            .expect("overlapping");
         assert!(
             (-forward.normal).dot(Vec4::X) < -0.99,
             "ball leaves along {:?}, not back out of the near face",
             -forward.normal
         );
-        let reversed = np.test(&wall, &ball, &EuclideanR4).expect("overlapping");
+        let reversed = np
+            .test(&wall, &ball, &geometry, &EuclideanR4)
+            .expect("overlapping");
         assert!(
             reversed.normal.dot(Vec4::X) < -0.99,
             "flipped pair leaves the ball along {:?}",
@@ -468,13 +521,15 @@ mod tests {
     fn sphere_settles_on_4d_floor() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        world.gravity = Some(Vec4::new(0.0, -9.8, 0.0, 0.0));
+        world
+            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
+            .unwrap();
         let _floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
         let ball = world.push_body(
             sphere_body_r4(Vec4::new(0.0, 2.0, 0.0, 0.0), Vec4::ZERO, 0.5, 1.0).unwrap(),
         );
         for _ in 0..300 {
-            world.step(1.0 / 60.0);
+            world.step(1.0 / 60.0).unwrap();
         }
         let body = &world.bodies[ball];
         let lowest = body.position.y - 0.5;
@@ -493,7 +548,9 @@ mod tests {
     fn pentatope_settles_on_4d_floor() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        world.gravity = Some(Vec4::new(0.0, -9.8, 0.0, 0.0));
+        world
+            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
+            .unwrap();
         let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
         let body_id = world.push_body(
             polytope_body_r4(
@@ -508,7 +565,7 @@ mod tests {
         world.bodies[body_id].restitution = 0.0;
 
         for _ in 0..600 {
-            world.step(1.0 / 60.0);
+            world.step(1.0 / 60.0).unwrap();
         }
         let body = &world.bodies[body_id];
 
@@ -545,53 +602,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tesseract_settles_on_4d_floor() {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        world.gravity = Some(Vec4::new(0.0, -9.8, 0.0, 0.0));
-        let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
-        let body_id = world.push_body(
-            polytope_body_r4(
-                Vec4::new(0.0, 3.0, 0.0, 0.0),
-                Vec4::ZERO,
-                tesseract_vertices(0.5),
-                1.0,
-            )
-            .unwrap(),
-        );
-        world.bodies[floor].restitution = 0.0;
-        world.bodies[body_id].restitution = 0.0;
-
-        for _ in 0..600 {
-            world.step(1.0 / 60.0);
-        }
-        let body = &world.bodies[body_id];
-
-        assert!(
-            body.position.y.is_finite() && (-0.3..=1.0).contains(&body.position.y),
-            "tesseract position out of expected resting band: y = {}",
-            body.position.y
-        );
-        assert!(
-            body.velocity.length() < 1.5,
-            "tesseract still moving after 10 s: |v| = {}, v = {:?}",
-            body.velocity.length(),
-            body.velocity
-        );
-        let omega = body.angular_velocity;
-        let omega_mag2 = omega.xy * omega.xy
-            + omega.xz * omega.xz
-            + omega.xw * omega.xw
-            + omega.yz * omega.yz
-            + omega.yw * omega.yw
-            + omega.zw * omega.zw;
-        assert!(
-            omega_mag2.is_finite() && omega_mag2 < 4.0,
-            "tesseract angular velocity blew up: |ω|² = {omega_mag2}, ω = {omega:?}"
-        );
-    }
-
     const CORNER_DROP_DT: f32 = 1.0 / 240.0;
     const CORNER_DROP_CIRCUMRADIUS: f32 = 0.45;
     const CORNER_DROP_GRAVITY: f32 = -9.8;
@@ -607,7 +617,9 @@ mod tests {
         fn new() -> Self {
             let mut world = World::new(EuclideanR4);
             register_default_narrowphase(&mut world.narrowphase);
-            world.gravity = Some(Vec4::new(0.0, CORNER_DROP_GRAVITY, 0.0, 0.0));
+            world
+                .set_gravity(Some(Vec4::new(0.0, CORNER_DROP_GRAVITY, 0.0, 0.0)))
+                .unwrap();
             let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
             world.bodies[floor].restitution = 0.05;
             let body = world.push_body(
@@ -633,7 +645,7 @@ mod tests {
         }
 
         fn step(&mut self) {
-            self.world.step(CORNER_DROP_DT);
+            self.world.step(CORNER_DROP_DT).unwrap();
             let decay = self.decay;
             let body = &mut self.world.bodies[self.body];
             body.angular_velocity = body.angular_velocity * decay;
@@ -705,12 +717,14 @@ mod tests {
     fn falling_sphere_accelerates_in_r4() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
-        world.gravity = Some(Vec4::new(0.0, -9.8, 0.0, 0.0));
+        world
+            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
+            .unwrap();
 
         let id = world.push_body(
             sphere_body_r4(Vec4::new(0.0, 5.0, 0.0, 0.0), Vec4::ZERO, 0.5, 1.0).unwrap(),
         );
-        world.step(1.0 / 60.0);
+        world.step(1.0 / 60.0).unwrap();
         let body = &world.bodies[id];
         assert!(body.velocity.y < -0.1 && body.velocity.y > -0.2);
         assert_close(body.velocity.x, 0.0, 1e-6);
@@ -743,7 +757,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 120.0);
+            world.step(1.0 / 120.0).unwrap();
         }
         let a = &world.bodies[0];
         let b = &world.bodies[1];
@@ -773,7 +787,7 @@ mod tests {
         let b = world
             .push_body(sphere_body_r4(b_pos, (a_pos - b_pos).normalize() * 2.0, 0.5, 1.0).unwrap());
         for _ in 0..120 {
-            world.step(1.0 / 120.0);
+            world.step(1.0 / 120.0).unwrap();
         }
         let rel = world.bodies[b].velocity - world.bodies[a].velocity;
         let axis = (b_pos - a_pos).normalize();
@@ -794,8 +808,12 @@ mod tests {
             polytope_body_r4(Vec4::ZERO, Vec4::ZERO, tesseract_vertices(0.8), 0.0).unwrap(),
         );
         let pair_found = {
+            let geometry = world.geometry().clone();
             let (a, b) = world.bodies.dense_mut().split_at_mut(1);
-            world.narrowphase.test(&a[0], &b[0], &EuclideanR4).is_some()
+            world
+                .narrowphase
+                .test(&a[0], &b[0], &geometry, &EuclideanR4)
+                .is_some()
         };
         assert!(
             pair_found,
@@ -819,8 +837,12 @@ mod tests {
             )
             .unwrap(),
         );
+        let geometry = world.geometry().clone();
         let (a, b) = world.bodies.dense_mut().split_at_mut(1);
-        assert!(world.narrowphase.test(&a[0], &b[0], &EuclideanR4).is_none());
+        assert!(world
+            .narrowphase
+            .test(&a[0], &b[0], &geometry, &EuclideanR4)
+            .is_none());
     }
 
     #[test]

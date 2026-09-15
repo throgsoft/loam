@@ -4,6 +4,7 @@ use crate::body::{BodyId, RigidBody};
 use crate::collision::VectorOps;
 use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
+use crate::response::FRICTION_COEFF;
 
 pub const MAX_POINTS: usize = 4;
 
@@ -14,7 +15,14 @@ const CONTACT_BREAK_DISTANCE_SQ: f32 = CONTACT_BREAK_DISTANCE * CONTACT_BREAK_DI
 
 const MERGE_RADIUS_SQ: f32 = CONTACT_BREAK_DISTANCE_SQ;
 
-#[derive(Clone, Copy)]
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "persist",
+    serde(bound(
+        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
+        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
+    ))
+)]
 pub struct ContactPoint<S: PhysicsSpace> {
     pub world_point: S::Point,
     /// Witness in A's local frame.
@@ -24,7 +32,6 @@ pub struct ContactPoint<S: PhysicsSpace> {
     /// Unit, from A toward B.
     pub normal: S::Vector,
     pub penetration: f32,
-    /// Persisted across frames; PGS clamps it to ≥ 0.
     pub normal_impulse: f32,
     /// Valid within one step only: the slide direction can flip.
     pub tangent_dir: S::Vector,
@@ -34,14 +41,47 @@ pub struct ContactPoint<S: PhysicsSpace> {
     pub velocity_bias: f32,
 }
 
+impl<S: PhysicsSpace> Clone for ContactPoint<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: PhysicsSpace> Copy for ContactPoint<S> {}
+
+#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "persist",
+    serde(bound(
+        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
+        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
+    ))
+)]
 pub struct Manifold<S: PhysicsSpace> {
     /// Always `< body_b`.
     pub body_a: BodyId,
     pub body_b: BodyId,
     /// Set on first contact and kept.
     pub restitution: f32,
-    /// `len() ≤ MAX_POINTS`.
     pub points: Vec<ContactPoint<S>>,
+}
+
+impl<S: PhysicsSpace> Clone for Manifold<S> {
+    fn clone(&self) -> Self {
+        Self {
+            body_a: self.body_a,
+            body_b: self.body_b,
+            restitution: self.restitution,
+            points: self.points.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.body_a = source.body_a;
+        self.body_b = source.body_b;
+        self.restitution = source.restitution;
+        self.points.clone_from(&source.points);
+    }
 }
 
 impl<S: PhysicsSpace> Manifold<S>
@@ -56,6 +96,77 @@ where
             restitution,
             points: Vec::with_capacity(MAX_POINTS),
         }
+    }
+
+    pub(crate) fn reset(&mut self, body_a: BodyId, body_b: BodyId, restitution: f32) {
+        debug_assert!(body_a < body_b);
+        self.body_a = body_a;
+        self.body_b = body_b;
+        self.restitution = restitution;
+        self.points.clear();
+    }
+
+    pub(crate) fn is_valid(&self, space: &S, body_a: &RigidBody<S>, body_b: &RigidBody<S>) -> bool
+    where
+        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+    {
+        if !self.restitution.is_finite()
+            || self.restitution < 0.0
+            || self.points.is_empty()
+            || self.points.len() > MAX_POINTS
+        {
+            return false;
+        }
+        self.points.iter().all(|point| {
+            let normal_length = VectorOps::length_squared(point.normal);
+            let tangent_length = VectorOps::length_squared(point.tangent_dir);
+            if !space.valid_point(point.world_point)
+                || !space.valid_vector(point.anchor_a)
+                || !space.valid_vector(point.anchor_b)
+                || !space.valid_vector(point.normal)
+                || !space.valid_vector(point.tangent_dir)
+                || (normal_length - 1.0).abs() > 1.0e-4
+                || !point.penetration.is_finite()
+                || !point.normal_impulse.is_finite()
+                || point.normal_impulse < 0.0
+                || !point.tangent_impulse.is_finite()
+                || point.tangent_impulse < 0.0
+                || !point.velocity_bias.is_finite()
+            {
+                return false;
+            }
+            if point.tangent_impulse == 0.0 {
+                if tangent_length != 0.0 {
+                    return false;
+                }
+            } else {
+                let limit = point.normal_impulse * FRICTION_COEFF;
+                let slack = f32::EPSILON * limit.abs().max(1.0);
+                if (tangent_length - 1.0).abs() > 1.0e-4
+                    || VectorOps::dot(point.normal, point.tangent_dir).abs() > 1.0e-4
+                    || point.tangent_impulse > limit + slack
+                {
+                    return false;
+                }
+            }
+            let anchor_a = anchor_world_point(space, body_a, point.anchor_a);
+            let anchor_b = anchor_world_point(space, body_b, point.anchor_b);
+            if !space.valid_point(anchor_a) || !space.valid_point(anchor_b) {
+                return false;
+            }
+            let gap = space.log(anchor_a, anchor_b);
+            if !space.valid_vector(gap) {
+                return false;
+            }
+            let midpoint = space.exp(anchor_a, gap * 0.5);
+            let midpoint_error = space.log(midpoint, point.world_point);
+            let penetration_error = point.penetration + VectorOps::dot(gap, point.normal);
+            space.valid_point(midpoint)
+                && space.valid_vector(midpoint_error)
+                && VectorOps::length(midpoint_error) <= CONTACT_BREAK_DISTANCE
+                && penetration_error.is_finite()
+                && penetration_error.abs() <= CONTACT_BREAK_DISTANCE
+        })
     }
 
     /// Retains anchors within [`CONTACT_BREAK_DISTANCE`]; bodies must match the manifold key.
@@ -164,7 +275,9 @@ pub const RESTITUTION_THRESHOLD: f32 = 1.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body::BodyDef;
     use crate::collider::Collider;
+    use crate::geometry::GeometryStore;
     use glam::Vec2;
     use loam_math::{Bivector, Bivector2, EuclideanR2};
 
@@ -180,7 +293,7 @@ mod tests {
     }
 
     fn body(position: Vec2) -> RigidBody<EuclideanR2> {
-        RigidBody::new(
+        BodyDef::new(
             position,
             Vec2::ZERO,
             Collider::sphere_at_origin(1.0),
@@ -189,6 +302,7 @@ mod tests {
             &SPACE,
         )
         .unwrap()
+        .into_row(&mut GeometryStore::default(), &SPACE)
     }
 
     fn resting_pair() -> (RigidBody<EuclideanR2>, RigidBody<EuclideanR2>) {

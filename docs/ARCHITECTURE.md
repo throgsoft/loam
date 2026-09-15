@@ -1,194 +1,160 @@
 # Architecture
 
+Loam separates simulation, presentation, and the platform host. `Space` defines
+geometry inside typed domains and numerical kernels. An application supplies its
+content, rules, controls, and UI.
+
+```mermaid
+flowchart TB
+    App[Application and UI] --> Host[loam-app: lifecycle and command ingress]
+    Host --> Session[loam-runtime: Session]
+    Session --> State[Typed stores, domains, views and optional physics]
+    State --> Extract[Publication systems and extraction]
+    Extract --> Records[Immutable stamped records]
+    Records --> Render[loam-render: presenter and custom passes]
+    Render --> Display[Window or browser canvas]
+    State --> Geometry[loam-math and loam-shape]
+    Records --> App
+```
+
 ## Crate boundaries
 
-The manifests define the dependency graph. These groups describe
-responsibility, not a universal capability shared by every crate.
+The manifests define the dependency graph. Math and shape do not depend on the
+runtime, renderer, or host.
 
-| Crates | Responsibility |
+| Crate | Responsibility |
 |---|---|
-| `loam-math` | Spaces, isometries, rotors, projections, and geometry WGSL |
-| `loam-shape` | Shared shapes, polytope topology, cross-sections, and isovolumes |
-| `loam-scene` | CSG scenes, CPU evaluation, loading, edits, and WGSL emission |
-| `loam-physics` | Body handles, integration, collision, contacts, and constraint solving |
-| `loam-time` | Fixed timestep, traces, replay data, and animation timelines |
-| `loam-input`, `loam-camera` | Input state, cameras, and controllers |
-| `loam-render` | GPU rendering, shader assembly, validation, and reload |
-| `loam-text` | Text overlays and glyph geometry |
-| `loam-console`, `loam-egui` | Console model and UI integration |
-| `loam-app` | App callbacks, scene shell, command routing, platform runners, file watching, and capture |
-| `loam` | Convenience exports |
-| `polytope_playground`, `tesseract_demo`, `hero` | Demo applications |
+| `loam-math` | Spaces, frames, isometries, rotors, projections, and geometry WGSL |
+| `loam-shape` | Shapes, topology, sections, isovolumes, and distance-field contracts |
+| `loam-time` | Fixed steps, traces, replay data, timelines, and the parallel shim |
+| `loam-physics` | Bodies, collision, contacts, constraints, and world snapshots |
+| `loam-runtime` | Typed storage, entities, commands, domains, views, and CPU publication |
+| `loam-render` | GPU resources, pass ordering, shared depth, raster and raymarch rendering, and CSG scene emission |
+| `loam-text` | Glyph overlays, extruded letter geometry, and text rendering |
+| `loam-console` | Console model and logging |
+| `loam-egui` | Debug UI and console integration |
+| `loam-app` | Native and browser lifecycle, input transport, files, capture, and pacing |
+| `loam` | Crate aliases and a prelude with feature-selected APIs |
 
-Math, shape, scene, and physics have no GPU dependency. WGSL generation in
-the CPU crates is still a shader ABI dependency. Keep changes to that ABI
-explicit. The renderer does not own simulation state. Constant gravity is a value
-on `World<S>`; games apply other forces through body impulses.
+The facade's default features support headless use. `render`, `app`, `physics`,
+`text`, and `capture` opt into their corresponding dependencies. Apps can also
+depend on engine crates directly.
 
-The app watches files and routes changed paths to `loam-render::shader`.
-The shader cache retains its last valid module when a reload fails. It
-does not depend on filesystem notification types.
+## Session and commands
 
-`Space` is the high-level geometry abstraction. It defines metric operations. `IsometryGroup`, `WgslSpace`,
-`RasterizableSpace` and `PhysicsSpace` express separate
-requirements. Their implementations differ. Rendering support does not
-imply rigid-body support.
+`Session<A>` owns application state, domains, views, entities, and pending
+commands. `stores!` derives storage support from `Store<T>`, `Value<T>`, and
+relation fields. Stores provide sparse lookup, dense iteration, disjoint borrows,
+and bounded change logs.
 
-## Geometry and physics
+Systems run in registration order within `Dispatch`, `Simulation`, and
+`Publication`. `system_at` places a system around a named entry such as
+`DOMAIN_STEP`. A boundary commits deferred commands, then runs each Dispatch
+system and its commands. Fixed steps run Simulation systems. Publication systems
+derive display data before extraction stamps it.
 
-Math includes Euclidean R² through R⁴, hyperbolic H³, two S³
-representations, flat tori, lens spaces, and a blended metric. The two S³
-representations use different coordinates and cannot share arbitrary chart
-arithmetic. See each type's conventions before combining operations.
+Checked spawn rolls back a failed attachment. Every accepted command has an
+ordered result. An `AppCommand` can mutate state before returning an error;
+the runtime does not roll back arbitrary callback code. Compound app actions
+must validate their edits before applying them.
 
-Rigid-body implementations cover flat R², R³, and R⁴. Narrowphase dispatch
-supports specific collider pairs. New geometry and shape implementations
-must define the collision cases they support.
+A failed CPU phase blocks further steps, publication, and snapshots. Reset or a
+valid restore clears the fault. Restore validates domains before replacing state,
+cancels pending commands, and advances the entity epoch. Old handles no longer
+resolve. Runtime and epoch identities stop at exhaustion instead of wrapping.
 
-`World<S>` owns a generational body arena and persistent contacts. Body
-handles survive storage compaction and reject reuse after despawn. A game
-may own several worlds. The physics world is not a general entity store.
+## Geometry and pose ownership
 
-Physics processes contacts in a defined order. That order affects solver
-results. It is an implementation property that games can use for replay,
-not a workspace-wide ban on concurrency or optimization.
+`Domains::read` provides shared typed access; `Domains::typed` provides mutable
+access. Erasure occurs at the domain boundary. Numerical loops retain their
+concrete `Space` type.
 
-## App and command boundaries
+A pose contains a point and a frame orthonormal in that point's metric.
+`DomainSpace` does not require an isometry group. `Homogeneous`, `WgslSpace`, and
+`PhysicsSpace` express separate capabilities. Chart values cross the erased
+boundary through checked conversions. Curved operations can refuse an invalid
+chart, a numerical failure, or an exceeded error budget.
 
-`App` separates fixed ticks, frame updates, UI, and recording. The native
-and browser runners own frame pacing and GPU submission. The scene shell
-selects an active demo and forwards its ticks, commands, and presentation
-callbacks. Each shell owns its scene control and cached scenes. The active
-scene is always present. Scene construction and reload use the runner's
-shader database. Failed construction keeps the current scene.
+Pose storage is private. Checked edits route through the owning facility.
+Physics owns body poses and synchronizes dirty rows at runtime cutoffs.
+Free objects use the domain's checked pose operations. Sleeping bodies do not
+rewrite unchanged rows.
 
-The Toybox applies queued interaction commands in its tick callback.
-Dragging still uses sampled pointer input and its frame duration. Exact
-replay requires recording those inputs. Rotate, Toybox, the tesseract, and
-the wordmark advance simulation or animation in fixed ticks. Cameras and
-UI use frame time. Timelines sample authored frames from elapsed tick time.
+Views map domain geometry into image spaces. Rigid placements compose toward
+the root. A bridge links a source view to an anchor and removes the placement
+when either endpoint despawns. This is not a general atlas implementation.
+Picking compares hits in root-eye projective depth. Manipulation retains the
+picked source view and its lifted hit through a drag.
 
-`loam-console` owns `CommandLine` and instance-owned `CommandQueue` values.
-These types need no window or GPU. Each runner owns a `Runtime` handle for
-commands, output, cursor requests, pacing, capture, and exit. Setup and frame
-callbacks receive that handle. Registered callbacks retain a clone for the
-same runner. The runner dispatches commands before each frame's tick batch,
-including frames with no ticks. This keeps presentation controls
-available when simulation is stopped. Games queue simulation effects for
-their tick callbacks. Runtime controls run on the event-loop thread; this
-does not impose a threading policy on simulation or geometry work.
-Logger and allocator statistics remain process-wide. Frame tracing is
-thread-local. Browser callbacks connect one worker to its host page. The text command vocabulary does not yet define a
-typed simulation API.
+## Publication and rendering
 
-`script.rs` plays console commands at frame indices. It supports automated
-demo and capture runs. Rhai gameplay integration still needs bindings,
-execution limits, state queries, and defined tick ordering. Replay tape
-serialization in `loam-time` does not supply that integration.
+Each published view contains stamped instance, segment, and triangle records.
+Change cursors preserve an unchanged view's built stamp. The presenter uses that
+stamp to skip redundant uploads. Changed views can rebuild their full records;
+dense storage does not imply incremental work per changed object.
 
-The intended gameplay boundary is a read interface plus commands that carry
-stable handles and validated values. The game applies commands at its
-simulation boundary. Rendering reads the resulting state. Rhai, UI, and
-native game code should use the same operations.
+Each view counts explicit geometry refusals and retains the first and last
+entity, error, and source. Normal projection clipping is not a refusal.
 
-## Demo extraction
+`Records` prevents publication into a buffer that a consumer still holds.
+A view whose eye has despawned publishes empty until a live eye is set. A
+Publication system that fails faults the session.
+The host does not render a partial buffer. Fill callbacks receive shared session
+and publication references. UI actions enter a later command boundary.
 
-Keep scene menus, catalog choices, color schemes, capture choreography,
-and arena rules in the demos. Engine APIs should accept the data that those
-choices produce.
+Raster and raymarch passes share projective depth and negotiated frame formats.
+The pass schedule runs passes by stage, background then scene then overlay,
+in registration order, and validates depth compatibility. Custom
+native passes remain available. Renderer resources rebuild after device loss
+without a GPU simulation checkpoint protocol.
 
-Ray intersections for picking live in `loam-camera`. Polytope cell-frame
-and eye setup lives in `loam-shape::projection`. The playground retains its
-cell-selection policy and cached projection parameters. Projected edge
-tessellation and pole clipping also live in `loam-shape`; callers supply
-sampling and clipping limits. `loam-text` appends glyph section geometry
-into retained meshes. `CameraRig` shares orbit and free-camera behavior.
-Renderer upload and buffer lifetime belong in `loam-render`. Simulation
-commands belong at the world or runtime boundary.
+Playground's SDF rendering uses `Scene4` and `HyperslicePass`. The separate
+dynamic field renderer is removed. WGSL assembly and validation operate on source
+strings; file ownership belongs to the host. CPU field programs retain bounded
+evaluation, conservative field kinds, and their spatial index. Their compiler
+supports the existing Euclidean chart representations. CPU field queries do not
+require a shader prelude. The geodesic march kernel has its own ABI and limits.
 
-The shared shape enum is not yet a universal geometry representation.
-Sphere centers have different meaning in scene evaluation and rigid-body
-placement. Bindings must preserve those conventions until pose and shape
-ownership have one explicit contract.
+## Host and application boundary
 
-## App direction
+The launch factory builds application state after native or browser options
+resolve. The browser page launches a worker without constructing a discarded
+session. The worker receives the canvas and URL options. The session owns the
+simulation configuration.
 
-See the [scripted Playground plan](SCRIPTING_PLAN.md) for the proposed
-implementation sequence.
+The host gathers input, admits commands, runs fixed steps, publishes, and fills
+the renderer and UI. UI and console share bounded command ingress. The console
+owns parsing and text responses. Input remains available through all fixed steps
+for that frame. Pointer release and cancellation clear existing gestures even
+when UI consumes the event.
 
-The next game exercises 4D interaction and physics. `Space` remains the
-shared abstraction. A game selects its space; algorithms request the
-capabilities they use. A physics world requires `PhysicsSpace`. A renderer
-requires its rendering capabilities. Neither requirement belongs on every
-game or every space.
+After a session fault, the host keeps the last uploaded scene and console alive.
+It suspends application fill and simulation time until reset or restore succeeds.
+Device and host failures follow their platform recovery or shutdown paths.
 
-Keep the host responsible for platform events, clocks, window and device
-lifetime, and GPU submission. Keep simulation state in a game-owned value.
-The current `App` callbacks can connect those owners. A new scheduler or
-entity framework needs a concrete use case before it becomes a dependency.
+Native execution supplies windows, devices, files, and capture. The browser host
+uses WebGPU and an offscreen canvas in a worker. Parallel kernels use
+`loam_time::par`; the browser executes the same kernels on one thread. Native apps
+can use capabilities unavailable to a browser build.
 
-The console, capture panel, traces, and scene browser should be optional
-host tools. They use the same commands as game code. Editors come later.
-The demo catalog and restart confirmation belong in `SceneShell`.
+Playground owns its modes, catalog, row order, colors, filmstrip, Toybox tuning,
+and UI layout. Hero owns its geometry composition and sequence. The engine owns
+their shared hosting, commands, camera controls, manipulation, and rendering
+mechanisms. The frame-script driver schedules console commands for captures;
+it is not a Rhai VM.
 
-Before adding Rhai, define typed operations for the first interaction loop:
-spawn a supported body, remove it, query it, pick it, grab it, release it,
-and apply forces or impulses. Use stable handles and validate inputs at the
-owning engine API. Keep arena rules and throw policy in the game. Shared
-picking, contact visualization, and sleep mechanics belong in engine crates.
+## Limits and verification
 
-Rhai receives queries and a command sink. A script cannot retain a mutable
-world reference. The game applies queued commands at a chosen simulation
-boundary. Bindings register the concrete point, tangent, and rotation types
-for that game's `Space`. This keeps the first R4 bindings from defining the
-whole engine's geometry API.
+GPU-authoritative simulation, CPU/GPU checkpoint pairing, and simulation/render
+overlap are deferred. The runtime executes synchronous CPU systems. Dense
+storage and joined kernels remain available for larger workloads.
 
-Games that require replay must control command order, time, randomness,
-and parallel reductions. The host should expose those choices. Geometry,
-rendering, and games without that requirement can use parallel work and
-approximations under their own accuracy contracts.
+Warm storage, extraction, and physics paths reuse capacity. Boxed app actions
+and UI code still have allocation costs. Measurements in [PERF.md](PERF.md)
+describe their recorded versions, including renderer paths since removed.
 
-## Current limits
-
-Rhai is not integrated. The console queue is a reusable input boundary, but
-text commands do not replace typed game operations or stable entity queries.
-The physics world remains directly mutable by Rust callers. A game runtime
-must own that access before it exposes scripting.
-
-Blended geometry uses numerical shooting on the CPU. Its WGSL logarithm and
-distance use cheaper chart approximations. Those paths do not promise equal
-results. Spherical charts also have finite domains; a rendered space is not
-proof that every movement or physics operation handles its global topology.
-
-Convex collision still allocates EPA storage per contact. GJK has absolute
-tolerances, and EPA can return its best estimate at the iteration limit.
-Rigid-body inertia uses scalar approximations. The friction solver stores a
-tangent vector and applies changes when the Coulomb bound shrinks. The
-inertia approximation and collision tolerances still need scene-specific
-validation.
-
-The extended polytope shader uses topology facets. Its result is exact
-inside the polytope and a conservative distance bound outside. Browser SDF
-restrictions remain until the new shader path is verified there.
-
-## Verification
-
-Workspace lints deny implicit unsafe operations and undocumented unsafe
-blocks. CI does not currently collect line or branch coverage.
-
-Tests retain geometric identities, singular and boundary cases, and contracts
-between crates. The same identity can catch a different defect in each
-`Space` implementation. Analytic cases and rendered GPU results provide
-independent checks. Round trips alone do not establish correctness when
-both operations can share an error. Test count and line coverage do not
-measure whether those checks are sufficient.
-
-CI owns formatting, clippy, workspace tests, GPU probes, rustdoc, and the
-browser build. Replay tests run with the workspace tests. See
-[ci.yml](../.github/workflows/ci.yml). The documentation workflow publishes
-rustdoc from `main`.
-
-Local review covers the changed code, documentation accuracy, and repository
-hooks. Do not duplicate CI checks locally unless the user requests it or an
-inspected CI failure requires a narrow reproduction. Report local findings
-and CI results separately.
+Focused tests cover identity, ordering, failure recovery, pose ownership,
+geometry, and allocation behavior. Interactive checks cover demo controls and
+appearance. CI owns the full native platform matrix, browser builds, formatting,
+linting, rustdoc, and GPU probes. Local checks follow repository policy and do not
+replace CI.

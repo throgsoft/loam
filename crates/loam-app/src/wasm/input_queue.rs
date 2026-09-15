@@ -1,7 +1,19 @@
 //! Input transitions preserve arrival order; overflow releases held input and keeps the latest control state.
+//! A pointer move replaces its pointer's newest queued move unless a transition sits between them.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::time::Duration;
+
+pub const SCROLL_PIXELS_PER_LINE: f32 = 50.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerPhase {
+    Down,
+    Move,
+    Up,
+    Cancel,
+}
 
 #[derive(Debug)]
 pub enum InputMessage {
@@ -19,6 +31,7 @@ pub enum InputMessage {
         buttons: u8,
         dx: f32,
         dy: f32,
+        time: Duration,
     },
 
     /// `button` is `MouseEvent.button` (0=primary, 1=middle, 2=secondary).
@@ -27,6 +40,7 @@ pub enum InputMessage {
         y: f32,
         button: u8,
         pressed: bool,
+        time: Duration,
     },
 
     /// Lines in DOM convention: positive is right/down.
@@ -54,7 +68,19 @@ pub enum InputMessage {
     Start,
 
     /// Browser-confirmed lock state, including releases by Esc or focus loss.
-    PointerLockChanged(bool),
+    PointerLockChanged {
+        locked: bool,
+        released: bool,
+    },
+
+    /// Canvas-local CSS position and the DOM `timeStamp`.
+    Pointer {
+        id: u64,
+        x: f32,
+        y: f32,
+        phase: PointerPhase,
+        time: Duration,
+    },
 }
 
 pub const MESSAGE_QUEUE_CAPACITY: usize = 256;
@@ -68,15 +94,42 @@ fn control_kind(msg: &InputMessage) -> Option<usize> {
         InputMessage::Resize { .. } => Some(0),
         InputMessage::Visibility(_) => Some(1),
         InputMessage::Start => Some(2),
-        InputMessage::PointerLockChanged(_) => Some(3),
+        InputMessage::PointerLockChanged { .. } => Some(3),
         InputMessage::Focus(_) => Some(4),
         _ => None,
     }
 }
 
+fn coalesced_move(q: &VecDeque<InputMessage>, msg: &InputMessage) -> Option<usize> {
+    let InputMessage::Pointer {
+        id,
+        phase: PointerPhase::Move,
+        ..
+    } = msg
+    else {
+        return None;
+    };
+    q.iter()
+        .enumerate()
+        .rev()
+        .map_while(|(index, queued)| match queued {
+            InputMessage::Pointer {
+                id: queued_id,
+                phase: PointerPhase::Move,
+                ..
+            } => Some((index, queued_id == id)),
+            _ => None,
+        })
+        .find(|(_, same_pointer)| *same_pointer)
+        .map(|(index, _)| index)
+}
+
 pub fn enqueue(msg: InputMessage) {
     MESSAGE_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
+        if let Some(index) = coalesced_move(&q, &msg) {
+            q.remove(index);
+        }
         if q.len() >= MESSAGE_QUEUE_CAPACITY {
             let mut latest = [None; 5];
             for (index, queued) in q.iter().enumerate() {
@@ -100,25 +153,4 @@ pub fn enqueue(msg: InputMessage) {
 pub fn drain_messages_into(batch: &mut VecDeque<InputMessage>) {
     batch.clear();
     MESSAGE_QUEUE.with(|q| std::mem::swap(&mut *q.borrow_mut(), batch));
-}
-
-/// Converts DOM coordinates to `FrameInput::cursor_pos` units.
-pub fn physical_cursor(x: f32, y: f32, device_pixel_ratio: f32) -> (f64, f64) {
-    (
-        (x * device_pixel_ratio) as f64,
-        (y * device_pixel_ratio) as f64,
-    )
-}
-
-pub fn pointer_button(
-    input: &mut loam_input::InputState,
-    x: f32,
-    y: f32,
-    dpr: f32,
-    button: winit::event::MouseButton,
-    state: winit::event::ElementState,
-) {
-    let (x, y) = physical_cursor(x, y, dpr);
-    input.cursor_moved(x, y);
-    input.mouse_input(button, state);
 }

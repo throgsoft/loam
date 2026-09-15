@@ -13,7 +13,6 @@ pub struct SchlegelParams {
 }
 
 impl SchlegelParams {
-    /// Returns `None` for an invalid cell or clearance that cannot place a finite eye outside the polytope.
     pub fn new(polytope: Polytope4, cell_index: u32, eye_margin: f32) -> Option<Self> {
         if !eye_margin.is_finite() || eye_margin <= 0.0 {
             return None;

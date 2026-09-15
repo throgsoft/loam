@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub struct Args {
     map: HashMap<String, String>,
     bare_flags: Vec<String>,
+    bare_values: HashMap<String, String>,
 }
 
 impl Args {
@@ -32,10 +33,10 @@ impl Args {
         Self {
             map,
             bare_flags: Vec::new(),
+            bare_values: HashMap::new(),
         }
     }
 
-    /// Positionals are ignored; a bare `--key` is kept for [`Args::has_bare_flag`].
     pub fn from_argv<I, S>(argv: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -43,22 +44,35 @@ impl Args {
     {
         let mut map = HashMap::new();
         let mut bare_flags = Vec::new();
+        let mut bare_values = HashMap::new();
+        let mut awaiting: Option<String> = None;
         for arg in argv {
             if arg.as_ref() == "--" {
                 break;
             }
             let Some(stripped) = arg.as_ref().strip_prefix("--") else {
+                if let Some(flag) = awaiting.take() {
+                    bare_values.insert(flag, arg.as_ref().to_string());
+                }
                 continue;
             };
+            awaiting = None;
             match stripped.split_once('=') {
                 Some((k, v)) if !k.is_empty() => {
                     map.insert(k.to_string(), v.to_string());
                 }
-                None if !stripped.is_empty() => bare_flags.push(stripped.to_string()),
+                None if !stripped.is_empty() => {
+                    bare_flags.push(stripped.to_string());
+                    awaiting = Some(stripped.to_string());
+                }
                 _ => {}
             }
         }
-        Self { map, bare_flags }
+        Self {
+            map,
+            bare_flags,
+            bare_values,
+        }
     }
 
     pub fn from_pairs<I, K, V>(pairs: I) -> Self
@@ -73,12 +87,20 @@ impl Args {
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
             bare_flags: Vec::new(),
+            bare_values: HashMap::new(),
         }
     }
 
-    /// Always false on wasm32: the query surface has no bare form.
     pub fn has_bare_flag(&self, key: &str) -> bool {
         self.bare_flags.iter().any(|flag| flag == key)
+    }
+
+    pub fn bare_flag_value(&self, key: &str) -> Option<&str> {
+        self.bare_values.get(key).map(String::as_str)
+    }
+
+    pub fn flag_value(&self, key: &str) -> Option<&str> {
+        self.bare_flag_value(key).or_else(|| self.get(key))
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -89,7 +111,6 @@ impl Args {
         self.get(key)?.parse().ok()
     }
 
-    /// Empty segments are filtered, so `?shapes=a,,b` yields `["a", "b"]`.
     pub fn get_many<'a>(&'a self, key: &str) -> Vec<&'a str> {
         match self.get(key) {
             Some(v) => v.split(',').filter(|s| !s.is_empty()).collect(),
@@ -162,6 +183,17 @@ mod tests {
         let args = Args::from_argv(["--shapes", "5-cell,8-cell", "--seed=42"]);
         assert_eq!(args.get("shapes"), None);
         assert!(args.has_bare_flag("shapes"));
+        assert_eq!(args.bare_flag_value("shapes"), Some("5-cell,8-cell"));
+        assert_eq!(args.flag_value("shapes"), Some("5-cell,8-cell"));
+        assert_eq!(
+            Args::from_argv(["--headless=1200"]).flag_value("headless"),
+            Some("1200")
+        );
+        assert_eq!(Args::from_argv(["--other"]).flag_value("headless"), None);
+        assert_eq!(
+            Args::from_argv(["--headless=1200"]).bare_flag_value("headless"),
+            None
+        );
 
         assert!(!args.has_bare_flag("seed"));
         assert!(!args.has_bare_flag("5-cell,8-cell"));

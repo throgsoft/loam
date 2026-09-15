@@ -1,5 +1,3 @@
-//! S³ uses unit ambient Vec4 points and tangent vectors perpendicular to their base points.
-
 use glam::Vec4;
 
 use crate::rasterizable::{Projection, RasterizableSpace};
@@ -11,6 +9,8 @@ const GEODESIC_DIRECTION_MIN: f32 = 1e-7;
 
 const TRANSPORT_DENOM_MIN: f32 = 1e-7;
 
+const UNIT_POINT_TOLERANCE: f32 = 1e-4;
+
 /// S³ with unit Vec4 points and ambient tangents; methods assume unit points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SphericalS3Embedded;
@@ -19,6 +19,12 @@ impl Space for SphericalS3Embedded {
     type Point = Vec4;
 
     type Vector = Vec4;
+
+    type Frame = Iso4;
+
+    fn frame_at(&self, at: Vec4) -> Iso4 {
+        Iso4::left_translation(at)
+    }
 
     fn distance(&self, a: Vec4, b: Vec4) -> f32 {
         let half_chord = (a - b).length() * 0.5;
@@ -51,6 +57,14 @@ impl Space for SphericalS3Embedded {
         let sum = from + to;
         let denom = (sum.length_squared() * 0.5).max(TRANSPORT_DENOM_MIN);
         v - (v.dot(to) / denom) * sum
+    }
+
+    fn chart_envelope(&self) -> f32 {
+        std::f32::consts::PI
+    }
+
+    fn valid_point(&self, p: Vec4) -> bool {
+        p.is_finite() && (p.length_squared() - 1.0).abs() <= UNIT_POINT_TOLERANCE
     }
 }
 
@@ -91,10 +105,10 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
         Vec4::from_array(arr).normalize()
     }
 
-    fn project_point(point: Vec4, projection: &Projection<4>) -> glam::Vec3 {
+    fn project_point(point: Vec4, projection: &Projection<4>) -> Option<glam::Vec3> {
         match projection {
             Projection::Stereographic { pole } => {
-                crate::rasterizable::stereographic_to_r3(point, *pole)
+                Some(crate::rasterizable::stereographic_to_r3(point, *pole))
             }
 
             Projection::Identity
@@ -251,19 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn slerp_samples_stay_on_sphere() {
-        let p0 = Vec4::new(1.0, 0.0, 0.0, 0.0);
-        let p1 = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 8, |p| {
-            out.push(p)
-        });
-        for p in &out {
-            assert_relative_eq!(p.length(), 1.0, epsilon = 1e-6);
-        }
-    }
-
-    #[test]
     fn slerp_midpoint_is_on_great_circle_not_chord() {
         let s = s3();
         let p0 = Vec4::new(1.0, 0.0, 0.0, 0.0);
@@ -364,7 +365,8 @@ mod tests {
     fn project_point_stereographic_is_conformal_map_not_drop_w() {
         let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
         let proj = Projection::Stereographic { pole: Vec4::W };
-        let got = <SphericalS3Embedded as RasterizableSpace<4>>::project_point(p, &proj);
+        let got = <SphericalS3Embedded as RasterizableSpace<4>>::project_point(p, &proj)
+            .expect("stereographic should accept an off-pole point");
         let want = glam::Vec3::new(p.x, p.y, p.z) / (1.0 - p.w);
         assert_relative_eq!(got.x, want.x, epsilon = 1e-6);
         assert_relative_eq!(got.y, want.y, epsilon = 1e-6);

@@ -1,19 +1,19 @@
 use std::borrow::Cow;
 
-/// A metric and its connection in one coordinate representation.
 pub trait Space {
     type Point: Copy + Send + Sync + 'static;
     type Vector: Copy + Send + Sync + 'static;
+    type Frame: Copy + Send + Sync + 'static;
+
+    fn frame_at(&self, at: Self::Point) -> Self::Frame;
 
     fn distance(&self, a: Self::Point, b: Self::Point) -> f32;
 
     /// Advances for unit time along the geodesic with initial velocity `v`.
     fn exp(&self, at: Self::Point, v: Self::Vector) -> Self::Point;
 
-    /// Inverse exponential map; each implementation defines its cut-locus behavior.
     fn log(&self, from: Self::Point, to: Self::Point) -> Self::Vector;
 
-    /// Uses the implementation's path; use [`Self::parallel_transport_along`] to specify a polyline.
     fn parallel_transport(
         &self,
         from: Self::Point,
@@ -34,9 +34,14 @@ pub trait Space {
     fn is_chart_flat(&self) -> bool {
         false
     }
+
+    /// Geodesic distance from the chart origin beyond which [`Self::valid_point`] refuses a point.
+    fn chart_envelope(&self) -> f32;
+
+    /// Finite, inside the chart, and within [`Self::chart_envelope`] of the origin.
+    fn valid_point(&self, p: Self::Point) -> bool;
 }
 
-/// A distance-preserving group action, with tangent transport given by its differential.
 pub trait IsometryGroup: Space {
     type Iso: Copy + Send + Sync + 'static;
 
@@ -53,7 +58,26 @@ pub trait IsometryGroup: Space {
     fn iso_transport(&self, iso: Self::Iso, at: Self::Point, v: Self::Vector) -> Self::Vector;
 }
 
+pub const FLAT_CHART_MAX_ARC: f32 = 40.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WgslAccuracy {
+    Exact,
+    FirstOrder { residual: f32 },
+}
+
+impl WgslAccuracy {
+    pub fn residual(self) -> f32 {
+        match self {
+            WgslAccuracy::Exact => 0.0,
+            WgslAccuracy::FirstOrder { residual } => residual,
+        }
+    }
+}
+
 pub trait WgslSpace: Space {
-    /// Emits vec3 `loam_distance`, `loam_origin_distance`, `loam_exp`, `loam_log`, `loam_parallel_transport`, and `LOAM_MAX_ARC`.
+    /// Emits `loam_distance`, `loam_origin_distance`, `loam_exp`, `loam_log`, `loam_geodesic_step`, and `LOAM_MAX_ARC` over the space's point type.
     fn wgsl_impl(&self) -> Cow<'static, str>;
+
+    fn wgsl_accuracy(&self) -> WgslAccuracy;
 }
