@@ -17,7 +17,6 @@ impl fmt::Display for LinkId {
     }
 }
 
-/// A typed pair of entities with data; endpoints resolve through the sparse index.
 #[derive(Clone, Copy, Debug)]
 pub struct Link<T> {
     pub(crate) from: Entity,
@@ -236,7 +235,6 @@ impl<T> Relation<T> {
         Some(&mut self.links[dense].data)
     }
 
-    /// O(1) to the first link; no rescan after a swap-remove.
     pub fn outgoing(&self, from: Entity) -> Endpoints<'_> {
         Endpoints {
             ids: self

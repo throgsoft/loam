@@ -1,5 +1,3 @@
-//! Capture reads the swapchain after the runner resolves and composites the selected stage.
-
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -104,7 +102,6 @@ struct WarmupFrame {
 // ~1 s at 30 fps; ~57 MB at 800x600, released after training.
 const GIF_WARMUP_FRAMES: u32 = 30;
 
-// Dropping it closes the channel, joins the thread, and flushes the trailer.
 pub(crate) struct GifWorker {
     tx: Option<SyncSender<GifFrame>>,
     handle: Option<JoinHandle<()>>,
@@ -263,7 +260,6 @@ fn encode_one_frame(
     };
 
     let mut gif_frame = if let Some(nq) = &frame.global_palette {
-        // Normalize alpha the same way `train_global_palette` did.
         for px in buf.chunks_exact_mut(4) {
             if px[3] != 0 {
                 px[3] = 0xFF;

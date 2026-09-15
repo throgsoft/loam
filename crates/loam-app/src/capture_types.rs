@@ -30,10 +30,8 @@ pub enum CaptureFormat {
 /// NeuQuant (Dekker, 1994) picks 256 colors; the mode controls what it trains on.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum PaletteMode {
-    /// Per-frame: consecutive palettes differ, so gradients shimmer.
     #[default]
     Local,
-    /// One palette trained on the first `GIF_WARMUP_FRAMES` captures.
     Global,
 }
 

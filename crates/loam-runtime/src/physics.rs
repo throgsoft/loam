@@ -50,7 +50,6 @@ impl<S: PhysicsSpace> GrabConfig<S> {
     }
 }
 
-/// Gravity and the narrowphase registration a domain's world is built with.
 pub struct PhysicsConfig<S: PhysicsSpace> {
     gravity: Option<S::Vector>,
     register: fn(&mut Narrowphase<S>),
@@ -171,7 +170,6 @@ impl<S: PhysicsSpace> Clone for Released<S> {
 
 impl<S: PhysicsSpace> Copy for Released<S> {}
 
-/// A domain's world plus the map between its entities and bodies; each step writes every dirty body's pose into its entity's row.
 pub struct Physics<S: PhysicsSpace> {
     scene: SceneId,
     world: World<S>,
@@ -780,7 +778,6 @@ where
     S::AngVel: PartialEq,
     S::Point: Sub<Output = S::Vector>,
 {
-    /// Only a space that is also a `PhysicsSpace` can name this, so a domain over any other space never builds a world.
     pub fn physics(self, config: PhysicsConfig<S>) -> Result<Self, EditError> {
         config.validate(&self.space)?;
         let mut world = World::new(self.space);

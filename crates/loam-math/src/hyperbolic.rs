@@ -38,7 +38,6 @@ fn clamp_to_ball(p: Vec3) -> Vec3 {
 /// SO⁺(3,1) acting on `(x, y, z, w)`, with `w` time-like.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3H {
-    /// Column-major matrix; membership in SO⁺(3,1) is a caller precondition.
     pub matrix: Mat4,
 }
 

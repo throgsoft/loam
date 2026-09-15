@@ -11,7 +11,6 @@ use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX
 use crate::spherical::Iso4;
 use crate::spherical_embedded::SphericalS3Embedded;
 
-/// A distance-preserving action on a quotient's covering space.
 pub trait CoveringSpace: Space {
     type CoverIso: Copy + Send + Sync + 'static;
 
@@ -31,14 +30,12 @@ pub trait CoveringSpace: Space {
     ) -> Self::Vector;
 }
 
-/// Cover actions select representatives; [`Self::face_pairings`] generate the deck group.
 pub trait QuotientSpace: CoveringSpace {
     /// Iteration order is part of the contract.
     fn face_pairings(&self) -> impl Iterator<Item = Self::CoverIso>;
 
     fn in_fundamental_domain(&self, p: Self::Point) -> bool;
 
-    /// Returns a domain representative and the deck element that maps `p` to it.
     fn wrap_to_domain(&self, p: Self::Point) -> (Self::Point, Self::CoverIso);
 }
 
@@ -67,7 +64,6 @@ impl FlatTorus3 {
         self.cell
     }
 
-    /// Half the shortest lattice vector.
     pub fn injectivity_radius(&self) -> f32 {
         0.5 * self.cell.min_element()
     }
@@ -255,7 +251,6 @@ impl LensSpace {
         self.q
     }
 
-    /// `π/p`, half the shortest deck displacement.
     pub fn injectivity_radius(&self) -> f32 {
         PI / self.p as f32
     }

@@ -30,7 +30,6 @@ pub trait Rotor: Copy + Mul<Output = Self> {
     fn log(self) -> Self::Bivector;
 }
 
-/// Coefficient on `e1∧e2`: the angle in radians from `x` toward `y`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bivector2(pub f32);
 
@@ -117,7 +116,6 @@ impl Rotor for Rotor2 {
     }
 }
 
-/// Coefficients on `e1∧e2`, `e2∧e3`, `e3∧e1`; the magnitude is the angle.
 #[derive(Copy, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bivector3 {
     pub xy: f32,
@@ -194,7 +192,6 @@ impl Bivector for Bivector3 {
     }
 }
 
-/// Scalar plus bivector part, with `s² + xy² + yz² + zx² = 1`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Rotor3 {
     pub s: f32,
@@ -285,7 +282,6 @@ impl Rotor for Rotor3 {
     }
 }
 
-/// Six coefficients on the basis planes `e_i ∧ e_j`, `i < j`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bivector4 {
     pub xy: f32,
@@ -396,7 +392,6 @@ impl Bivector4 {
         )
     }
 
-    /// Hodge dual `B* = B·I`.
     pub fn dual(self) -> Self {
         Self {
             xy: -self.zw,
@@ -409,7 +404,6 @@ impl Bivector4 {
     }
 }
 
-/// Discriminants follow [`Bivector4`]'s field order: `0=xy, 1=xz, 2=xw, 3=yz, 4=yw, 5=zw`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
 pub enum Plane4 {
@@ -559,10 +553,8 @@ impl Bivector for Bivector4 {
     }
 }
 
-/// Even element of G(4,0), with rotations recovered through [`Rotor::log`].
 #[derive(Copy, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rotor4 {
-    /// `cos(θ₁/2)·cos(θ₂/2)`.
     pub s: f32,
     pub xy: f32,
     pub xz: f32,
@@ -570,7 +562,6 @@ pub struct Rotor4 {
     pub yz: f32,
     pub yw: f32,
     pub zw: f32,
-    /// `sin(θ₁/2)·sin(θ₂/2)`; zero for a simple rotation.
     pub xyzw: f32,
 }
 

@@ -252,7 +252,6 @@ struct SubcommandEntry<Ctx> {
 pub struct SubcommandSet<Ctx> {
     name: &'static str,
     help: &'static str,
-    /// BTreeMap so iteration and Tab cycling are alphabetical.
     subs: BTreeMap<&'static str, SubcommandEntry<Ctx>>,
     name_cache: std::cell::OnceCell<Vec<&'static str>>,
     bare: Option<BareHandler<Ctx>>,
@@ -496,7 +495,6 @@ impl<Ctx: 'static> Command<Ctx> for SubcommandSet<Ctx> {
 
 pub struct Console<Ctx> {
     commands: BTreeMap<String, Box<dyn Command<Ctx>>>,
-    /// BTreeMap so binds fire in a fixed order when several land in one frame.
     binds: BTreeMap<Key, String>,
     toggle_key: Key,
     history: VecDeque<HistoryLine>,

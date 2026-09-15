@@ -5,12 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
 
-/// A rigid motion of R³: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3 {
-    /// Applied before translation; composition does not renormalize.
     pub rotation: Quat,
-    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec3,
 }
 

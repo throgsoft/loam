@@ -30,7 +30,6 @@ pub struct Submit<A: Stores> {
 }
 
 impl<A: Stores> Submit<A> {
-    /// Reads committed state at the command boundary and returns its text to the console.
     pub fn inspect(
         &mut self,
         name: &'static str,

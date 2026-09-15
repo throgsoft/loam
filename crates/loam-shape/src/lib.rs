@@ -20,13 +20,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Shape {
     Sphere {
-        /// Geodesic center in the shape frame. Ignored by physics.
         center: Vec3,
-        /// Positive; a zero or negative radius is not rejected here.
         radius: f32,
     },
 
-    /// `{ p : dot(p, normal) − offset ≤ 0 }` is the solid side.
     HalfSpace {
         /// Assumed unit: `dot(p, normal) - offset` is read as a signed distance.
         normal: Vec3,
@@ -61,9 +58,7 @@ pub enum Shape {
     },
 
     HyperSphere4D {
-        /// Local center for scene evaluation; physics uses the body position.
         center: Vec4,
-        /// Positive; same non-enforcement as [`Shape::Sphere`].
         radius: f32,
     },
 }
@@ -94,7 +89,6 @@ impl Shape {
     }
 }
 
-/// One variant per [`Shape`] variant, and [`Shape::kind`] is total.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShapeKind {
     Sphere,

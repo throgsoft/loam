@@ -13,7 +13,6 @@ use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
-/// Point velocity uses the negative Clifford left contraction.
 pub fn omega_cross_r(omega: Bivector4, r: glam::Vec4) -> glam::Vec4 {
     -omega.contract_vec(r)
 }

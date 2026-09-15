@@ -82,7 +82,6 @@ pub enum Key {
     Digit(u8),
 }
 
-/// Host configuration over pointer, key, and gamepad; nothing in the session names a key.
 #[derive(Clone, Debug, Default)]
 pub struct Bindings {
     keys: Vec<(Key, ActionId)>,

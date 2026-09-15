@@ -31,7 +31,6 @@ pub struct RigidBody<S: PhysicsSpace> {
 
     pub restitution: f32,
 
-    /// Each body must accept the other body's collision group.
     pub collision_group: u32,
     pub collision_mask: u32,
 }
@@ -44,7 +43,6 @@ impl<S: PhysicsSpace> Clone for RigidBody<S> {
 
 impl<S: PhysicsSpace> Copy for RigidBody<S> {}
 
-/// A body before its collider is prepared; [`crate::World::push_body`] turns it into a row.
 pub struct BodyDef<S: PhysicsSpace> {
     position: S::Point,
     velocity: S::Vector,
@@ -54,7 +52,6 @@ pub struct BodyDef<S: PhysicsSpace> {
 }
 
 impl<S: PhysicsSpace> BodyDef<S> {
-    /// Rejects invalid initial state, mass, or geometry unsupported by the space.
     pub fn new(
         position: S::Point,
         velocity: S::Vector,
@@ -409,7 +406,6 @@ impl<S: PhysicsSpace> BodyArena<S> {
         let dense = self.dense_index(id)?;
         let slot = &mut self.slots[id.slot as usize];
         slot.dense = None;
-        // A slot whose generation would wrap is retired, never recycled.
         if let Some(next) = slot.generation.checked_add(1) {
             slot.generation = next;
             self.free.push(id.slot);

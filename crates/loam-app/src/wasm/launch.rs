@@ -62,8 +62,6 @@ pub fn inject_launch_overlay(host_id: &str, button_id: &str) -> Result<HtmlButto
     overlay_button(host_id, button_id, "loam-demo-launch", "Launch demo")
 }
 
-/// The paused-state affordance (`.ready.resume`: immediately clickable, a paused
-/// demo is warm).
 pub fn show_resume_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonElement> {
     overlay_button(
         host_id,

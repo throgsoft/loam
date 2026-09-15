@@ -7,7 +7,6 @@ use crate::integrator::PhysicsSpace;
 use crate::manifold::Manifold;
 use crate::world::{FieldId, PairKey};
 
-/// Physics state without configuration: gravity, solver iterations, narrowphase functions, and the field objects stay with the world, while field bindings and anchor ids travel.
 #[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
     feature = "persist",

@@ -18,7 +18,6 @@ use crate::view::{ImageRay, Pick, Rigid, ViewRecords, ViewTarget, Views, ViewsSn
 
 const RELEASE_STALE_SECONDS: f64 = 0.12;
 
-/// Fixed steps on both hosts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SimConfig {
     pub fixed_hz: u32,
@@ -264,7 +263,6 @@ pub struct PublishedView {
     pub records: ViewRecords,
 }
 
-/// What a frame presents; publication writes it and the host reads it.
 #[derive(Default)]
 pub struct Publication {
     pub views: Vec<PublishedView>,
@@ -284,7 +282,6 @@ impl From<PhaseError> for PublishError {
     }
 }
 
-/// The one record buffer a session publishes into.
 pub struct Records {
     idle: Option<Publication>,
 }
@@ -702,7 +699,6 @@ impl<A: Stores> Session<A> {
         &self.bridges
     }
 
-    /// Checks the anchor, domain, view, and placement kind before it links the view.
     pub fn bridge(&mut self, spec: BridgeSpec) -> Result<LinkId, BridgeError> {
         if self.entities().resolve(spec.anchor).is_none() {
             return Err(BridgeError::Domain(DomainError::Stale(spec.anchor)));
@@ -755,7 +751,6 @@ impl<A: Stores> Session<A> {
         self.manipulation.dragging()
     }
 
-    /// Picks among the views with a ray lift and records a drag plane through the hit facing the root eye.
     pub fn grab(&mut self, ndc: [f32; 2], time: f64) -> Result<Pick, DragError> {
         self.manipulation.grab(
             &self.domains,
@@ -767,7 +762,6 @@ impl<A: Stores> Session<A> {
         )
     }
 
-    /// Meets the pointer ray with the drag plane, refusing a parallel ray as ambiguous, moves the entity's image point by the pointer delta, lifts it through the view's own map, and submits a `Move`.
     pub fn drag(&mut self, ndc: [f32; 2], time: f64) -> Result<ChartPoint, DragError> {
         self.manipulation
             .drag(&self.domains, &self.views, &mut self.commands, ndc, time)
@@ -785,7 +779,6 @@ impl<A: Stores> Session<A> {
         self.manipulation.cancel(&mut self.commands)
     }
 
-    /// Commits deferred commands, runs each dispatch entry and then its commands, counts what grew, and on the first boundary that finishes stores the session's initial snapshot if none was set.
     pub fn boundary(&mut self, input: Input) -> Result<Growth, PhaseError> {
         self.input = input;
         if let Some(error) = self.unfinished_error() {
@@ -829,7 +822,6 @@ impl<A: Stores> Session<A> {
         Ok(growth)
     }
 
-    /// One fixed step with the domain step among the simulation entries.
     pub fn tick(&mut self) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
@@ -1000,7 +992,6 @@ impl<A: Stores> Session<A> {
         Ok(())
     }
 
-    /// Refused like `snapshot`; `reset` restores what it captures.
     pub fn set_initial(&mut self) -> Result<(), RestoreError> {
         self.initial = Some(self.snapshot()?);
         Ok(())

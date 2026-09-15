@@ -1,5 +1,3 @@
-//! Glyph baking returns errors for unsupported characters and invalid geometry.
-
 mod field;
 mod hull;
 mod outline;

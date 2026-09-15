@@ -1,6 +1,5 @@
 use loam_egui::egui;
 
-/// `None` for buttons egui does not model.
 pub fn mouse_button_egui(button: u8) -> Option<egui::PointerButton> {
     match button {
         0 => Some(egui::PointerButton::Primary),

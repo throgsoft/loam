@@ -19,7 +19,6 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A shared hyperslice pass in the Background stage: it loads the color target the sky-ground pass filled, then writes scene color and reversed Z depth.
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,
@@ -43,7 +42,6 @@ impl HyperslicePass {
         }
     }
 
-    /// Stores the uniforms and copies the bodies; the record fills in the resolution and flushes both.
     pub fn publish(&self, uniforms: Hyperslice4DUniforms, bodies: &[BodyUniform]) {
         let mut state = self.shared.borrow_mut();
         state.uniforms = uniforms;

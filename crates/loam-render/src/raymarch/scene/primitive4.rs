@@ -4,7 +4,6 @@ use loam_shape::Shape;
 use super::literal::wgsl_f32;
 use super::SENTINEL_DISTANCE;
 
-/// CPU evaluation and named vec4 WGSL functions share primitive support rules.
 pub trait Primitive4 {
     fn to_wgsl_4d(&self, name: &str) -> String;
 

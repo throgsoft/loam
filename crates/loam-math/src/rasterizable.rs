@@ -1,5 +1,3 @@
-//! Projection consumes canonical ambient coordinates; tessellation emits samples without owning storage.
-
 use glam::{Vec3, Vec4};
 
 use crate::space::Space;
@@ -75,9 +73,7 @@ pub enum Projection<const N: usize> {
     /// Projects onto the cell plane; the normal must be outward and unit, and the eye outside the polytope.
     Schlegel {
         cell_normal: Vec4,
-        /// Signed plane offset: the cell lies in `{x : dot(cell_normal, x) = cell_offset}`.
         cell_offset: f32,
-        /// Eye distance along `cell_normal`; must exceed `cell_offset`.
         viewpoint_distance: f32,
         basis: [Vec4; 3],
     },
@@ -111,7 +107,6 @@ impl Projection<4> {
     }
 }
 
-/// `N` is the const-generic ambient dimension matching the `Visualizable<N>` mesh data in `loam-shape`.
 pub trait RasterizableSpace<const N: usize>: Space {
     fn point_to_array(p: Self::Point) -> [f32; N];
 

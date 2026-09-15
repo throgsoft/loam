@@ -1,9 +1,7 @@
 /// `pointer` and `keyboard` are read at different points in egui's pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UiCapture {
-    /// This frame's pointer against the previous build's layout.
     pub pointer: bool,
-    /// Focus as of the previous build, minus what this frame's Escape dropped.
     pub keyboard: bool,
 }
 

@@ -4,11 +4,9 @@ use serde::{Deserialize, Serialize};
 use crate::bivector::{Rotor, Rotor2};
 use crate::space::{IsometryGroup, Space};
 
-/// A rigid motion of R²: a rotation followed by a translation.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso2 {
     pub rotation: Rotor2,
-    /// Offset added after the rotation, in the target frame's coordinates.
     pub translation: Vec2,
 }
 

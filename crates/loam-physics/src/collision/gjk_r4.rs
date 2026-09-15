@@ -26,7 +26,6 @@ impl<'a> SupportFn4 for ConvexHull4<'a> {
     }
 }
 
-/// Support queries transform the direction into the body frame.
 pub struct PosedHull4<'a> {
     pub local: &'a [Vec4],
     pub position: Vec4,

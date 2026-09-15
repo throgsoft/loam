@@ -1,7 +1,3 @@
-//! Antisymmetric 4×4 `M_ij = B_ij = -M_ji`, upper triangle `xy xz xw / yz yw zw`
-//! in the `e_i ∧ e_j` basis (Hestenes & Sobczyk, Clifford Algebra to Geometric
-//! Calculus, ch. 1).
-
 use egui::{Grid, Label, Response, RichText, Ui};
 use loam_math::{Bivector4, Plane4};
 

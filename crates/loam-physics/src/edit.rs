@@ -24,7 +24,6 @@ pub enum EditError {
     FieldAnchorRemoval,
     AnchorBindsOwnField,
     FieldMismatch,
-    /// The world's narrowphase registrations differ from the snapshot's.
     RegistrationMismatch,
 }
 

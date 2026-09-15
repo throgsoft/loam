@@ -266,7 +266,6 @@ fn dispatch_embed_activated(host_id: &str) {
     }
 }
 
-// Starts inactive until the launch click's broadcast.
 fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> Result<()> {
     let document = web_sys::window()
         .and_then(|w| w.document())

@@ -31,7 +31,6 @@ pub fn root_view_projection(eye: &Eye) -> Mat4 {
     root_projection(eye.fov_y, eye.aspect, eye.near) * basis.inverse()
 }
 
-/// Places an R³ image space so that `eye` sits at the root origin.
 pub fn eye_relative(eye: Iso3) -> Mat4 {
     Mat4::from_rotation_translation(eye.rotation, eye.translation).inverse()
 }
@@ -44,17 +43,14 @@ pub fn placement_matrix(placement: Rigid) -> Mat4 {
     )
 }
 
-/// The root projection after the placement, so a bridged record lands where its space is placed and keeps the root eye's depth.
 pub fn placed_view_projection(eye: &Eye, placement: Rigid) -> Mat4 {
     root_view_projection(eye) * placement_matrix(placement)
 }
 
-/// Klein image of a Poincaré point, with `eye_inverse` composed first on the Lorentz embedding.
 pub fn h3_image_of(eye_inverse: &Iso3H, p: Vec3) -> Vec3 {
     hyperboloid_to_klein(eye_inverse.matrix * poincare_to_hyperboloid(p))
 }
 
-/// `samples` chords of a Poincaré-chart segment in the Klein image; [`klein_tessellation_error`] bounds the gap.
 pub fn klein_tessellate_segment(p0: Vec3, p1: Vec3, samples: usize, mut emit: impl FnMut(Vec3)) {
     let samples = samples.max(1);
     for i in 0..=samples {

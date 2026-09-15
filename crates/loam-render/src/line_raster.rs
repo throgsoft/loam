@@ -41,7 +41,6 @@ impl Default for LineRasterUniforms {
     }
 }
 
-/// Construct once per `RenderDevice`.
 pub struct LineRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
@@ -228,7 +227,6 @@ impl LineRasterNode {
         self.set_camera(queue, crate::view::root_view_projection(eye), viewport_size);
     }
 
-    /// Call before [`Self::record`] each frame.
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4, viewport_size: Vec2) {
         let uniforms = LineRasterUniforms {
             view_projection: view_projection.to_cols_array_2d(),

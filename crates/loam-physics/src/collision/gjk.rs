@@ -140,7 +140,6 @@ fn do_simplex(simplex: &mut [MinkowskiPoint; 4], n: usize) -> (bool, usize, Vec3
     }
 }
 
-// [b, a] with `a` newest.
 fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[1].point;
     let b = simplex[0].point;
@@ -176,7 +175,6 @@ fn fall_back_to_ab(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     do_line(simplex)
 }
 
-// [c, b, a] with `a` newest.
 fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
     let a = simplex[2].point;
     let b = simplex[1].point;

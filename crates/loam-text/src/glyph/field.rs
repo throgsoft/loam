@@ -16,7 +16,6 @@ pub struct DistanceField2D {
     cell: f32,
     samples_x: usize,
     samples_y: usize,
-    // Row-major, `samples_x` per row, `y` increasing with row index.
     samples: Vec<f32>,
 }
 
@@ -81,7 +80,6 @@ impl DistanceField2D {
         &mut self.samples
     }
 
-    /// Grid corner count, which is one more than the cell count per axis.
     pub fn sample_counts(&self) -> (usize, usize) {
         (self.samples_x, self.samples_y)
     }

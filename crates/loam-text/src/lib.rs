@@ -472,7 +472,6 @@ fn is_printable_ascii(c: char) -> bool {
     ('\u{20}'..='\u{7E}').contains(&c)
 }
 
-/// Accepts printable ASCII and newlines, matching the HUD layout.
 pub fn is_renderable(text: &str) -> bool {
     text.chars().all(|c| c == '\n' || is_printable_ascii(c))
 }

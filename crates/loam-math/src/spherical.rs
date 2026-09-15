@@ -47,7 +47,6 @@ fn from_sphere(q: Vec4) -> Vec3 {
 /// SO(4) acting on the ambient embedding of S³.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4 {
-    /// Column-major orthogonal matrix; inverse uses the transpose without validation.
     pub matrix: Mat4,
 }
 

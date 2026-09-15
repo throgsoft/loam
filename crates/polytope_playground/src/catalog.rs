@@ -192,7 +192,6 @@ pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
     })
 }
 
-// The space-separated `--shapes a,b` form never reaches `args`, so it errors.
 pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>> {
     if args.has_bare_flag("shapes") {
         return Err(anyhow!(

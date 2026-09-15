@@ -1,7 +1,6 @@
 use crate::entity::SceneId;
 use crate::store::{Owner, StoreField, Version};
 
-/// One row with no entity; app state that snapshots like a store.
 pub struct Value<T> {
     value: T,
     version: Version,

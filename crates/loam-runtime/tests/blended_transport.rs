@@ -117,7 +117,6 @@ fn blended_chart_walk_drifts_from_the_variational_path_and_frame() {
         .poses()
         .get(entity)
         .expect("stored pose");
-    // Euler-Lagrange for ∫√F√(1 + y'²) dx: y'' = (1 + y'²)(F_y - y'F_x)/(2F).
     let endpoint_error = metric_error(pose.point, [0.25, 0.143_538_88, 0.0]);
     assert!(
         endpoint_error <= ERROR_LIMIT,

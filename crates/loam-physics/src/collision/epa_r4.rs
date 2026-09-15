@@ -302,7 +302,6 @@ fn contact_from_face(polytope: &Polytope4, face: Face4) -> ContactInfo4 {
     }
 }
 
-// Affine witnesses must differ by normal times penetration.
 fn face_barycentrics(points: &[Vec4; 4], closest: Vec4) -> [f32; 4] {
     let shifted = points.map(|p| p - closest);
     match project_origin_onto_affine_hull(&[0, 1, 2, 3], &shifted) {
@@ -605,8 +604,6 @@ mod tests {
             );
         }
     }
-
-    // Schneider 2014, Convex Bodies, §1.7; Ziegler 1995, Lectures on Polytopes, §7.1.
 
     #[test]
     fn tesseract_tesseract_contact_matches_deepest_axis() {

@@ -3,7 +3,6 @@ use egui::{
     UiBuilder,
 };
 
-/// The dragged body leaves no layout slot behind.
 pub fn drag_source_collapsing<P>(
     ui: &mut Ui,
     id: Id,

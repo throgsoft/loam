@@ -46,7 +46,6 @@ pub enum PassExecutionError {
     },
 }
 
-/// The color and depth formats the presenter negotiated, handed to every pass at attach.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FrameFormat {
     pub color: TextureFormat,
@@ -89,7 +88,6 @@ pub trait FramePass {
         target: &FrameTarget<'_>,
     ) -> anyhow::Result<()>;
 
-    /// Builds device resources for startup or device replacement.
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()>;
 }
 

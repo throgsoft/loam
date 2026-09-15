@@ -152,7 +152,6 @@ impl Presenter {
         })
     }
 
-    /// Builds pass device resources at startup and after device loss.
     pub fn attach(&mut self, gpu: &GpuContext) -> Result<(), PassExecutionError> {
         self.depth = None;
         self.views.borrow_mut().clear();
@@ -181,7 +180,6 @@ impl Presenter {
         self.schedule.after_submit();
     }
 
-    /// Skips a slot whose domain, view, and built stamp match what it last uploaded; when any slot rebuilt, refills the section fills of every view, each mapped by its placement.
     pub fn upload(
         &mut self,
         device: &Device,

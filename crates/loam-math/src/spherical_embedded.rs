@@ -1,5 +1,3 @@
-//! S³ uses unit ambient Vec4 points and tangent vectors perpendicular to their base points.
-
 use glam::Vec4;
 
 use crate::rasterizable::{Projection, RasterizableSpace};

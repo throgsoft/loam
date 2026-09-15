@@ -62,7 +62,6 @@ impl From<PhaseError> for HostError {
     }
 }
 
-/// Boundary, tick, and publish `steps` times, with each key of `holds` held over its step range, and returns the last publication.
 pub fn run_headless<A: Stores>(
     session: &mut Session<A>,
     config: &HostConfig,
