@@ -111,6 +111,10 @@ impl Drag {
     }
 
     pub(crate) fn sample(&mut self, at: [f32; 3], time: f64) {
+        if time < self.newest_time() {
+            self.at = at;
+            return;
+        }
         if time - self.opened < SAMPLE_SPACING_SECONDS {
             self.samples[self.sampled.saturating_sub(1) % VELOCITY_SAMPLES] = (at, time);
         } else {
