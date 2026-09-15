@@ -321,6 +321,32 @@ fn a_turned_eye_carries_the_held_entity_the_same_distance_ahead() {
 }
 
 #[test]
+fn a_release_after_a_slow_carry_throws_at_the_recent_speed() {
+    let mut stage = stage(false);
+    let section = stage.view(Section4 { w: 0.0 });
+    let root = stage.root;
+    stage.bridge(root, section, shrunk()).unwrap();
+    stage.session.grab([GRAB_NDC, 0.0], 0.0).unwrap();
+    let mut ndc = GRAB_NDC;
+    let mut recent = [0.0; 3];
+    for step in 1..=1100 {
+        ndc += if step <= 1000 { 0.0001 } else { 0.001 };
+        stage.session.drag([ndc, 0.0], step as f64 * 0.001).unwrap();
+        if step == 1000 {
+            recent = stage.session.dragging().unwrap().image_point();
+        }
+    }
+    let end = stage.session.dragging().unwrap().image_point();
+    let want = (end[0] - recent[0]) / 0.1;
+    let release = stage.session.release().unwrap();
+    assert!(
+        (release.velocity[0] - want).abs() <= 0.05 * want,
+        "{:?} against the recent {want}: the release read the whole carry",
+        release.velocity
+    );
+}
+
+#[test]
 fn a_drag_through_a_section_lands_off_the_analytic_point() {
     let mut stage = stage(false);
     let section = stage.view(Section4 { w: 0.0 });

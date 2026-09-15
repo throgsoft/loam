@@ -415,6 +415,7 @@ impl Manipulation {
             at: plane,
             samples: [(plane, time); VELOCITY_SAMPLES],
             sampled: 1,
+            opened: time,
         });
         commands.submit(Command::Chart(
             pick.domain,

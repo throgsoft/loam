@@ -33,7 +33,9 @@ const MAX_CARRY_SPEED: f32 = 20.0;
 const MAX_GRAB_ACCELERATION: f32 = 400.0;
 const RELEASE_GAIN: f32 = 1.0;
 const MAX_RELEASE_SPEED: f32 = 0.5 * STEP_TRAVEL_BUDGET / (TICK_DT / MAX_SUBSTEPS as f32);
-const RELEASE_SPIN_GAIN: f32 = 0.25;
+const RELEASE_SPIN_GAIN: f32 = 0.075;
+// Spin a release can add, far under the tunneling bound below.
+const MAX_RELEASE_SPIN: f32 = 8.0;
 const MAX_ANGULAR_SPEED: f32 =
     0.5 * STEP_TRAVEL_BUDGET / (BODY_SIZE * (TICK_DT / MAX_SUBSTEPS as f32));
 const ANGULAR_DAMPING: f32 = 1.2;
@@ -99,7 +101,12 @@ pub(crate) fn release(
     velocity: [f32; 3],
 ) -> Result<(), EditError> {
     let (before, impulsed) = physics.throw_from_release(entity, release_velocity(velocity))?;
-    let mut angular = impulsed * RELEASE_SPIN_GAIN + before * (1.0 - RELEASE_SPIN_GAIN);
+    let mut spin = (impulsed + before * -1.0) * RELEASE_SPIN_GAIN;
+    let added = spin.magnitude();
+    if added > MAX_RELEASE_SPIN {
+        spin = spin * (MAX_RELEASE_SPIN / added);
+    }
+    let mut angular = before + spin;
     let speed = angular.magnitude();
     if speed > MAX_ANGULAR_SPEED {
         angular = angular * (MAX_ANGULAR_SPEED / speed);

@@ -58,7 +58,6 @@ impl From<DomainError> for DragError {
 
 pub(crate) const VELOCITY_SAMPLES: usize = 12;
 
-/// The drag plane sits `depth` in front of the current eye, so a moving eye carries the held entity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Drag {
     pub entity: Entity,
@@ -72,6 +71,7 @@ pub struct Drag {
     pub(crate) at: [f32; 3],
     pub(crate) samples: [([f32; 3], f64); VELOCITY_SAMPLES],
     pub(crate) sampled: usize,
+    pub(crate) opened: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,12 +111,12 @@ impl Drag {
     }
 
     pub(crate) fn sample(&mut self, at: [f32; 3], time: f64) {
-        let newest = self.sampled.saturating_sub(1) % VELOCITY_SAMPLES;
-        if self.sampled > 0 && time - self.samples[newest].1 < SAMPLE_SPACING_SECONDS {
-            self.samples[newest] = (at, time);
+        if time - self.opened < SAMPLE_SPACING_SECONDS {
+            self.samples[self.sampled.saturating_sub(1) % VELOCITY_SAMPLES] = (at, time);
         } else {
             self.samples[self.sampled % VELOCITY_SAMPLES] = (at, time);
             self.sampled += 1;
+            self.opened = time;
         }
         self.at = at;
     }
