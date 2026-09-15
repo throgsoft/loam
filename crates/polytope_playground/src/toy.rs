@@ -35,7 +35,7 @@ const RELEASE_GAIN: f32 = 1.0;
 const MAX_RELEASE_SPEED: f32 = 0.5 * STEP_TRAVEL_BUDGET / (TICK_DT / MAX_SUBSTEPS as f32);
 const RELEASE_SPIN_GAIN: f32 = 0.075;
 // Spin a release can add, far under the tunneling bound below.
-const MAX_RELEASE_SPIN: f32 = 8.0;
+const MAX_RELEASE_SPIN: f32 = 30.0;
 const MAX_ANGULAR_SPEED: f32 =
     0.5 * STEP_TRAVEL_BUDGET / (BODY_SIZE * (TICK_DT / MAX_SUBSTEPS as f32));
 const ANGULAR_DAMPING: f32 = 1.2;
