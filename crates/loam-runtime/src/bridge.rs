@@ -56,6 +56,9 @@ impl From<DomainError> for DragError {
     }
 }
 
+pub(crate) const VELOCITY_SAMPLES: usize = 12;
+
+/// The drag plane sits `depth` in front of the current eye, so a moving eye carries the held entity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Drag {
     pub entity: Entity,
@@ -64,10 +67,11 @@ pub struct Drag {
     pub image: ImageSpaceId,
     pub(crate) plane: [f32; 3],
     pub(crate) normal: [f32; 3],
+    pub(crate) depth: f32,
     pub(crate) center: [f32; 3],
     pub(crate) at: [f32; 3],
-    pub(crate) time: f64,
-    pub(crate) velocity: [f32; 3],
+    pub(crate) samples: [([f32; 3], f64); VELOCITY_SAMPLES],
+    pub(crate) sampled: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,19 +84,26 @@ pub struct DragRelease {
 }
 
 const PLANE_EPSILON: f32 = 1e-6;
+const VELOCITY_WINDOW_SECONDS: f64 = 0.1;
+// Keeps the ring from filling with one frame of high-rate pointer events.
+const SAMPLE_SPACING_SECONDS: f64 = 0.01;
 
 impl Drag {
     pub fn image_point(&self) -> [f32; 3] {
         self.at
     }
 
-    pub(crate) fn meet(&self, ray: &ImageRay) -> Option<[f32; 3]> {
-        let normal = Vec3::from(self.normal);
+    pub(crate) fn plane_at(&self, eye: [f32; 3], forward: [f32; 3]) -> [f32; 3] {
+        (Vec3::from(eye) + Vec3::from(forward) * self.depth).to_array()
+    }
+
+    pub(crate) fn meet(ray: &ImageRay, plane: [f32; 3], normal: [f32; 3]) -> Option<[f32; 3]> {
+        let normal = Vec3::from(normal);
         let along = Vec3::from(ray.direction).dot(normal);
         if along.abs() <= PLANE_EPSILON {
             return None;
         }
-        Some(ray.at((Vec3::from(self.plane) - Vec3::from(ray.origin)).dot(normal) / along))
+        Some(ray.at((Vec3::from(plane) - Vec3::from(ray.origin)).dot(normal) / along))
     }
 
     pub(crate) fn moved(&self, at: [f32; 3]) -> [f32; 3] {
@@ -100,20 +111,47 @@ impl Drag {
     }
 
     pub(crate) fn sample(&mut self, at: [f32; 3], time: f64) {
-        let elapsed = time - self.time;
-        if elapsed > 0.0 {
-            self.velocity = ((Vec3::from(at) - Vec3::from(self.at)) / elapsed as f32).to_array();
-            self.time = time;
+        let newest = self.sampled.saturating_sub(1) % VELOCITY_SAMPLES;
+        if self.sampled > 0 && time - self.samples[newest].1 < SAMPLE_SPACING_SECONDS {
+            self.samples[newest] = (at, time);
+        } else {
+            self.samples[self.sampled % VELOCITY_SAMPLES] = (at, time);
+            self.sampled += 1;
         }
         self.at = at;
     }
 
-    pub(crate) fn released(&self) -> DragRelease {
+    pub(crate) fn newest_time(&self) -> f64 {
+        self.samples[self.sampled.saturating_sub(1) % VELOCITY_SAMPLES].1
+    }
+
+    pub(crate) fn velocity(&self) -> [f32; 3] {
+        let held = self.sampled.min(VELOCITY_SAMPLES);
+        if held < 2 {
+            return [0.0; 3];
+        }
+        let newest = self.samples[(self.sampled - 1) % VELOCITY_SAMPLES];
+        let mut oldest = newest;
+        for back in 1..held {
+            let sample = self.samples[(self.sampled - 1 - back) % VELOCITY_SAMPLES];
+            if back > 1 && newest.1 - sample.1 > VELOCITY_WINDOW_SECONDS {
+                break;
+            }
+            oldest = sample;
+        }
+        let elapsed = (newest.1 - oldest.1) as f32;
+        if elapsed <= 0.0 {
+            return [0.0; 3];
+        }
+        ((Vec3::from(newest.0) - Vec3::from(oldest.0)) / elapsed).to_array()
+    }
+
+    pub(crate) fn released(&self, velocity: [f32; 3]) -> DragRelease {
         DragRelease {
             entity: self.entity,
             domain: self.domain,
             image: self.image,
-            velocity: self.velocity,
+            velocity,
         }
     }
 }

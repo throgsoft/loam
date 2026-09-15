@@ -1,6 +1,8 @@
 use loam_shape::polytope::Polytope4Topology;
 
-use crate::bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
+use crate::bridge::{
+    Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease, VELOCITY_SAMPLES,
+};
 use crate::command::{
     Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
 };
@@ -14,7 +16,7 @@ use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, System, SystemEn
 use crate::relation::{LinkId, Relation, RelationSnapshot};
 use crate::store::{Owner, SchemaId, StoreField};
 use crate::stores::Stores;
-use crate::view::{ImageRay, Pick, Rigid, ViewRecords, ViewTarget, Views, ViewsSnapshot};
+use crate::view::{ImageRay, Pick, Rigid, Vec3, ViewRecords, ViewTarget, Views, ViewsSnapshot};
 
 const RELEASE_STALE_SECONDS: f64 = 0.12;
 
@@ -384,12 +386,14 @@ impl Manipulation {
         let center = domain
             .image_of(pick.view, pick.entity)
             .ok_or(DomainError::Stale(pick.entity))?;
-        let forward = views
+        let eye = views
             .get(views.root())
             .ok_or(DomainError::Unsupported("image space"))?
-            .eye
-            .forward;
+            .eye;
         let plane = into.apply(pick.image_point);
+        let normal = into.direction(eye.forward);
+        let depth =
+            (Vec3::from(plane) - Vec3::from(into.apply(eye.position))).dot(Vec3::from(normal));
         let hit = pick.hit.ok_or(DomainError::Unsupported("view ray lift"))?;
         if let Some(held) = self.drag.take() {
             commands.submit(Command::Chart(
@@ -405,11 +409,12 @@ impl Manipulation {
             view: pick.view,
             image: pick.image,
             plane,
-            normal: into.direction(forward),
+            normal,
+            depth,
             center,
             at: plane,
-            time,
-            velocity: [0.0; 3],
+            samples: [(plane, time); VELOCITY_SAMPLES],
+            sampled: 1,
         });
         commands.submit(Command::Chart(
             pick.domain,
@@ -421,15 +426,13 @@ impl Manipulation {
         Ok(pick)
     }
 
-    pub(crate) fn drag<A: Stores>(
-        &mut self,
+    fn aim(
+        &self,
         domains: &Domains,
         views: &Views,
-        commands: &mut Commands<A>,
         ndc: [f32; 2],
-        time: f64,
-    ) -> Result<ChartPoint, DragError> {
-        let mut drag = self.drag.ok_or(DragError::NotGrabbed)?;
+    ) -> Result<(Drag, [f32; 3], ChartPoint), DragError> {
+        let drag = self.drag.ok_or(DragError::NotGrabbed)?;
         let domain = domains
             .get(drag.domain)
             .ok_or(DomainError::UnknownDomain(drag.domain))?;
@@ -440,7 +443,18 @@ impl Manipulation {
         let ray = views
             .ray(drag.image, ndc)
             .ok_or(DomainError::Unsupported("image space"))?;
-        let at = drag.meet(&ray).ok_or(DragError::Ambiguous(name))?;
+        let eye = views
+            .get(views.root())
+            .ok_or(DomainError::Unsupported("image space"))?
+            .eye;
+        let into = views
+            .to_root(drag.image)
+            .and_then(|to| to.rigid())
+            .ok_or(DomainError::Unsupported("image space"))?
+            .inverse();
+        let forward = into.direction(eye.forward);
+        let plane = drag.plane_at(into.apply(eye.position), forward);
+        let at = Drag::meet(&ray, plane, forward).ok_or(DragError::Ambiguous(name))?;
         let point = domain.lift_origin(
             drag.view,
             &ImageRay {
@@ -448,7 +462,15 @@ impl Manipulation {
                 direction: drag.normal,
             },
         )?;
-        drag.sample(at, time);
+        Ok((drag, at, point))
+    }
+
+    fn submit_move<A: Stores>(
+        &mut self,
+        commands: &mut Commands<A>,
+        drag: Drag,
+        point: ChartPoint,
+    ) {
         self.drag = Some(drag);
         commands.submit(Command::Chart(
             drag.domain,
@@ -457,26 +479,52 @@ impl Manipulation {
                 point,
             },
         ));
+    }
+
+    pub(crate) fn drag<A: Stores>(
+        &mut self,
+        domains: &Domains,
+        views: &Views,
+        commands: &mut Commands<A>,
+        ndc: [f32; 2],
+        time: f64,
+    ) -> Result<ChartPoint, DragError> {
+        let (mut drag, at, point) = self.aim(domains, views, ndc)?;
+        drag.sample(at, time);
+        self.submit_move(commands, drag, point);
         Ok(point)
     }
 
-    fn finish<A: Stores>(commands: &mut Commands<A>, drag: Drag, throw: bool) -> DragRelease {
-        let mut release = drag.released();
-        if !throw {
-            release.velocity = [0.0; 3];
-        }
+    pub(crate) fn hold<A: Stores>(
+        &mut self,
+        domains: &Domains,
+        views: &Views,
+        commands: &mut Commands<A>,
+        ndc: [f32; 2],
+    ) -> Result<ChartPoint, DragError> {
+        let (mut drag, at, point) = self.aim(domains, views, ndc)?;
+        drag.at = at;
+        self.submit_move(commands, drag, point);
+        Ok(point)
+    }
+
+    fn finish<A: Stores>(
+        commands: &mut Commands<A>,
+        drag: Drag,
+        velocity: [f32; 3],
+    ) -> DragRelease {
         commands.submit(Command::Chart(
             drag.domain,
             ChartCommand::Release {
                 entity: drag.entity,
             },
         ));
-        release
+        drag.released(velocity)
     }
 
     pub(crate) fn release<A: Stores>(&mut self, commands: &mut Commands<A>) -> Option<DragRelease> {
         let drag = self.drag.take()?;
-        Some(Self::finish(commands, drag, true))
+        Some(Self::finish(commands, drag, drag.velocity()))
     }
 
     pub(crate) fn release_at<A: Stores>(
@@ -485,17 +533,18 @@ impl Manipulation {
         time: f64,
     ) -> Option<DragRelease> {
         let drag = self.drag.take()?;
-        let age = time - drag.time;
-        Some(Self::finish(
-            commands,
-            drag,
-            (0.0..=RELEASE_STALE_SECONDS).contains(&age),
-        ))
+        let age = time - drag.newest_time();
+        let velocity = if (0.0..=RELEASE_STALE_SECONDS).contains(&age) {
+            drag.velocity()
+        } else {
+            [0.0; 3]
+        };
+        Some(Self::finish(commands, drag, velocity))
     }
 
     pub(crate) fn cancel<A: Stores>(&mut self, commands: &mut Commands<A>) -> Option<DragRelease> {
         let drag = self.drag.take()?;
-        Some(Self::finish(commands, drag, false))
+        Some(Self::finish(commands, drag, [0.0; 3]))
     }
 
     pub(crate) fn clear(&mut self) {
@@ -765,6 +814,11 @@ impl<A: Stores> Session<A> {
     pub fn drag(&mut self, ndc: [f32; 2], time: f64) -> Result<ChartPoint, DragError> {
         self.manipulation
             .drag(&self.domains, &self.views, &mut self.commands, ndc, time)
+    }
+
+    pub fn hold(&mut self, ndc: [f32; 2]) -> Result<ChartPoint, DragError> {
+        self.manipulation
+            .hold(&self.domains, &self.views, &mut self.commands, ndc)
     }
 
     pub fn release(&mut self) -> Option<DragRelease> {

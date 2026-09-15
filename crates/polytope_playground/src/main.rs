@@ -171,6 +171,9 @@ loam::runtime::stores! {
         angles: Value<[f32; 6]>,
         controls: Value<bool>,
         formula: Value<bool>,
+        labels: Value<bool>,
+        guides: Value<bool>,
+        toybox_debug: Value<bool>,
         camera: Value<camera::Camera>,
         control: Value<Control>,
         catalog: Value<Catalog>,
@@ -197,6 +200,9 @@ pub(crate) enum Action {
     ReorderShape { from: usize, to: usize },
     Controls(Option<bool>),
     Formula(Option<bool>),
+    Labels(Option<bool>),
+    Guides(Option<bool>),
+    ToyboxDebug(Option<bool>),
     Strip(Strip),
     Rate(f32),
     Display(Display),
@@ -260,6 +266,7 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
     session.views_mut().root_mut().eye =
         Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
     session.app.controls.set(true);
+    session.app.guides.set(true);
 
     let cards = session.app.catalog.get().cards.clone();
     install_systems(&mut session, domain, layers, cards);
@@ -549,6 +556,9 @@ impl AppCommand<Playground> for Action {
             Self::ReorderShape { .. } => "reorder shape",
             Self::Controls(_) => "controls",
             Self::Formula(_) => "formula",
+            Self::Labels(_) => "labels",
+            Self::Guides(_) => "guides",
+            Self::ToyboxDebug(_) => "toybox debug",
             Self::Strip(_) => "strip",
             Self::Rate(_) => "rate",
             Self::Display(_) => "display",
@@ -657,6 +667,18 @@ impl AppCommand<Playground> for Action {
             Action::Formula(setting) => {
                 let visible = *dispatch.app.formula.get();
                 dispatch.app.formula.set(setting.unwrap_or(!visible));
+            }
+            Action::Labels(setting) => {
+                let visible = *dispatch.app.labels.get();
+                dispatch.app.labels.set(setting.unwrap_or(!visible));
+            }
+            Action::Guides(setting) => {
+                let visible = *dispatch.app.guides.get();
+                dispatch.app.guides.set(setting.unwrap_or(!visible));
+            }
+            Action::ToyboxDebug(setting) => {
+                let visible = *dispatch.app.toybox_debug.get();
+                dispatch.app.toybox_debug.set(setting.unwrap_or(!visible));
             }
             Action::Time(time) => {
                 display::seek(dispatch.app, dispatch.domains, domain, time)
@@ -909,7 +931,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
                 scratch.subject,
                 &scratch.depths,
             );
-            if panel.show_callouts && !strip.on {
+            if *hook.session.app.labels.get() && !strip.on {
                 ui::callouts(context, hook.session, &scratch.anchors);
             }
             ui::strip_labels(context, hook.session, &scratch.cells);
@@ -961,6 +983,7 @@ fn readout_of(session: &Session<Playground>) -> hud::Readout {
         rate: session.app.spin.get().rate,
         bodies: session.app.slots.len(),
         planes: session.app.spin.get().planes,
+        toybox: *session.app.mode.get() == Mode::Toybox,
     }
 }
 
@@ -1086,6 +1109,7 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
     } else {
         gimbal.release();
     }
+    let mut aimed = false;
     for index in 0..ctx.input.pointers.len() {
         let pointer = ctx.input.pointers[index];
         if pointer.button != Some(PointerButton::Primary) {
@@ -1100,6 +1124,7 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
                         .is_some_and(|ray| gimbal.press(&ray, center));
                 if !ring && *ctx.app.mode.get() == Mode::Toybox && !ctx.app.strip.get().on {
                     let _ = ctx.grab(pointer.ndc, pointer.time);
+                    aimed = true;
                 }
             }
             PointerPhase::Moved if gimbal.held() => {
@@ -1111,10 +1136,11 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
                     let _ = mode::turn_row(ctx.app, ctx.domains, domain, rotor);
                 }
             }
-            PointerPhase::Moved
-                if ctx.dragging().is_some() && ctx.drag(pointer.ndc, pointer.time).is_err() =>
-            {
-                ctx.cancel_drag();
+            PointerPhase::Moved if ctx.dragging().is_some() => {
+                aimed = true;
+                if ctx.drag(pointer.ndc, pointer.time).is_err() {
+                    ctx.cancel_drag();
+                }
             }
             PointerPhase::Ended if gimbal.held() => gimbal.release(),
             PointerPhase::Ended if ctx.dragging().is_some() => {
@@ -1128,6 +1154,11 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
                 ctx.cancel_drag();
             }
             _ => {}
+        }
+    }
+    if let Some(pointer) = latest.filter(|_| !aimed && ctx.dragging().is_some()) {
+        if ctx.hold(pointer.ndc).is_err() {
+            ctx.cancel_drag();
         }
     }
     ctx.app.control.get_mut().gimbal = gimbal;
@@ -1886,6 +1917,7 @@ mod tests {
             .expect("the ray through the slot center picks it");
         assert_eq!(picked.entity, entity);
         booted.session.boundary(Input::default()).expect("hold");
+        booted.session.app.toybox_debug.set(true);
         let mut guides = guides::Guides::default();
         guides.update(&booted.session, booted.domain);
         assert_eq!(guides.points.len(), 1);

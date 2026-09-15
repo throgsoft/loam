@@ -30,7 +30,6 @@ pub(crate) struct Panel {
     expanded: bool,
     show_render: bool,
     show_about: bool,
-    pub(crate) show_callouts: bool,
 }
 
 pub(crate) fn draw(
@@ -81,12 +80,21 @@ fn menu_bar(
                 if ui.checkbox(&mut controls, "Controls").changed() {
                     sender.app(Action::Controls(None));
                 }
-                let mut formula = *app.formula.get();
-                if ui.checkbox(&mut formula, "Rotation formula").changed() {
-                    sender.app(Action::Formula(None));
+                match *app.mode.get() {
+                    Mode::Rotate => {
+                        let mut formula = *app.formula.get();
+                        if ui.checkbox(&mut formula, "Rotation formula").changed() {
+                            sender.app(Action::Formula(None));
+                        }
+                    }
+                    Mode::Toybox => {
+                        let mut guides = *app.guides.get();
+                        if ui.checkbox(&mut guides, "Floor guides").changed() {
+                            sender.app(Action::Guides(None));
+                        }
+                    }
                 }
                 ui.checkbox(&mut panel.show_render, "Render settings");
-                ui.checkbox(&mut panel.show_callouts, "Shape labels");
                 ui.separator();
                 if ui.button("About this program").clicked() {
                     panel.show_about = true;
@@ -434,31 +442,39 @@ fn toybox_depth(
         .filter(|band| slice >= band.min && slice <= band.max)
         .count();
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("w depth").strong());
+        ui.label(egui::RichText::new("w slice").strong());
         ui.monospace(format!("{slice:+.2}"));
-        ui.label(format!("{visible}/{} in slice", depths.len()));
+        ui.label(egui::RichText::new(format!("{visible} of {} in the slice", depths.len())).weak());
     });
     if let Some(next) = depth_ruler(ui, slice, depths) {
         sender.app(Action::Slice(next));
     }
     if panel.expanded {
         ui.label("Primary-drag a shape to carry it. Release it to throw.");
-        ui.label("Click or drag the depth ruler to move the w slice.");
+        ui.label("Click or drag the ruler to move the w slice.");
     }
     transport(ui, app, panel, sender);
 }
 
 fn depth_ruler(ui: &mut egui::Ui, slice: f32, depths: &[DepthBand]) -> Option<f32> {
-    const LABEL_WIDTH: f32 = 76.0;
-    const ROW_HEIGHT: f32 = 18.0;
-    let height = ROW_HEIGHT * depths.len().max(1) as f32;
+    const LABEL_WIDTH: f32 = 72.0;
+    const ROW_HEIGHT: f32 = 16.0;
+    const AXIS_HEIGHT: f32 = 14.0;
+    const PAD: f32 = 6.0;
+    let rows = depths.len().max(1) as f32;
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height),
+        egui::vec2(
+            ui.available_width(),
+            ROW_HEIGHT * rows + AXIS_HEIGHT + 2.0 * PAD,
+        ),
         egui::Sense::click_and_drag(),
     );
     let chart = egui::Rect::from_min_max(
-        egui::pos2((rect.left() + LABEL_WIDTH).min(rect.right()), rect.top()),
-        rect.max,
+        egui::pos2(
+            (rect.left() + LABEL_WIDTH).min(rect.right() - PAD),
+            rect.top() + PAD,
+        ),
+        egui::pos2(rect.right() - PAD, rect.bottom() - PAD - AXIS_HEIGHT),
     );
     let reach = depths.iter().fold(W_RANGE, |held, band| {
         held.max(band.min.abs()).max(band.max.abs())
@@ -467,14 +483,46 @@ fn depth_ruler(ui: &mut egui::Ui, slice: f32, depths: &[DepthBand]) -> Option<f3
         let position = (w / reach).clamp(-1.0, 1.0) * 0.5 + 0.5;
         chart.left() + position * chart.width()
     };
+    let axis_color = ui.visuals().weak_text_color();
     let painter = ui.painter();
-    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(20, 22, 28));
-    for (index, band) in depths.iter().enumerate() {
-        let top = rect.top() + index as f32 * ROW_HEIGHT;
-        let row = egui::Rect::from_min_max(
-            egui::pos2(rect.left(), top),
-            egui::pos2(rect.right(), top + ROW_HEIGHT),
+    painter.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
+    let axis_y = chart.bottom() + 2.0;
+    painter.line_segment(
+        [
+            egui::pos2(chart.left(), axis_y),
+            egui::pos2(chart.right(), axis_y),
+        ],
+        egui::Stroke::new(1.0, axis_color),
+    );
+    for (w, align) in [
+        (-reach, egui::Align2::LEFT_TOP),
+        (0.0, egui::Align2::CENTER_TOP),
+        (reach, egui::Align2::RIGHT_TOP),
+    ] {
+        let x = x_for(w);
+        painter.line_segment(
+            [egui::pos2(x, axis_y), egui::pos2(x, axis_y + 3.0)],
+            egui::Stroke::new(1.0, axis_color),
         );
+        painter.text(
+            egui::pos2(x, axis_y + 4.0),
+            align,
+            format!("{w:+.1}"),
+            egui::FontId::monospace(10.0),
+            axis_color,
+        );
+    }
+    painter.line_segment(
+        [
+            egui::pos2(x_for(0.0), chart.top()),
+            egui::pos2(x_for(0.0), chart.bottom()),
+        ],
+        egui::Stroke::new(1.0, axis_color.gamma_multiply(0.4)),
+    );
+    for (index, band) in depths.iter().enumerate() {
+        let top = chart.top() + index as f32 * ROW_HEIGHT;
+        let middle = top + ROW_HEIGHT * 0.5;
+        let in_slice = slice >= band.min && slice <= band.max;
         let dim = if band.asleep { 0.5 } else { 1.0 };
         let channel = |value: f32| (value * dim * 255.0).clamp(0.0, 255.0) as u8;
         let color = egui::Color32::from_rgb(
@@ -483,43 +531,58 @@ fn depth_ruler(ui: &mut egui::Ui, slice: f32, depths: &[DepthBand]) -> Option<f3
             channel(band.color[2]),
         );
         painter.text(
-            egui::pos2(rect.left() + 5.0, row.center().y),
-            egui::Align2::LEFT_CENTER,
+            egui::pos2(chart.left() - 8.0, middle),
+            egui::Align2::RIGHT_CENTER,
             band.label,
             egui::FontId::monospace(11.0),
-            color,
+            if in_slice {
+                color
+            } else {
+                color.gamma_multiply(0.7)
+            },
         );
+        let left = x_for(band.min);
+        let right = x_for(band.max).max(left + 2.0);
         let band_rect = egui::Rect::from_min_max(
-            egui::pos2(x_for(band.min), row.top() + 3.0),
-            egui::pos2(x_for(band.max), row.bottom() - 3.0),
+            egui::pos2(left, top + 3.0),
+            egui::pos2(right, top + ROW_HEIGHT - 3.0),
         );
-        painter.rect_filled(band_rect, 2.0, color.gamma_multiply(0.55));
+        painter.rect_filled(
+            band_rect,
+            3.0,
+            color.gamma_multiply(if in_slice { 0.85 } else { 0.35 }),
+        );
         painter.line_segment(
             [
-                egui::pos2(x_for(band.center), row.top() + 2.0),
-                egui::pos2(x_for(band.center), row.bottom() - 2.0),
+                egui::pos2(x_for(band.center), top + 2.0),
+                egui::pos2(x_for(band.center), top + ROW_HEIGHT - 2.0),
             ],
             egui::Stroke::new(1.5, color),
         );
-        if slice >= band.min && slice <= band.max {
-            painter.rect_stroke(
-                band_rect,
-                2.0,
-                egui::Stroke::new(1.0, egui::Color32::WHITE),
-                egui::StrokeKind::Inside,
-            );
-        }
     }
     let slice_x = x_for(slice);
     painter.line_segment(
         [
-            egui::pos2(slice_x, rect.top()),
-            egui::pos2(slice_x, rect.bottom()),
+            egui::pos2(slice_x, chart.top() - 2.0),
+            egui::pos2(slice_x, chart.bottom() + 2.0),
         ],
-        egui::Stroke::new(2.0, egui::Color32::WHITE),
+        egui::Stroke::new(1.5, egui::Color32::WHITE),
+    );
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(slice_x - 4.0, chart.top() - 5.0),
+            egui::pos2(slice_x + 4.0, chart.top() - 5.0),
+            egui::pos2(slice_x, chart.top()),
+        ],
+        egui::Color32::WHITE,
+        egui::Stroke::NONE,
+    ));
+    let hit = egui::Rect::from_min_max(
+        egui::pos2(chart.left(), rect.top()),
+        egui::pos2(chart.right(), rect.bottom()),
     );
     let pointer = response.interact_pointer_pos()?;
-    if !(response.clicked() || response.dragged()) || !chart.contains(pointer) {
+    if !(response.clicked() || response.dragged()) || !hit.contains(pointer) {
         return None;
     }
     let position =
@@ -711,7 +774,7 @@ fn about(context: &egui::Context, panel: &mut Panel) {
 }
 
 fn rotor_formula(context: &egui::Context, app: &Playground, rotor: Rotor4) {
-    if !*app.formula.get() {
+    if !*app.formula.get() || *app.mode.get() == Mode::Toybox {
         return;
     }
     let available = context.available_rect();

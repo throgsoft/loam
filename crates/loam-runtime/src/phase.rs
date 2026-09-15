@@ -116,6 +116,12 @@ impl<A: Stores> Ctx<'_, A> {
             .drag(self.domains, self.views, self.commands, ndc, time)
     }
 
+    /// Re-aims the held target at `ndc` after the eye moved; adds no velocity sample.
+    pub fn hold(&mut self, ndc: [f32; 2]) -> Result<ChartPoint, DragError> {
+        self.manipulation
+            .hold(self.domains, self.views, self.commands, ndc)
+    }
+
     pub fn release(&mut self) -> Option<DragRelease> {
         self.manipulation.release(self.commands)
     }

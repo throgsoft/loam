@@ -166,6 +166,39 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
     );
 
     app = app.command(
+        "labels",
+        "toggle the shape labels; optional on | off",
+        |args, submit, _out| {
+            submit.app(Action::Labels(toggle(args, "usage: labels [on|off]")?));
+            Ok(())
+        },
+    );
+
+    app = app.command(
+        "guides",
+        "toggle the toybox floor guides; optional on | off",
+        |args, submit, _out| {
+            submit.app(Action::Guides(toggle(args, "usage: guides [on|off]")?));
+            Ok(())
+        },
+    );
+
+    app = app.command(
+        "toybox",
+        "toybox debug drawing: debug [on|off]",
+        |args, submit, _out| match args {
+            ["debug", rest @ ..] => {
+                submit.app(Action::ToyboxDebug(toggle(
+                    rest,
+                    "usage: toybox debug [on|off]",
+                )?));
+                Ok(())
+            }
+            _ => bail!("usage: toybox debug [on|off]"),
+        },
+    );
+
+    app = app.command(
         "handles",
         "toggle the 4D rotation handles; optional on | off",
         |args, submit, _out| {

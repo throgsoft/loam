@@ -298,7 +298,7 @@ fn a_drag_through_a_projection_moves_the_entity_instead_of_naming_the_view() {
 }
 
 #[test]
-fn a_drag_whose_ray_runs_parallel_to_its_constraint_moves_the_entity() {
+fn a_turned_eye_carries_the_held_entity_the_same_distance_ahead() {
     let mut stage = stage(false);
     let section = stage.view(Section4 { w: 0.0 });
     let root = stage.root;
@@ -306,12 +306,18 @@ fn a_drag_whose_ray_runs_parallel_to_its_constraint_moves_the_entity() {
     stage.session.grab([GRAB_NDC, 0.0], 0.0).unwrap();
     stage.session.views_mut().root_mut().eye =
         Eye::looking_at([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-    assert_eq!(
-        stage.session.drag([0.0, 0.0], 0.5),
-        Err(DragError::Ambiguous("section4"))
-    );
+    stage.session.hold([0.0, 0.0]).unwrap();
     stage.session.boundary(Input::default()).unwrap();
-    assert_eq!(stage.at(), OBJECT);
+    let eye_local = Vec3::new(-SHIFT / SCALE, 0.0, 0.0);
+    let ahead = eye_local + Vec3::X * -HIT.z;
+    let want = OBJECT + (ahead - HIT.truncate()).extend(0.0);
+    let moved = stage.at();
+    assert!((moved - want).length() <= 1e-4, "{moved:?} is not {want:?}");
+    let release = stage.session.release().unwrap();
+    assert_eq!(
+        release.velocity, [0.0; 3],
+        "a hold sampled pointer velocity"
+    );
 }
 
 #[test]
