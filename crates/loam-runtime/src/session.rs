@@ -427,13 +427,15 @@ impl Manipulation {
         Ok(pick)
     }
 
-    fn aim(
-        &self,
+    pub(crate) fn drag<A: Stores>(
+        &mut self,
         domains: &Domains,
         views: &Views,
+        commands: &mut Commands<A>,
         ndc: [f32; 2],
-    ) -> Result<(Drag, [f32; 3], ChartPoint), DragError> {
-        let drag = self.drag.ok_or(DragError::NotGrabbed)?;
+        time: f64,
+    ) -> Result<ChartPoint, DragError> {
+        let mut drag = self.drag.ok_or(DragError::NotGrabbed)?;
         let domain = domains
             .get(drag.domain)
             .ok_or(DomainError::UnknownDomain(drag.domain))?;
@@ -463,15 +465,7 @@ impl Manipulation {
                 direction: drag.normal,
             },
         )?;
-        Ok((drag, at, point))
-    }
-
-    fn submit_move<A: Stores>(
-        &mut self,
-        commands: &mut Commands<A>,
-        drag: Drag,
-        point: ChartPoint,
-    ) {
+        drag.sample(at, time);
         self.drag = Some(drag);
         commands.submit(Command::Chart(
             drag.domain,
@@ -480,32 +474,6 @@ impl Manipulation {
                 point,
             },
         ));
-    }
-
-    pub(crate) fn drag<A: Stores>(
-        &mut self,
-        domains: &Domains,
-        views: &Views,
-        commands: &mut Commands<A>,
-        ndc: [f32; 2],
-        time: f64,
-    ) -> Result<ChartPoint, DragError> {
-        let (mut drag, at, point) = self.aim(domains, views, ndc)?;
-        drag.sample(at, time);
-        self.submit_move(commands, drag, point);
-        Ok(point)
-    }
-
-    pub(crate) fn hold<A: Stores>(
-        &mut self,
-        domains: &Domains,
-        views: &Views,
-        commands: &mut Commands<A>,
-        ndc: [f32; 2],
-    ) -> Result<ChartPoint, DragError> {
-        let (mut drag, at, point) = self.aim(domains, views, ndc)?;
-        drag.at = at;
-        self.submit_move(commands, drag, point);
         Ok(point)
     }
 
@@ -815,11 +783,6 @@ impl<A: Stores> Session<A> {
     pub fn drag(&mut self, ndc: [f32; 2], time: f64) -> Result<ChartPoint, DragError> {
         self.manipulation
             .drag(&self.domains, &self.views, &mut self.commands, ndc, time)
-    }
-
-    pub fn hold(&mut self, ndc: [f32; 2]) -> Result<ChartPoint, DragError> {
-        self.manipulation
-            .hold(&self.domains, &self.views, &mut self.commands, ndc)
     }
 
     pub fn release(&mut self) -> Option<DragRelease> {

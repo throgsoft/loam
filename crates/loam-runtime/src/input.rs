@@ -43,6 +43,8 @@ pub struct Input {
     /// Captured mouse motion in logical pixels, y-up.
     pub look: [f32; 2],
     pub cursor_locked: bool,
+    /// Seconds on the pointer clock when the host gathered this boundary.
+    pub time: f64,
 }
 
 impl Input {

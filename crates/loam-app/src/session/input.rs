@@ -423,6 +423,7 @@ impl InputMap {
         }
         self.input.look = std::mem::take(&mut self.look);
         self.input.cursor_locked = self.cursor_locked;
+        self.input.time = self.started.elapsed().as_secs_f64();
         std::mem::replace(&mut self.input, std::mem::take(&mut self.spare))
     }
 
@@ -433,6 +434,7 @@ impl InputMap {
         reclaimed.scroll = [0.0; 2];
         reclaimed.look = [0.0; 2];
         reclaimed.cursor_locked = false;
+        reclaimed.time = 0.0;
         self.spare = reclaimed;
     }
 }

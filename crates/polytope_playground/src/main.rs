@@ -1157,7 +1157,8 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
         }
     }
     if let Some(pointer) = latest.filter(|_| !aimed && ctx.dragging().is_some()) {
-        if ctx.hold(pointer.ndc).is_err() {
+        let time = ctx.input.time;
+        if ctx.drag(pointer.ndc, time).is_err() {
             ctx.cancel_drag();
         }
     }
@@ -1878,6 +1879,59 @@ mod tests {
             .read(booted.domain)
             .expect("domain");
         assert!(physics.physics().expect("physics").is_held(picked.entity));
+    }
+
+    #[test]
+    fn a_carry_by_the_camera_alone_throws_with_its_motion() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted.session.boundary(Input::default()).expect("toybox");
+        let center = toy::pose_at(Polytope4::Pentatope, 0.0).point.truncate();
+        booted.session.app.control.get_mut().orbit = Orbit::around(center.to_array(), EYE_BACK);
+        let pointer = |phase, time| Pointer {
+            id: 0,
+            button: Some(PointerButton::Primary),
+            ndc: [0.0; 2],
+            delta: [0.0; 2],
+            phase,
+            time,
+        };
+        booted
+            .session
+            .boundary(Input {
+                pointers: vec![pointer(PointerPhase::Began, 0.0)],
+                ..Input::default()
+            })
+            .expect("grab");
+        let picked = booted.session.dragging().expect("grab").entity;
+        for step in 1..=12 {
+            booted.session.app.control.get_mut().orbit.distance -= 0.1;
+            booted
+                .session
+                .boundary(Input {
+                    time: step as f64 * 0.016,
+                    ..Input::default()
+                })
+                .expect("carry");
+        }
+        booted
+            .session
+            .boundary(Input {
+                pointers: vec![pointer(PointerPhase::Ended, 13.0 * 0.016)],
+                time: 13.0 * 0.016,
+                ..Input::default()
+            })
+            .expect("release");
+        let physics = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .physics()
+            .expect("physics");
+        let body = physics.body(picked).expect("body");
+        let velocity = physics.world().body(body).expect("body row").velocity;
+        assert!(velocity.z < -1.0, "a camera carry released at {velocity}");
     }
 
     #[test]
