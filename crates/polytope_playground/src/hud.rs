@@ -25,12 +25,17 @@ pub(crate) struct Readout {
     pub(crate) rate: f32,
     pub(crate) bodies: usize,
     pub(crate) planes: [bool; 6],
+    pub(crate) toybox: bool,
 }
 
 // loam-text lays out on advance widths only, so columns need padded formatting.
 pub(crate) fn write_readout(out: &mut String, readout: &Readout) {
     out.clear();
     let _ = writeln!(out, "{:<6} {:>+8.3}", "w", readout.slice);
+    if readout.toybox {
+        let _ = write!(out, "{:<6} {:>7}", "bodies", readout.bodies);
+        return;
+    }
     let _ = writeln!(out, "{:<6} {:>7.2}x", "rate", readout.rate);
     let _ = writeln!(out, "{:<6} {:>7}", "bodies", readout.bodies);
     let _ = write!(out, "{:<6} ", "planes");
@@ -128,6 +133,7 @@ mod tests {
             rate: value,
             bodies: 8,
             planes,
+            toybox: false,
         }
     }
 

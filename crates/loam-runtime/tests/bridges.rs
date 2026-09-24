@@ -298,7 +298,7 @@ fn a_drag_through_a_projection_moves_the_entity_instead_of_naming_the_view() {
 }
 
 #[test]
-fn a_drag_whose_ray_runs_parallel_to_its_constraint_moves_the_entity() {
+fn a_turned_eye_carries_the_held_entity_and_the_carry_throws_it() {
     let mut stage = stage(false);
     let section = stage.view(Section4 { w: 0.0 });
     let root = stage.root;
@@ -306,12 +306,53 @@ fn a_drag_whose_ray_runs_parallel_to_its_constraint_moves_the_entity() {
     stage.session.grab([GRAB_NDC, 0.0], 0.0).unwrap();
     stage.session.views_mut().root_mut().eye =
         Eye::looking_at([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
-    assert_eq!(
-        stage.session.drag([0.0, 0.0], 0.5),
-        Err(DragError::Ambiguous("section4"))
-    );
+    stage.session.drag([0.0, 0.0], 0.5).unwrap();
     stage.session.boundary(Input::default()).unwrap();
-    assert_eq!(stage.at(), OBJECT);
+    let eye_local = Vec3::new(-SHIFT / SCALE, 0.0, 0.0);
+    let ahead = eye_local + Vec3::X * -HIT.z;
+    let carried = ahead - HIT.truncate();
+    let want = OBJECT + carried.extend(0.0);
+    let moved = stage.at();
+    assert!((moved - want).length() <= 1e-4, "{moved:?} is not {want:?}");
+    let release = stage.session.release().unwrap();
+    let speed = Vec3::from(release.velocity);
+    assert!(
+        (speed - carried / 0.5).length() <= 1e-3,
+        "{speed:?} is not the carry {:?} over half a second",
+        carried / 0.5
+    );
+}
+
+#[test]
+fn a_release_after_a_slow_carry_throws_at_the_recent_speed() {
+    let mut stage = stage(false);
+    let section = stage.view(Section4 { w: 0.0 });
+    let root = stage.root;
+    stage.bridge(root, section, shrunk()).unwrap();
+    stage.session.grab([GRAB_NDC, 0.0], 0.0).unwrap();
+    let mut ndc = GRAB_NDC;
+    let mut recent = [0.0; 3];
+    for step in 1..=1100 {
+        ndc += if step <= 1000 {
+            0.0001
+        } else if step % 2 == 1 {
+            0.002
+        } else {
+            0.0
+        };
+        stage.session.drag([ndc, 0.0], step as f64 * 0.001).unwrap();
+        if step == 1000 {
+            recent = stage.session.dragging().unwrap().image_point();
+        }
+    }
+    let end = stage.session.dragging().unwrap().image_point();
+    let want = (end[0] - recent[0]) / 0.1;
+    let release = stage.session.release().unwrap();
+    assert!(
+        (release.velocity[0] - want).abs() <= 0.05 * want,
+        "{:?} against the recent {want}: the release read the whole carry",
+        release.velocity
+    );
 }
 
 #[test]

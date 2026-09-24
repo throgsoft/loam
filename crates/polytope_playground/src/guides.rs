@@ -23,7 +23,10 @@ impl Guides {
     ) {
         self.lines.clear();
         self.points.clear();
-        if *session.app.mode.get() != Mode::Toybox || session.app.strip.get().on {
+        if *session.app.mode.get() != Mode::Toybox
+            || session.app.strip.get().on
+            || !*session.app.guides.get()
+        {
             return;
         }
         self.rectangle(
@@ -34,10 +37,6 @@ impl Guides {
         let Some(drag) = session.dragging() else {
             return;
         };
-        let placement = session
-            .views()
-            .to_root(drag.image)
-            .and_then(|to| to.rigid());
         let Some(polytope) = session
             .app
             .slots
@@ -49,25 +48,31 @@ impl Guides {
         let Ok(r4) = session.domains().read(domain) else {
             return;
         };
-        let anchor = r4
-            .physics()
-            .and_then(|physics| physics.held_anchor(drag.entity));
-        if let (Some(anchor), Some(placement), Some(view), Some(eye)) = (
-            anchor,
-            placement,
-            r4.view(drag.view),
-            r4.view_eye(drag.view),
-        ) {
-            if let Some(point) = r4
-                .poses()
-                .get(eye)
-                .and_then(|eye| view.mapping().image_point(eye, anchor))
-            {
-                self.points.push(PointRecord {
-                    position: placement.apply(point),
-                    radius_px: 6.0,
-                    color: HANDLE_COLOR,
-                });
+        if *session.app.toybox_debug.get() {
+            let placement = session
+                .views()
+                .to_root(drag.image)
+                .and_then(|to| to.rigid());
+            let anchor = r4
+                .physics()
+                .and_then(|physics| physics.held_anchor(drag.entity));
+            if let (Some(anchor), Some(placement), Some(view), Some(eye)) = (
+                anchor,
+                placement,
+                r4.view(drag.view),
+                r4.view_eye(drag.view),
+            ) {
+                if let Some(point) = r4
+                    .poses()
+                    .get(eye)
+                    .and_then(|eye| view.mapping().image_point(eye, anchor))
+                {
+                    self.points.push(PointRecord {
+                        position: placement.apply(point),
+                        radius_px: 6.0,
+                        color: HANDLE_COLOR,
+                    });
+                }
             }
         }
         let Some(pose) = r4.poses().get(drag.entity) else {

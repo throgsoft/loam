@@ -79,6 +79,7 @@ pub(crate) fn set_mode(
     dispatch.app.display.get_mut().single = false;
     dispatch.app.active.set(0);
     dispatch.app.mode.set(mode);
+    dispatch.app.slice.set(0.0);
     dispatch.app.spin.get_mut().running = false;
     Ok(())
 }
@@ -109,17 +110,18 @@ pub(crate) fn throw_toy(
     dispatch: &mut Dispatch<'_, Playground>,
     domain: DomainHandle<EuclideanR4>,
     entity: Entity,
-    velocity: [f32; 3],
+    pointer: [f32; 3],
 ) -> Result<(), Rejection> {
     if !dispatch.app.toys.contains(entity) {
         return Ok(());
     }
+    let rope = *dispatch.app.rope.get();
     let physics = dispatch
         .domains
         .typed(domain)?
         .physics_mut()
         .ok_or(Rejection::Unsupported("the domain has no physics"))?;
-    toy::release(physics, entity, velocity).map_err(Rejection::Edit)
+    toy::release(physics, entity, pointer, rope).map_err(Rejection::Edit)
 }
 
 pub(crate) fn toggle_plane(

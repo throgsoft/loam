@@ -19,6 +19,8 @@ pub struct InputMap {
     mouse_buttons: [bool; 3],
     active_touches: Vec<u32>,
     started: Instant,
+    clock_offset: f64,
+    latest_time: f64,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -120,6 +122,8 @@ impl Default for InputMap {
             mouse_buttons: [false; 3],
             active_touches: Vec::with_capacity(8),
             started: Instant::now(),
+            clock_offset: 0.0,
+            latest_time: 0.0,
         }
     }
 }
@@ -235,8 +239,16 @@ impl InputMap {
         self.release_pointers();
     }
 
+    fn now(&self) -> f64 {
+        (self.started.elapsed().as_secs_f64() + self.clock_offset).max(self.latest_time)
+    }
+
+    fn sync_clock(&mut self, time: f64) {
+        self.clock_offset = time - self.started.elapsed().as_secs_f64();
+    }
+
     fn release_pointers(&mut self) {
-        let time = self.started.elapsed().as_secs_f64();
+        let time = self.now();
         for button in [
             PointerButton::Primary,
             PointerButton::Secondary,
@@ -275,7 +287,7 @@ impl InputMap {
     }
 
     pub fn moved(&mut self, ndc: [f32; 2]) {
-        self.moved_at(ndc, self.started.elapsed().as_secs_f64());
+        self.moved_at(ndc, self.now());
     }
 
     fn moved_at(&mut self, ndc: [f32; 2], time: f64) {
@@ -302,7 +314,7 @@ impl InputMap {
     }
 
     pub fn button(&mut self, ndc: [f32; 2], button: PointerButton, pressed: bool) {
-        self.button_at(ndc, button, pressed, self.started.elapsed().as_secs_f64());
+        self.button_at(ndc, button, pressed, self.now());
     }
 
     fn button_at(&mut self, ndc: [f32; 2], button: PointerButton, pressed: bool, time: f64) {
@@ -331,7 +343,7 @@ impl InputMap {
     }
 
     pub fn touch(&mut self, id: u32, ndc: [f32; 2], phase: RuntimePointerPhase) {
-        self.touch_at(id, ndc, phase, self.started.elapsed().as_secs_f64());
+        self.touch_at(id, ndc, phase, self.now());
     }
 
     fn touch_at(&mut self, id: u32, ndc: [f32; 2], phase: RuntimePointerPhase, time: f64) {
@@ -401,6 +413,7 @@ impl InputMap {
         phase: RuntimePointerPhase,
         time: f64,
     ) {
+        self.latest_time = self.latest_time.max(time);
         self.input.pointers.push(Pointer {
             id,
             button,
@@ -423,6 +436,7 @@ impl InputMap {
         }
         self.input.look = std::mem::take(&mut self.look);
         self.input.cursor_locked = self.cursor_locked;
+        self.input.time = self.now();
         std::mem::replace(&mut self.input, std::mem::take(&mut self.spare))
     }
 
@@ -433,6 +447,7 @@ impl InputMap {
         reclaimed.scroll = [0.0; 2];
         reclaimed.look = [0.0; 2];
         reclaimed.cursor_locked = false;
+        reclaimed.time = 0.0;
         self.spare = reclaimed;
     }
 }
@@ -505,6 +520,7 @@ pub fn apply(map: &mut InputMap, bindings: &Bindings, message: &InputMessage, co
             dy,
             time,
         } => {
+            map.sync_clock(time.as_secs_f64());
             if consumed {
                 return;
             }
@@ -523,6 +539,7 @@ pub fn apply(map: &mut InputMap, bindings: &Bindings, message: &InputMessage, co
             pressed,
             time,
         } => {
+            map.sync_clock(time.as_secs_f64());
             let button = match button {
                 0 => Some(PointerButton::Primary),
                 1 => Some(PointerButton::Middle),
@@ -550,6 +567,7 @@ pub fn apply(map: &mut InputMap, bindings: &Bindings, message: &InputMessage, co
             phase,
             time,
         } => {
+            map.sync_clock(time.as_secs_f64());
             let ndc = map.css_ndc(*x, *y);
             map.host_touch_at(
                 *id as u32,
@@ -628,6 +646,33 @@ mod tests {
         assert!(
             *session.app.walked.get(),
             "the DOM key code never became the action bound to it"
+        );
+    }
+
+    #[test]
+    fn the_boundary_stamp_follows_the_pointer_clock_of_host_messages() {
+        let bindings = Bindings::new();
+        let mut map = InputMap::default();
+        map.resize(800, 600, 1.0);
+        apply(
+            &mut map,
+            &bindings,
+            &InputMessage::MouseMove {
+                x: 10.0,
+                y: 10.0,
+                buttons: 0,
+                dx: 0.0,
+                dy: 0.0,
+                time: std::time::Duration::from_secs(100),
+            },
+            false,
+        );
+        let input = map.take();
+        let pointer = input.pointers[0].time;
+        assert!(
+            pointer == 100.0 && input.time >= pointer && input.time < pointer + 1.0,
+            "the boundary was stamped {} on a clock where the pointer read {pointer}",
+            input.time
         );
     }
 

@@ -1,6 +1,8 @@
 use loam_shape::polytope::Polytope4Topology;
 
-use crate::bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
+use crate::bridge::{
+    Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease, VELOCITY_SAMPLES,
+};
 use crate::command::{
     Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
 };
@@ -14,7 +16,7 @@ use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, System, SystemEn
 use crate::relation::{LinkId, Relation, RelationSnapshot};
 use crate::store::{Owner, SchemaId, StoreField};
 use crate::stores::Stores;
-use crate::view::{ImageRay, Pick, Rigid, ViewRecords, ViewTarget, Views, ViewsSnapshot};
+use crate::view::{ImageRay, Pick, Rigid, Vec3, ViewRecords, ViewTarget, Views, ViewsSnapshot};
 
 const RELEASE_STALE_SECONDS: f64 = 0.12;
 
@@ -384,12 +386,14 @@ impl Manipulation {
         let center = domain
             .image_of(pick.view, pick.entity)
             .ok_or(DomainError::Stale(pick.entity))?;
-        let forward = views
+        let eye = views
             .get(views.root())
             .ok_or(DomainError::Unsupported("image space"))?
-            .eye
-            .forward;
+            .eye;
         let plane = into.apply(pick.image_point);
+        let normal = into.direction(eye.forward);
+        let depth =
+            (Vec3::from(plane) - Vec3::from(into.apply(eye.position))).dot(Vec3::from(normal));
         let hit = pick.hit.ok_or(DomainError::Unsupported("view ray lift"))?;
         if let Some(held) = self.drag.take() {
             commands.submit(Command::Chart(
@@ -405,11 +409,13 @@ impl Manipulation {
             view: pick.view,
             image: pick.image,
             plane,
-            normal: into.direction(forward),
+            normal,
+            depth,
             center,
             at: plane,
-            time,
-            velocity: [0.0; 3],
+            samples: [(plane, time); VELOCITY_SAMPLES],
+            sampled: 1,
+            opened: time,
         });
         commands.submit(Command::Chart(
             pick.domain,
@@ -440,7 +446,18 @@ impl Manipulation {
         let ray = views
             .ray(drag.image, ndc)
             .ok_or(DomainError::Unsupported("image space"))?;
-        let at = drag.meet(&ray).ok_or(DragError::Ambiguous(name))?;
+        let eye = views
+            .get(views.root())
+            .ok_or(DomainError::Unsupported("image space"))?
+            .eye;
+        let into = views
+            .to_root(drag.image)
+            .and_then(|to| to.rigid())
+            .ok_or(DomainError::Unsupported("image space"))?
+            .inverse();
+        let forward = into.direction(eye.forward);
+        let plane = drag.plane_at(into.apply(eye.position), forward);
+        let at = Drag::meet(&ray, plane, forward).ok_or(DragError::Ambiguous(name))?;
         let point = domain.lift_origin(
             drag.view,
             &ImageRay {
@@ -460,23 +477,23 @@ impl Manipulation {
         Ok(point)
     }
 
-    fn finish<A: Stores>(commands: &mut Commands<A>, drag: Drag, throw: bool) -> DragRelease {
-        let mut release = drag.released();
-        if !throw {
-            release.velocity = [0.0; 3];
-        }
+    fn finish<A: Stores>(
+        commands: &mut Commands<A>,
+        drag: Drag,
+        velocity: [f32; 3],
+    ) -> DragRelease {
         commands.submit(Command::Chart(
             drag.domain,
             ChartCommand::Release {
                 entity: drag.entity,
             },
         ));
-        release
+        drag.released(velocity)
     }
 
     pub(crate) fn release<A: Stores>(&mut self, commands: &mut Commands<A>) -> Option<DragRelease> {
         let drag = self.drag.take()?;
-        Some(Self::finish(commands, drag, true))
+        Some(Self::finish(commands, drag, drag.velocity()))
     }
 
     pub(crate) fn release_at<A: Stores>(
@@ -485,17 +502,18 @@ impl Manipulation {
         time: f64,
     ) -> Option<DragRelease> {
         let drag = self.drag.take()?;
-        let age = time - drag.time;
-        Some(Self::finish(
-            commands,
-            drag,
-            (0.0..=RELEASE_STALE_SECONDS).contains(&age),
-        ))
+        let age = time - drag.newest_time();
+        let velocity = if (0.0..=RELEASE_STALE_SECONDS).contains(&age) {
+            drag.velocity()
+        } else {
+            [0.0; 3]
+        };
+        Some(Self::finish(commands, drag, velocity))
     }
 
     pub(crate) fn cancel<A: Stores>(&mut self, commands: &mut Commands<A>) -> Option<DragRelease> {
         let drag = self.drag.take()?;
-        Some(Self::finish(commands, drag, false))
+        Some(Self::finish(commands, drag, [0.0; 3]))
     }
 
     pub(crate) fn clear(&mut self) {
@@ -1429,6 +1447,57 @@ mod tests {
         assert_eq!(
             grabbed.view, section,
             "the grab resolved to a view it cannot lift, so a drag is a coin flip"
+        );
+    }
+
+    #[test]
+    fn a_section_pick_passes_through_a_body_the_slice_misses() {
+        use crate::view::{Eye, Section4};
+        use loam_shape::polytope::Polytope4;
+
+        const SCALE: f32 = 0.45;
+
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let tesseract = session.prepare(PreparedGeometry::Polytope4 {
+            polytope: Polytope4::Tesseract,
+            scale: SCALE,
+        });
+        let white = session.add_material(Material::lines([1.0; 4], 1.0));
+        let root = session.views().root();
+        let cut = session
+            .dispatch(|d| -> Result<Entity, Rejection> {
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -3.0, 0.3)))
+                        .instance(Instance::new(tesseract, white)),
+                )?;
+                let cut = d.spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -5.0, 0.0)))
+                        .instance(Instance::new(tesseract, white)),
+                )?;
+                d.domains
+                    .typed(r4)?
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))?;
+                Ok(cut)
+            })
+            .expect("the scene built");
+        session.views_mut().root_mut().eye = Eye::default();
+
+        let picked = session
+            .pick([0.0, 0.0])
+            .expect("the slice cuts the far tesseract");
+        assert_eq!(
+            picked.entity, cut,
+            "the pick took the near tesseract, whose section is empty"
+        );
+        let face = picked.hit.expect("a section pick lifts").coordinates[2];
+        assert!(
+            (face - (-5.0 + 0.5 * SCALE)).abs() < 1e-4,
+            "the hit is at z = {face}, off the tesseract's face"
         );
     }
 
