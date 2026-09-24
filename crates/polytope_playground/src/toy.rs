@@ -1,5 +1,5 @@
 use glam::Vec4;
-use loam::math::{EuclideanR4, Rotor, Rotor4};
+use loam::math::{Bivector4, EuclideanR4, Rotor, Rotor4};
 use loam::physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
 };
@@ -17,6 +17,7 @@ use crate::{Card, HiddenSlot, Playground, Slot, Toy, Wall};
 
 pub(crate) const BODY_SIZE: f32 = 0.45;
 pub(crate) const ARENA_HALF: f32 = 3.6;
+const ARENA_TOP: f32 = FLOOR_Y + 2.0 * ARENA_HALF;
 
 const BODY_MASS: f32 = 1.0;
 const BODY_RESTITUTION: f32 = 0.05;
@@ -28,14 +29,12 @@ const TICK_DT: f32 = 1.0 / 60.0;
 const BASE_SUBSTEPS: u32 = 4;
 const MAX_SUBSTEPS: u32 = 16;
 const STEP_TRAVEL_BUDGET: f32 = 0.135;
-const GRAB_STIFFNESS: f32 = 20.0;
-const MAX_CARRY_SPEED: f32 = 20.0;
-const MAX_GRAB_ACCELERATION: f32 = 400.0;
-const RELEASE_GAIN: f32 = 1.0;
+const GRAB_STIFFNESS: f32 = 40.0;
+const MAX_CARRY_SPEED: f32 = 35.0;
+const MAX_GRAB_ACCELERATION: f32 = 800.0;
+const RELEASE_GAIN: f32 = 0.3;
 const MAX_RELEASE_SPEED: f32 = 0.5 * STEP_TRAVEL_BUDGET / (TICK_DT / MAX_SUBSTEPS as f32);
-const RELEASE_SPIN_GAIN: f32 = 0.075;
-// Spin a release can add, far under the tunneling bound below.
-const MAX_RELEASE_SPIN: f32 = 30.0;
+const RELEASE_SPIN_GAIN: f32 = 0.35;
 const MAX_ANGULAR_SPEED: f32 =
     0.5 * STEP_TRAVEL_BUDGET / (BODY_SIZE * (TICK_DT / MAX_SUBSTEPS as f32));
 const ANGULAR_DAMPING: f32 = 1.2;
@@ -79,49 +78,50 @@ fn clamp_target_to_arena(current: Vec4, target: Vec4) -> Vec4 {
     let reach = ARENA_HALF - BODY_SIZE;
     Vec4::new(
         target.x.clamp(-reach, reach),
-        target.y.max(PHYSICS_FLOOR_Y + BODY_SIZE),
+        target
+            .y
+            .clamp(PHYSICS_FLOOR_Y + BODY_SIZE, ARENA_TOP - BODY_SIZE),
         target.z.clamp(-reach, reach),
         current.w,
     )
 }
 
-pub(crate) fn release_velocity(velocity: [f32; 3]) -> Vec4 {
-    let velocity = Vec4::new(velocity[0], velocity[1], velocity[2], 0.0) * RELEASE_GAIN;
-    let speed = velocity.length();
-    if speed > MAX_RELEASE_SPEED {
-        velocity * (MAX_RELEASE_SPEED / speed)
-    } else {
-        velocity
-    }
-}
-
 pub(crate) fn release(
     physics: &mut Physics<EuclideanR4>,
     entity: Entity,
-    velocity: [f32; 3],
+    pointer: [f32; 3],
+    rope: bool,
 ) -> Result<(), EditError> {
-    let (before, impulsed) = physics.throw_from_release(entity, release_velocity(velocity))?;
-    let mut spin = (impulsed + before * -1.0) * RELEASE_SPIN_GAIN;
-    let added = spin.magnitude();
-    if added > MAX_RELEASE_SPIN {
-        spin = spin * (MAX_RELEASE_SPIN / added);
+    let body = *physics
+        .world()
+        .body(physics.body(entity).ok_or(EditError::StaleHandle)?)
+        .ok_or(EditError::StaleHandle)?;
+    let mut linear = body.velocity;
+    let mut angular = body.angular_velocity;
+    if !rope {
+        let flick = Vec4::new(pointer[0], pointer[1], pointer[2], 0.0);
+        let throw = flick * RELEASE_GAIN;
+        linear = throw * (MAX_RELEASE_SPEED / throw.length().max(MAX_RELEASE_SPEED))
+            + Vec4::W * body.velocity.w;
+        let lever = physics
+            .released_anchor(entity)
+            .and_then(|handle| (handle - body.position).truncate().try_normalize());
+        if let Some(lever) = lever {
+            angular = angular
+                + Bivector4::wedge(lever.extend(0.0), flick) * (RELEASE_SPIN_GAIN / BODY_SIZE);
+        }
     }
-    let mut angular = before + spin;
     let speed = angular.magnitude();
     if speed > MAX_ANGULAR_SPEED {
         angular = angular * (MAX_ANGULAR_SPEED / speed);
     }
-    let linear = physics
-        .world()
-        .body(physics.body(entity).ok_or(EditError::StaleHandle)?)
-        .ok_or(EditError::StaleHandle)?
-        .velocity;
     physics.set_velocity(entity, linear, angular)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct DepthBand {
     pub(crate) entity: Entity,
+    pub(crate) index: usize,
     pub(crate) center: f32,
     pub(crate) min: f32,
     pub(crate) max: f32,
@@ -153,6 +153,7 @@ pub(crate) fn fill_depth_bands(
         };
         out.push(DepthBand {
             entity,
+            index: slot.index,
             center: 0.0,
             min: 0.0,
             max: 0.0,
@@ -184,16 +185,19 @@ pub(crate) fn fill_depth_bands(
         band.asleep = body.is_sleeping();
         true
     });
-    out.sort_by(|a, b| a.center.total_cmp(&b.center));
+    out.sort_by_key(|band| band.index);
 }
 
-fn arena() -> [(Vec4, f32, f32); 5] {
+fn arena() -> [(Vec4, f32, f32); 8] {
     [
         (Vec4::Y, PHYSICS_FLOOR_Y, BODY_RESTITUTION),
+        (-Vec4::Y, -ARENA_TOP, WALL_RESTITUTION),
         (Vec4::X, -ARENA_HALF, WALL_RESTITUTION),
         (-Vec4::X, -ARENA_HALF, WALL_RESTITUTION),
         (Vec4::Z, -ARENA_HALF, WALL_RESTITUTION),
         (-Vec4::Z, -ARENA_HALF, WALL_RESTITUTION),
+        (Vec4::W, -ARENA_HALF, WALL_RESTITUTION),
+        (-Vec4::W, -ARENA_HALF, WALL_RESTITUTION),
     ]
 }
 
@@ -435,16 +439,22 @@ mod tests {
     #[test]
     fn a_drag_target_cannot_pull_the_toy_hull_through_the_arena() {
         let current = Vec4::new(0.0, 1.0, 0.0, 2.0);
-        let target = clamp_target_to_arena(current, Vec4::new(99.0, -99.0, -99.0, -8.0));
         let rotation =
             Rotor4::from_rotation_arc(Vec4::X, Vec4::new(1.0, 1.0, 0.0, 1.0).normalize());
-        for vertex in Polytope4::Tesseract.topology().vertices {
-            let point = target + rotation.apply(*vertex * BODY_SIZE);
-            assert!(point.x.abs() <= ARENA_HALF + 1e-6);
-            assert!(point.z.abs() <= ARENA_HALF + 1e-6);
-            assert!(point.y >= FLOOR_Y - 1e-6);
+        for far in [
+            Vec4::new(99.0, -99.0, -99.0, -8.0),
+            Vec4::new(-99.0, 99.0, 99.0, 8.0),
+        ] {
+            let target = clamp_target_to_arena(current, far);
+            for vertex in Polytope4::Tesseract.topology().vertices {
+                let point = target + rotation.apply(*vertex * BODY_SIZE);
+                assert!(point.x.abs() <= ARENA_HALF + 1e-6);
+                assert!(point.z.abs() <= ARENA_HALF + 1e-6);
+                assert!(point.y >= FLOOR_Y - 1e-6);
+                assert!(point.y <= ARENA_TOP + 1e-6);
+            }
+            assert_eq!(target.w, current.w);
         }
-        assert_eq!(target.w, current.w);
     }
 
     #[test]

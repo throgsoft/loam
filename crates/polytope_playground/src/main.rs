@@ -13,9 +13,9 @@ use loam::runtime::host::{HostConfig, HostError};
 use loam::runtime::Input;
 use loam::runtime::{
     ActionId, AppCommand, Bindings, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle,
-    Domains, Entity, Eye, Instance, Key, LogCapacity, Material, MaterialId, Outcome, Phase,
-    Pointer, PointerButton, PointerPhase, Pose, PreparedGeometry, PreparedId, Rejection, Section4,
-    Session, SimConfig, SpawnBundle, ViewId, ViewSpec,
+    Domains, Entity, Eye, GrabHold, Instance, Key, LogCapacity, Material, MaterialId, Outcome,
+    Phase, Pointer, PointerButton, PointerPhase, Pose, PreparedGeometry, PreparedId, Rejection,
+    Section4, Session, SimConfig, SpawnBundle, ViewId, ViewSpec,
 };
 
 #[cfg(test)]
@@ -174,6 +174,7 @@ loam::runtime::stores! {
         labels: Value<bool>,
         guides: Value<bool>,
         toybox_debug: Value<bool>,
+        rope: Value<bool>,
         camera: Value<camera::Camera>,
         control: Value<Control>,
         catalog: Value<Catalog>,
@@ -203,6 +204,7 @@ pub(crate) enum Action {
     Labels(Option<bool>),
     Guides(Option<bool>),
     ToyboxDebug(Option<bool>),
+    Rope(Option<bool>),
     Strip(Strip),
     Rate(f32),
     Display(Display),
@@ -365,6 +367,22 @@ fn install_systems(
         },
     );
 
+    session.system(
+        Phase::Dispatch,
+        "grab hold",
+        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
+            let hold = if *ctx.app.rope.get() {
+                GrabHold::Anchor
+            } else {
+                GrabHold::Center
+            };
+            if let Some(physics) = ctx.domains.typed(domain)?.physics_mut() {
+                physics.set_grab_hold(hold);
+            }
+            Ok(())
+        },
+    );
+
     let mut applied = None;
     session.system(
         Phase::Publication,
@@ -484,11 +502,8 @@ fn install_systems(
                 return Ok(());
             }
             let next = *ctx.app.slice.get() + scrub * W_SCRUB_RATE * ctx.step.dt;
-            let next = match *ctx.app.mode.get() {
-                Mode::Rotate => next.clamp(-consts::W_RANGE, consts::W_RANGE),
-                Mode::Toybox => next,
-            };
-            ctx.app.slice.set(next);
+            let reach = slice_reach(*ctx.app.mode.get());
+            ctx.app.slice.set(next.clamp(-reach, reach));
             Ok(())
         },
     );
@@ -559,6 +574,7 @@ impl AppCommand<Playground> for Action {
             Self::Labels(_) => "labels",
             Self::Guides(_) => "guides",
             Self::ToyboxDebug(_) => "toybox debug",
+            Self::Rope(_) => "rope carry",
             Self::Strip(_) => "strip",
             Self::Rate(_) => "rate",
             Self::Display(_) => "display",
@@ -587,21 +603,18 @@ impl AppCommand<Playground> for Action {
                 if !w.is_finite() {
                     return Err(Rejection::Unsupported("slice is not finite"));
                 }
-                let w = if *dispatch.app.mode.get() == Mode::Toybox {
-                    w
-                } else {
-                    w.clamp(-consts::W_RANGE, consts::W_RANGE)
-                };
-                dispatch.app.slice.set(w);
+                let reach = slice_reach(*dispatch.app.mode.get());
+                dispatch.app.slice.set(w.clamp(-reach, reach));
             }
             Action::ExactSlice(w) => {
-                if *dispatch.app.mode.get() == Mode::Rotate
-                    && !(-consts::W_RANGE..=consts::W_RANGE).contains(&w)
-                {
-                    return Err(Rejection::Unsupported("slice is outside the rotate range"));
-                }
                 if !w.is_finite() {
                     return Err(Rejection::Unsupported("slice is not finite"));
+                }
+                let reach = slice_reach(*dispatch.app.mode.get());
+                if !(-reach..=reach).contains(&w) {
+                    return Err(Rejection::Unsupported(
+                        "slice is outside the mode's w range",
+                    ));
                 }
                 dispatch.app.slice.set(w);
             }
@@ -676,6 +689,10 @@ impl AppCommand<Playground> for Action {
                 let visible = *dispatch.app.guides.get();
                 dispatch.app.guides.set(setting.unwrap_or(!visible));
             }
+            Action::Rope(setting) => {
+                let rope = *dispatch.app.rope.get();
+                dispatch.app.rope.set(setting.unwrap_or(!rope));
+            }
             Action::ToyboxDebug(setting) => {
                 let visible = *dispatch.app.toybox_debug.get();
                 dispatch.app.toybox_debug.set(setting.unwrap_or(!visible));
@@ -700,8 +717,8 @@ impl AppCommand<Playground> for Action {
                 row::add_shape(dispatch, domain, *entry, cards[card])?;
             }
             Action::RemoveShape(slot) => row::remove_shape(dispatch, domain, slot)?,
-            Action::Throw(entity, velocity) => {
-                mode::throw_toy(dispatch, domain, entity, velocity)?;
+            Action::Throw(entity, pointer) => {
+                mode::throw_toy(dispatch, domain, entity, pointer)?;
             }
         }
         Ok(Outcome::Done)
@@ -975,6 +992,13 @@ fn focus_camera(
         orbit.target = target;
     }
     *camera_focus = Some(focus);
+}
+
+fn slice_reach(mode: Mode) -> f32 {
+    match mode {
+        Mode::Rotate => consts::W_RANGE,
+        Mode::Toybox => toy::ARENA_HALF,
+    }
 }
 
 fn readout_of(session: &Session<Playground>) -> hud::Readout {
@@ -1440,7 +1464,7 @@ mod tests {
         assert!(!booted.session.app.slots.contains(original));
         assert_eq!(booted.session.app.slots.len(), 5);
         assert_eq!(booted.session.app.toys.len(), 5);
-        assert_eq!(booted.session.app.walls.len(), 5);
+        assert_eq!(booted.session.app.walls.len(), 8);
         let expected = [
             Polytope4::Cell24,
             Polytope4::Tesseract,
@@ -1775,75 +1799,6 @@ mod tests {
     }
 
     #[test]
-    fn a_stationary_pointer_release_clears_the_spring_carry_velocity() {
-        let mut booted = one_slot();
-        send(&mut booted, Action::Mode(Mode::Toybox));
-        booted.session.boundary(Input::default()).expect("toybox");
-        let entity = booted
-            .session
-            .app
-            .slots
-            .iter()
-            .find(|(_, slot)| slot.index == 2)
-            .map(|(entity, _)| entity)
-            .expect("middle toy");
-        let center = booted
-            .session
-            .domains()
-            .read(booted.domain)
-            .expect("domain")
-            .poses()
-            .get(entity)
-            .expect("pose")
-            .point
-            .truncate();
-        booted.session.views_mut().root_mut().eye = Eye::looking_at(
-            [center.x, center.y, EYE_BACK],
-            center.to_array(),
-            [0.0, 1.0, 0.0],
-        );
-        booted.session.grab([0.0; 2], 0.0).expect("grab");
-        booted.session.boundary(Input::default()).expect("hold");
-        let physics = booted
-            .session
-            .domains_mut()
-            .typed(booted.domain)
-            .expect("domain")
-            .physics_mut()
-            .expect("physics");
-        physics
-            .set_velocity(entity, Vec4::Y, Bivector4::ZERO)
-            .expect("carry velocity");
-        let pointer = Pointer {
-            id: 0,
-            button: Some(PointerButton::Primary),
-            ndc: [0.0; 2],
-            delta: [0.0; 2],
-            phase: PointerPhase::Ended,
-            time: 1.0,
-        };
-        booted
-            .session
-            .boundary(Input {
-                pointers: vec![pointer],
-                ..Input::default()
-            })
-            .expect("drop");
-        let physics = booted
-            .session
-            .domains_mut()
-            .typed(booted.domain)
-            .expect("domain")
-            .physics()
-            .expect("physics");
-        let body = physics.body(entity).expect("body");
-        assert_eq!(
-            physics.world().body(body).expect("body row").velocity,
-            Vec4::ZERO
-        );
-    }
-
-    #[test]
     fn a_primary_grab_does_not_block_secondary_orbit_or_wheel_zoom() {
         let mut booted = one_slot();
         send(&mut booted, Action::Mode(Mode::Toybox));
@@ -1881,6 +1836,85 @@ mod tests {
         assert!(physics.physics().expect("physics").is_held(picked.entity));
     }
 
+    fn flicked(step_ndc: f32) -> (Vec4, Vec4, Vec4) {
+        use loam::physics::PhysicsSpace;
+
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted.session.boundary(Input::default()).expect("toybox");
+        let entity = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .find(|(_, slot)| slot.index == 2)
+            .map(|(entity, _)| entity)
+            .expect("middle toy");
+        let center = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(entity)
+            .expect("pose")
+            .point
+            .truncate();
+        booted.session.app.control.get_mut().orbit = Orbit::around(center.to_array(), EYE_BACK);
+        booted.session.boundary(Input::default()).expect("aim");
+        booted.session.grab([0.0; 2], 0.0).expect("grab");
+        booted.session.boundary(Input::default()).expect("hold");
+        booted.session.tick().expect("tick");
+        let mut time = 0.0;
+        for step in 1..=6 {
+            time = f64::from(step) / 60.0;
+            booted
+                .session
+                .drag([0.0, step_ndc * step as f32], time)
+                .expect("drag");
+            booted.session.boundary(Input::default()).expect("carry");
+            booted.session.tick().expect("tick");
+        }
+        let release = booted.session.release_at(time).expect("held");
+        send(&mut booted, Action::Throw(release.entity, release.velocity));
+        booted.session.boundary(Input::default()).expect("throw");
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain");
+        let physics = r4.physics().expect("physics");
+        let body = physics
+            .world()
+            .body(physics.body(entity).expect("body"))
+            .expect("row");
+        let handle = physics.released_anchor(entity).expect("released");
+        let slip = EuclideanR4.velocity_at_point(body, handle) - body.velocity;
+        let flick = glam::Vec3::from(release.velocity).extend(0.0);
+        (body.velocity, slip, flick)
+    }
+
+    #[test]
+    fn a_rigid_flick_spins_the_toy_the_way_it_moved_the_grab_point() {
+        let (_, slip, flick) = flicked(0.06);
+        assert!(
+            slip.dot(flick.normalize()) > 0.5,
+            "a flick along {flick} left the grab point turning at {slip}"
+        );
+    }
+
+    #[test]
+    fn a_flick_past_the_carry_cap_still_throws_faster() {
+        let (fast, _, _) = flicked(0.22);
+        let (faster, _, _) = flicked(0.35);
+        assert!(
+            faster.length() > 1.4 * fast.length(),
+            "a faster flick moved the throw only from {} to {}",
+            fast.length(),
+            faster.length()
+        );
+    }
+
     #[test]
     fn a_carry_by_the_camera_alone_throws_with_its_motion() {
         let mut booted = one_slot();
@@ -1913,6 +1947,7 @@ mod tests {
                     ..Input::default()
                 })
                 .expect("carry");
+            booted.session.tick().expect("the carry tick ran");
         }
         booted
             .session
@@ -2015,12 +2050,15 @@ mod tests {
             .domains()
             .read(booted.domain)
             .expect("the r4 domain");
-        let pose = r4.poses().get(picked.entity).expect("pose").point;
+        let grip = r4
+            .physics()
+            .and_then(|physics| physics.held_anchor(picked.entity))
+            .expect("the toy is held");
+        let goal = anchor[1] + target.coordinates[1] - center.y;
         assert!(
-            (pose.y - target.coordinates[1]).abs() < 0.1,
-            "the held body stopped following at y {} before target {}",
-            pose.y,
-            target.coordinates[1]
+            (grip.y - goal).abs() < 0.1,
+            "the grab point stopped following at y {} before its goal {goal}",
+            grip.y
         );
 
         let release = booted.session.release_at(1.05).expect("the drag was live");
@@ -2032,14 +2070,6 @@ mod tests {
             .session
             .boundary(Input::default())
             .expect("the release and throw landed");
-        let r4 = booted
-            .session
-            .domains()
-            .read(booted.domain)
-            .expect("the r4 domain");
-        let physics = r4.physics().expect("the domain has physics");
-        let body = physics.body(release.entity).expect("the toy has a body");
-        assert!(physics.world().body(body).expect("body row").velocity.y > 0.0);
         for _ in 0..600 {
             booted.session.tick().expect("the tick ran");
         }

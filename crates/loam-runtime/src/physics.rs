@@ -16,11 +16,21 @@ use crate::phase::Step;
 use crate::session::RestoreError;
 use crate::store::{Owner, SchemaId, Store};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GrabHold {
+    /// Pulls the body's center, so carrying adds no spin.
+    #[default]
+    Center,
+    /// Pulls the grabbed point, so the body swings from it.
+    Anchor,
+}
+
 #[derive(Clone, Copy)]
 pub struct GrabConfig<S: PhysicsSpace> {
     stiffness: f32,
     max_carry_speed: f32,
     max_acceleration: f32,
+    hold: GrabHold,
     anchor_point: fn(S::Point, S::Point) -> S::Point,
     constrain_target: fn(S::Point, S::Point) -> S::Point,
 }
@@ -31,9 +41,15 @@ impl<S: PhysicsSpace> GrabConfig<S> {
             stiffness,
             max_carry_speed,
             max_acceleration,
+            hold: GrabHold::Center,
             anchor_point: |_, point| point,
             constrain_target: |_, point| point,
         }
+    }
+
+    pub fn hold(mut self, hold: GrabHold) -> Self {
+        self.hold = hold;
+        self
     }
 
     pub fn anchor_point(mut self, anchor_point: fn(S::Point, S::Point) -> S::Point) -> Self {
@@ -147,6 +163,7 @@ struct Held<S: PhysicsSpace> {
     body: BodyId,
     target: S::Point,
     anchor: S::Vector,
+    offset: S::Vector,
 }
 
 struct Released<S: PhysicsSpace> {
@@ -255,6 +272,13 @@ where
         self.world.set_solver_iterations(iterations);
     }
 
+    /// Has no effect on a domain built without a grab.
+    pub fn set_grab_hold(&mut self, hold: GrabHold) {
+        if let Some(grab) = &mut self.grab {
+            grab.hold = hold;
+        }
+    }
+
     pub fn set_gravity(&mut self, gravity: Option<S::Vector>) -> Result<(), EditError> {
         self.world.set_gravity(gravity)
     }
@@ -360,39 +384,17 @@ where
         Ok(())
     }
 
-    pub fn throw_from_release(
-        &mut self,
-        entity: Entity,
-        velocity: S::Vector,
-    ) -> Result<(S::AngVel, S::AngVel), EditError> {
-        let id = self.body(entity).ok_or(EditError::StaleHandle)?;
-        let released = self
-            .released
-            .filter(|released| released.body == id)
-            .ok_or(EditError::StaleHandle)?;
-        if !self.world.space().valid_vector(velocity) {
-            return Err(EditError::NotFinite);
-        }
-        let row = *self.world.body(id).ok_or(EditError::StaleHandle)?;
+    /// The grab point of the body released last, moved with the body since.
+    pub fn released_anchor(&self, entity: Entity) -> Option<S::Point> {
+        let body = self.body(entity)?;
+        let released = self.released.filter(|released| released.body == body)?;
+        let row = self.world.body(body)?;
         let lever =
             self.world
                 .space()
                 .iso_transport(row.orientation, row.position, released.anchor);
         let point = self.world.space().exp(row.position, lever);
-        let impulse = velocity * row.mass();
-        if !self.world.space().valid_point(point) || !self.world.space().valid_vector(impulse) {
-            return Err(EditError::NotFinite);
-        }
-        self.world
-            .set_velocity(id, S::Vector::default(), row.angular_velocity)?;
-        self.world.apply_impulse_at_point(id, impulse, point)?;
-        let after = self
-            .world
-            .body(id)
-            .ok_or(EditError::StaleHandle)?
-            .angular_velocity;
-        self.released = None;
-        Ok((row.angular_velocity, after))
+        self.world.space().valid_point(point).then_some(point)
     }
 
     pub(crate) fn spawn(&mut self, entity: Entity, body: BodyDef<S>) -> BodyId {
@@ -558,6 +560,7 @@ where
             body: id,
             target,
             anchor: local_anchor,
+            offset: lever,
         });
         Ok(Outcome::Done)
     }
@@ -580,16 +583,41 @@ where
         let Some(grab) = self.grab else {
             return Ok(());
         };
-        let row = self.world.body(held.body).ok_or(EditError::StaleHandle)?;
-        let angular = row.angular_velocity;
-        let velocity = row.velocity;
+        let space = *self.world.space();
+        let row = *self.world.body(held.body).ok_or(EditError::StaleHandle)?;
+        if grab.hold == GrabHold::Center {
+            let desired = clamp_length(
+                space.log(row.position, held.target) * grab.stiffness,
+                grab.max_carry_speed,
+            );
+            let acceleration = clamp_length(desired - row.velocity, grab.max_acceleration * dt);
+            return self
+                .world
+                .set_velocity(held.body, row.velocity + acceleration, row.angular_velocity)
+                .map_err(DomainError::from);
+        }
+        let lever = space.iso_transport(row.orientation, row.position, held.anchor);
+        let point = space.exp(row.position, lever);
+        let goal = space.exp(held.target, held.offset);
+        let moving = space.velocity_at_point(&row, point);
         let desired = clamp_length(
-            self.world.space().log(row.position, held.target) * grab.stiffness,
+            space.log(point, goal) * grab.stiffness,
             grab.max_carry_speed,
         );
-        let acceleration = clamp_length(desired - velocity, grab.max_acceleration * dt);
+        let change = clamp_length(desired - moving, grab.max_acceleration * dt);
+        let size = change.length();
+        if size <= 0.0 {
+            return Ok(());
+        }
+        let direction = change * (1.0 / size);
+        let mut probe = row;
+        probe.apply_impulse_at_point(&space, direction, point);
+        let response = (space.velocity_at_point(&probe, point) - moving).dot(direction);
+        if response <= 0.0 {
+            return Ok(());
+        }
         self.world
-            .set_velocity(held.body, velocity + acceleration, angular)
+            .apply_impulse_at_point(held.body, direction * (size / response), point)
             .map_err(DomainError::from)
     }
 
@@ -893,20 +921,68 @@ mod tests {
             Vec4::new(1.0, 0.5, 0.0, 0.75)
         );
         physics.release_grab(id).expect("release");
-        let (_, angular) = physics
-            .throw_from_release(entity, Vec4::X * 3.0)
-            .expect("throw");
-        assert!(angular.xy < -0.1, "the local handle torqued the wrong way");
-        assert_eq!(
-            [angular.xz, angular.xw, angular.yz, angular.yw, angular.zw],
-            [0.0; 5]
+        let handle = physics.released_anchor(entity).expect("released");
+        assert!(
+            (handle - Vec4::new(0.0, 2.3, 0.0, 0.75)).length() < 1e-5,
+            "the release lost the grabbed handle: {handle}"
         );
-        let velocity = physics.world.body(id).expect("body").velocity;
-        assert_eq!(
-            physics.throw_from_release(entity, Vec4::Y),
-            Err(EditError::StaleHandle)
+    }
+
+    #[test]
+    fn the_grab_hold_decides_whether_an_off_center_body_swings() {
+        let lowest = |hold: GrabHold| {
+            let scene = SceneId {
+                runtime: RuntimeId::allocate(),
+                epoch: Epoch::default(),
+            };
+            let mut entities = Entities::new(scene);
+            let mut domain = DomainBuilder::new("r4", EuclideanR4)
+                .tracked(DEFAULT_LOG_CAPACITY)
+                .physics(
+                    PhysicsConfig::new(register_default_narrowphase)
+                        .gravity(Vec4::NEG_Y * 9.8)
+                        .substeps(4)
+                        .grab(GrabConfig::new(20.0, 20.0, 400.0).hold(hold)),
+                )
+                .unwrap()
+                .build(DomainId::new(0), scene);
+            let entity = entities.spawn();
+            domain
+                .attach_pose(entity, Pose::at(Vec4::ZERO))
+                .expect("pose");
+            let physics = domain.physics_mut().expect("physics");
+            let id = physics.spawn(
+                entity,
+                sphere_body_r4(Vec4::ZERO, Vec4::ZERO, 0.5, 1.0).expect("body"),
+            );
+            physics.grab(id, Vec4::X * 0.4).expect("grab");
+            let mut lowest = f32::INFINITY;
+            for tick in 0..120 {
+                domain.step(step_at(tick)).expect("step");
+                let physics = domain.physics().expect("physics");
+                lowest = lowest.min(physics.world.body(id).expect("body").position.y);
+            }
+            let grip = domain
+                .physics()
+                .expect("physics")
+                .held_anchor(entity)
+                .expect("held");
+            assert!(
+                (grip - Vec4::X * 0.4).length() < 0.1,
+                "the {hold:?} hold let the grab point drift to {grip}"
+            );
+            lowest
+        };
+        let swung = lowest(GrabHold::Anchor);
+        assert!(
+            swung < -0.3,
+            "the anchor hold never swung the body under its grab point; its center bottomed out at y {swung}"
         );
-        assert_eq!(physics.world.body(id).expect("body").velocity, velocity);
+        let carried = lowest(GrabHold::Center);
+        assert!(
+            carried > -0.05,
+            "the center hold let the body swing down to y {carried}"
+        );
     }
 
     #[test]

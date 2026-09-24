@@ -1450,6 +1450,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_section_pick_passes_through_a_body_the_slice_misses() {
+        use crate::view::{Eye, Section4};
+        use loam_shape::polytope::Polytope4;
+
+        const SCALE: f32 = 0.45;
+
+        let mut session = Session::new(Quiet::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let tesseract = session.prepare(PreparedGeometry::Polytope4 {
+            polytope: Polytope4::Tesseract,
+            scale: SCALE,
+        });
+        let white = session.add_material(Material::lines([1.0; 4], 1.0));
+        let root = session.views().root();
+        let cut = session
+            .dispatch(|d| -> Result<Entity, Rejection> {
+                let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
+                d.spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -3.0, 0.3)))
+                        .instance(Instance::new(tesseract, white)),
+                )?;
+                let cut = d.spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -5.0, 0.0)))
+                        .instance(Instance::new(tesseract, white)),
+                )?;
+                d.domains
+                    .typed(r4)?
+                    .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))?;
+                Ok(cut)
+            })
+            .expect("the scene built");
+        session.views_mut().root_mut().eye = Eye::default();
+
+        let picked = session
+            .pick([0.0, 0.0])
+            .expect("the slice cuts the far tesseract");
+        assert_eq!(
+            picked.entity, cut,
+            "the pick took the near tesseract, whose section is empty"
+        );
+        let face = picked.hit.expect("a section pick lifts").coordinates[2];
+        assert!(
+            (face - (-5.0 + 0.5 * SCALE)).abs() < 1e-4,
+            "the hit is at z = {face}, off the tesseract's face"
+        );
+    }
+
     crate::stores! {
         #[derive(Default)]
         pub struct Churn {

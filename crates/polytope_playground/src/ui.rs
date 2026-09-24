@@ -14,7 +14,7 @@ use crate::display::Surface;
 use crate::mode::Mode;
 use crate::projection::Family;
 use crate::strip::{Cell, Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
-use crate::toy::DepthBand;
+use crate::toy::{DepthBand, ARENA_HALF};
 use crate::{catalog, Action, Playground};
 
 const PLANE_LABELS: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
@@ -46,7 +46,10 @@ pub(crate) fn draw(
     render_settings(context, app, panel, sender);
     about(context, panel);
     if *app.controls.get() {
-        overlay(context, app, panel, sender, depths);
+        match *app.mode.get() {
+            Mode::Rotate => overlay(context, app, panel, sender),
+            Mode::Toybox => w_line(context, app, sender, depths),
+        }
     }
 }
 
@@ -77,20 +80,31 @@ fn menu_bar(
             });
             loam_egui::sticky_menu(ui, "View", |ui| {
                 let mut controls = *app.controls.get();
-                if ui.checkbox(&mut controls, "Controls").changed() {
-                    sender.app(Action::Controls(None));
-                }
                 match *app.mode.get() {
                     Mode::Rotate => {
+                        if ui.checkbox(&mut controls, "Controls").changed() {
+                            sender.app(Action::Controls(None));
+                        }
                         let mut formula = *app.formula.get();
                         if ui.checkbox(&mut formula, "Rotation formula").changed() {
                             sender.app(Action::Formula(None));
                         }
                     }
                     Mode::Toybox => {
+                        if ui.checkbox(&mut controls, "w line").changed() {
+                            sender.app(Action::Controls(None));
+                        }
                         let mut guides = *app.guides.get();
                         if ui.checkbox(&mut guides, "Floor guides").changed() {
                             sender.app(Action::Guides(None));
+                        }
+                        let mut rope = *app.rope.get();
+                        if ui
+                            .checkbox(&mut rope, "Rope carry")
+                            .on_hover_text("Held shapes swing from the point you grabbed.")
+                            .changed()
+                        {
+                            sender.app(Action::Rope(None));
                         }
                     }
                 }
@@ -110,42 +124,21 @@ fn overlay(
     app: &Playground,
     panel: &mut Panel,
     sender: &CommandSender<Playground>,
-    depths: &[DepthBand],
 ) {
     let screen = context.content_rect();
     let width = (screen.width() - 2.0 * (OVERLAY_PAD + 10.0)).clamp(280.0, 760.0);
-    let visuals = &context.style().visuals;
-    let frame = egui::Frame::default()
-        .fill(visuals.window_fill)
-        .stroke(visuals.window_stroke)
-        .corner_radius(visuals.window_corner_radius)
-        .inner_margin(10.0);
-    egui::Window::new("polytope-playground-controls")
-        .id(egui::Id::new("polytope-playground-controls"))
-        .title_bar(false)
-        .resizable(false)
-        .collapsible(false)
-        .movable(true)
-        .auto_sized()
-        .pivot(egui::Align2::CENTER_BOTTOM)
-        .default_pos(egui::pos2(screen.center().x, screen.bottom() - OVERLAY_PAD))
-        .default_width(width)
-        .frame(frame)
-        .show(context, |ui| {
-            ui.set_width(width);
-            if *app.mode.get() == Mode::Toybox {
-                toybox_depth(ui, app, panel, sender, depths);
-            } else {
-                if panel.expanded {
-                    egui::ScrollArea::vertical()
-                        .max_height((screen.height() - 190.0).max(80.0))
-                        .show(ui, |ui| expanded(ui, app, sender));
-                    ui.separator();
-                }
-                sliders(ui, app, sender);
-                transport(ui, app, panel, sender);
-            }
-        });
+    let window = bottom_panel(context, "polytope-playground-controls", width, 10.0);
+    window.show(context, |ui| {
+        ui.set_width(width);
+        if panel.expanded {
+            egui::ScrollArea::vertical()
+                .max_height((screen.height() - 190.0).max(80.0))
+                .show(ui, |ui| expanded(ui, app, sender));
+            ui.separator();
+        }
+        sliders(ui, app, sender);
+        transport(ui, app, panel, sender);
+    });
 }
 
 fn expanded(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground>) {
@@ -429,165 +422,156 @@ fn shapes(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground
     }
 }
 
-fn toybox_depth(
-    ui: &mut egui::Ui,
+fn bottom_panel(
+    context: &egui::Context,
+    id: &'static str,
+    width: f32,
+    margin: f32,
+) -> egui::Window<'static> {
+    let screen = context.content_rect();
+    let visuals = &context.style().visuals;
+    let frame = egui::Frame::default()
+        .fill(visuals.window_fill)
+        .stroke(visuals.window_stroke)
+        .corner_radius(visuals.window_corner_radius)
+        .inner_margin(margin);
+    egui::Window::new(id)
+        .id(egui::Id::new(id))
+        .title_bar(false)
+        .resizable(false)
+        .collapsible(false)
+        .movable(true)
+        .auto_sized()
+        .pivot(egui::Align2::CENTER_BOTTOM)
+        .default_pos(egui::pos2(screen.center().x, screen.bottom() - OVERLAY_PAD))
+        .default_width(width)
+        .frame(frame)
+}
+
+fn w_line(
+    context: &egui::Context,
     app: &Playground,
-    panel: &mut Panel,
     sender: &CommandSender<Playground>,
     depths: &[DepthBand],
 ) {
+    const WIDTH: f32 = 360.0;
+    const MARGIN: f32 = 8.0;
+    const VALUE_W: f32 = 64.0;
+    const LANE: f32 = 2.0;
+    const LANE_GAP: f32 = 2.0;
+    const RAIL_GAP: f32 = 4.0;
+    const HANDLE: f32 = 5.0;
+
     let slice = *app.slice.get();
-    let visible = depths
-        .iter()
-        .filter(|band| slice >= band.min && slice <= band.max)
-        .count();
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("w slice").strong());
-        ui.monospace(format!("{slice:+.2}"));
-        ui.label(egui::RichText::new(format!("{visible} of {} in the slice", depths.len())).weak());
+    let window = bottom_panel(context, "polytope-playground-w-line", WIDTH, MARGIN);
+    window.show(context, |ui| {
+        ui.set_width(WIDTH);
+        ui.horizontal(|ui| {
+            let lanes = depths.len().max(1) as f32 * (LANE + LANE_GAP) - LANE_GAP;
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(
+                    ui.available_width() - VALUE_W,
+                    lanes + RAIL_GAP + HANDLE + 1.0,
+                ),
+                egui::Sense::click_and_drag(),
+            );
+            let left = rect.left() + HANDLE;
+            let right = rect.right() - HANDLE;
+            let x_for =
+                |w: f32| left + ((w / ARENA_HALF).clamp(-1.0, 1.0) * 0.5 + 0.5) * (right - left);
+            if response.clicked() || response.dragged() {
+                if let Some(at) = response.interact_pointer_pos() {
+                    let position =
+                        ((at.x - left) / (right - left).max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
+                    sender.app(Action::Slice((position * 2.0 - 1.0) * ARENA_HALF));
+                }
+            }
+
+            let handle = ui.style().interact(&response).fg_stroke.color;
+            let weak = ui.visuals().weak_text_color();
+            let painter = ui.painter();
+            let axis = rect.top() + lanes + RAIL_GAP;
+            painter.line_segment(
+                [egui::pos2(left, axis), egui::pos2(right, axis)],
+                egui::Stroke::new(1.0, weak),
+            );
+            for x in [left, right] {
+                painter.line_segment(
+                    [egui::pos2(x, axis - 4.0), egui::pos2(x, axis + 4.0)],
+                    egui::Stroke::new(1.0, weak),
+                );
+            }
+
+            let mut hovered = None;
+            for (index, band) in depths.iter().enumerate() {
+                let top = rect.top() + index as f32 * (LANE + LANE_GAP);
+                let dim = if band.asleep { 0.5 } else { 1.0 };
+                let channel = |value: f32| (value * dim * 255.0).clamp(0.0, 255.0) as u8;
+                let color = egui::Color32::from_rgb(
+                    channel(band.color[0]),
+                    channel(band.color[1]),
+                    channel(band.color[2]),
+                );
+                let start = x_for(band.min);
+                let bar = egui::Rect::from_min_max(
+                    egui::pos2(start, top),
+                    egui::pos2(x_for(band.max).max(start + 2.0), top + LANE),
+                );
+                let in_slice = (band.min..=band.max).contains(&slice);
+                painter.rect_filled(
+                    bar,
+                    1.0,
+                    color.gamma_multiply(if in_slice { 1.0 } else { 0.3 }),
+                );
+                if response
+                    .hover_pos()
+                    .is_some_and(|at| bar.expand2(egui::vec2(3.0, LANE_GAP)).contains(at))
+                {
+                    hovered = Some(index);
+                }
+            }
+
+            let x = x_for(slice);
+            painter.line_segment(
+                [egui::pos2(x, rect.top() - 1.0), egui::pos2(x, axis)],
+                egui::Stroke::new(1.0, handle),
+            );
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(x, axis),
+                    egui::pos2(x + HANDLE, axis + HANDLE + 1.0),
+                    egui::pos2(x - HANDLE, axis + HANDLE + 1.0),
+                ],
+                handle,
+                egui::Stroke::NONE,
+            ));
+
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            if let Some(index) = hovered {
+                response.on_hover_text_at_pointer(band_name(depths, index));
+            }
+            ui.add_sized(
+                egui::vec2(VALUE_W, rect.height()),
+                egui::Label::new(egui::RichText::new(format!("w {slice:>+.2}")).monospace())
+                    .selectable(false),
+            );
+        });
     });
-    if let Some(next) = depth_ruler(ui, slice, depths) {
-        sender.app(Action::Slice(next));
-    }
-    if panel.expanded {
-        ui.label("Primary-drag a shape to carry it. Release it to throw.");
-        ui.label("Click or drag the ruler to move the w slice.");
-    }
-    transport(ui, app, panel, sender);
 }
 
-fn depth_ruler(ui: &mut egui::Ui, slice: f32, depths: &[DepthBand]) -> Option<f32> {
-    const LABEL_WIDTH: f32 = 72.0;
-    const ROW_HEIGHT: f32 = 16.0;
-    const AXIS_HEIGHT: f32 = 14.0;
-    const PAD: f32 = 6.0;
-    let rows = depths.len().max(1) as f32;
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(
-            ui.available_width(),
-            ROW_HEIGHT * rows + AXIS_HEIGHT + 2.0 * PAD,
-        ),
-        egui::Sense::click_and_drag(),
-    );
-    let chart = egui::Rect::from_min_max(
-        egui::pos2(
-            (rect.left() + LABEL_WIDTH).min(rect.right() - PAD),
-            rect.top() + PAD,
-        ),
-        egui::pos2(rect.right() - PAD, rect.bottom() - PAD - AXIS_HEIGHT),
-    );
-    let reach = depths.iter().fold(W_RANGE, |held, band| {
-        held.max(band.min.abs()).max(band.max.abs())
-    });
-    let x_for = |w: f32| {
-        let position = (w / reach).clamp(-1.0, 1.0) * 0.5 + 0.5;
-        chart.left() + position * chart.width()
-    };
-    let axis_color = ui.visuals().weak_text_color();
-    let painter = ui.painter();
-    painter.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
-    let axis_y = chart.bottom() + 2.0;
-    painter.line_segment(
-        [
-            egui::pos2(chart.left(), axis_y),
-            egui::pos2(chart.right(), axis_y),
-        ],
-        egui::Stroke::new(1.0, axis_color),
-    );
-    for (w, align) in [
-        (-reach, egui::Align2::LEFT_TOP),
-        (0.0, egui::Align2::CENTER_TOP),
-        (reach, egui::Align2::RIGHT_TOP),
-    ] {
-        let x = x_for(w);
-        painter.line_segment(
-            [egui::pos2(x, axis_y), egui::pos2(x, axis_y + 3.0)],
-            egui::Stroke::new(1.0, axis_color),
-        );
-        painter.text(
-            egui::pos2(x, axis_y + 4.0),
-            align,
-            format!("{w:+.1}"),
-            egui::FontId::monospace(10.0),
-            axis_color,
-        );
+fn band_name(depths: &[DepthBand], index: usize) -> String {
+    let label = depths[index].label;
+    let same = |band: &&DepthBand| band.label == label;
+    if depths.iter().filter(same).count() > 1 {
+        format!(
+            "{label} {}",
+            depths[..index].iter().filter(same).count() + 1
+        )
+    } else {
+        label.to_string()
     }
-    painter.line_segment(
-        [
-            egui::pos2(x_for(0.0), chart.top()),
-            egui::pos2(x_for(0.0), chart.bottom()),
-        ],
-        egui::Stroke::new(1.0, axis_color.gamma_multiply(0.4)),
-    );
-    for (index, band) in depths.iter().enumerate() {
-        let top = chart.top() + index as f32 * ROW_HEIGHT;
-        let middle = top + ROW_HEIGHT * 0.5;
-        let in_slice = slice >= band.min && slice <= band.max;
-        let dim = if band.asleep { 0.5 } else { 1.0 };
-        let channel = |value: f32| (value * dim * 255.0).clamp(0.0, 255.0) as u8;
-        let color = egui::Color32::from_rgb(
-            channel(band.color[0]),
-            channel(band.color[1]),
-            channel(band.color[2]),
-        );
-        painter.text(
-            egui::pos2(chart.left() - 8.0, middle),
-            egui::Align2::RIGHT_CENTER,
-            band.label,
-            egui::FontId::monospace(11.0),
-            if in_slice {
-                color
-            } else {
-                color.gamma_multiply(0.7)
-            },
-        );
-        let left = x_for(band.min);
-        let right = x_for(band.max).max(left + 2.0);
-        let band_rect = egui::Rect::from_min_max(
-            egui::pos2(left, top + 3.0),
-            egui::pos2(right, top + ROW_HEIGHT - 3.0),
-        );
-        painter.rect_filled(
-            band_rect,
-            3.0,
-            color.gamma_multiply(if in_slice { 0.85 } else { 0.35 }),
-        );
-        painter.line_segment(
-            [
-                egui::pos2(x_for(band.center), top + 2.0),
-                egui::pos2(x_for(band.center), top + ROW_HEIGHT - 2.0),
-            ],
-            egui::Stroke::new(1.5, color),
-        );
-    }
-    let slice_x = x_for(slice);
-    painter.line_segment(
-        [
-            egui::pos2(slice_x, chart.top() - 2.0),
-            egui::pos2(slice_x, chart.bottom() + 2.0),
-        ],
-        egui::Stroke::new(1.5, egui::Color32::WHITE),
-    );
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            egui::pos2(slice_x - 4.0, chart.top() - 5.0),
-            egui::pos2(slice_x + 4.0, chart.top() - 5.0),
-            egui::pos2(slice_x, chart.top()),
-        ],
-        egui::Color32::WHITE,
-        egui::Stroke::NONE,
-    ));
-    let hit = egui::Rect::from_min_max(
-        egui::pos2(chart.left(), rect.top()),
-        egui::pos2(chart.right(), rect.bottom()),
-    );
-    let pointer = response.interact_pointer_pos()?;
-    if !(response.clicked() || response.dragged()) || !hit.contains(pointer) {
-        return None;
-    }
-    let position =
-        ((pointer.x - chart.left()) / chart.width().max(f32::MIN_POSITIVE)).clamp(0.0, 1.0);
-    Some((position * 2.0 - 1.0) * reach)
 }
 
 fn sliders(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground>) {
@@ -634,24 +618,20 @@ fn transport(
     sender: &CommandSender<Playground>,
 ) {
     let mut rate = app.spin.get().rate;
-    let toybox = *app.mode.get() == Mode::Toybox;
     ui.horizontal(|ui| {
-        let group_width = if toybox { CONTROL_W } else { 215.0 };
-        let leading = ((ui.available_width() - group_width) / 2.0).max(8.0);
+        let leading = ((ui.available_width() - 215.0) / 2.0).max(8.0);
         ui.add_space(leading);
         let control = egui::vec2(CONTROL_W, CONTROL_H);
-        if !toybox {
-            rate_toggle(ui, control, &mut rate, 0.25, true, false);
-            rate_toggle(ui, control, &mut rate, 0.5, false, false);
-            if play_pause_button(ui, egui::vec2(PLAY_W, CONTROL_H), app.spin.get().running)
-                .on_hover_text("Play or pause rotation.")
-                .clicked()
-            {
-                sender.app(Action::Running(Some(!app.spin.get().running)));
-            }
-            rate_toggle(ui, control, &mut rate, 2.0, false, true);
-            rate_toggle(ui, control, &mut rate, 4.0, true, true);
+        rate_toggle(ui, control, &mut rate, 0.25, true, false);
+        rate_toggle(ui, control, &mut rate, 0.5, false, false);
+        if play_pause_button(ui, egui::vec2(PLAY_W, CONTROL_H), app.spin.get().running)
+            .on_hover_text("Play or pause rotation.")
+            .clicked()
+        {
+            sender.app(Action::Running(Some(!app.spin.get().running)));
         }
+        rate_toggle(ui, control, &mut rate, 2.0, false, true);
+        rate_toggle(ui, control, &mut rate, 4.0, true, true);
         if refresh_button(ui, control)
             .on_hover_text("Reset poses, rotation, and slice.")
             .clicked()
@@ -690,7 +670,7 @@ fn transport(
             }
         });
     });
-    if !toybox && rate != app.spin.get().rate {
+    if rate != app.spin.get().rate {
         sender.app(Action::Rate(rate));
     }
 }
@@ -767,7 +747,7 @@ fn about(context: &egui::Context, panel: &mut Panel) {
             ui.label("Rotation in xy, xz, or yz turns the shape within visible space. Rotation in xw, yw, or zw carries it through the slice.");
             ui.label("Shadow projection drops w. Perspective uses a 4D focal point. Stereographic projection maps directions on S³ into 3D.");
             ui.separator();
-            ui.label("In Toybox, primary-drag a shape to carry it, then release it to throw. Use the depth ruler to move the w slice.");
+            ui.label("In Toybox, primary-drag a shape to carry it, then release it to throw. The line at the bottom is the w axis between the arena walls, with one bar for each shape's extent in w. Click or drag it, or hold Q or E, to move the slice. View > Rope carry makes held shapes swing from the point you grabbed.");
             ui.label("Right-drag to orbit the camera. Scroll to zoom.");
             ui.label("In Rotate, Space plays or pauses rotation. Q and E move the w slice in orbit mode.");
         });
