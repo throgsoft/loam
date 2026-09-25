@@ -154,6 +154,10 @@ fn shade(frag_pos: vec4<f32>, near_ndc: f32, far_ndc: f32, background_depth: f32
     // The infinite reversed projection puts the far point at w = 0, so the direction is formed before the divide.
     let far = u.inv_view_proj * vec4<f32>(ndc_xy, far_ndc, 1.0);
     let rd = normalize(far.xyz - near * far.w);
+    // Derivatives need uniform control flow, so the plane footprint is taken before the sky branch returns.
+    let plane_t = (u.ground_y - near.y) / select(rd.y, HORIZON_EPS, abs(rd.y) <= HORIZON_EPS);
+    let plane = (near + rd * plane_t).xz;
+    let footprint = abs(dpdx(plane)) + abs(dpdy(plane));
 
     var out: Fragment;
 
@@ -172,7 +176,7 @@ fn shade(frag_pos: vec4<f32>, near_ndc: f32, far_ndc: f32, background_depth: f32
 
     let p_hit = near + rd * t;
     let fog = 1.0 - exp(-t * u.fog_per_unit);
-    let base = ground_color(p_hit, u.ground_dark, u.ground_light, fog);
+    let base = ground_color(p_hit, footprint, u.ground_dark, u.ground_light, fog);
     let lambert = max(dot(vec3<f32>(0.0, 1.0, 0.0), normalize(LIGHT_DIR)), 0.0);
     let lit = base * (AMBIENT + DIFFUSE * lambert);
     out.color = vec4<f32>(mix(lit, sky(rd, u.sky_below, u.sky_above), fog), 1.0);
