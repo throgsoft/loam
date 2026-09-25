@@ -34,7 +34,7 @@ pub use field::{
 };
 pub use host::{HostConfig, HostError};
 pub use input::{
-    ActionEvent, ActionId, Bindings, Input, Key, Pointer, PointerButton, PointerPhase,
+    ActionEvent, ActionId, Bindings, HostMessages, Input, Key, Pointer, PointerButton, PointerPhase,
 };
 pub use phase::{Ctx, Order, Phase, PhaseError, Step, System, SystemEntry, Tick};
 #[cfg(feature = "physics")]

@@ -1,6 +1,7 @@
 pub mod app;
 pub mod camera;
 pub mod console;
+#[cfg(feature = "egui")]
 pub mod debug_layer;
 pub mod pacing;
 
@@ -23,6 +24,7 @@ pub use camera::{look, orbit, FreeCamera, Orbit};
 pub use commands::CommandSender;
 pub use console::{SessionConsole, Submit};
 pub use cursor::CursorPolicy;
+#[cfg(feature = "egui")]
 pub use debug_layer::{DebugLayer, DEBUG_LAYER};
 pub use frame::Target;
 pub use pacing::{Pace, Pacer};

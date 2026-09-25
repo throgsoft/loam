@@ -23,20 +23,20 @@ pub struct InputMap {
     latest_time: f64,
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "egui"), test))]
 pub(crate) struct TouchCapture {
     active: Vec<CapturedTouch>,
     pointer: Option<u64>,
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "egui"), test))]
 struct CapturedTouch {
     id: u64,
     captured: bool,
     pos: [f32; 2],
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "egui"), test))]
 impl Default for TouchCapture {
     fn default() -> Self {
         Self {
@@ -46,7 +46,7 @@ impl Default for TouchCapture {
     }
 }
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(any(all(target_arch = "wasm32", feature = "egui"), test))]
 impl TouchCapture {
     pub(crate) fn route(
         &mut self,
@@ -93,7 +93,7 @@ impl TouchCapture {
         }
     }
 
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(feature = "egui")]
     pub(super) fn cancel_all(&mut self) -> impl Iterator<Item = (u64, [f32; 2])> + '_ {
         self.pointer = None;
         self.active
@@ -101,7 +101,7 @@ impl TouchCapture {
             .filter_map(|touch| touch.captured.then_some((touch.id, touch.pos)))
     }
 
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(feature = "egui")]
     pub(crate) fn is_pointer(&self, id: u64) -> bool {
         self.pointer == Some(id)
     }
@@ -385,6 +385,10 @@ impl InputMap {
         self.input.scroll[1] += delta[1];
     }
 
+    pub fn host_message(&mut self, topic: &str, values: &[f32]) {
+        self.input.host.push(topic, values);
+    }
+
     fn button_index(button: PointerButton) -> usize {
         match button {
             PointerButton::Primary => 0,
@@ -448,6 +452,7 @@ impl InputMap {
         reclaimed.look = [0.0; 2];
         reclaimed.cursor_locked = false;
         reclaimed.time = 0.0;
+        reclaimed.host.clear();
         self.spare = reclaimed;
     }
 }
@@ -579,6 +584,7 @@ pub fn apply(map: &mut InputMap, bindings: &Bindings, message: &InputMessage, co
         }
         InputMessage::MouseWheel { dx, dy } if !consumed => map.wheel([-*dx, -*dy]),
         InputMessage::MouseWheel { .. } => {}
+        InputMessage::Host { topic, values } => map.host_message(topic, values),
         InputMessage::Focus(true)
         | InputMessage::Visibility(_)
         | InputMessage::Start
@@ -688,6 +694,7 @@ mod tests {
             map.moved([0.2, 0.2]);
             map.button([0.2, 0.2], PointerButton::Primary, false);
             map.action(&bindings, Key::Letter('w'), false);
+            map.host_message("scroll", &[0.5]);
             let input = map.take();
             session.boundary(input).expect("boundary");
             session.tick().expect("tick");
@@ -707,6 +714,20 @@ mod tests {
             bytes, 0,
             "16 warmed frames of input asked the allocator for {bytes} bytes"
         );
+    }
+
+    #[test]
+    fn a_reclaimed_input_carries_no_host_messages_from_the_previous_boundary() {
+        let mut map = InputMap::default();
+        map.host_message("reset", &[]);
+        let first = map.take();
+        assert_eq!(first.host.iter().count(), 1);
+
+        map.reclaim(first);
+        let second = map.take();
+        map.reclaim(second);
+        let reused = map.take();
+        assert!(reused.host.iter().next().is_none());
     }
 
     #[test]

@@ -1,7 +1,6 @@
 
-fn sky(rd: vec3<f32>) -> vec3<f32> {
-    let t = (rd.y + 1.0) * 0.5;
-    return mix(vec3<f32>(0.04, 0.05, 0.10), vec3<f32>(0.10, 0.13, 0.22), t);
+fn sky(rd: vec3<f32>, below: vec3<f32>, above: vec3<f32>) -> vec3<f32> {
+    return mix(below, above, (rd.y + 1.0) * 0.5);
 }
 
 fn ground_color(

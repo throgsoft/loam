@@ -4,8 +4,9 @@ pub mod input_queue;
 pub mod launch;
 pub mod main_launcher;
 pub mod messages;
+mod metrics;
 
-pub use main_launcher::launch_on_click;
+pub(crate) use main_launcher::launch_page;
 
 use anyhow::{anyhow, Result};
 use wasm_bindgen::{JsCast, JsValue};
@@ -50,6 +51,13 @@ pub(crate) fn install_logging_idempotent() {
                 post_failure(&scope, &format!("worker panic: {info}"));
             }
         }));
+        #[cfg(debug_assertions)]
         tracing_wasm::set_as_global_default();
+        #[cfg(not(debug_assertions))]
+        tracing_wasm::set_as_global_default_with_config(
+            tracing_wasm::WASMLayerConfigBuilder::new()
+                .set_max_level(tracing::Level::WARN)
+                .build(),
+        );
     });
 }

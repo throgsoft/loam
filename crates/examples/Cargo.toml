@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam example bins: hero, tesseract, rubiks4d."
+description = "Loam example bins: hero, tesseract, rubiks4d, backdrop."
 publish = false
 
 [dependencies]
@@ -15,6 +15,10 @@ tracing.workspace = true
 web-time.workspace = true
 
 loam = { path = "../..", features = ["app", "capture", "physics", "text"] }
+
+[features]
+default = ["egui"]
+egui = ["loam/egui"]
 
 [lints]
 workspace = true

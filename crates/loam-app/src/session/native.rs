@@ -257,11 +257,14 @@ impl<A: Stores> ApplicationHandler for Host<A> {
                     | WindowEvent::MouseInput { .. }
                     | WindowEvent::MouseWheel { .. }
             );
+        #[cfg(feature = "egui")]
         let consumed = hidden_pointer
             || self
                 .frame
                 .layer()
                 .is_some_and(|layer| layer.on_window_event(&event));
+        #[cfg(not(feature = "egui"))]
+        let consumed = hidden_pointer;
         let scale = self
             .window
             .as_ref()

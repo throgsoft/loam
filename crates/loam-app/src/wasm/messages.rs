@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::time::Duration;
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 
 use super::input_queue::{InputMessage, PointerPhase};
 
@@ -72,10 +72,27 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
                 time: read_event_time(data),
             }
         }
+        "host_message" => {
+            let Some(topic) = read_string_field(data, "topic") else {
+                return Ok(None);
+            };
+            InputMessage::Host {
+                topic,
+                values: read_f32_array_field(data, "values"),
+            }
+        }
         _ => return Ok(None),
     };
 
     Ok(Some(msg))
+}
+
+fn read_f32_array_field(obj: &JsValue, key: &str) -> Vec<f32> {
+    js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Float32Array>().ok())
+        .map(|array| array.to_vec())
+        .unwrap_or_default()
 }
 
 fn read_event_time(obj: &JsValue) -> Duration {

@@ -6,11 +6,12 @@ use wgpu::{CommandEncoder, Queue};
 
 use crate::device::GpuContext;
 use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
-use crate::sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
+use crate::sky_ground::{Ground, Sky, SkyGroundNode, SkyGroundUniforms, DEFAULT_SKY};
 use crate::{DepthConvention, Viewport};
 
 struct State {
     eye: Eye,
+    sky: Sky,
     ground: Ground,
     node: Option<SkyGroundNode>,
     queue: Option<Queue>,
@@ -26,6 +27,7 @@ impl SkyGroundPass {
         Self {
             shared: Rc::new(RefCell::new(State {
                 eye: Eye::default(),
+                sky: DEFAULT_SKY,
                 ground,
                 node: None,
                 queue: None,
@@ -33,9 +35,10 @@ impl SkyGroundPass {
         }
     }
 
-    pub fn publish(&self, eye: &Eye, ground: Ground) {
+    pub fn publish(&self, eye: &Eye, sky: Sky, ground: Ground) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;
+        state.sky = sky;
         state.ground = ground;
     }
 }
@@ -65,8 +68,8 @@ impl FramePass for SkyGroundPass {
         let Some(depth) = target.depth else {
             return Ok(());
         };
-        let state = self.shared.borrow();
-        let (Some(node), Some(queue)) = (state.node.as_ref(), state.queue.as_ref()) else {
+        let state = &mut *self.shared.borrow_mut();
+        let (Some(node), Some(queue)) = (state.node.as_mut(), state.queue.as_ref()) else {
             return Ok(());
         };
         let viewport = Viewport::full([target.size.0, target.size.1]);
@@ -75,6 +78,7 @@ impl FramePass for SkyGroundPass {
             &SkyGroundUniforms::new(
                 crate::view::root_view_projection(&state.eye),
                 viewport,
+                state.sky,
                 state.ground,
             ),
         );

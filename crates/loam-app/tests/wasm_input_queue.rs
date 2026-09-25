@@ -153,6 +153,31 @@ fn pointer(id: u64, phase: PointerPhase, x: f32, millis: u64) -> InputMessage {
 }
 
 #[test]
+fn a_streaming_host_topic_never_purges_a_queued_one_shot_message() {
+    enqueue(InputMessage::Host {
+        topic: "reset".into(),
+        values: Vec::new(),
+    });
+    for i in 0..=MESSAGE_QUEUE_CAPACITY {
+        enqueue(InputMessage::Host {
+            topic: "scroll".into(),
+            values: vec![i as f32],
+        });
+    }
+    let mut batch = VecDeque::new();
+    drain_messages_into(&mut batch);
+    let got: Vec<(&str, &[f32])> = batch
+        .iter()
+        .map(|msg| match msg {
+            InputMessage::Host { topic, values } => (topic.as_str(), values.as_slice()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let last = MESSAGE_QUEUE_CAPACITY as f32;
+    assert_eq!(got, [("reset", &[][..]), ("scroll", &[last][..])]);
+}
+
+#[test]
 fn coalesced_pointer_motion_keeps_the_latest_sample_and_never_crosses_a_release() {
     enqueue(pointer(1, PointerPhase::Down, 0.0, 0));
     enqueue(pointer(1, PointerPhase::Move, 10.0, 10));

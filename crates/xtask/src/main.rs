@@ -6,6 +6,9 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   cargo xtask web [--bin <name>] [--package <name>] [--release] [--public-url <path>] [--features <list>]
+                  [--manifest-path <Cargo.toml>] [--out-dir <dir>]
+    with --manifest-path, --release needs that workspace to declare [profile.wasm-release]
+    (copy it from loam's root Cargo.toml)
   cargo xtask serve [--port <port>]";
 
 fn main() -> ExitCode {

@@ -123,7 +123,10 @@ impl ScriptDriver {
 
     pub fn advance_console<A: Stores>(&mut self, console: &mut SessionConsole<A>) -> ScriptStatus {
         self.advance_with(|command| {
-            console.execute(&loam_egui::render_line(&command.name, &command.arg_refs()));
+            console.execute(&loam_console::render_line(
+                &command.name,
+                &command.arg_refs(),
+            ));
         })
     }
 }

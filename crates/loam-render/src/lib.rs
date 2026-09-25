@@ -32,7 +32,7 @@ pub use passes::{HyperslicePass, LinePass, PointPass, RaymarchPass, SkyGroundPas
 pub use point_raster::{PointInstance, PointRasterNode, PointRasterUniforms};
 pub use present::Presenter;
 pub use raymarch::{RayMarchNode, RayMarchUniforms};
-pub use sky_ground::{Ground, SkyGroundNode, SkyGroundUniforms};
+pub use sky_ground::{Ground, Sky, SkyGroundNode, SkyGroundUniforms};
 pub use triangle_pass::{GroundLocked, TriangleFeed};
 pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,

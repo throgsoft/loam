@@ -4,7 +4,9 @@ use loam::render::raymarch::scene::{Scene4, SceneNode4};
 use loam::render::raymarch::{
     polytope_extended_sdfs_wgsl, BodyUniform, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
 };
-use loam::render::sky_ground::{Ground, DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
+use loam::render::sky_ground::{
+    Ground, Sky, DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY,
+};
 use loam::runtime::Eye;
 use loam::runtime::Pose;
 
@@ -41,8 +43,15 @@ pub(crate) fn body_of(entry: &ShapeEntry, pose: &Pose<EuclideanR4>, size: f32) -
     )
 }
 
-pub(crate) fn uniforms(eye: &Eye, w_slice: f32, floor_visible: bool) -> Hyperslice4DUniforms {
+pub(crate) fn uniforms(
+    eye: &Eye,
+    sky: Sky,
+    w_slice: f32,
+    floor_visible: bool,
+) -> Hyperslice4DUniforms {
     Hyperslice4DUniforms {
+        sky_below: sky.below,
+        sky_above: sky.above,
         camera_pos: eye.position,
         camera_forward: eye.forward,
         camera_right: eye.right,

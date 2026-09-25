@@ -97,7 +97,7 @@ fn render(gpu: &GpuContext, eye: Vec3, show_ground: bool) -> Vec<u8> {
     let color_view = color.create_view(&TextureViewDescriptor::default());
     let depth_view = depth.create_view(&TextureViewDescriptor::default());
 
-    let background = SkyGroundNode::new(
+    let mut background = SkyGroundNode::new(
         device,
         TARGET_FORMAT,
         DEPTH_FORMAT,
@@ -108,6 +108,7 @@ fn render(gpu: &GpuContext, eye: Vec3, show_ground: bool) -> Vec<u8> {
         &SkyGroundUniforms::new(
             view_proj(eye),
             Viewport::full([SIZE, SIZE]),
+            loam_render::sky_ground::DEFAULT_SKY,
             Ground {
                 y: 0.0,
                 dark: loam_render::sky_ground::GROUND_DARK_GREY,

@@ -60,7 +60,13 @@ pub(super) struct Probe {
 }
 
 impl Probe {
-    pub(super) fn from_args(args: &Args, width: u32, height: u32, scale: f32) -> Option<Self> {
+    pub(super) fn from_args(
+        args: &Args,
+        width: u32,
+        height: u32,
+        scale: f32,
+        pixel_budget: Option<u32>,
+    ) -> Option<Self> {
         Some(Self {
             origin: Instant::now(),
             sample_seconds: args.parse::<u32>("measure-seconds")?.clamp(1, MAX_SECONDS),
@@ -68,7 +74,7 @@ impl Probe {
                 .parse::<u32>("warmup-seconds")
                 .unwrap_or(30)
                 .min(MAX_SECONDS),
-            pixel_budget: args.parse::<u32>("max-pixels").filter(|pixels| *pixels > 0),
+            pixel_budget,
             resolution: (width, height, scale),
             phase: Phase::Waiting,
             warmup: (0, 0.0),

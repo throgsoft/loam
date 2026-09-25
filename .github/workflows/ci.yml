@@ -36,6 +36,7 @@ jobs:
             libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
             pkg-config
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p loam-app --no-default-features --all-targets -- -D warnings
 
   clippy-wasm:
     name: clippy (wasm32)
@@ -48,6 +49,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo clippy -p loam-app -p polytope_playground --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo clippy -p loam-app --no-default-features --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo clippy -p loam-app --no-default-features --features measure --target wasm32-unknown-unknown -- -D warnings
+      - name: the facade's app feature links no egui
+        run: |
+          tree=$(cargo tree -p loam --features app -e normal --target wasm32-unknown-unknown --prefix none)
+          ! grep -qE '^egui v' <<<"$tree"
 
   platform-cfg:
     name: cfg(target_arch = "wasm32") only in loam-app
@@ -122,6 +129,8 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - name: Build the runnable worker bundle
         run: cargo xtask web --bin polytope_playground --public-url /
+      - name: Build the backdrop page
+        run: cargo xtask web --bin backdrop --package examples --public-url /
 
   wasm-session:
     name: wasm32 build (session crates)

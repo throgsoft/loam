@@ -50,6 +50,14 @@ pollster = "0.3"
 # `std::time::Instant::now` panics on wasm32.
 web-time = "1"
 
+# strip drops target_features, which turns off wasm-bindgen externref.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
 [package]
 name = "loam"
 version.workspace = true
@@ -76,6 +84,7 @@ loam-text    = { path = "crates/loam-text",    version = "0.1.0", optional = tru
 default = []
 app = ["dep:loam-app", "render"]
 capture = ["app", "loam-app/capture"]
+egui = ["app", "loam-app/egui"]
 physics = ["dep:loam-physics", "loam-runtime/physics"]
 render = ["dep:loam-render"]
 text = ["dep:loam-text", "render"]

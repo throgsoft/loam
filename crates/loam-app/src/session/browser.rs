@@ -7,6 +7,7 @@ use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, OffscreenCanvas};
 
+#[cfg(feature = "egui")]
 use loam_egui::egui;
 use loam_render::device::{FeatureRequest, RenderDevice};
 use loam_runtime::host::HostError;
@@ -16,6 +17,7 @@ use web_time::Instant;
 use super::animation::{self, Lifecycle, Next};
 use super::app::SessionApp;
 use super::frame::{failed, Frame};
+#[cfg(feature = "egui")]
 use super::input::TouchCapture;
 use super::pacing::Pace;
 use super::surface::{Attempt, SurfaceHost};
@@ -45,8 +47,7 @@ pub fn launch_with<A: Stores>(
         return listen(factory).map_err(|error| failed(format!("{error:#}")));
     }
     drop(factory);
-    crate::wasm::launch_on_click(&wasm.host_id, &wasm.button_id, &wasm.canvas_id)
-        .map_err(|error| failed(format!("{error:#}")))
+    crate::wasm::launch_page(&wasm).map_err(|error| failed(format!("{error:#}")))
 }
 
 pub fn launch_or_headless<A: Stores>(
@@ -65,6 +66,8 @@ thread_local! {
     static RAF_PENDING: Cell<bool> = const { Cell::new(false) };
     static START_REQUESTED: Cell<bool> = const { Cell::new(false) };
     static PAUSED: Cell<bool> = const { Cell::new(false) };
+    static HOST_PAUSED: Cell<bool> = const { Cell::new(false) };
+    static HIDDEN: Cell<bool> = const { Cell::new(false) };
     static LOOP_STARTED: Cell<bool> = const { Cell::new(false) };
     static LIFECYCLE: Cell<Lifecycle> = const { Cell::new(Lifecycle::Ready) };
 }
@@ -89,6 +92,48 @@ where
     on_message.forget();
     post(&scope, "ready");
     Ok(())
+}
+
+fn input_paused() -> bool {
+    PAUSED.with(Cell::get) || HOST_PAUSED.with(Cell::get)
+}
+
+fn halted() -> bool {
+    input_paused() || HIDDEN.with(Cell::get)
+}
+
+fn set_paused(
+    scope: &DedicatedWorkerGlobalScope,
+    flag: &'static std::thread::LocalKey<Cell<bool>>,
+    paused: bool,
+) {
+    let was_halted = halted();
+    let was_input_paused = input_paused();
+    flag.with(|flag| flag.set(paused));
+    match (was_input_paused, input_paused()) {
+        (false, true) => {
+            input_queue::enqueue(InputMessage::Focus(false));
+            post_cursor_request(scope, false);
+        }
+        (true, false) => input_queue::enqueue(InputMessage::Focus(true)),
+        _ => {}
+    }
+    if !paused {
+        restart_if_unhalted(was_halted);
+    }
+}
+
+fn restart_if_unhalted(was_halted: bool) {
+    let started = LOOP_STARTED.with(|started| started.get());
+    let pending = RAF_PENDING.with(|pending| pending.get());
+    let lifecycle = LIFECYCLE.with(|lifecycle| lifecycle.get());
+    if animation::resumed(was_halted, halted(), started, pending, lifecycle) == Next::Frame {
+        RAF_RESTART.with(|restart| {
+            if let Some(restart) = restart.borrow().as_ref() {
+                restart();
+            }
+        });
+    }
 }
 
 fn post(scope: &DedicatedWorkerGlobalScope, kind: &str) {
@@ -117,6 +162,28 @@ fn post_cursor_request(scope: &DedicatedWorkerGlobalScope, locked: bool) {
     );
     if let Err(error) = scope.post_message(&message) {
         tracing::warn!("loam-app::session::browser: cursor request failed: {error:?}");
+    }
+}
+
+fn post_to_page(scope: &DedicatedWorkerGlobalScope, topic: &str, values: &[f32]) {
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str("host_post"),
+    );
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("topic"),
+        &JsValue::from_str(topic),
+    );
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("values"),
+        &js_sys::Float32Array::from(values),
+    );
+    if let Err(error) = scope.post_message(&message) {
+        tracing::warn!("loam-app::session::browser: post {topic} failed: {error:?}");
     }
 }
 
@@ -166,28 +233,29 @@ where
             return Ok(());
         }
         Some("pause") => {
-            if !PAUSED.with(|paused| paused.replace(true)) {
-                input_queue::enqueue(InputMessage::Focus(false));
-                post_cursor_request(scope, false);
-            }
+            set_paused(scope, &PAUSED, true);
             return Ok(());
         }
         Some("resume") => {
-            let was_paused = PAUSED.with(|paused| paused.replace(false));
-            if was_paused {
-                input_queue::enqueue(InputMessage::Focus(true));
-            }
-            let started = LOOP_STARTED.with(|started| started.get());
-            let pending = RAF_PENDING.with(|pending| pending.get());
-            let lifecycle = LIFECYCLE.with(|lifecycle| lifecycle.get());
-            if animation::resumed(was_paused, started, pending, lifecycle) == Next::Frame {
-                RAF_RESTART.with(|restart| {
-                    if let Some(restart) = restart.borrow().as_ref() {
-                        restart();
-                    }
-                });
-            }
+            set_paused(scope, &PAUSED, false);
             return Ok(());
+        }
+        Some("host_pause") => {
+            set_paused(scope, &HOST_PAUSED, true);
+            return Ok(());
+        }
+        Some("host_resume") => {
+            set_paused(scope, &HOST_PAUSED, false);
+            return Ok(());
+        }
+        Some("visibility") => {
+            let was_halted = halted();
+            let visible = js_sys::Reflect::get(&data, &JsValue::from_str("visible"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+            HIDDEN.with(|hidden| hidden.set(!visible));
+            restart_if_unhalted(was_halted);
         }
         Some("init") => {
             let Some(factory) = pending.borrow_mut().take() else {
@@ -209,6 +277,11 @@ where
                     .and_then(|value| value.as_string())
                     .unwrap_or_default()
             };
+            let visible = js_sys::Reflect::get(&data, &JsValue::from_str("visible"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+            HIDDEN.with(|hidden| hidden.set(!visible));
             crate::args::set_query_override(read_str("search"), read_str("hash"));
             let args = Args::current();
             let (session, app) = factory(args.clone())
@@ -217,7 +290,13 @@ where
             let height = read_u32("height").unwrap_or(600);
             let dpr = messages::read_device_pixel_ratio(&data);
             #[cfg(feature = "measure")]
-            let measurement = Probe::from_args(&args, width, height, dpr);
+            let measurement = Probe::from_args(
+                &args,
+                width,
+                height,
+                dpr,
+                read_u32("max_pixels").filter(|pixels| *pixels > 0),
+            );
             let scope = scope.clone();
             let failure_scope = scope.clone();
             wasm_bindgen_futures::spawn_local(async move {
@@ -242,7 +321,7 @@ where
         }
         _ => {}
     }
-    if PAUSED.with(|paused| paused.get())
+    if input_paused()
         && matches!(
             kind.as_deref(),
             Some("mouse_move" | "mouse_button" | "mouse_wheel" | "key" | "pointer")
@@ -282,7 +361,7 @@ async fn start<A: Stores>(
 
     let mut frame = Frame::new(session, app).map_err(|error| anyhow!("{error:?}"))?;
     frame
-        .attach(&rd.context, rd.target_format(), None, size, dpr)
+        .attach(&rd.context, rd.target_format(), size, dpr)
         .map_err(|error| anyhow!("{error:?}"))?;
     let worker = Rc::new(RefCell::new(Some(Worker {
         frame,
@@ -291,8 +370,10 @@ async fn start<A: Stores>(
         canvas,
         scope: scope.clone(),
         messages: VecDeque::new(),
+        #[cfg(feature = "egui")]
         touches: TouchCapture::default(),
         dpr,
+        presented: false,
         #[cfg(feature = "measure")]
         measurement,
     })));
@@ -336,8 +417,8 @@ fn install_animation_frame<A: Stores>(
     let worker_for_closure = worker.clone();
     *callback.borrow_mut() = Some(Closure::wrap(Box::new(move |_timestamp: f64| {
         RAF_PENDING.with(|pending| pending.set(false));
-        let paused = PAUSED.with(|paused| paused.get());
-        let loss = match paused {
+        let idle = halted();
+        let loss = match idle {
             true => None,
             false => worker_for_closure
                 .borrow()
@@ -346,7 +427,7 @@ fn install_animation_frame<A: Stores>(
         };
         let next = LIFECYCLE.with(|lifecycle| {
             let mut state = lifecycle.get();
-            let next = animation::frame(paused, &mut state, loss.is_some(), || {
+            let next = animation::frame(idle, &mut state, loss.is_some(), || {
                 let mut held = worker_for_closure.borrow_mut();
                 let Some(worker) = held.as_mut() else {
                     return Err(failed("the session worker is unavailable"));
@@ -376,11 +457,10 @@ fn install_animation_frame<A: Stores>(
                         Some(loss) => recover(&worker, &loss).await,
                         None => Ok(()),
                     };
-                    let paused = PAUSED.with(|paused| paused.get());
                     let pending = RAF_PENDING.with(|pending| pending.get());
                     let next = LIFECYCLE.with(|lifecycle| {
                         let mut state = lifecycle.get();
-                        let next = animation::recovered(&mut state, paused, pending, outcome);
+                        let next = animation::recovered(&mut state, halted(), pending, outcome);
                         lifecycle.set(state);
                         next
                     });
@@ -485,6 +565,7 @@ async fn recover<A: Stores>(
     outcome
 }
 
+#[cfg(feature = "egui")]
 fn feed_layer(
     layer: &super::DebugLayer,
     touches: &mut TouchCapture,
@@ -631,7 +712,8 @@ fn feed_layer(
         InputMessage::Resize { .. }
         | InputMessage::Visibility(_)
         | InputMessage::Start
-        | InputMessage::PointerLockChanged { .. } => false,
+        | InputMessage::PointerLockChanged { .. }
+        | InputMessage::Host { .. } => false,
     }
 }
 
@@ -642,8 +724,10 @@ struct Worker<A: Stores> {
     canvas: OffscreenCanvas,
     scope: DedicatedWorkerGlobalScope,
     messages: VecDeque<InputMessage>,
+    #[cfg(feature = "egui")]
     touches: TouchCapture,
     dpr: f32,
+    presented: bool,
     #[cfg(feature = "measure")]
     measurement: Option<Probe>,
 }
@@ -678,10 +762,14 @@ impl<A: Stores> Worker<A> {
             }
             return;
         }
-        let layer = self.frame.layer().cloned();
-        let consumed = layer
-            .as_ref()
-            .is_some_and(|layer| feed_layer(layer, &mut self.touches, &message));
+        #[cfg(feature = "egui")]
+        let consumed = self
+            .frame
+            .layer()
+            .cloned()
+            .is_some_and(|layer| feed_layer(&layer, &mut self.touches, &message));
+        #[cfg(not(feature = "egui"))]
+        let consumed = false;
         match &message {
             InputMessage::Resize { width, height, dpr } => self.resize(*width, *height, *dpr),
             _ => self.frame.apply_message(&message, consumed),
@@ -710,13 +798,22 @@ impl<A: Stores> Worker<A> {
             surface,
             rd,
             scope,
+            presented,
             ..
         } = self;
-        surface.present(rd, frame, now, |frame, _| {
+        let attempt = surface.present(rd, frame, now, |frame, _| {
             if let Some(locked) = frame.take_cursor_request() {
                 post_cursor_request(scope, locked);
             }
-        })
+            for (topic, values) in frame.posts() {
+                post_to_page(scope, topic, values);
+            }
+        })?;
+        if matches!(attempt, Attempt::Presented) && !*presented {
+            *presented = true;
+            post(scope, "presented");
+        }
+        Ok(attempt)
     }
 
     fn flush_cursor_request(&mut self) {

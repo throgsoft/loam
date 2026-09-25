@@ -1,8 +1,10 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 use glam::Vec2;
 use web_time::Instant;
 use wgpu::{CommandBuffer, CommandEncoder, Texture, TextureFormat, TextureView};
+#[cfg(not(target_arch = "wasm32"))]
 use winit::window::Window;
 
 use loam_render::device::GpuContext;
@@ -13,17 +15,11 @@ use loam_runtime::host::HostError;
 use loam_runtime::{Eye, Publication, PublishError, Records, Session, Stores};
 use loam_time::{frame_trace, FixedTimestep};
 
-use super::app::{CaptureControl, FrameHook, InputHook, SessionApp};
+use super::app::{CaptureControl, FrameHook, InputHook, Posts, SessionApp};
 use super::cursor::CursorCapture;
+#[cfg(feature = "egui")]
 use super::debug_layer::DebugLayer;
 use super::input::InputMap;
-
-const BACKGROUND: wgpu::Color = wgpu::Color {
-    r: 0.02,
-    g: 0.02,
-    b: 0.03,
-    a: 1.0,
-};
 
 pub struct Target<'a> {
     pub view: &'a TextureView,
@@ -44,6 +40,7 @@ struct Inner<A: Stores> {
     input: InputMap,
     cursor: CursorCapture,
     app: SessionApp<A>,
+    posts: Posts,
     no_views_reported: bool,
     #[cfg(test)]
     presented: Option<Eye>,
@@ -53,6 +50,7 @@ struct Inner<A: Stores> {
 
 pub(crate) struct Frame<A: Stores> {
     presenter: Option<Presenter>,
+    #[cfg(feature = "egui")]
     layer: Option<DebugLayer>,
     inner: Inner<A>,
 }
@@ -66,6 +64,7 @@ impl<A: Stores> Frame<A> {
             .map(|_| FixedTimestep::new(sim.fixed_hz).with_max_catch_up(sim.max_ticks_per_frame));
         Ok(Self {
             presenter: None,
+            #[cfg(feature = "egui")]
             layer: None,
             inner: Inner {
                 session,
@@ -75,6 +74,7 @@ impl<A: Stores> Frame<A> {
                 input: InputMap::default(),
                 cursor: CursorCapture::new(),
                 app,
+                posts: Posts::default(),
                 no_views_reported: false,
                 #[cfg(test)]
                 presented: None,
@@ -96,6 +96,11 @@ impl<A: Stores> Frame<A> {
     #[cfg(any(all(target_arch = "wasm32", feature = "measure"), test))]
     pub(crate) fn phase_error(&self) -> Option<loam_runtime::PhaseError> {
         self.inner.session.phase_error()
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn posts(&self) -> impl Iterator<Item = (&'static str, &[f32])> {
+        self.inner.posts.iter()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -174,6 +179,7 @@ impl<A: Stores> Frame<A> {
             .host_action(&self.inner.app.config.bindings, key, pressed, consumed);
     }
 
+    #[cfg(feature = "egui")]
     pub(crate) fn layer(&self) -> Option<&DebugLayer> {
         self.layer.as_ref()
     }
@@ -189,7 +195,7 @@ impl<A: Stores> Frame<A> {
         &mut self,
         gpu: &GpuContext,
         format: TextureFormat,
-        window: Option<Arc<Window>>,
+        #[cfg(not(target_arch = "wasm32"))] window: Option<Arc<Window>>,
         size: (u32, u32),
         scale: f32,
     ) -> Result<(), HostError> {
@@ -197,13 +203,19 @@ impl<A: Stores> Frame<A> {
         for pass in self.inner.app.passes.drain(..) {
             presenter.register_pass(pass).map_err(failed)?;
         }
+        #[cfg(all(not(feature = "egui"), not(target_arch = "wasm32")))]
+        let _ = window;
+        #[cfg(feature = "egui")]
         if self.inner.app.debug_layer {
             let layer = match self.layer.clone() {
                 Some(layer) => layer,
+                #[cfg(not(target_arch = "wasm32"))]
                 None => match window {
                     Some(window) => DebugLayer::on_window(gpu, format, window, size),
                     None => DebugLayer::offscreen(gpu, format, size, scale),
                 },
+                #[cfg(target_arch = "wasm32")]
+                None => DebugLayer::offscreen(gpu, format, size, scale),
             };
             presenter.register_pass(layer.pass()).map_err(failed)?;
             self.layer = Some(layer);
@@ -223,6 +235,7 @@ impl<A: Stores> Frame<A> {
 
     pub(crate) fn resize(&mut self, width: u32, height: u32, scale: f32) {
         self.inner.input.resize(width, height, scale);
+        #[cfg(feature = "egui")]
         if let Some(layer) = self.layer.as_ref() {
             layer.resize(width, height, scale);
         }
@@ -235,6 +248,7 @@ impl<A: Stores> Frame<A> {
         now: Instant,
         finish: impl FnMut(&mut CommandEncoder),
     ) -> Result<(), HostError> {
+        self.inner.posts.clear();
         let outcome = self.stepped(gpu, target, now, finish);
         if let Err(error) = &outcome {
             tracing::error!("frame failed: {error}");
@@ -262,8 +276,15 @@ impl<A: Stores> Frame<A> {
         frame_trace::begin_frame();
         let outcome = {
             let _frame = frame_trace::scope("frame");
-            self.inner
-                .drive(gpu, target, now, finish, presenter, self.layer.as_ref())
+            self.inner.drive(
+                gpu,
+                target,
+                now,
+                finish,
+                presenter,
+                #[cfg(feature = "egui")]
+                self.layer.as_ref(),
+            )
         };
         frame_trace::end_frame();
         outcome
@@ -275,7 +296,7 @@ impl<A: Stores> Inner<A> {
         &mut self,
         now: Instant,
         size: (u32, u32),
-        ui: Option<&loam_egui::egui::Context>,
+        #[cfg(feature = "egui")] ui: Option<&loam_egui::egui::Context>,
     ) -> Result<(), HostError> {
         let controls = self.app.console.take_controls();
         if let Some(fps) = controls.target_fps {
@@ -306,6 +327,7 @@ impl<A: Stores> Inner<A> {
             hook(&InputHook {
                 session,
                 input: &gathered,
+                #[cfg(feature = "egui")]
                 ui,
                 size,
                 sender: &sender,
@@ -337,9 +359,14 @@ impl<A: Stores> Inner<A> {
         &mut self,
         now: Instant,
         size: (u32, u32),
-        ui: Option<&loam_egui::egui::Context>,
+        #[cfg(feature = "egui")] ui: Option<&loam_egui::egui::Context>,
     ) -> Result<(Publication, Eye), HostError> {
-        self.advance(now, size, ui)?;
+        self.advance(
+            now,
+            size,
+            #[cfg(feature = "egui")]
+            ui,
+        )?;
         {
             let _publication = frame_trace::scope("publication");
             self.records
@@ -380,30 +407,42 @@ impl<A: Stores> Inner<A> {
         now: Instant,
         mut finish: impl FnMut(&mut CommandEncoder),
         presenter: &mut Presenter,
-        layer: Option<&DebugLayer>,
+        #[cfg(feature = "egui")] layer: Option<&DebugLayer>,
     ) -> Result<(), HostError> {
+        #[cfg(feature = "egui")]
         let context = layer.map(DebugLayer::begin);
         let faulted_before = self.session.faulted_phase();
         let scene_before = self.session.scene();
-        let terminal = match self.prepare(now, target.size, context.as_ref()) {
+        let prepared = self.prepare(
+            now,
+            target.size,
+            #[cfg(feature = "egui")]
+            context.as_ref(),
+        );
+        let terminal = match prepared {
             Ok((records, eye)) => {
                 {
                     let sender = self.app.commands.sender();
-                    let (hook, captures, cursor) = (
+                    let (hook, captures, cursor, background, posts) = (
                         self.app.frame.as_mut(),
                         &mut self.app.captures,
                         &mut self.cursor,
+                        &mut self.app.background,
+                        &mut self.posts,
                     );
                     if let Some(hook) = hook {
                         hook(&mut FrameHook {
                             session: &self.session,
                             published: &records,
                             sections: presenter.sections(),
+                            #[cfg(feature = "egui")]
                             ui: context.as_ref(),
                             size: target.size,
                             sender: &sender,
                             capture: CaptureControl::new(captures),
                             cursor,
+                            background,
+                            posts,
                         });
                     }
                 }
@@ -434,6 +473,7 @@ impl<A: Stores> Inner<A> {
             }
             Err(error) => Some(error),
         };
+        #[cfg(feature = "egui")]
         if let Some(context) = context.as_ref() {
             loam_egui::ConsoleUi::ui(self.app.console.ui_mut(), context);
         }
@@ -441,6 +481,7 @@ impl<A: Stores> Inner<A> {
             driver.advance_console(&mut self.app.console);
         }
         self.app.console.dispatch_pending();
+        #[cfg(feature = "egui")]
         if let Some(layer) = layer {
             layer.finish();
         }
@@ -461,7 +502,7 @@ impl<A: Stores> Inner<A> {
                 &mut encoder,
                 target.view,
                 target.size,
-                BACKGROUND,
+                self.app.background,
             )
             .map_err(failed)?;
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
@@ -479,6 +520,7 @@ impl<A: Stores> Inner<A> {
         let post = wants_post
             .then(|| self.record_capture(&gpu.device, &mut encoder, target))
             .flatten();
+        #[cfg(feature = "egui")]
         if let Some(layer) = layer {
             layer.take_callbacks(&mut self.callbacks);
         }
@@ -574,11 +616,14 @@ mod tests {
         Pose, SimConfig, SpawnBundle, Tick, ViewSpec,
     };
     use wgpu::{
-        BackendOptions, Backends, Color, ColorTargetState, ColorWrites, Extent3d, FragmentState,
-        Instance, InstanceDescriptor, LoadOp, MultisampleState, NoopBackendOptions, Operations,
+        BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
+        TextureDescriptor, TextureDimension, TextureUsages, TextureViewDescriptor,
+    };
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+    use wgpu::{
+        Color, ColorTargetState, ColorWrites, FragmentState, LoadOp, MultisampleState, Operations,
         PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
-        RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, StoreOp, TextureDescriptor,
-        TextureDimension, TextureUsages, TextureViewDescriptor, VertexState,
+        RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, StoreOp, VertexState,
     };
 
     use super::*;
@@ -592,6 +637,7 @@ mod tests {
         pub struct Bare {}
     }
 
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     const CAPTURE_FPS: u16 = 60;
 
     struct Probe {
@@ -623,6 +669,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     struct Paint {
         name: &'static str,
         color: Color,
@@ -630,6 +677,7 @@ mod tests {
         pipeline: Option<RenderPipeline>,
     }
 
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     impl FramePass for Paint {
         fn name(&self) -> &'static str {
             self.name
@@ -763,8 +811,14 @@ fn fragment() -> @location(0) vec4<f32> {{
     }
 
     fn host<A: Stores>(name: &'static str) -> SessionApp<A> {
-        SessionApp::with_args(HostConfig::new(name, Bindings::new()), Args::default())
-            .debug_layer(false)
+        quiet(SessionApp::with_args(
+            HostConfig::new(name, Bindings::new()),
+            Args::default(),
+        ))
+    }
+
+    fn quiet<A: Stores>(app: SessionApp<A>) -> SessionApp<A> {
+        app.debug_layer(false)
     }
 
     fn run_one<A: Stores>(frame: &mut Frame<A>, gpu: &GpuContext, texture: &Texture) {
@@ -919,14 +973,41 @@ struct Fragment {
     }
 
     #[test]
+    fn a_post_from_one_frame_is_not_flushed_again_on_the_next() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let mut frames = 0_u32;
+        let app = host::<Bare>("posts").on_frame(move |hook| {
+            frames += 1;
+            if frames == 1 {
+                hook.post("rect", &[1.0, 2.0, 3.0, 4.0]);
+                hook.post("ready", &[]);
+            }
+        });
+        let mut frame = bare(app);
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+
+        run_one(&mut frame, &gpu, &texture);
+        let posted: Vec<(&str, Vec<f32>)> = frame
+            .posts()
+            .map(|(topic, values)| (topic, values.to_vec()))
+            .collect();
+        assert_eq!(
+            posted,
+            [("rect", vec![1.0, 2.0, 3.0, 4.0]), ("ready", Vec::new())]
+        );
+
+        run_one(&mut frame, &gpu, &texture);
+        assert_eq!(frame.posts().count(), 0);
+    }
+
+    #[test]
     fn a_publication_with_no_views_is_reported_once_per_frame() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
-        let app = SessionApp::<Bare>::with_args(
-            HostConfig::new("no views", Bindings::new()),
-            Args::default(),
-        )
-        .debug_layer(false);
+        let app = host::<Bare>("no views");
         let mut session = Session::new(Bare::default(), SimConfig::default());
         session.register_domain(DomainBuilder::new("r3", EuclideanR3));
         let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
@@ -965,11 +1046,7 @@ struct Fragment {
     fn a_zero_rate_config_pauses_the_frame_and_a_config_without_catch_up_is_refused() {
         let paused =
             loam_runtime::SimConfig::new(0, 2).expect("a zero rate is documented as paused");
-        let app = SessionApp::<Bare>::with_args(
-            HostConfig::new("paused", Bindings::new()),
-            Args::default(),
-        )
-        .debug_layer(false);
+        let app = host::<Bare>("paused");
         let session = Session::new(Bare::default(), paused);
         assert!(Frame::new(session, app).is_ok());
         assert!(matches!(
@@ -982,11 +1059,7 @@ struct Fragment {
     fn a_publication_phase_eye_write_keeps_the_frame_aspect() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
-        let app = SessionApp::<Bare>::with_args(
-            HostConfig::new("aspect", Bindings::new()),
-            Args::default(),
-        )
-        .debug_layer(false);
+        let app = host::<Bare>("aspect");
         let mut session = Session::new(Bare::default(), SimConfig::default());
         session.register_domain(DomainBuilder::new("r3", EuclideanR3));
         session.system(
@@ -1021,14 +1094,13 @@ struct Fragment {
         let recorded = Arc::new(AtomicU32::new(0));
         let filled = Arc::new(AtomicU32::new(0));
         let fills = filled.clone();
-        let app = SessionApp::<Bare>::with_args(
+        let app = quiet(SessionApp::<Bare>::with_args(
             HostConfig::new(
                 "fault recovery",
                 Bindings::new().key(Key::Letter('r'), RESET),
             ),
             Args::default(),
-        )
-        .debug_layer(false)
+        ))
         .recover_on_fault(RESET)
         .pass(Box::new(Probe {
             recorded: recorded.clone(),
@@ -1169,15 +1241,17 @@ struct Fragment {
         let marked: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let recorded = marked.clone();
         let args = Args::from_argv([format!("--script={}", path.display())]);
-        let app = SessionApp::<Bare>::with_args(HostConfig::new("script", Bindings::new()), args)
-            .debug_layer(false)
-            .command("mark", "record a marker", move |args, _submit, _out| {
-                recorded
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .push(args.join(" "));
-                Ok(())
-            });
+        let app = quiet(SessionApp::<Bare>::with_args(
+            HostConfig::new("script", Bindings::new()),
+            args,
+        ))
+        .command("mark", "record a marker", move |args, _submit, _out| {
+            recorded
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(args.join(" "));
+            Ok(())
+        });
         let mut frame = bare(app);
         frame
             .attach(&gpu, FORMAT, None, SIZE, 1.0)
@@ -1340,6 +1414,7 @@ struct Fragment {
         );
     }
 
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     fn animation_frames(png: &[u8]) -> Option<u32> {
         let mut at = 8;
         while at + 12 <= png.len() {

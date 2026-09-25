@@ -79,7 +79,7 @@ fn reversed_z_depths() -> Vec<f32> {
     let color_view = color.create_view(&TextureViewDescriptor::default());
     let depth_view = depth.create_view(&TextureViewDescriptor::default());
 
-    let node = SkyGroundNode::new(
+    let mut node = SkyGroundNode::new(
         &device,
         TARGET_FORMAT,
         DEPTH_FORMAT,
@@ -90,6 +90,7 @@ fn reversed_z_depths() -> Vec<f32> {
         &SkyGroundUniforms::new(
             view::root_projection(FOV_Y, 1.0, NEAR),
             Viewport::full([SIZE, SIZE]),
+            loam_render::sky_ground::DEFAULT_SKY,
             Ground {
                 y: GROUND_Y,
                 dark: loam_render::sky_ground::GROUND_DARK_GREY,

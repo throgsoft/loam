@@ -11,17 +11,19 @@ pub use loam_shape::{
 };
 pub use loam_time::FixedTimestep;
 
+#[cfg(feature = "egui")]
+pub use loam_app::egui;
 #[cfg(feature = "app")]
 pub use loam_app::session::{
     launch, launch_with, orbit, CaptureControl, CommandSender, CursorPolicy, FrameHook, FreeCamera,
     InputHook, Orbit, SessionApp, Target,
 };
 #[cfg(feature = "app")]
-pub use loam_app::{egui, WasmConfig};
+pub use loam_app::{LaunchMode, WasmConfig};
 #[cfg(feature = "render")]
 pub use loam_render::{
     DepthConvention, DepthMode, FragmentShading, FramePass, Ground, HyperslicePass, LinePass,
-    PointPass, RaymarchPass, SkyGroundPass, TriangleFeed, Viewport,
+    PointPass, RaymarchPass, Sky, SkyGroundPass, TriangleFeed, Viewport,
 };
 #[cfg(feature = "text")]
 pub use loam_text::{TextDraw, TextPass};
