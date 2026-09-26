@@ -94,6 +94,7 @@ pub fn run(opts: &Options) -> Result<(), String> {
     }
     if opts.release {
         command.args(["--profile", "wasm-release"]);
+        remap_paths(&mut command, &root)?;
     }
     for feature in &opts.features {
         if let Some((package, _)) = feature.split_once('/') {
@@ -169,6 +170,53 @@ pub fn run(opts: &Options) -> Result<(), String> {
     for entry in entries.flatten() {
         let size = entry.metadata().map_or(0, |meta| meta.len());
         println!("{} ({size} bytes)", entry.path().display());
+    }
+    Ok(())
+}
+
+// Shipped wasm must not carry build-machine paths; rustc applies the last matching remap.
+fn remap_paths(command: &mut Command, root: &Path) -> Result<(), String> {
+    let home = std::env::home_dir();
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|home| home.join(".cargo")));
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let sysroot = Command::new(rustc)
+        .args(["--print", "sysroot"])
+        .output()
+        .map_err(|e| format!("rustc --print sysroot: {e}"))?;
+    let sysroot = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim());
+    let flags: Vec<String> = [
+        (home, "~"),
+        (cargo_home, "cargo"),
+        (Some(sysroot), "rust"),
+        (Some(root.to_path_buf()), "loam"),
+    ]
+    .into_iter()
+    .filter_map(|(from, to)| {
+        from.map(|from| format!("--remap-path-prefix={}={to}", from.display()))
+    })
+    .collect();
+    // Cargo ignores config rustflags whenever the environment sets any.
+    let set = std::env::var("CARGO_ENCODED_RUSTFLAGS").ok().or_else(|| {
+        std::env::var("RUSTFLAGS")
+            .ok()
+            .map(|flags| flags.split_whitespace().collect::<Vec<_>>().join("\u{1f}"))
+    });
+    match set {
+        Some(set) => {
+            let all: Vec<String> = std::iter::once(set)
+                .filter(|set| !set.is_empty())
+                .chain(flags)
+                .collect();
+            command.env("CARGO_ENCODED_RUSTFLAGS", all.join("\u{1f}"));
+        }
+        None => {
+            let array = serde_json::to_string(&flags).map_err(|e| format!("remap flags: {e}"))?;
+            command
+                .arg("--config")
+                .arg(format!("target.wasm32-unknown-unknown.rustflags={array}"));
+        }
     }
     Ok(())
 }
