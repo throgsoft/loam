@@ -302,13 +302,10 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
 
     let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
     let dpr = window.device_pixel_ratio() as f32;
-    #[cfg(feature = "measure")]
     let max_pixels = crate::args::Args::current()
         .parse::<u32>("max-pixels")
-        .or(config.max_pixels);
-    #[cfg(not(feature = "measure"))]
-    let max_pixels = config.max_pixels;
-    let max_pixels = max_pixels.filter(|pixels| *pixels > 0);
+        .or(config.max_pixels)
+        .filter(|pixels| *pixels > 0);
     let css = (canvas.client_width(), canvas.client_height());
     let probe = canvas.width();
     canvas.set_width(probe + 1);
