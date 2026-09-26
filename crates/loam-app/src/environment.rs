@@ -14,6 +14,7 @@ pub struct Environment {
     pub dark: [f32; 3],
     pub light: [f32; 3],
     pub fog_per_unit: f32,
+    pub fog_start: f32,
     pub floor_visible: bool,
 }
 
@@ -24,6 +25,7 @@ impl Default for Environment {
             dark: GROUND_DARK_GREY,
             light: GROUND_LIGHT_GREY,
             fog_per_unit: DEFAULT_FOG_PER_UNIT,
+            fog_start: 0.0,
             floor_visible: true,
         }
     }
@@ -36,6 +38,7 @@ impl Environment {
             dark: self.dark,
             light: self.light,
             fog_per_unit: self.fog_per_unit,
+            fog_start: self.fog_start,
             visible,
         }
     }

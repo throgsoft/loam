@@ -57,6 +57,8 @@ pub struct Ground {
     pub dark: [f32; 3],
     pub light: [f32; 3],
     pub fog_per_unit: f32,
+    /// Distance from the eye before any fog mixes in.
+    pub fog_start: f32,
     pub visible: bool,
 }
 
@@ -75,7 +77,7 @@ pub struct SkyGroundUniforms {
     pub sky_below: [f32; 3],
     pub fog_per_unit: f32,
     pub sky_above: [f32; 3],
-    pub sky_pad: f32,
+    pub fog_start: f32,
 }
 
 impl SkyGroundUniforms {
@@ -93,7 +95,7 @@ impl SkyGroundUniforms {
             sky_below: sky.below,
             fog_per_unit: ground.fog_per_unit,
             sky_above: sky.above,
-            sky_pad: 0.0,
+            fog_start: ground.fog_start,
         }
     }
 
@@ -120,7 +122,7 @@ struct Uniforms {
     sky_below: vec3<f32>,
     fog_per_unit: f32,
     sky_above: vec3<f32>,
-    sky_pad: f32,
+    fog_start: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -175,7 +177,7 @@ fn shade(frag_pos: vec4<f32>, near_ndc: f32, far_ndc: f32, background_depth: f32
     }
 
     let p_hit = near + rd * t;
-    let fog = 1.0 - exp(-t * u.fog_per_unit);
+    let fog = 1.0 - exp(-max(t - u.fog_start, 0.0) * u.fog_per_unit);
     let base = ground_color(p_hit, footprint, u.ground_dark, u.ground_light, fog);
     let lambert = max(dot(vec3<f32>(0.0, 1.0, 0.0), normalize(LIGHT_DIR)), 0.0);
     let lit = base * (AMBIENT + DIFFUSE * lambert);
@@ -421,7 +423,10 @@ mod tests {
                 "sky_above",
                 std::mem::offset_of!(SkyGroundUniforms, sky_above),
             ),
-            ("sky_pad", std::mem::offset_of!(SkyGroundUniforms, sky_pad)),
+            (
+                "fog_start",
+                std::mem::offset_of!(SkyGroundUniforms, fog_start),
+            ),
         ];
         assert_eq!(members.len(), rust_offsets.len());
         for (member, (name, offset)) in members.iter().zip(rust_offsets) {

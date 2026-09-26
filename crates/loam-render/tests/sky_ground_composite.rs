@@ -114,6 +114,7 @@ fn render(gpu: &GpuContext, eye: Vec3, show_ground: bool) -> Vec<u8> {
                 dark: loam_render::sky_ground::GROUND_DARK_GREY,
                 light: loam_render::sky_ground::GROUND_LIGHT_GREY,
                 fog_per_unit: loam_render::sky_ground::DEFAULT_FOG_PER_UNIT,
+                fog_start: 0.0,
                 visible: show_ground,
             },
         ),

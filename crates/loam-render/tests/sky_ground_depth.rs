@@ -96,6 +96,7 @@ fn reversed_z_depths() -> Vec<f32> {
                 dark: loam_render::sky_ground::GROUND_DARK_GREY,
                 light: loam_render::sky_ground::GROUND_LIGHT_GREY,
                 fog_per_unit: 0.0,
+                fog_start: 0.0,
                 visible: true,
             },
         ),

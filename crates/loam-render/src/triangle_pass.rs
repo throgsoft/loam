@@ -332,6 +332,7 @@ mod tests {
             dark: [0.1; 3],
             light: [0.3; 3],
             fog_per_unit: 0.0,
+            fog_start: 0.0,
             visible: true,
         }
     }
