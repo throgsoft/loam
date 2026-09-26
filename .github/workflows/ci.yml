@@ -129,8 +129,6 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - name: Build the runnable worker bundle
         run: cargo xtask web --bin polytope_playground --public-url /
-      - name: Build the backdrop page
-        run: cargo xtask web --bin backdrop --package examples --public-url /
 
   wasm-session:
     name: wasm32 build (session crates)
