@@ -24,6 +24,12 @@ pub enum InputMessage {
         dpr: f32,
     },
 
+    /// Canvas CSS size, sent on every frame it changes; `Resize` follows once it settles.
+    Viewport {
+        width: f32,
+        height: f32,
+    },
+
     /// Canvas-local CSS position and accumulated DOM `movementX/Y` deltas.
     MouseMove {
         x: f32,
@@ -102,6 +108,7 @@ fn control_kind(msg: &InputMessage) -> Option<usize> {
         InputMessage::Start => Some(2),
         InputMessage::PointerLockChanged { .. } => Some(3),
         InputMessage::Focus(_) => Some(4),
+        InputMessage::Viewport { .. } => Some(5),
         _ => None,
     }
 }
@@ -157,7 +164,7 @@ pub fn enqueue(msg: InputMessage) {
             q.remove(index);
         }
         if q.len() >= MESSAGE_QUEUE_CAPACITY {
-            let mut latest = [None; 5];
+            let mut latest = [None; 6];
             for (index, queued) in q.iter().enumerate() {
                 if let Some(kind) = control_kind(queued) {
                     latest[kind] = Some(index);

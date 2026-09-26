@@ -4,7 +4,10 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{Element, HtmlCanvasElement, MessageEvent, Worker, WorkerOptions, WorkerType};
+use web_sys::{
+    Element, HtmlCanvasElement, MessageChannel, MessageEvent, MessagePort, Window, Worker,
+    WorkerOptions, WorkerType,
+};
 
 use super::input_queue::MESSAGE_QUEUE_CAPACITY;
 use crate::{LaunchMode, WasmConfig};
@@ -17,6 +20,67 @@ struct CanvasMetrics {
 }
 
 type Pending<T> = Rc<RefCell<Option<T>>>;
+
+pub(crate) type InPage = Box<dyn FnOnce(MessagePort, Window, HtmlCanvasElement) -> Result<()>>;
+
+#[derive(Clone)]
+enum Link {
+    Worker(Worker),
+    Page(MessagePort),
+}
+
+impl Link {
+    fn post_message(&self, message: &JsValue) -> Result<(), JsValue> {
+        match self {
+            Self::Worker(worker) => worker.post_message(message),
+            Self::Page(port) => port.post_message(message),
+        }
+    }
+
+    fn post_message_with_transfer(
+        &self,
+        message: &JsValue,
+        transfer: &JsValue,
+    ) -> Result<(), JsValue> {
+        match self {
+            Self::Worker(worker) => worker.post_message_with_transfer(message, transfer),
+            Self::Page(port) => port.post_message_with_transferable(message, transfer),
+        }
+    }
+
+    fn add_event_listener_with_callback(
+        &self,
+        kind: &str,
+        callback: &js_sys::Function,
+    ) -> Result<(), JsValue> {
+        match self {
+            Self::Worker(worker) => worker.add_event_listener_with_callback(kind, callback),
+            Self::Page(port) => port.add_event_listener_with_callback(kind, callback),
+        }
+    }
+}
+
+thread_local! {
+    static PAGE_HOST: RefCell<Option<(Element, String)>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn fail_page(message: &str) {
+    PAGE_HOST.with(|slot| {
+        if let Some((host, button_id)) = slot.borrow().as_ref() {
+            show_worker_failure(message, host, button_id);
+        }
+    });
+}
+
+// Gecko copies a worker's WebGPU canvas back on every page repaint; only Gecko has navigator.buildID.
+fn runs_in_page(window: &Window) -> bool {
+    match crate::args::Args::current().get("loam-session") {
+        Some("page") => true,
+        Some("worker") => false,
+        _ => js_sys::Reflect::has(&window.navigator(), &JsValue::from_str("buildID"))
+            .unwrap_or(false),
+    }
+}
 
 const HOST_STATE_ATTR: &str = "data-state";
 const HOST_STATE_EVENT: &str = "loam-state";
@@ -61,7 +125,7 @@ impl HostChannel {
         });
     }
 
-    fn flush(&mut self, worker: &Worker) {
+    fn flush(&mut self, worker: &Link) {
         if !self.ready {
             return;
         }
@@ -94,7 +158,7 @@ fn read_host_values(values: &JsValue) -> Vec<f32> {
 }
 
 fn install_host_channel(
-    worker: &Worker,
+    worker: &Link,
     host: &Element,
     channel: &Rc<RefCell<HostChannel>>,
 ) -> Result<()> {
@@ -158,7 +222,7 @@ fn install_host_channel(
     Ok(())
 }
 
-pub(crate) fn launch_page(config: &WasmConfig) -> Result<()> {
+pub(crate) fn launch_page(config: &WasmConfig, in_page: InPage) -> Result<()> {
     super::install_logging_idempotent();
     if let Some(host) = host_element(&config.host_id) {
         if host.has_attribute(HOST_STATE_ATTR) {
@@ -169,7 +233,7 @@ pub(crate) fn launch_page(config: &WasmConfig) -> Result<()> {
             return Ok(());
         }
     }
-    spawn_worker(config).inspect_err(|error| {
+    spawn_session(config, in_page).inspect_err(|error| {
         tracing::error!("loam_app::wasm: launch failed: {error:#}");
         if let Some(host) = host_element(&config.host_id) {
             set_host_state(&host, "failed");
@@ -214,7 +278,7 @@ fn read_wasm_bundle_url() -> Result<String> {
         .ok_or_else(|| anyhow!("__loam_wasm_url is not a string; demo's index.html must set it"))
 }
 
-fn spawn_worker(config: &WasmConfig) -> Result<()> {
+fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
     let host_id = config.host_id.as_str();
     let button_id = config.button_id.as_str();
     let canvas_id = config.canvas_id.as_str();
@@ -269,44 +333,24 @@ fn spawn_worker(config: &WasmConfig) -> Result<()> {
         "loam_app::wasm::worker: canvas sized to {width}x{height} (scale {})",
         metrics.scale
     );
+    PAGE_HOST.with(|slot| *slot.borrow_mut() = Some((host.clone(), button_id.to_string())));
 
-    let offscreen = canvas
-        .transfer_control_to_offscreen()
-        .map_err(|e| anyhow!("transfer_control_to_offscreen: {e:?}"))?;
-
-    let js_url = read_wasm_bundle_url()?;
-    let (js_path, query) = js_url.split_once('?').unwrap_or((js_url.as_str(), ""));
-    let wasm_url = format!(
-        "{}_bg.wasm{}{query}",
-        js_path.strip_suffix(".js").unwrap_or(js_path),
-        if query.is_empty() { "" } else { "?" }
-    );
-    tracing::info!("loam_app::wasm::worker: spawning worker (js={js_url}, wasm={wasm_url})");
-
-    let bootstrap_js =
-        format!("import init from {js_url:?};\nawait init({{ module_or_path: {wasm_url:?} }});\n");
-    let blob_parts = js_sys::Array::new();
-    blob_parts.push(&JsValue::from_str(&bootstrap_js));
-    let blob_options = web_sys::BlobPropertyBag::new();
-    blob_options.set_type("application/javascript");
-    let blob = web_sys::Blob::new_with_str_sequence_and_options(&blob_parts, &blob_options)
-        .map_err(|e| anyhow!("Blob::new: {e:?}"))?;
-    let blob_url = web_sys::Url::create_object_url_with_blob(&blob)
-        .map_err(|e| anyhow!("createObjectURL: {e:?}"))?;
-
-    let opts = WorkerOptions::new();
-    opts.set_type(WorkerType::Module);
-    let worker =
-        Worker::new_with_options(&blob_url, &opts).map_err(|e| anyhow!("Worker::new: {e:?}"))?;
-
+    let (worker, offscreen, bootstrap_url) = if runs_in_page(&window) {
+        tracing::info!("loam_app::wasm: running the session on the page");
+        let channel = MessageChannel::new().map_err(|e| anyhow!("MessageChannel::new: {e:?}"))?;
+        in_page(channel.port2(), window.clone(), canvas.clone())?;
+        (Link::Page(channel.port1()), None, None)
+    } else {
+        let (worker, offscreen, blob_url) = spawn_worker(&canvas)?;
+        (Link::Worker(worker), Some(offscreen), Some(blob_url))
+    };
     let channel: Rc<RefCell<HostChannel>> = Rc::new(RefCell::new(HostChannel::default()));
     let worker_for_ready = worker.clone();
-    let offscreen_for_ready = offscreen.clone();
+    let offscreen_for_ready = offscreen;
     let host_for_ready = host.clone();
     let button_for_ready = button_id.to_string();
     let document_for_ready = document.clone();
     let channel_for_ready = channel.clone();
-    let bootstrap_url = blob_url;
     let on_ready = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
         let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
@@ -315,10 +359,11 @@ fn spawn_worker(config: &WasmConfig) -> Result<()> {
         if kind.as_deref() != Some("ready") {
             return;
         }
-        let _ = web_sys::Url::revoke_object_url(&bootstrap_url);
+        if let Some(url) = bootstrap_url.as_deref() {
+            let _ = web_sys::Url::revoke_object_url(url);
+        }
 
         let msg = build_msg("init");
-        let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("canvas"), &offscreen_for_ready);
         set_msg_u32(&msg, "width", width);
         set_msg_u32(&msg, "height", height);
         set_msg_f32(&msg, "dpr", metrics.scale);
@@ -338,10 +383,16 @@ fn spawn_worker(config: &WasmConfig) -> Result<()> {
         if let Some(max_pixels) = max_pixels {
             set_msg_u32(&msg, "max_pixels", max_pixels);
         }
-        let transfer = js_sys::Array::new();
-        transfer.push(&offscreen_for_ready);
-
-        if let Err(e) = worker_for_ready.post_message_with_transfer(&msg, &transfer) {
+        let posted = match offscreen_for_ready.as_ref() {
+            Some(offscreen) => {
+                let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("canvas"), offscreen);
+                let transfer = js_sys::Array::new();
+                transfer.push(offscreen);
+                worker_for_ready.post_message_with_transfer(&msg, &transfer)
+            }
+            None => worker_for_ready.post_message(&msg),
+        };
+        if let Err(e) = posted {
             show_worker_failure(
                 &format!("worker initialization message failed: {e:?}"),
                 &host_for_ready,
@@ -385,6 +436,9 @@ fn spawn_worker(config: &WasmConfig) -> Result<()> {
     set_host_state(&host, "loading");
     #[cfg(feature = "measure")]
     install_measurement_result_handler(&worker, host_id)?;
+    if let Link::Page(port) = &worker {
+        port.start();
+    }
 
     let Some(launch_overlay) = launch_overlay else {
         return Ok(());
@@ -429,6 +483,38 @@ fn spawn_worker(config: &WasmConfig) -> Result<()> {
     Ok(())
 }
 
+fn spawn_worker(canvas: &HtmlCanvasElement) -> Result<(Worker, web_sys::OffscreenCanvas, String)> {
+    let offscreen = canvas
+        .transfer_control_to_offscreen()
+        .map_err(|e| anyhow!("transfer_control_to_offscreen: {e:?}"))?;
+
+    let js_url = read_wasm_bundle_url()?;
+    let (js_path, query) = js_url.split_once('?').unwrap_or((js_url.as_str(), ""));
+    let wasm_url = format!(
+        "{}_bg.wasm{}{query}",
+        js_path.strip_suffix(".js").unwrap_or(js_path),
+        if query.is_empty() { "" } else { "?" }
+    );
+    tracing::info!("loam_app::wasm::worker: spawning worker (js={js_url}, wasm={wasm_url})");
+
+    let bootstrap_js =
+        format!("import init from {js_url:?};\nawait init({{ module_or_path: {wasm_url:?} }});\n");
+    let blob_parts = js_sys::Array::new();
+    blob_parts.push(&JsValue::from_str(&bootstrap_js));
+    let blob_options = web_sys::BlobPropertyBag::new();
+    blob_options.set_type("application/javascript");
+    let blob = web_sys::Blob::new_with_str_sequence_and_options(&blob_parts, &blob_options)
+        .map_err(|e| anyhow!("Blob::new: {e:?}"))?;
+    let blob_url = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|e| anyhow!("createObjectURL: {e:?}"))?;
+
+    let opts = WorkerOptions::new();
+    opts.set_type(WorkerType::Module);
+    let worker =
+        Worker::new_with_options(&blob_url, &opts).map_err(|e| anyhow!("Worker::new: {e:?}"))?;
+    Ok((worker, offscreen, blob_url))
+}
+
 fn is_visible(document: &web_sys::Document) -> bool {
     document.visibility_state() != web_sys::VisibilityState::Hidden
 }
@@ -452,7 +538,7 @@ fn canvas_metrics(
 }
 
 fn install_page_control(
-    worker: &Worker,
+    worker: &Link,
     host: &Element,
     channel: &Rc<RefCell<HostChannel>>,
 ) -> Result<()> {
@@ -500,7 +586,7 @@ fn dispatch_embed_activated(host_id: &str) {
     }
 }
 
-fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> Result<()> {
+fn install_embed_lifecycle(worker: &Link, host_id: &str, button_id: &str) -> Result<()> {
     let document = web_sys::window()
         .and_then(|w| w.document())
         .ok_or_else(|| anyhow!("no document on global window"))?;
@@ -602,7 +688,7 @@ fn install_embed_lifecycle(worker: &Worker, host_id: &str, button_id: &str) -> R
 }
 
 fn install_cursor_control(
-    worker: &Worker,
+    worker: &Link,
     canvas: &HtmlCanvasElement,
     background: bool,
 ) -> Result<()> {
@@ -742,7 +828,7 @@ fn request_pointer_lock(canvas: &HtmlCanvasElement) {
 }
 
 fn install_dom_input_forwarders(
-    worker: &Worker,
+    worker: &Link,
     canvas: &HtmlCanvasElement,
     launched: CanvasMetrics,
     max_pixels: Option<u32>,
@@ -758,6 +844,8 @@ fn install_dom_input_forwarders(
     {
         let pending: Pending<(CanvasMetrics, u32)> = Rc::new(RefCell::new(None));
         let pending_for_listener = pending.clone();
+        let viewport: Pending<(f32, f32)> = Rc::new(RefCell::new(None));
+        let viewport_for_listener = viewport.clone();
         let canvas_for_listener = canvas.clone();
         let window_for_listener = window.clone();
         let cb = Closure::wrap(Box::new(move || {
@@ -767,6 +855,10 @@ fn install_dom_input_forwarders(
                 max_pixels,
             );
             *pending_for_listener.borrow_mut() = Some((metrics, 0));
+            *viewport_for_listener.borrow_mut() = Some((
+                canvas_for_listener.client_width().max(1) as f32,
+                canvas_for_listener.client_height().max(1) as f32,
+            ));
         }) as Box<dyn FnMut()>);
         window
             .add_event_listener_with_callback("resize", cb.as_ref().unchecked_ref())
@@ -784,6 +876,14 @@ fn install_dom_input_forwarders(
         let raf_cb: Pending<Closure<dyn FnMut()>> = Rc::new(RefCell::new(None));
         let raf_cb_for_closure = raf_cb.clone();
         *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move || {
+            if channel_for_resize.borrow().ready {
+                if let Some((width, height)) = viewport.borrow_mut().take() {
+                    let msg = build_msg("viewport");
+                    set_msg_f32(&msg, "width", width);
+                    set_msg_f32(&msg, "height", height);
+                    let _ = worker_for_raf.post_message(&msg);
+                }
+            }
             let commit = {
                 let mut p = pending_for_raf.borrow_mut();
                 match p.as_mut() {
@@ -1005,7 +1105,7 @@ fn install_dom_input_forwarders(
 }
 
 fn install_focus_and_visibility(
-    worker: &Worker,
+    worker: &Link,
     window: &web_sys::Window,
     document: &web_sys::Document,
 ) -> Result<()> {
@@ -1065,7 +1165,7 @@ fn set_msg_string(obj: &js_sys::Object, key: &str, v: &str) {
     let _ = js_sys::Reflect::set(obj, &JsValue::from_str(key), &JsValue::from_str(v));
 }
 
-fn install_worker_state_handler(worker: &Worker, host: &Element, button_id: &str) -> Result<()> {
+fn install_worker_state_handler(worker: &Link, host: &Element, button_id: &str) -> Result<()> {
     let host = host.clone();
     let button_id_owned: String = button_id.to_string();
     let cb = Closure::wrap(Box::new(move |event: MessageEvent| {
@@ -1097,7 +1197,7 @@ fn install_worker_state_handler(worker: &Worker, host: &Element, button_id: &str
 }
 
 #[cfg(feature = "measure")]
-fn install_measurement_result_handler(worker: &Worker, host_id: &str) -> Result<()> {
+fn install_measurement_result_handler(worker: &Link, host_id: &str) -> Result<()> {
     let host_id = host_id.to_owned();
     let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
@@ -1138,7 +1238,7 @@ fn install_measurement_result_handler(worker: &Worker, host_id: &str) -> Result<
     Ok(())
 }
 
-fn install_worker_failure_handler(worker: &Worker, host: &Element, button_id: &str) -> Result<()> {
+fn install_worker_failure_handler(worker: &Link, host: &Element, button_id: &str) -> Result<()> {
     let host_for_message = host.clone();
     let button_for_message = button_id.to_string();
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
@@ -1160,6 +1260,9 @@ fn install_worker_failure_handler(worker: &Worker, host: &Element, button_id: &s
         .map_err(|e| anyhow!("worker.addEventListener('message') for error: {e:?}"))?;
     on_message.forget();
 
+    let Link::Worker(worker) = worker else {
+        return Ok(());
+    };
     // A panic traps the worker; the trap arrives here without the panic text.
     let host_for_error = host.clone();
     let button_for_error = button_id.to_string();

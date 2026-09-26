@@ -20,6 +20,10 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
             height: read_u32_field(data, "height").unwrap_or(0),
             dpr: read_device_pixel_ratio(data),
         },
+        "viewport" => InputMessage::Viewport {
+            width: read_f32_field(data, "width").unwrap_or(0.0),
+            height: read_f32_field(data, "height").unwrap_or(0.0),
+        },
         "mouse_move" => InputMessage::MouseMove {
             x: read_f32_field(data, "x").unwrap_or(0.0),
             y: read_f32_field(data, "y").unwrap_or(0.0),

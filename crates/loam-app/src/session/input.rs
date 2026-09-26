@@ -13,6 +13,7 @@ pub struct InputMap {
     width: u32,
     height: u32,
     scale: f32,
+    display: Option<[f32; 2]>,
     cursor: [f32; 2],
     look: [f32; 2],
     cursor_locked: bool,
@@ -116,6 +117,7 @@ impl Default for InputMap {
             width: 1,
             height: 1,
             scale: 1.0,
+            display: None,
             cursor: [0.0; 2],
             look: [0.0; 2],
             cursor_locked: false,
@@ -135,6 +137,24 @@ impl InputMap {
         if scale.is_finite() && scale > 0.0 {
             self.scale = scale;
         }
+    }
+
+    /// The CSS size the canvas is shown at, which leads the physical size while a resize settles.
+    pub fn set_display(&mut self, width: f32, height: f32) {
+        if width.is_finite() && height.is_finite() && width >= 1.0 && height >= 1.0 {
+            self.display = Some([width, height]);
+        }
+    }
+
+    pub fn display_aspect(&self) -> Option<f32> {
+        self.display.map(|[width, height]| width / height)
+    }
+
+    fn css_size(&self) -> [f32; 2] {
+        self.display.unwrap_or([
+            self.width as f32 / self.scale,
+            self.height as f32 / self.scale,
+        ])
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -170,7 +190,8 @@ impl InputMap {
     }
 
     pub fn css_ndc(&self, css_x: f32, css_y: f32) -> [f32; 2] {
-        self.ndc(f64::from(css_x * self.scale), f64::from(css_y * self.scale))
+        let [width, height] = self.css_size();
+        [css_x / width * 2.0 - 1.0, 1.0 - css_y / height * 2.0]
     }
 
     pub fn action(&mut self, bindings: &Bindings, key: Key, pressed: bool) {
@@ -418,14 +439,12 @@ impl InputMap {
         time: f64,
     ) {
         self.latest_time = self.latest_time.max(time);
+        let [width, height] = self.css_size();
         self.input.pointers.push(Pointer {
             id,
             button,
             ndc,
-            delta: [
-                delta[0] * self.width as f32 / (2.0 * self.scale),
-                delta[1] * self.height as f32 / (2.0 * self.scale),
-            ],
+            delta: [delta[0] * width / 2.0, delta[1] * height / 2.0],
             phase,
             time,
         });
@@ -517,6 +536,7 @@ fn dom_phase(phase: PointerPhase) -> RuntimePointerPhase {
 pub fn apply(map: &mut InputMap, bindings: &Bindings, message: &InputMessage, consumed: bool) {
     match message {
         InputMessage::Resize { width, height, dpr } => map.resize(*width, *height, *dpr),
+        InputMessage::Viewport { width, height } => map.set_display(*width, *height),
         InputMessage::MouseMove {
             x,
             y,
@@ -728,6 +748,16 @@ mod tests {
         map.reclaim(second);
         let reused = map.take();
         assert!(reused.host.iter().next().is_none());
+    }
+
+    #[test]
+    fn pointers_map_to_the_shown_canvas_while_its_physical_size_lags() {
+        let mut map = InputMap::default();
+        map.resize(1600, 900, 1.0);
+        map.set_display(2560.0, 900.0);
+        assert_eq!(map.css_ndc(2560.0, 450.0), [1.0, 0.0]);
+        assert_eq!(map.css_ndc(640.0, 0.0), [-0.5, 1.0]);
+        assert_eq!(map.display_aspect(), Some(2560.0 / 900.0));
     }
 
     #[test]

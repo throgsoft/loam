@@ -312,7 +312,9 @@ impl<A: Stores> Inner<A> {
             app,
             ..
         } = self;
-        let aspect = size.0 as f32 / size.1 as f32;
+        let aspect = input
+            .display_aspect()
+            .unwrap_or(size.0 as f32 / size.1 as f32);
         session.views_mut().root_mut().eye.aspect = aspect;
         let gathered = input.take();
         let sender = app.commands.sender();
@@ -378,7 +380,10 @@ impl<A: Stores> Inner<A> {
                     PublishError::Phase(error) => HostError::Phase(error),
                 })?;
         }
-        self.session.views_mut().root_mut().eye.aspect = size.0 as f32 / size.1 as f32;
+        self.session.views_mut().root_mut().eye.aspect = self
+            .input
+            .display_aspect()
+            .unwrap_or(size.0 as f32 / size.1 as f32);
         let root = self.session.views().root();
         let eye = self
             .session
