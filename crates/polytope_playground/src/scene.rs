@@ -29,6 +29,7 @@ pub(crate) fn ground(visible: bool) -> Ground {
         dark: GROUND_DARK_GREY,
         light: GROUND_LIGHT_GREY,
         fog_per_unit: DEFAULT_FOG_PER_UNIT,
+        fog_start: 0.0,
         visible,
     }
 }
