@@ -119,6 +119,10 @@ pub struct Hyperslice4DUniforms {
     pub near: f32,
     pub body_offset: f32,
     pub _pad3: [f32; 2],
+    pub sky_below: [f32; 3],
+    pub _pad4: f32,
+    pub sky_above: [f32; 3],
+    pub _pad5: f32,
 }
 
 impl Default for Hyperslice4DUniforms {
@@ -142,6 +146,10 @@ impl Default for Hyperslice4DUniforms {
             near: 0.05,
             body_offset: 0.0,
             _pad3: [0.0; 2],
+            sky_below: crate::sky_ground::DEFAULT_SKY.below,
+            _pad4: 0.0,
+            sky_above: crate::sky_ground::DEFAULT_SKY.above,
+            _pad5: 0.0,
         }
     }
 }
@@ -196,6 +204,8 @@ struct Uniforms {
     params: vec4<f32>,
     near: f32,
     body_offset: f32,
+    sky_below: vec3<f32>,
+    sky_above: vec3<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -500,7 +510,7 @@ fn shade(frag_pos: vec4<f32>) -> Shaded {
     }
     let lit = base * (ambient + lambert * 0.85);
     let fog = 1.0 - exp(-t * 0.05);
-    let final_color = mix(lit, sky(rd), fog * 0.5);
+    let final_color = mix(lit, sky(rd, u.sky_below, u.sky_above), fog * 0.5);
     let image = vec3<f32>(0.0, 0.0, -t * dot(rd, u.camera_forward));
     return Shaded(vec4<f32>(final_color, 1.0), loam_projective_depth(image, u.near));
 }
@@ -1053,6 +1063,84 @@ mod tests {
                 stride - HYPERSLICE_UNIFORMS_SIZE < alignment,
                 "stride {stride} wastes a whole alignment unit",
             );
+        }
+    }
+
+    #[test]
+    fn kernel_uniforms_match_the_host_layout() {
+        let source = format!(
+            "{HYPERSLICE_KERNEL_WGSL}\n{}\n{EMPTY_SCENE_STUB}",
+            super::super::polytope_data::polytope_stub_sdfs_wgsl()
+        );
+        let module = naga::front::wgsl::parse_str(&source).expect("parse");
+        let ty = module
+            .types
+            .iter()
+            .map(|(_, t)| t)
+            .find(|t| t.name.as_deref() == Some("Uniforms"))
+            .expect("the kernel declares `Uniforms`");
+        let naga::TypeInner::Struct { members, span } = &ty.inner else {
+            panic!("`Uniforms` is not a struct");
+        };
+        assert_eq!(*span as usize, std::mem::size_of::<Hyperslice4DUniforms>());
+        let rust_offsets = [
+            (
+                "camera_pos",
+                std::mem::offset_of!(Hyperslice4DUniforms, camera_pos),
+            ),
+            (
+                "camera_forward",
+                std::mem::offset_of!(Hyperslice4DUniforms, camera_forward),
+            ),
+            (
+                "camera_right",
+                std::mem::offset_of!(Hyperslice4DUniforms, camera_right),
+            ),
+            (
+                "camera_up",
+                std::mem::offset_of!(Hyperslice4DUniforms, camera_up),
+            ),
+            (
+                "fov_y_tan",
+                std::mem::offset_of!(Hyperslice4DUniforms, fov_y_tan),
+            ),
+            (
+                "resolution",
+                std::mem::offset_of!(Hyperslice4DUniforms, resolution),
+            ),
+            ("time", std::mem::offset_of!(Hyperslice4DUniforms, time)),
+            ("tick", std::mem::offset_of!(Hyperslice4DUniforms, tick)),
+            (
+                "w_slice",
+                std::mem::offset_of!(Hyperslice4DUniforms, w_slice),
+            ),
+            (
+                "body_count",
+                std::mem::offset_of!(Hyperslice4DUniforms, body_count),
+            ),
+            (
+                "viewport_origin",
+                std::mem::offset_of!(Hyperslice4DUniforms, viewport_origin),
+            ),
+            ("params", std::mem::offset_of!(Hyperslice4DUniforms, params)),
+            ("near", std::mem::offset_of!(Hyperslice4DUniforms, near)),
+            (
+                "body_offset",
+                std::mem::offset_of!(Hyperslice4DUniforms, body_offset),
+            ),
+            (
+                "sky_below",
+                std::mem::offset_of!(Hyperslice4DUniforms, sky_below),
+            ),
+            (
+                "sky_above",
+                std::mem::offset_of!(Hyperslice4DUniforms, sky_above),
+            ),
+        ];
+        assert_eq!(members.len(), rust_offsets.len());
+        for (member, (name, offset)) in members.iter().zip(rust_offsets) {
+            assert_eq!(member.name.as_deref(), Some(name));
+            assert_eq!(member.offset as usize, offset, "offset of {name}");
         }
     }
 

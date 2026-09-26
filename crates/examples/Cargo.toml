@@ -16,5 +16,9 @@ web-time.workspace = true
 
 loam = { path = "../..", features = ["app", "capture", "physics", "text"] }
 
+[features]
+default = ["egui"]
+egui = ["loam/egui"]
+
 [lints]
 workspace = true

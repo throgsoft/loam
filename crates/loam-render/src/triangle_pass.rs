@@ -178,6 +178,7 @@ impl FramePass for TrianglePass {
                 &SkyGroundUniforms::new(
                     input.view_projection,
                     Viewport::full([target.size.0, target.size.1]),
+                    crate::sky_ground::DEFAULT_SKY,
                     ground,
                 ),
             );
@@ -331,6 +332,7 @@ mod tests {
             dark: [0.1; 3],
             light: [0.3; 3],
             fog_per_unit: 0.0,
+            fog_start: 0.0,
             visible: true,
         }
     }

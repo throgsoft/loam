@@ -794,6 +794,7 @@ fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
                 feed.set_view(&image.eye, Rigid::IDENTITY);
                 sky.publish(
                     &image.eye,
+                    environment.sky,
                     environment.ground(FLOOR_Y, environment.floor_visible),
                 );
             }

@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use loam_console::CommandLine;
-use loam_egui::{cmd, Console, ConsoleWriter, HistoryLine};
+use loam_console::{cmd, CommandLine, Console, ConsoleWriter, HistoryLine};
 use loam_runtime::{AppCommand, Dispatch, Stores};
 
 use super::commands::{CommandSender, Reported};

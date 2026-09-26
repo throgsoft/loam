@@ -15,7 +15,7 @@ categories = ["game-development", "graphics", "visualization"]
 anyhow.workspace = true
 glam.workspace = true
 
-loam = { path = "../..", version = "0.1.0", default-features = false, features = ["app", "physics", "render", "text"] }
+loam = { path = "../..", version = "0.1.0", default-features = false, features = ["app", "egui", "physics", "render", "text"] }
 loam-egui = { path = "../loam-egui", version = "0.1.0" }
 
 [dev-dependencies]

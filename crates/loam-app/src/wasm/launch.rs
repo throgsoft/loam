@@ -1,5 +1,3 @@
-//! Demos opt into click-to-start by marking the host element in `index.html`.
-
 use anyhow::{anyhow, Result};
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlButtonElement, HtmlStyleElement};

@@ -16,12 +16,12 @@ pub(crate) enum Lifecycle {
 }
 
 pub(crate) fn frame(
-    paused: bool,
+    halted: bool,
     lifecycle: &mut Lifecycle,
     lost: bool,
     animate: impl FnOnce() -> Result<(), HostError>,
 ) -> Next {
-    if paused || *lifecycle != Lifecycle::Ready {
+    if halted || *lifecycle != Lifecycle::Ready {
         return Next::Idle;
     }
     if lost {
@@ -38,12 +38,13 @@ pub(crate) fn frame(
 }
 
 pub(crate) fn resumed(
-    was_paused: bool,
+    was_halted: bool,
+    halted: bool,
     started: bool,
     pending: bool,
     lifecycle: Lifecycle,
 ) -> Next {
-    if was_paused && started && !pending && lifecycle == Lifecycle::Ready {
+    if was_halted && !halted && started && !pending && lifecycle == Lifecycle::Ready {
         Next::Frame
     } else {
         Next::Idle
@@ -52,7 +53,7 @@ pub(crate) fn resumed(
 
 pub(crate) fn recovered(
     lifecycle: &mut Lifecycle,
-    paused: bool,
+    halted: bool,
     pending: bool,
     outcome: Result<(), String>,
 ) -> Next {
@@ -63,7 +64,7 @@ pub(crate) fn recovered(
         }
         Ok(()) => {
             *lifecycle = Lifecycle::Ready;
-            if paused || pending {
+            if halted || pending {
                 Next::Idle
             } else {
                 Next::Frame

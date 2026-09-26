@@ -8,7 +8,9 @@ use loam_egui::egui;
 use loam_render::device::GpuContext;
 use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use wgpu::{CommandBuffer, CommandEncoder, Device, Queue, TextureFormat, TextureView};
+#[cfg(not(target_arch = "wasm32"))]
 use winit::event::WindowEvent;
+#[cfg(not(target_arch = "wasm32"))]
 use winit::window::Window;
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -17,14 +19,17 @@ use super::input::TouchCapture;
 pub const DEBUG_LAYER: &str = "debug-layer";
 
 enum Feed {
+    #[cfg(not(target_arch = "wasm32"))]
     Winit(Box<WinitInput>),
     Raw(RawFeed),
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct WinitInput {
     state: egui_winit::State,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl WinitInput {
     fn new(ctx: &egui::Context, window: &Window) -> Self {
         Self {
@@ -180,13 +185,27 @@ impl Layer {
         }
     }
 
-    fn raw_input(&mut self, window: Option<&Window>) -> egui::RawInput {
+    fn raw(&mut self) -> Option<&mut RawFeed> {
+        match &mut self.feed {
+            Feed::Raw(feed) => Some(feed),
+            #[cfg(not(target_arch = "wasm32"))]
+            Feed::Winit(_) => None,
+        }
+    }
+
+    fn raw_input(
+        &mut self,
+        #[cfg(not(target_arch = "wasm32"))] window: Option<&Window>,
+    ) -> egui::RawInput {
         let points = self.native_pixels_per_point * self.ctx.zoom_factor();
         let size = self.screen.size_in_pixels;
-        match (&mut self.feed, window) {
-            (Feed::Winit(input), Some(window)) => input.take(window),
-            (Feed::Winit(_), None) => egui::RawInput::default(),
-            (Feed::Raw(feed), _) => {
+        match &mut self.feed {
+            #[cfg(not(target_arch = "wasm32"))]
+            Feed::Winit(input) => match window {
+                Some(window) => input.take(window),
+                None => egui::RawInput::default(),
+            },
+            Feed::Raw(feed) => {
                 let mut raw = egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
@@ -206,14 +225,16 @@ impl Layer {
         }
     }
 
-    fn finish(&mut self, window: Option<&Window>) {
+    fn finish(&mut self, #[cfg(not(target_arch = "wasm32"))] window: Option<&Window>) {
         let output = self.ctx.end_pass();
         #[cfg(any(target_arch = "wasm32", test))]
-        if let Feed::Raw(feed) = &mut self.feed {
-            if std::mem::take(&mut feed.reset) {
-                reset_pointer(&self.ctx);
-            }
+        if self
+            .raw()
+            .is_some_and(|feed| std::mem::take(&mut feed.reset))
+        {
+            reset_pointer(&self.ctx);
         }
+        #[cfg(not(target_arch = "wasm32"))]
         if let (Feed::Winit(input), Some(window)) = (&mut self.feed, window) {
             input.handle_output(window, output.platform_output);
         }
@@ -312,10 +333,12 @@ fn retain_managed_texture(
 #[derive(Clone)]
 pub struct DebugLayer {
     shared: Rc<RefCell<Layer>>,
+    #[cfg(not(target_arch = "wasm32"))]
     window: Option<Arc<Window>>,
 }
 
 impl DebugLayer {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn on_window(
         gpu: &GpuContext,
         format: TextureFormat,
@@ -350,6 +373,7 @@ impl DebugLayer {
         let layer = Layer::new(gpu, format, egui::Context::default(), feed, size, scale);
         Self {
             shared: Rc::new(RefCell::new(layer)),
+            #[cfg(not(target_arch = "wasm32"))]
             window: None,
         }
     }
@@ -372,6 +396,7 @@ impl DebugLayer {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn on_window_event(&self, event: &WindowEvent) -> bool {
         let Some(window) = self.window.clone() else {
             return false;
@@ -384,14 +409,14 @@ impl DebugLayer {
     }
 
     pub fn push(&self, event: egui::Event) {
-        if let Feed::Raw(feed) = &mut self.shared.borrow_mut().feed {
+        if let Some(feed) = self.shared.borrow_mut().raw() {
             feed.push(event);
         }
     }
 
     #[cfg(any(target_arch = "wasm32", test))]
     pub(super) fn cancel_touch(&self, id: u64, pos: egui::Pos2, pointer: bool) {
-        if let Feed::Raw(feed) = &mut self.shared.borrow_mut().feed {
+        if let Some(feed) = self.shared.borrow_mut().raw() {
             feed.cancel_touch(id, pos, pointer);
         }
     }
@@ -406,7 +431,7 @@ impl DebugLayer {
 
     #[cfg(any(target_arch = "wasm32", test))]
     fn cancel_pointer(&self) {
-        if let Feed::Raw(feed) = &mut self.shared.borrow_mut().feed {
+        if let Some(feed) = self.shared.borrow_mut().raw() {
             feed.cancel_pointer();
         }
     }
@@ -414,26 +439,34 @@ impl DebugLayer {
     pub fn modifiers(&self) -> egui::Modifiers {
         match &self.shared.borrow().feed {
             Feed::Raw(feed) => feed.modifiers,
+            #[cfg(not(target_arch = "wasm32"))]
             Feed::Winit(_) => egui::Modifiers::default(),
         }
     }
 
     pub fn set_modifiers(&self, next: egui::Modifiers) {
-        if let Feed::Raw(feed) = &mut self.shared.borrow_mut().feed {
+        if let Some(feed) = self.shared.borrow_mut().raw() {
             feed.modifiers = next;
         }
     }
 
     pub fn begin(&self) -> egui::Context {
         let mut layer = self.shared.borrow_mut();
-        let raw = layer.raw_input(self.window.as_deref());
+        let raw = layer.raw_input(
+            #[cfg(not(target_arch = "wasm32"))]
+            self.window.as_deref(),
+        );
         layer.ctx.begin_pass(raw);
         layer.ctx.clone()
     }
 
     pub fn finish(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
         let window = self.window.clone();
-        self.shared.borrow_mut().finish(window.as_deref());
+        self.shared.borrow_mut().finish(
+            #[cfg(not(target_arch = "wasm32"))]
+            window.as_deref(),
+        );
     }
 
     pub fn take_callbacks(&self, into: &mut Vec<CommandBuffer>) {

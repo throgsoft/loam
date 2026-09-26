@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+serde_json = "1"
 wasm-bindgen-cli-support = "=0.2.118"
 
 [lints]

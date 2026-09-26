@@ -910,9 +910,16 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
         let slice = *hook.session.app.slice.get();
         let environment = *hook.session.app.environment.get();
         let floor = environment.floor_visible;
-        sky.publish(&eye, environment.ground(consts::FLOOR_Y, floor));
+        sky.publish(
+            &eye,
+            environment.sky,
+            environment.ground(consts::FLOOR_Y, floor),
+        );
         hyperslice.set_enabled(strip.on || !scratch.bodies.is_empty());
-        hyperslice.publish(scene::uniforms(&eye, slice, floor), &scratch.bodies);
+        hyperslice.publish(
+            scene::uniforms(&eye, environment.sky, slice, floor),
+            &scratch.bodies,
+        );
         fill_strip(
             &strip,
             turn_of(hook.session),

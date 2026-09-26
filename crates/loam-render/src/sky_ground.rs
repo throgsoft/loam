@@ -5,16 +5,45 @@ use wgpu::*;
 /// Shared with [`crate::raymarch::HYPERSLICE_KERNEL_WGSL`].
 pub const SKY_GROUND_WGSL: &str = include_str!("sky_ground.wgsl");
 
-const SKY_BELOW: [f64; 3] = [0.04, 0.05, 0.10];
-const SKY_ABOVE: [f64; 3] = [0.10, 0.13, 0.22];
+/// Linear light; `below` is the color at ray y = -1, `above` at ray y = +1, mixed linearly in y.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Sky {
+    pub below: [f32; 3],
+    pub above: [f32; 3],
+}
 
-/// `sky` at `rd.y = 0`, linear, so a clear meets the shaded sky without a seam.
-pub const SKY_HORIZON: Color = Color {
-    r: 0.5 * (SKY_BELOW[0] + SKY_ABOVE[0]),
-    g: 0.5 * (SKY_BELOW[1] + SKY_ABOVE[1]),
-    b: 0.5 * (SKY_BELOW[2] + SKY_ABOVE[2]),
-    a: 1.0,
+pub const DEFAULT_SKY: Sky = Sky {
+    below: [0.04, 0.05, 0.10],
+    above: [0.10, 0.13, 0.22],
 };
+
+impl Sky {
+    /// The color at ray y = 0 with alpha 1.
+    pub const fn horizon(self) -> Color {
+        Color {
+            r: 0.5 * (self.below[0] as f64 + self.above[0] as f64),
+            g: 0.5 * (self.below[1] as f64 + self.above[1] as f64),
+            b: 0.5 * (self.below[2] as f64 + self.above[2] as f64),
+            a: 1.0,
+        }
+    }
+}
+
+pub const SKY_HORIZON: Color = DEFAULT_SKY.horizon();
+
+/// Returns linear light.
+pub fn linear_from_srgb8(rgb: [u8; 3]) -> [f32; 3] {
+    // IEC 61966-2-1 sRGB electro-optical transfer function.
+    rgb.map(|byte| {
+        let c = f64::from(byte) / 255.0;
+        let linear = if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        };
+        linear as f32
+    })
+}
 
 pub const GROUND_DARK_GREY: [f32; 3] = [0.18, 0.20, 0.24];
 pub const GROUND_LIGHT_GREY: [f32; 3] = [0.30, 0.32, 0.36];
@@ -28,6 +57,8 @@ pub struct Ground {
     pub dark: [f32; 3],
     pub light: [f32; 3],
     pub fog_per_unit: f32,
+    /// Distance from the eye before any fog mixes in.
+    pub fog_start: f32,
     pub visible: bool,
 }
 
@@ -43,14 +74,15 @@ pub struct SkyGroundUniforms {
     pub ground_y: f32,
     pub ground_light: [f32; 3],
     pub show_ground: f32,
-    /// std140: the trailing `f32` needs a 16-byte slot, which these lead.
-    pub fog_pad: [f32; 3],
+    pub sky_below: [f32; 3],
     pub fog_per_unit: f32,
+    pub sky_above: [f32; 3],
+    pub fog_start: f32,
 }
 
 impl SkyGroundUniforms {
     /// `view_proj` must be the matrix the raster content over this pass is drawn with.
-    pub fn new(view_proj: Mat4, viewport: crate::Viewport, ground: Ground) -> Self {
+    pub fn new(view_proj: Mat4, viewport: crate::Viewport, sky: Sky, ground: Ground) -> Self {
         Self {
             view_proj: view_proj.to_cols_array_2d(),
             inv_view_proj: view_proj.inverse().to_cols_array_2d(),
@@ -60,8 +92,17 @@ impl SkyGroundUniforms {
             ground_y: ground.y,
             ground_light: ground.light,
             show_ground: if ground.visible { 1.0 } else { 0.0 },
-            fog_pad: [0.0; 3],
+            sky_below: sky.below,
             fog_per_unit: ground.fog_per_unit,
+            sky_above: sky.above,
+            fog_start: ground.fog_start,
+        }
+    }
+
+    fn sky(&self) -> Sky {
+        Sky {
+            below: self.sky_below,
+            above: self.sky_above,
         }
     }
 }
@@ -78,8 +119,10 @@ struct Uniforms {
     ground_y: f32,
     ground_light: vec3<f32>,
     show_ground: f32,
-    fog_pad: vec3<f32>,
+    sky_below: vec3<f32>,
     fog_per_unit: f32,
+    sky_above: vec3<f32>,
+    fog_start: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -113,6 +156,10 @@ fn shade(frag_pos: vec4<f32>, near_ndc: f32, far_ndc: f32, background_depth: f32
     // The infinite reversed projection puts the far point at w = 0, so the direction is formed before the divide.
     let far = u.inv_view_proj * vec4<f32>(ndc_xy, far_ndc, 1.0);
     let rd = normalize(far.xyz - near * far.w);
+    // Derivatives need uniform control flow, so the plane footprint is taken before the sky branch returns.
+    let plane_t = (u.ground_y - near.y) / select(rd.y, HORIZON_EPS, abs(rd.y) <= HORIZON_EPS);
+    let plane = (near + rd * plane_t).xz;
+    let footprint = abs(dpdx(plane)) + abs(dpdy(plane));
 
     var out: Fragment;
 
@@ -124,17 +171,17 @@ fn shade(frag_pos: vec4<f32>, near_ndc: f32, far_ndc: f32, background_depth: f32
     }
 
     if (!hit) {
-        out.color = vec4<f32>(sky(rd), 1.0);
+        out.color = vec4<f32>(sky(rd, u.sky_below, u.sky_above), 1.0);
         out.depth = background_depth;
         return out;
     }
 
     let p_hit = near + rd * t;
-    let fog = 1.0 - exp(-t * u.fog_per_unit);
-    let base = ground_color(p_hit, u.ground_dark, u.ground_light, fog);
+    let fog = 1.0 - exp(-max(t - u.fog_start, 0.0) * u.fog_per_unit);
+    let base = ground_color(p_hit, footprint, u.ground_dark, u.ground_light, fog);
     let lambert = max(dot(vec3<f32>(0.0, 1.0, 0.0), normalize(LIGHT_DIR)), 0.0);
     let lit = base * (AMBIENT + DIFFUSE * lambert);
-    out.color = vec4<f32>(mix(lit, sky(rd), fog), 1.0);
+    out.color = vec4<f32>(mix(lit, sky(rd, u.sky_below, u.sky_above), fog), 1.0);
 
     let clip = u.view_proj * vec4<f32>(p_hit, 1.0);
     out.depth = clamp(clip.z / clip.w, 0.0, 1.0);
@@ -157,6 +204,7 @@ pub struct SkyGroundNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,
     bind_group: BindGroup,
+    clear: Color,
     depth_clear: f32,
 }
 
@@ -254,6 +302,7 @@ impl SkyGroundNode {
             pipeline,
             uniform_buf,
             bind_group,
+            clear: SKY_HORIZON,
             depth_clear: match convention {
                 crate::DepthConvention::StandardZ => 1.0,
                 crate::DepthConvention::ReversedZ => crate::view::DEPTH_CLEAR,
@@ -261,7 +310,9 @@ impl SkyGroundNode {
         }
     }
 
-    pub fn set_uniforms(&self, queue: &Queue, uniforms: &SkyGroundUniforms) {
+    /// Also sets the color clear to the uniforms' horizon.
+    pub fn set_uniforms(&mut self, queue: &Queue, uniforms: &SkyGroundUniforms) {
+        self.clear = uniforms.sky().horizon();
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
     }
 
@@ -280,7 +331,7 @@ impl SkyGroundNode {
                 depth_slice: None,
                 resolve_target: None,
                 ops: Operations {
-                    load: LoadOp::Clear(SKY_HORIZON),
+                    load: LoadOp::Clear(self.clear),
                     store: StoreOp::Store,
                 },
             })],
@@ -360,16 +411,41 @@ mod tests {
                 "show_ground",
                 std::mem::offset_of!(SkyGroundUniforms, show_ground),
             ),
-            ("fog_pad", std::mem::offset_of!(SkyGroundUniforms, fog_pad)),
+            (
+                "sky_below",
+                std::mem::offset_of!(SkyGroundUniforms, sky_below),
+            ),
             (
                 "fog_per_unit",
                 std::mem::offset_of!(SkyGroundUniforms, fog_per_unit),
+            ),
+            (
+                "sky_above",
+                std::mem::offset_of!(SkyGroundUniforms, sky_above),
+            ),
+            (
+                "fog_start",
+                std::mem::offset_of!(SkyGroundUniforms, fog_start),
             ),
         ];
         assert_eq!(members.len(), rust_offsets.len());
         for (member, (name, offset)) in members.iter().zip(rust_offsets) {
             assert_eq!(member.name.as_deref(), Some(name));
             assert_eq!(member.offset as usize, offset, "offset of {name}");
+        }
+    }
+
+    #[test]
+    fn every_srgb_byte_survives_decode_and_the_targets_encode() {
+        for byte in 0..=u8::MAX {
+            let [linear, _, _] = linear_from_srgb8([byte; 3]);
+            let c = f64::from(linear);
+            let encoded = if c <= 0.003_130_8 {
+                12.92 * c
+            } else {
+                1.055 * c.powf(1.0 / 2.4) - 0.055
+            };
+            assert_eq!((encoded * 255.0).round() as u8, byte);
         }
     }
 }

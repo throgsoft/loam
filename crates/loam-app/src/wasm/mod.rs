@@ -1,15 +1,17 @@
-//! Requires WebGPU, transferable OffscreenCanvas, and module workers.
+//! Requires WebGPU. The session runs in a module worker on a transferred OffscreenCanvas, or on
+//! the page itself in Firefox, which copies a worker's canvas back on every page repaint.
 
 pub mod input_queue;
 pub mod launch;
 pub mod main_launcher;
 pub mod messages;
+mod metrics;
 
-pub use main_launcher::launch_on_click;
+pub(crate) use main_launcher::{launch_page, InPage};
 
 use anyhow::{anyhow, Result};
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::DedicatedWorkerGlobalScope;
+use web_sys::{DedicatedWorkerGlobalScope, MessagePort, Window};
 
 pub fn is_worker_context() -> bool {
     js_sys::global()
@@ -23,8 +25,44 @@ pub(crate) fn worker_scope() -> Result<DedicatedWorkerGlobalScope> {
         .map_err(|_| anyhow!("not running in a DedicatedWorkerGlobalScope"))
 }
 
+#[derive(Clone)]
+pub(crate) enum Endpoint {
+    Worker(DedicatedWorkerGlobalScope),
+    Page(MessagePort, Window),
+}
+
+impl Endpoint {
+    pub(crate) fn post(&self, message: &JsValue) -> Result<(), JsValue> {
+        match self {
+            Self::Worker(scope) => scope.post_message(message),
+            Self::Page(port, _) => port.post_message(message),
+        }
+    }
+
+    pub(crate) fn listen(&self, callback: &js_sys::Function) -> Result<(), JsValue> {
+        match self {
+            Self::Worker(scope) => scope.add_event_listener_with_callback("message", callback),
+            Self::Page(port, _) => {
+                port.add_event_listener_with_callback("message", callback)?;
+                port.start();
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn request_animation_frame(
+        &self,
+        callback: &js_sys::Function,
+    ) -> Result<i32, JsValue> {
+        match self {
+            Self::Worker(scope) => scope.request_animation_frame(callback),
+            Self::Page(_, window) => window.request_animation_frame(callback),
+        }
+    }
+}
+
 // Main ends the loader state on this message.
-pub(crate) fn post_failure(scope: &DedicatedWorkerGlobalScope, message: &str) {
+pub(crate) fn post_failure(endpoint: &Endpoint, message: &str) {
     let msg = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &msg,
@@ -36,7 +74,7 @@ pub(crate) fn post_failure(scope: &DedicatedWorkerGlobalScope, message: &str) {
         &JsValue::from_str("message"),
         &JsValue::from_str(message),
     );
-    if let Err(e) = scope.post_message(&msg) {
+    if let Err(e) = endpoint.post(&msg) {
         tracing::error!("loam_app::wasm: post error failed: {e:?}");
     }
 }
@@ -46,10 +84,21 @@ pub(crate) fn install_logging_idempotent() {
     INIT.call_once(|| {
         std::panic::set_hook(Box::new(|info| {
             console_error_panic_hook::hook(info);
-            if let Ok(scope) = worker_scope() {
-                post_failure(&scope, &format!("worker panic: {info}"));
+            match worker_scope() {
+                Ok(scope) => {
+                    post_failure(&Endpoint::Worker(scope), &format!("worker panic: {info}"))
+                }
+                // A panic traps the page's only instance, so no message listener would report it.
+                Err(_) => main_launcher::fail_page(&format!("panic: {info}")),
             }
         }));
+        #[cfg(debug_assertions)]
         tracing_wasm::set_as_global_default();
+        #[cfg(not(debug_assertions))]
+        tracing_wasm::set_as_global_default_with_config(
+            tracing_wasm::WASMLayerConfigBuilder::new()
+                .set_max_level(tracing::Level::WARN)
+                .build(),
+        );
     });
 }

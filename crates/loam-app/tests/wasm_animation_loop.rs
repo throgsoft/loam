@@ -18,7 +18,10 @@ fn recovery_schedules_once_after_success_and_never_while_paused_or_failed() {
         let next = match next {
             Next::Recover => {
                 lost = false;
-                assert_eq!(animation::resumed(true, true, false, lifecycle), Next::Idle);
+                assert_eq!(
+                    animation::resumed(true, false, true, false, lifecycle),
+                    Next::Idle
+                );
                 animation::recovered(&mut lifecycle, false, false, Ok(()))
             }
             other => other,
@@ -36,7 +39,7 @@ fn recovery_schedules_once_after_success_and_never_while_paused_or_failed() {
         Next::Idle
     );
     assert_eq!(
-        animation::resumed(true, true, false, lifecycle),
+        animation::resumed(true, false, true, false, lifecycle),
         Next::Frame
     );
 
@@ -45,7 +48,10 @@ fn recovery_schedules_once_after_success_and_never_while_paused_or_failed() {
         animation::recovered(&mut lifecycle, false, false, Err("no device".into())),
         Next::Failed(_)
     ));
-    assert_eq!(animation::resumed(true, true, false, lifecycle), Next::Idle);
+    assert_eq!(
+        animation::resumed(true, false, true, false, lifecycle),
+        Next::Idle
+    );
 
     lifecycle = Lifecycle::Ready;
     assert!(matches!(
@@ -54,5 +60,27 @@ fn recovery_schedules_once_after_success_and_never_while_paused_or_failed() {
         )),
         Next::Failed(_)
     ));
-    assert_eq!(animation::resumed(true, true, false, lifecycle), Next::Idle);
+    assert_eq!(
+        animation::resumed(true, false, true, false, lifecycle),
+        Next::Idle
+    );
+}
+
+#[test]
+fn showing_the_tab_does_not_restart_a_paused_embed_and_resuming_does_not_restart_a_hidden_tab() {
+    let unhalt = |before: (bool, bool), after: (bool, bool)| {
+        animation::resumed(
+            before.0 || before.1,
+            after.0 || after.1,
+            true,
+            false,
+            Lifecycle::Ready,
+        )
+    };
+    let (paused, hidden) = (true, true);
+    assert_eq!(unhalt((paused, hidden), (paused, false)), Next::Idle);
+    assert_eq!(unhalt((paused, hidden), (false, hidden)), Next::Idle);
+    assert_eq!(unhalt((false, hidden), (false, false)), Next::Frame);
+    assert_eq!(unhalt((paused, false), (false, false)), Next::Frame);
+    assert_eq!(unhalt((false, false), (false, false)), Next::Idle);
 }

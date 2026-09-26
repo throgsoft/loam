@@ -24,6 +24,12 @@ pub enum InputMessage {
         dpr: f32,
     },
 
+    /// Canvas CSS size, sent on every frame it changes; `Resize` follows once it settles.
+    Viewport {
+        width: f32,
+        height: f32,
+    },
+
     /// Canvas-local CSS position and accumulated DOM `movementX/Y` deltas.
     MouseMove {
         x: f32,
@@ -81,6 +87,12 @@ pub enum InputMessage {
         phase: PointerPhase,
         time: Duration,
     },
+
+    /// A page `loam-message` event, delivered whether or not the embed is paused.
+    Host {
+        topic: String,
+        values: Vec<f32>,
+    },
 }
 
 pub const MESSAGE_QUEUE_CAPACITY: usize = 256;
@@ -96,6 +108,7 @@ fn control_kind(msg: &InputMessage) -> Option<usize> {
         InputMessage::Start => Some(2),
         InputMessage::PointerLockChanged { .. } => Some(3),
         InputMessage::Focus(_) => Some(4),
+        InputMessage::Viewport { .. } => Some(5),
         _ => None,
     }
 }
@@ -127,11 +140,31 @@ fn coalesced_move(q: &VecDeque<InputMessage>, msg: &InputMessage) -> Option<usiz
 pub fn enqueue(msg: InputMessage) {
     MESSAGE_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
+        let msg = match msg {
+            InputMessage::Host { topic, values } if !values.is_empty() => {
+                let earlier = q
+                    .iter_mut()
+                    .rev()
+                    .filter_map(|queued| match queued {
+                        InputMessage::Host { topic, values } => Some((topic, values)),
+                        _ => None,
+                    })
+                    .take_while(|(_, queued_values)| !queued_values.is_empty())
+                    .find(|(queued_topic, _)| **queued_topic == topic)
+                    .map(|(_, queued_values)| queued_values);
+                if let Some(earlier) = earlier {
+                    *earlier = values;
+                    return;
+                }
+                InputMessage::Host { topic, values }
+            }
+            msg => msg,
+        };
         if let Some(index) = coalesced_move(&q, &msg) {
             q.remove(index);
         }
         if q.len() >= MESSAGE_QUEUE_CAPACITY {
-            let mut latest = [None; 5];
+            let mut latest = [None; 6];
             for (index, queued) in q.iter().enumerate() {
                 if let Some(kind) = control_kind(queued) {
                     latest[kind] = Some(index);

@@ -1,25 +1,31 @@
 use anyhow::{anyhow, Result};
-use loam_egui::Console;
-use loam_render::sky_ground::{DEFAULT_FOG_PER_UNIT, GROUND_DARK_GREY, GROUND_LIGHT_GREY};
-use loam_render::Ground;
+use loam_console::Console;
+use loam_render::sky_ground::{
+    DEFAULT_FOG_PER_UNIT, DEFAULT_SKY, GROUND_DARK_GREY, GROUND_LIGHT_GREY,
+};
+use loam_render::{Ground, Sky};
 
 // Above this the checker blends into the sky inside one body length.
 const MAX_FOG_PER_UNIT: f32 = 1.0;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Environment {
+    pub sky: Sky,
     pub dark: [f32; 3],
     pub light: [f32; 3],
     pub fog_per_unit: f32,
+    pub fog_start: f32,
     pub floor_visible: bool,
 }
 
 impl Default for Environment {
     fn default() -> Self {
         Self {
+            sky: DEFAULT_SKY,
             dark: GROUND_DARK_GREY,
             light: GROUND_LIGHT_GREY,
             fog_per_unit: DEFAULT_FOG_PER_UNIT,
+            fog_start: 0.0,
             floor_visible: true,
         }
     }
@@ -32,6 +38,7 @@ impl Environment {
             dark: self.dark,
             light: self.light,
             fog_per_unit: self.fog_per_unit,
+            fog_start: self.fog_start,
             visible,
         }
     }
@@ -61,7 +68,10 @@ impl Environment {
         };
         match field {
             "reset" => {
-                *self = Self::default();
+                *self = Self {
+                    sky: self.sky,
+                    ..Self::default()
+                };
                 Ok(format!("ground: reset ({})", self.report(None)))
             }
             "dark" | "light" => {
@@ -139,7 +149,7 @@ pub fn register_ground_command<Ctx: 'static>(
     reach: fn(&mut Ctx) -> &mut Environment,
 ) {
     console.register(
-        loam_egui::cmd::<Ctx, _>(
+        loam_console::cmd::<Ctx, _>(
             "ground",
             "background checker colors and fog density (bare reads all three)",
             move |args, ctx, out| {
@@ -167,7 +177,7 @@ pub fn register_floor_command<Ctx: 'static>(
     reach: fn(&mut Ctx) -> &mut Environment,
 ) {
     console.register(
-        loam_egui::cmd::<Ctx, _>(
+        loam_console::cmd::<Ctx, _>(
             "floor",
             "toggle the ground plane (on | off; bare flips)",
             move |args, ctx, out| {
@@ -218,10 +228,30 @@ mod tests {
     }
 
     #[test]
+    fn ground_reset_keeps_a_page_set_sky() {
+        let sky = Sky {
+            below: [0.9, 0.8, 0.7],
+            above: [0.6, 0.5, 0.4],
+        };
+        let mut env = Environment {
+            sky,
+            ..Environment::default()
+        };
+        env.apply(&["fog", "0.5"]).expect("set");
+        env.apply(&["reset"]).expect("reset");
+        assert_eq!(env.fog_per_unit, DEFAULT_FOG_PER_UNIT);
+        assert_eq!(env.sky, sky, "the ground verb wiped the sky");
+    }
+
+    #[test]
     fn the_environment_reaches_the_uniform_the_shader_reads() {
         let mut env = Environment::default();
         env.apply(&["fog", "0.07"]).expect("set");
         env.apply(&["dark", "0.1", "0.2", "0.3"]).expect("set");
+        env.sky = Sky {
+            below: [0.4, 0.5, 0.6],
+            above: [0.7, 0.8, 0.9],
+        };
         let ground = env.ground(-1.5, false);
         assert_eq!(ground.fog_per_unit, 0.07);
         assert_eq!(ground.dark, [0.1, 0.2, 0.3]);
@@ -231,11 +261,14 @@ mod tests {
         let uniforms = loam_render::SkyGroundUniforms::new(
             glam::Mat4::IDENTITY,
             loam_render::Viewport::full([4, 4]),
+            env.sky,
             ground,
         );
         assert_eq!(uniforms.fog_per_unit, 0.07);
         assert_eq!(uniforms.ground_dark, [0.1, 0.2, 0.3]);
         assert_eq!(uniforms.show_ground, 0.0);
+        assert_eq!(uniforms.sky_below, [0.4, 0.5, 0.6]);
+        assert_eq!(uniforms.sky_above, [0.7, 0.8, 0.9]);
     }
 
     #[test]

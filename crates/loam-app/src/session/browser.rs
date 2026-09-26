@@ -5,8 +5,9 @@ use std::rc::Rc;
 use anyhow::{anyhow, Context, Result};
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, OffscreenCanvas};
+use web_sys::{HtmlCanvasElement, MessageEvent, OffscreenCanvas};
 
+#[cfg(feature = "egui")]
 use loam_egui::egui;
 use loam_render::device::{FeatureRequest, RenderDevice};
 use loam_runtime::host::HostError;
@@ -16,12 +17,13 @@ use web_time::Instant;
 use super::animation::{self, Lifecycle, Next};
 use super::app::SessionApp;
 use super::frame::{failed, Frame};
+#[cfg(feature = "egui")]
 use super::input::TouchCapture;
 use super::pacing::Pace;
 use super::surface::{Attempt, SurfaceHost};
 use crate::wasm::input_queue::{self, InputMessage};
 use crate::wasm::messages;
-use crate::wasm::{install_logging_idempotent, post_failure, worker_scope};
+use crate::wasm::{install_logging_idempotent, post_failure, worker_scope, Endpoint};
 use crate::{args::Args, WasmConfig};
 
 #[cfg(feature = "measure")]
@@ -42,11 +44,14 @@ pub fn launch_with<A: Stores>(
 ) -> Result<(), HostError> {
     install_logging_idempotent();
     if crate::wasm::is_worker_context() {
-        return listen(factory).map_err(|error| failed(format!("{error:#}")));
+        return worker_scope()
+            .and_then(|scope| listen(Endpoint::Worker(scope), None, factory))
+            .map_err(|error| failed(format!("{error:#}")));
     }
-    drop(factory);
-    crate::wasm::launch_on_click(&wasm.host_id, &wasm.button_id, &wasm.canvas_id)
-        .map_err(|error| failed(format!("{error:#}")))
+    let in_page: crate::wasm::InPage = Box::new(move |port, window, canvas| {
+        listen(Endpoint::Page(port, window), Some(canvas), factory)
+    });
+    crate::wasm::launch_page(&wasm, in_page).map_err(|error| failed(format!("{error:#}")))
 }
 
 pub fn launch_or_headless<A: Stores>(
@@ -65,45 +70,89 @@ thread_local! {
     static RAF_PENDING: Cell<bool> = const { Cell::new(false) };
     static START_REQUESTED: Cell<bool> = const { Cell::new(false) };
     static PAUSED: Cell<bool> = const { Cell::new(false) };
+    static HOST_PAUSED: Cell<bool> = const { Cell::new(false) };
+    static HIDDEN: Cell<bool> = const { Cell::new(false) };
     static LOOP_STARTED: Cell<bool> = const { Cell::new(false) };
     static LIFECYCLE: Cell<Lifecycle> = const { Cell::new(Lifecycle::Ready) };
 }
 
-fn listen<A: Stores, F>(factory: F) -> Result<()>
+fn listen<A: Stores, F>(
+    endpoint: Endpoint,
+    page_canvas: Option<HtmlCanvasElement>,
+    factory: F,
+) -> Result<()>
 where
     F: FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
 {
-    let scope = worker_scope()?;
     let pending: Pending<F> = Rc::new(RefCell::new(Some(factory)));
-    let handler_scope = scope.clone();
+    let page_canvas = RefCell::new(page_canvas);
+    let handler_endpoint = endpoint.clone();
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
-        if let Err(error) = on_message(&handler_scope, event, &pending) {
+        if let Err(error) = on_message(&handler_endpoint, event, &pending, &page_canvas) {
             let message = format!("message handler failed: {error:#}");
             tracing::error!("loam-app::session::browser: {message}");
-            post_failure(&handler_scope, &message);
+            post_failure(&handler_endpoint, &message);
         }
     }) as Box<dyn FnMut(MessageEvent)>);
-    scope
-        .add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref())
+    endpoint
+        .listen(on_message.as_ref().unchecked_ref())
         .map_err(|error| anyhow!("addEventListener('message'): {error:?}"))?;
     on_message.forget();
-    post(&scope, "ready");
+    post(&endpoint, "ready");
     Ok(())
 }
 
-fn post(scope: &DedicatedWorkerGlobalScope, kind: &str) {
+fn input_paused() -> bool {
+    PAUSED.with(Cell::get) || HOST_PAUSED.with(Cell::get)
+}
+
+fn halted() -> bool {
+    input_paused() || HIDDEN.with(Cell::get)
+}
+
+fn set_paused(endpoint: &Endpoint, flag: &'static std::thread::LocalKey<Cell<bool>>, paused: bool) {
+    let was_halted = halted();
+    let was_input_paused = input_paused();
+    flag.with(|flag| flag.set(paused));
+    match (was_input_paused, input_paused()) {
+        (false, true) => {
+            input_queue::enqueue(InputMessage::Focus(false));
+            post_cursor_request(endpoint, false);
+        }
+        (true, false) => input_queue::enqueue(InputMessage::Focus(true)),
+        _ => {}
+    }
+    if !paused {
+        restart_if_unhalted(was_halted);
+    }
+}
+
+fn restart_if_unhalted(was_halted: bool) {
+    let started = LOOP_STARTED.with(|started| started.get());
+    let pending = RAF_PENDING.with(|pending| pending.get());
+    let lifecycle = LIFECYCLE.with(|lifecycle| lifecycle.get());
+    if animation::resumed(was_halted, halted(), started, pending, lifecycle) == Next::Frame {
+        RAF_RESTART.with(|restart| {
+            if let Some(restart) = restart.borrow().as_ref() {
+                restart();
+            }
+        });
+    }
+}
+
+fn post(endpoint: &Endpoint, kind: &str) {
     let message = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &message,
         &JsValue::from_str("kind"),
         &JsValue::from_str(kind),
     );
-    if let Err(error) = scope.post_message(&message) {
+    if let Err(error) = endpoint.post(&message) {
         tracing::warn!("loam-app::session::browser: post {kind} failed: {error:?}");
     }
 }
 
-fn post_cursor_request(scope: &DedicatedWorkerGlobalScope, locked: bool) {
+fn post_cursor_request(endpoint: &Endpoint, locked: bool) {
     let message = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &message,
@@ -115,13 +164,35 @@ fn post_cursor_request(scope: &DedicatedWorkerGlobalScope, locked: bool) {
         &JsValue::from_str("locked"),
         &JsValue::from_bool(locked),
     );
-    if let Err(error) = scope.post_message(&message) {
+    if let Err(error) = endpoint.post(&message) {
         tracing::warn!("loam-app::session::browser: cursor request failed: {error:?}");
     }
 }
 
+fn post_to_page(endpoint: &Endpoint, topic: &str, values: &[f32]) {
+    let message = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str("host_post"),
+    );
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("topic"),
+        &JsValue::from_str(topic),
+    );
+    let _ = js_sys::Reflect::set(
+        &message,
+        &JsValue::from_str("values"),
+        &js_sys::Float32Array::from(values),
+    );
+    if let Err(error) = endpoint.post(&message) {
+        tracing::warn!("loam-app::session::browser: post {topic} failed: {error:?}");
+    }
+}
+
 #[cfg(feature = "measure")]
-fn post_measurement(scope: &DedicatedWorkerGlobalScope, result: &str) {
+fn post_measurement(endpoint: &Endpoint, result: &str) {
     let message = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &message,
@@ -133,7 +204,7 @@ fn post_measurement(scope: &DedicatedWorkerGlobalScope, result: &str) {
         &JsValue::from_str("result"),
         &JsValue::from_str(result),
     );
-    if let Err(error) = scope.post_message(&message) {
+    if let Err(error) = endpoint.post(&message) {
         tracing::warn!("loam-app::session::browser: measurement post failed: {error:?}");
     }
 }
@@ -146,9 +217,10 @@ fn committed_wasm_memory_bytes() -> u64 {
 }
 
 fn on_message<A: Stores, F>(
-    scope: &DedicatedWorkerGlobalScope,
+    endpoint: &Endpoint,
     event: MessageEvent,
     pending: &Pending<F>,
+    page_canvas: &RefCell<Option<HtmlCanvasElement>>,
 ) -> Result<()>
 where
     F: FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
@@ -166,37 +238,45 @@ where
             return Ok(());
         }
         Some("pause") => {
-            if !PAUSED.with(|paused| paused.replace(true)) {
-                input_queue::enqueue(InputMessage::Focus(false));
-                post_cursor_request(scope, false);
-            }
+            set_paused(endpoint, &PAUSED, true);
             return Ok(());
         }
         Some("resume") => {
-            let was_paused = PAUSED.with(|paused| paused.replace(false));
-            if was_paused {
-                input_queue::enqueue(InputMessage::Focus(true));
-            }
-            let started = LOOP_STARTED.with(|started| started.get());
-            let pending = RAF_PENDING.with(|pending| pending.get());
-            let lifecycle = LIFECYCLE.with(|lifecycle| lifecycle.get());
-            if animation::resumed(was_paused, started, pending, lifecycle) == Next::Frame {
-                RAF_RESTART.with(|restart| {
-                    if let Some(restart) = restart.borrow().as_ref() {
-                        restart();
-                    }
-                });
-            }
+            set_paused(endpoint, &PAUSED, false);
             return Ok(());
+        }
+        Some("host_pause") => {
+            set_paused(endpoint, &HOST_PAUSED, true);
+            return Ok(());
+        }
+        Some("host_resume") => {
+            set_paused(endpoint, &HOST_PAUSED, false);
+            return Ok(());
+        }
+        Some("visibility") => {
+            let was_halted = halted();
+            let visible = js_sys::Reflect::get(&data, &JsValue::from_str("visible"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+            HIDDEN.with(|hidden| hidden.set(!visible));
+            restart_if_unhalted(was_halted);
         }
         Some("init") => {
             let Some(factory) = pending.borrow_mut().take() else {
                 return Err(anyhow!("a second init reached the session worker"));
             };
-            let canvas = js_sys::Reflect::get(&data, &JsValue::from_str("canvas"))
-                .map_err(|error| anyhow!("init missing 'canvas': {error:?}"))?
-                .dyn_into::<OffscreenCanvas>()
-                .map_err(|error| anyhow!("init 'canvas' is not an OffscreenCanvas: {error:?}"))?;
+            let canvas = match page_canvas.borrow_mut().take() {
+                Some(canvas) => Canvas::Page(canvas),
+                None => Canvas::Offscreen(
+                    js_sys::Reflect::get(&data, &JsValue::from_str("canvas"))
+                        .map_err(|error| anyhow!("init missing 'canvas': {error:?}"))?
+                        .dyn_into::<OffscreenCanvas>()
+                        .map_err(|error| {
+                            anyhow!("init 'canvas' is not an OffscreenCanvas: {error:?}")
+                        })?,
+                ),
+            };
             let read_u32 = |key: &str| {
                 js_sys::Reflect::get(&data, &JsValue::from_str(key))
                     .ok()
@@ -209,6 +289,11 @@ where
                     .and_then(|value| value.as_string())
                     .unwrap_or_default()
             };
+            let visible = js_sys::Reflect::get(&data, &JsValue::from_str("visible"))
+                .ok()
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+            HIDDEN.with(|hidden| hidden.set(!visible));
             crate::args::set_query_override(read_str("search"), read_str("hash"));
             let args = Args::current();
             let (session, app) = factory(args.clone())
@@ -217,12 +302,18 @@ where
             let height = read_u32("height").unwrap_or(600);
             let dpr = messages::read_device_pixel_ratio(&data);
             #[cfg(feature = "measure")]
-            let measurement = Probe::from_args(&args, width, height, dpr);
-            let scope = scope.clone();
-            let failure_scope = scope.clone();
+            let measurement = Probe::from_args(
+                &args,
+                width,
+                height,
+                dpr,
+                read_u32("max_pixels").filter(|pixels| *pixels > 0),
+            );
+            let endpoint = endpoint.clone();
+            let failure_endpoint = endpoint.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let started = start(
-                    scope,
+                    endpoint,
                     session,
                     app,
                     canvas,
@@ -235,14 +326,14 @@ where
                 if let Err(error) = started {
                     let message = format!("initialization failed: {error:#}");
                     tracing::error!("loam-app::session::browser: {message}");
-                    post_failure(&failure_scope, &message);
+                    post_failure(&failure_endpoint, &message);
                 }
             });
             return Ok(());
         }
         _ => {}
     }
-    if PAUSED.with(|paused| paused.get())
+    if input_paused()
         && matches!(
             kind.as_deref(),
             Some("mouse_move" | "mouse_button" | "mouse_wheel" | "key" | "pointer")
@@ -257,10 +348,10 @@ where
 }
 
 async fn start<A: Stores>(
-    scope: DedicatedWorkerGlobalScope,
+    endpoint: Endpoint,
     session: Session<A>,
     app: SessionApp<A>,
-    canvas: OffscreenCanvas,
+    canvas: Canvas,
     size: (u32, u32),
     dpr: f32,
     #[cfg(feature = "measure")] measurement: Option<Probe>,
@@ -270,8 +361,8 @@ async fn start<A: Stores>(
         ..Default::default()
     });
     let surface = instance
-        .create_surface(wgpu::SurfaceTarget::OffscreenCanvas(canvas.clone()))
-        .context("create_surface from OffscreenCanvas")?;
+        .create_surface(canvas.target())
+        .context("create_surface")?;
     let request = FeatureRequest {
         optional_features: wgpu::Features::empty(),
         ..FeatureRequest::default()
@@ -282,22 +373,24 @@ async fn start<A: Stores>(
 
     let mut frame = Frame::new(session, app).map_err(|error| anyhow!("{error:?}"))?;
     frame
-        .attach(&rd.context, rd.target_format(), None, size, dpr)
+        .attach(&rd.context, rd.target_format(), size, dpr)
         .map_err(|error| anyhow!("{error:?}"))?;
     let worker = Rc::new(RefCell::new(Some(Worker {
         frame,
         surface,
         rd,
         canvas,
-        scope: scope.clone(),
+        endpoint: endpoint.clone(),
         messages: VecDeque::new(),
+        #[cfg(feature = "egui")]
         touches: TouchCapture::default(),
         dpr,
+        presented: false,
         #[cfg(feature = "measure")]
         measurement,
     })));
-    post(&scope, "preview_ready");
-    install_animation_frame(scope, worker);
+    post(&endpoint, "preview_ready");
+    install_animation_frame(endpoint, worker);
     Ok(())
 }
 
@@ -319,25 +412,22 @@ fn measure<A: Stores>(worker: &mut Worker<A>) -> std::result::Result<(), HostErr
                 "\nWASM linear memory committed at report: {} bytes\nGPU memory: unavailable\nGPU duration: unavailable; no timestamp query",
                 committed_wasm_memory_bytes()
             ));
-            post_measurement(&worker.scope, &report);
+            post_measurement(&worker.endpoint, &report);
             worker.measurement = None;
         }
     }
     Ok(())
 }
 
-fn install_animation_frame<A: Stores>(
-    scope: DedicatedWorkerGlobalScope,
-    worker: Rc<RefCell<Option<Worker<A>>>>,
-) {
+fn install_animation_frame<A: Stores>(endpoint: Endpoint, worker: Rc<RefCell<Option<Worker<A>>>>) {
     let callback: Pending<Closure<dyn FnMut(f64)>> = Rc::new(RefCell::new(None));
     let callback_for_closure = callback.clone();
-    let scope_for_closure = scope.clone();
+    let scope_for_closure = endpoint.clone();
     let worker_for_closure = worker.clone();
     *callback.borrow_mut() = Some(Closure::wrap(Box::new(move |_timestamp: f64| {
         RAF_PENDING.with(|pending| pending.set(false));
-        let paused = PAUSED.with(|paused| paused.get());
-        let loss = match paused {
+        let idle = halted();
+        let loss = match idle {
             true => None,
             false => worker_for_closure
                 .borrow()
@@ -346,7 +436,7 @@ fn install_animation_frame<A: Stores>(
         };
         let next = LIFECYCLE.with(|lifecycle| {
             let mut state = lifecycle.get();
-            let next = animation::frame(paused, &mut state, loss.is_some(), || {
+            let next = animation::frame(idle, &mut state, loss.is_some(), || {
                 let mut held = worker_for_closure.borrow_mut();
                 let Some(worker) = held.as_mut() else {
                     return Err(failed("the session worker is unavailable"));
@@ -376,11 +466,10 @@ fn install_animation_frame<A: Stores>(
                         Some(loss) => recover(&worker, &loss).await,
                         None => Ok(()),
                     };
-                    let paused = PAUSED.with(|paused| paused.get());
                     let pending = RAF_PENDING.with(|pending| pending.get());
                     let next = LIFECYCLE.with(|lifecycle| {
                         let mut state = lifecycle.get();
-                        let next = animation::recovered(&mut state, paused, pending, outcome);
+                        let next = animation::recovered(&mut state, halted(), pending, outcome);
                         lifecycle.set(state);
                         next
                     });
@@ -405,7 +494,7 @@ fn install_animation_frame<A: Stores>(
         }
     }) as Box<dyn FnMut(f64)>));
 
-    let scope_for_kickoff = scope.clone();
+    let scope_for_kickoff = endpoint.clone();
     let callback_for_kickoff = callback.clone();
     let worker_for_kickoff = worker.clone();
     RAF_KICKOFF.with(|slot| {
@@ -421,7 +510,7 @@ fn install_animation_frame<A: Stores>(
         }));
     });
 
-    let scope_for_restart = scope.clone();
+    let scope_for_restart = endpoint.clone();
     let callback_for_restart = callback.clone();
     RAF_RESTART.with(|slot| {
         *slot.borrow_mut() = Some(Box::new(move || {
@@ -445,12 +534,12 @@ fn install_animation_frame<A: Stores>(
     }
 }
 
-fn request_frame(scope: &DedicatedWorkerGlobalScope, callback: &Pending<Closure<dyn FnMut(f64)>>) {
+fn request_frame(endpoint: &Endpoint, callback: &Pending<Closure<dyn FnMut(f64)>>) {
     let held = callback.borrow();
     let Some(callback) = held.as_ref() else {
         return;
     };
-    match scope.request_animation_frame(callback.as_ref().unchecked_ref()) {
+    match endpoint.request_animation_frame(callback.as_ref().unchecked_ref()) {
         Ok(_) => RAF_PENDING.with(|pending| pending.set(true)),
         Err(error) => tracing::error!("loam-app::session::browser: RAF failed: {error:?}"),
     }
@@ -485,6 +574,7 @@ async fn recover<A: Stores>(
     outcome
 }
 
+#[cfg(feature = "egui")]
 fn feed_layer(
     layer: &super::DebugLayer,
     touches: &mut TouchCapture,
@@ -629,9 +719,39 @@ fn feed_layer(
             consumed
         }
         InputMessage::Resize { .. }
+        | InputMessage::Viewport { .. }
         | InputMessage::Visibility(_)
         | InputMessage::Start
-        | InputMessage::PointerLockChanged { .. } => false,
+        | InputMessage::PointerLockChanged { .. }
+        | InputMessage::Host { .. } => false,
+    }
+}
+
+#[derive(Clone)]
+enum Canvas {
+    Offscreen(OffscreenCanvas),
+    Page(HtmlCanvasElement),
+}
+
+impl Canvas {
+    fn set_size(&self, width: u32, height: u32) {
+        match self {
+            Self::Offscreen(canvas) => {
+                canvas.set_width(width);
+                canvas.set_height(height);
+            }
+            Self::Page(canvas) => {
+                canvas.set_width(width);
+                canvas.set_height(height);
+            }
+        }
+    }
+
+    fn target(&self) -> wgpu::SurfaceTarget<'static> {
+        match self {
+            Self::Offscreen(canvas) => wgpu::SurfaceTarget::OffscreenCanvas(canvas.clone()),
+            Self::Page(canvas) => wgpu::SurfaceTarget::Canvas(canvas.clone()),
+        }
     }
 }
 
@@ -639,19 +759,20 @@ struct Worker<A: Stores> {
     frame: Frame<A>,
     surface: SurfaceHost,
     rd: RenderDevice,
-    canvas: OffscreenCanvas,
-    scope: DedicatedWorkerGlobalScope,
+    canvas: Canvas,
+    endpoint: Endpoint,
     messages: VecDeque<InputMessage>,
+    #[cfg(feature = "egui")]
     touches: TouchCapture,
     dpr: f32,
+    presented: bool,
     #[cfg(feature = "measure")]
     measurement: Option<Probe>,
 }
 
 impl<A: Stores> Worker<A> {
     fn resize(&mut self, width: u32, height: u32, dpr: f32) {
-        self.canvas.set_width(width);
-        self.canvas.set_height(height);
+        self.canvas.set_size(width, height);
         let size = (width, height);
         self.surface.resize(&self.rd.context.device, size);
         self.rd.resize(size);
@@ -678,10 +799,14 @@ impl<A: Stores> Worker<A> {
             }
             return;
         }
-        let layer = self.frame.layer().cloned();
-        let consumed = layer
-            .as_ref()
-            .is_some_and(|layer| feed_layer(layer, &mut self.touches, &message));
+        #[cfg(feature = "egui")]
+        let consumed = self
+            .frame
+            .layer()
+            .cloned()
+            .is_some_and(|layer| feed_layer(&layer, &mut self.touches, &message));
+        #[cfg(not(feature = "egui"))]
+        let consumed = false;
         match &message {
             InputMessage::Resize { width, height, dpr } => self.resize(*width, *height, *dpr),
             _ => self.frame.apply_message(&message, consumed),
@@ -709,19 +834,28 @@ impl<A: Stores> Worker<A> {
             frame,
             surface,
             rd,
-            scope,
+            endpoint,
+            presented,
             ..
         } = self;
-        surface.present(rd, frame, now, |frame, _| {
+        let attempt = surface.present(rd, frame, now, |frame, _| {
             if let Some(locked) = frame.take_cursor_request() {
-                post_cursor_request(scope, locked);
+                post_cursor_request(endpoint, locked);
             }
-        })
+            for (topic, values) in frame.posts() {
+                post_to_page(endpoint, topic, values);
+            }
+        })?;
+        if matches!(attempt, Attempt::Presented) && !*presented {
+            *presented = true;
+            post(endpoint, "presented");
+        }
+        Ok(attempt)
     }
 
     fn flush_cursor_request(&mut self) {
         if let Some(locked) = self.frame.take_cursor_request() {
-            post_cursor_request(&self.scope, locked);
+            post_cursor_request(&self.endpoint, locked);
         }
     }
 }
