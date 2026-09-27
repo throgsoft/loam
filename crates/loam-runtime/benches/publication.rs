@@ -5,9 +5,10 @@ use std::time::Instant;
 
 use loam_math::{BlendedSpace, EuclideanR3, EuclideanR4, HyperbolicH3, LinearBlendX, Mat3, Space};
 use loam_runtime::{
-    Command, DepthEnvelope, DomainBuilder, DomainHandle, DomainRay, DomainSpace, Entity, Identity3,
-    ImageRay, Input, Instance, LogCapacity, Material, Outcome, Pose, PreparedGeometry, Projection4,
-    Publication, Section4, Session, SimConfig, SpawnBundle, ViewMapping, ViewSpec,
+    Command, Ctx, DepthEnvelope, DomainBuilder, DomainError, DomainHandle, DomainRay, DomainSpace,
+    Entity, Identity3, ImageRay, Input, Instance, LogCapacity, Material, Outcome, Phase, Pose,
+    PreparedGeometry, Projection4, Publication, Section4, Session, SimConfig, SpawnBundle,
+    ViewMapping, ViewSpec,
 };
 use loam_shape::polytope::Polytope4;
 use loam_time::alloc::{current_snapshot, delta, AllocDelta, CountingAllocator};
@@ -195,6 +196,7 @@ struct SectionFixture {
     entities: Vec<Entity>,
     publication: Publication,
     shifted: bool,
+    alpha: f32,
 }
 
 impl SectionFixture {
@@ -241,7 +243,63 @@ impl SectionFixture {
             entities,
             publication: Publication::default(),
             shifted: false,
+            alpha: 1.0,
         }
+    }
+
+    fn published(population: usize) -> Self {
+        let mut fixture = Self::new(population);
+        fixture.publish();
+        fixture
+    }
+
+    fn drifting(population: usize) -> Self {
+        let mut fixture = Self::new(population);
+        let domain = fixture.domain;
+        let entities = fixture.entities.clone();
+        fixture.session.system(
+            Phase::Simulation,
+            "drift",
+            move |ctx: Ctx<'_, Empty>| -> Result<(), DomainError> {
+                let shift = if ctx.step.tick.0.is_multiple_of(2) {
+                    0.002
+                } else {
+                    0.0
+                };
+                let domain = ctx.domains.typed(domain)?;
+                for (index, &entity) in entities.iter().enumerate() {
+                    domain.set_point(entity, point4(index, shift))?;
+                }
+                Ok(())
+            },
+        );
+        fixture.tick();
+        fixture.publish();
+        fixture
+    }
+
+    fn tick(&mut self) {
+        self.session.tick().expect("R4 tick");
+    }
+
+    fn tick_to_half(&mut self) {
+        self.tick();
+        self.alpha = 0.5;
+    }
+
+    fn next_alpha(&mut self) {
+        self.alpha = if self.alpha >= 0.75 {
+            0.25
+        } else {
+            self.alpha + 0.25
+        };
+    }
+
+    fn publish_at(&mut self) {
+        self.session
+            .publish_at(&mut self.publication, self.alpha)
+            .expect("R4 publication");
+        black_box(self.publication.stamp);
     }
 
     fn edit_one(&mut self) {
@@ -751,6 +809,33 @@ fn main() {
             SectionFixture::counts,
         );
     }
+    run_case(
+        &filters,
+        "r4_between_ticks",
+        10_000,
+        || SectionFixture::drifting(10_000),
+        SectionFixture::next_alpha,
+        SectionFixture::publish_at,
+        SectionFixture::counts,
+    );
+    run_case(
+        &filters,
+        "r4_after_tick",
+        10_000,
+        || SectionFixture::drifting(10_000),
+        SectionFixture::tick_to_half,
+        SectionFixture::publish_at,
+        SectionFixture::counts,
+    );
+    run_case(
+        &filters,
+        "r4_tick_idle",
+        10_000,
+        || SectionFixture::published(10_000),
+        SectionFixture::tick,
+        SectionFixture::publish,
+        SectionFixture::counts,
+    );
     run_case(
         &filters,
         "blend_publish_blend_moved",
