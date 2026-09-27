@@ -144,6 +144,7 @@ fn depth_bounds(position: Vec4, rotation: Rotor4, vertices: &[Vec4]) -> (f32, f3
 pub(crate) fn fill_depth_bands(
     session: &Session<Playground>,
     domain: DomainHandle<EuclideanR4>,
+    alpha: f32,
     out: &mut Vec<DepthBand>,
 ) {
     out.clear();
@@ -180,8 +181,11 @@ pub(crate) fn fill_depth_bands(
         let Some(Collider::ConvexPolytope4D { vertices }) = physics.world().collider(body) else {
             return false;
         };
-        band.center = body.position.w;
-        (band.min, band.max) = depth_bounds(body.position, body.orientation.rotation, vertices);
+        let Some(pose) = r4.drawn_pose(band.entity, alpha) else {
+            return false;
+        };
+        band.center = pose.point.w;
+        (band.min, band.max) = depth_bounds(pose.point, pose.frame, vertices);
         band.asleep = body.is_sleeping();
         true
     });
