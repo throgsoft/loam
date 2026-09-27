@@ -213,7 +213,7 @@ fn a_timed_pass_reports_a_positive_gpu_duration_gpu_probe() {
             .expect("poll");
         for section in presenter.sections() {
             match section.name {
-                "present-draw" => empty = section.gpu,
+                "scene-pass" => empty = section.gpu,
                 "blit" => loaded = section.gpu,
                 _ => {}
             }
