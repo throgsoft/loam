@@ -276,6 +276,7 @@ pub struct Publication {
 }
 
 impl Publication {
+    /// Changes only when a publish alters what a frame draws; a restamp alone leaves it as it was.
     pub fn content(&self) -> u64 {
         self.content
     }

@@ -586,6 +586,7 @@ impl<A: Stores> Inner<A> {
             &self.shown,
             requested || dispatched || layered || capturing,
         );
+        // Set again only after submit, so a failed acquire keeps the draw pending.
         if draw {
             self.drawn = None;
         }

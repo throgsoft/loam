@@ -62,6 +62,7 @@ impl<A: Stores> FrameHook<'_, A> {
         self.posts.push(topic, values);
     }
 
+    /// Draws this frame under `Redraw::OnChange`.
     pub fn request_redraw(&mut self) {
         *self.redraw = true;
     }
@@ -71,6 +72,7 @@ impl<A: Stores> FrameHook<'_, A> {
 pub enum Redraw {
     #[default]
     EveryFrame,
+    /// Draws only when the publication content, root eye, size or background changed since the last draw, or a hook called `request_redraw`.
     OnChange,
 }
 

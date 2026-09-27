@@ -165,6 +165,7 @@ impl<A: Stores> Host<A> {
                 Self::apply_cursor_request(frame, window);
             }
         })?;
+        // ControlFlow::Poll would spin the loop on skipped frames.
         if matches!(attempt, Attempt::Unchanged) && redraw_deadline.is_none() {
             let deadline = now + *refresh;
             *redraw_deadline = Some(deadline);
