@@ -3321,6 +3321,17 @@ mod tests {
     }
 
     #[test]
+    fn a_restamp_only_publish_keeps_the_content_revision() {
+        let (mut session, _, _) = drawn_session(|_| None);
+        let mut publication = Publication::default();
+        session.publish(&mut publication).unwrap();
+        let content = publication.content();
+        session.tick().unwrap();
+        session.publish_at(&mut publication, 0.5).unwrap();
+        assert_eq!(publication.content(), content);
+    }
+
+    #[test]
     fn stale_view_identity_edits_leave_live_references_installed() {
         let mut session = Session::new(Probe::default(), SimConfig::default());
         let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
