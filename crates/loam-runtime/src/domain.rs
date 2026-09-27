@@ -282,6 +282,8 @@ pub trait DomainSpace:
 
     type Relative: Copy + Send + Sync + 'static;
 
+    const BLENDS: bool = true;
+
     fn origin(&self) -> Self::Point;
 
     fn check(&self, point: Self::Point) -> Result<(), DomainError>;
@@ -661,6 +663,8 @@ impl From<Iso4Flat> for Pose<EuclideanR4> {
 impl DomainSpace for HyperbolicH3 {
     homogeneous_capabilities!();
 
+    const BLENDS: bool = false;
+
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
     }
@@ -901,6 +905,8 @@ where
     type Placement = Pose<Self>;
 
     type Relative = (Pose<Self>, Pose<Self>);
+
+    const BLENDS: bool = false;
 
     fn origin(&self) -> Self::Point {
         Vec3::ZERO
@@ -1708,8 +1714,30 @@ pub(crate) trait DomainOwner: Domain {
 
     fn end_tick(&mut self);
 
-    fn collect_moving(&mut self);
+    fn present(&mut self, alpha: f32);
 }
+
+pub(crate) fn presented_alpha(alpha: f32) -> f32 {
+    if alpha.is_nan() {
+        return 1.0;
+    }
+    alpha.clamp(0.0, 1.0)
+}
+
+struct TickPose<S: Space> {
+    entity: Entity,
+    pose: Pose<S>,
+    before: Version,
+    after: Version,
+}
+
+impl<S: Space> Clone for TickPose<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: Space> Copy for TickPose<S> {}
 
 pub struct TypedDomain<S: DomainSpace> {
     id: DomainId,
@@ -1725,11 +1753,10 @@ pub struct TypedDomain<S: DomainSpace> {
     view_stamps: Vec<ViewStyle<S>>,
     pub(crate) facilities: Vec<Box<dyn Facility<S>>>,
     compiler: FieldCompiler,
-    before_tick: Vec<(Entity, Pose<S>, Option<Version>)>,
+    before_tick: Vec<TickPose<S>>,
     moving: Vec<Entity>,
-    stopped: Vec<Entity>,
-    ticked: bool,
-    ticking: bool,
+    generation: u64,
+    presented: f32,
 }
 
 impl<S: DomainSpace> TypedDomain<S> {
@@ -1792,11 +1819,7 @@ impl<S: DomainSpace> TypedDomain<S> {
     /// Inside a tick the move is drawn blended across that tick; outside one it is drawn at once.
     pub fn set_pose(&mut self, entity: Entity, pose: Pose<S>) -> Result<(), DomainError> {
         self.check_pose(&pose)?;
-        self.apply_pose(entity, pose)?;
-        if !self.ticking {
-            self.snap(entity);
-        }
-        Ok(())
+        self.apply_pose(entity, pose)
     }
 
     /// Moves without drawing the poses in between, for a jump such as a respawn.
@@ -1808,39 +1831,52 @@ impl<S: DomainSpace> TypedDomain<S> {
     }
 
     fn snap(&mut self, entity: Entity) {
-        let Some(pose) = self.poses.get(entity).copied() else {
+        let Some(dense) = self.poses.dense_index(entity) else {
             return;
         };
-        let dense = self.poses.dense_index(entity);
-        if let Some(entry) = dense
-            .and_then(|dense| self.before_tick.get_mut(dense))
-            .filter(|entry| entry.0 == entity)
+        let Some(pose) = self.poses.rows().get(dense).copied() else {
+            return;
+        };
+        if let Some(entry) = self
+            .before_tick
+            .get_mut(dense)
+            .filter(|entry| entry.entity == entity)
         {
-            entry.1 = pose;
+            entry.pose = pose;
         }
+    }
+
+    fn interpolates(&self) -> bool {
+        S::BLENDS && self.poses.is_tracked()
+    }
+
+    pub fn drawn_pose(&self, entity: Entity, alpha: f32) -> Option<Pose<S>> {
+        self.drawn(entity, presented_alpha(alpha))
     }
 
     #[inline]
     fn drawn(&self, entity: Entity, alpha: f32) -> Option<Pose<S>> {
-        let pose = *self.poses.get(entity)?;
-        if alpha >= 1.0 {
+        let dense = self.poses.dense_index(entity)?;
+        let pose = *self.poses.rows().get(dense)?;
+        if alpha >= 1.0 || !self.interpolates() {
             return Some(pose);
         }
-        Some(self.blended(entity, pose, alpha))
+        Some(self.blended(entity, dense, pose, alpha))
     }
 
     #[inline(never)]
-    fn blended(&self, entity: Entity, pose: Pose<S>, alpha: f32) -> Pose<S> {
-        let before = self
+    fn blended(&self, entity: Entity, dense: usize, pose: Pose<S>, alpha: f32) -> Pose<S> {
+        let now = self
             .poses
-            .dense_index(entity)
-            .and_then(|dense| self.before_tick.get(dense))
-            .filter(|entry| entry.0 == entity);
-        match before {
-            Some((_, from, version))
-                if version.is_none() || *version != self.poses.version(entity) =>
+            .dense_versions()
+            .and_then(|(_, versions)| versions.get(dense));
+        match self.before_tick.get(dense) {
+            Some(entry)
+                if entry.entity == entity
+                    && now == Some(&entry.after)
+                    && entry.after != entry.before =>
             {
-                self.space.blend(from, &pose, alpha)
+                self.space.blend(&entry.pose, &pose, alpha)
             }
             _ => pose,
         }
@@ -2265,7 +2301,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         if !spec.style.enabled {
             return None;
         }
-        let eye = self.poses.get(spec.eye)?;
+        let eye = &self.drawn(spec.eye, self.presented)?;
         let origin = self.space.origin();
         let lifted = spec.style.mapping.lift(eye, ray);
         let mut nearest: Option<Pick> = None;
@@ -2273,13 +2309,13 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             if spec.subject.is_some_and(|subject| subject != entity) {
                 continue;
             }
-            let Some(pose) = self.poses.get(entity) else {
+            let Some(pose) = self.drawn(entity, self.presented) else {
                 continue;
             };
             let Some(geometry) = prepared.get(instance.geometry.index()) else {
                 continue;
             };
-            let Ok(center) = self.space.place(&self.space.prepare(pose), origin) else {
+            let Ok(center) = self.space.place(&self.space.prepare(&pose), origin) else {
                 continue;
             };
             let radius = geometry.bounding_radius();
@@ -2290,7 +2326,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
                         .hit_ball(domain_ray, center, reach)
                         .and_then(|entry| match geometry {
                             PreparedGeometry::Polytope4 { polytope, scale } => {
-                                polytope_entry(&self.space, domain_ray, pose, *polytope, *scale)
+                                polytope_entry(&self.space, domain_ray, &pose, *polytope, *scale)
                             }
                             _ => Some(entry),
                         })
@@ -2338,12 +2374,12 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         if !spec.style.enabled || spec.subject.is_some_and(|subject| subject != entity) {
             return None;
         }
-        let eye = self.poses.get(spec.eye)?;
-        let pose = self.poses.get(entity)?;
-        let relative = self.space.relative(eye, pose).ok()?;
+        let eye = self.drawn(spec.eye, self.presented)?;
+        let pose = self.drawn(entity, self.presented)?;
+        let relative = self.space.relative(&eye, &pose).ok()?;
         spec.style
             .mapping
-            .image_local(&self.space, eye, pose, &relative, self.space.origin())
+            .image_local(&self.space, &eye, &pose, &relative, self.space.origin())
     }
 
     fn lift_origin(&self, view: ViewId, ray: &ImageRay) -> Result<ChartPoint, DomainError> {
@@ -2352,13 +2388,12 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             .get(view.index())
             .ok_or(DomainError::UnknownView(view))?;
         let eye = self
-            .poses
-            .get(spec.eye)
+            .drawn(spec.eye, self.presented)
             .ok_or(DomainError::Stale(spec.eye))?;
         let lifted = spec
             .style
             .mapping
-            .lift(eye, ray)
+            .lift(&eye, ray)
             .ok_or(DomainError::Unsupported(spec.style.mapping.name()))?;
         self.space.check(lifted.origin)?;
         Ok(self.space.chart_point(lifted.origin))
@@ -2422,11 +2457,22 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
                 Change::Removed(_) => pose_removed = true,
             }
         }
-        if alpha != into.alpha || !self.stopped.is_empty() {
-            into.changed.extend_from_slice(&self.moving);
-            into.changed.extend_from_slice(&self.stopped);
-            into.changed.sort_unstable();
-            into.changed.dedup();
+        if self.interpolates() {
+            let logged = !into.changed.is_empty();
+            let ticked = into.generation != self.generation;
+            if ticked {
+                into.changed.extend_from_slice(&into.merged);
+                into.merged.clear();
+                into.merged.extend_from_slice(&self.moving);
+                into.generation = self.generation;
+            }
+            if ticked || alpha != into.alpha {
+                into.changed.extend_from_slice(&self.moving);
+                if logged || ticked {
+                    into.changed.sort_unstable();
+                    into.changed.dedup();
+                }
+            }
         }
         into.alpha = alpha;
         let mut attachment_cursor = into.attachments;
@@ -2499,6 +2545,17 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         for facility in &mut self.facilities {
             facility.release(entity, Owner::new());
         }
+        if let Some(dense) = self.poses.dense_index(entity) {
+            let last = self.poses.len() - 1;
+            let moved = self
+                .before_tick
+                .get(last)
+                .copied()
+                .filter(|entry| Some(entry.entity) == self.poses.entity_at(last));
+            if let (Some(moved), Some(slot)) = (moved, self.before_tick.get_mut(dense)) {
+                *slot = moved;
+            }
+        }
         StoreField::release(&mut self.poses, entity, Owner::new());
         StoreField::release(&mut self.instances, entity, Owner::new());
         if let Some(fields) = &mut self.fields {
@@ -2551,7 +2608,6 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         self.scene = scene;
         self.before_tick.clear();
         self.moving.clear();
-        self.stopped.clear();
         StoreField::restore(&mut self.poses, &from.poses, scene, Owner::new());
         StoreField::restore(&mut self.instances, &from.instances, scene, Owner::new());
         if let (Some(fields), Some(snapshot)) = (&mut self.fields, &from.fields) {
@@ -2594,50 +2650,39 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
     }
 
     fn begin_tick(&mut self) {
-        let poses = &self.poses;
         self.before_tick.clear();
-        match poses.dense_versions() {
-            Some((_, versions)) => self.before_tick.extend(
-                poses
-                    .iter()
-                    .zip(versions)
-                    .map(|((entity, pose), version)| (entity, *pose, Some(*version))),
-            ),
-            None => self
-                .before_tick
-                .extend(poses.iter().map(|(entity, pose)| (entity, *pose, None))),
+        if !self.interpolates() {
+            return;
         }
-        self.ticked = true;
-        self.ticking = true;
+        let Some((_, versions)) = self.poses.dense_versions() else {
+            return;
+        };
+        self.before_tick.extend(self.poses.iter().zip(versions).map(
+            |((entity, pose), version)| TickPose {
+                entity,
+                pose: *pose,
+                before: *version,
+                after: *version,
+            },
+        ));
     }
 
     fn end_tick(&mut self) {
-        self.ticking = false;
+        self.moving.clear();
+        let Some((keys, versions)) = self.poses.dense_versions() else {
+            return;
+        };
+        for ((entry, key), version) in self.before_tick.iter_mut().zip(keys).zip(versions) {
+            if *version != entry.before && entry.entity.key() == *key {
+                entry.after = *version;
+                self.moving.push(entry.entity);
+            }
+        }
+        self.generation = self.generation.wrapping_add(1);
     }
 
-    fn collect_moving(&mut self) {
-        self.stopped.clear();
-        if !std::mem::take(&mut self.ticked) {
-            return;
-        }
-        self.stopped.append(&mut self.moving);
-        let poses = &self.poses;
-        let dense = poses.dense_versions();
-        self.moving.extend(
-            self.before_tick
-                .iter()
-                .enumerate()
-                .filter(|(index, (entity, _, version))| {
-                    let now = match dense {
-                        Some((keys, versions)) if keys.get(*index) == Some(&entity.key()) => {
-                            versions.get(*index).copied()
-                        }
-                        _ => poses.version(*entity),
-                    };
-                    version.is_none() || now != *version
-                })
-                .map(|(_, (entity, ..))| *entity),
-        );
+    fn present(&mut self, alpha: f32) {
+        self.presented = alpha;
     }
 
     fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection> {
@@ -2755,9 +2800,8 @@ impl<S: DomainSpace> DomainBuilder<S> {
             compiler: FieldCompiler::new(),
             before_tick: Vec::new(),
             moving: Vec::new(),
-            stopped: Vec::new(),
-            ticked: false,
-            ticking: false,
+            generation: 0,
+            presented: 1.0,
         }
     }
 }
@@ -2931,11 +2975,12 @@ mod tests {
     use loam_shape::polytope::Polytope4;
 
     use super::*;
-    use crate::command::SpawnBundle;
+    use crate::command::{Command, SpawnBundle};
+    use crate::input::Input;
     use crate::phase::{Ctx, Phase, Tick};
     use crate::session::{Material, Publication, Session, SimConfig};
     use crate::store::LogCapacity;
-    use crate::view::{Projection4, Section4};
+    use crate::view::{Klein, Projection4, Section4};
 
     crate::stores! {
         #[derive(Default)]
@@ -3049,6 +3094,215 @@ mod tests {
         assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 0.5);
         session.tick().unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 1.0);
+    }
+
+    fn moving(tick: Tick) -> Option<(f32, bool)> {
+        Some((tick.0 as f32 + 1.0, false))
+    }
+
+    fn assert_cached_matches_fresh(
+        session: &mut Session<Probe>,
+        cached: &mut Publication,
+        alpha: f32,
+    ) {
+        session.publish_at(cached, alpha).unwrap();
+        let mut fresh = Publication::default();
+        session.publish_at(&mut fresh, alpha).unwrap();
+        let rows =
+            |publication: &Publication| publication.views[0].records.instances.rows().to_vec();
+        assert_eq!(rows(cached), rows(&fresh));
+    }
+
+    #[test]
+    fn a_command_move_between_ticks_is_drawn_at_once_and_the_cache_converges() {
+        let (mut session, r4, mover) = drawn_session(|_| None);
+        let mut publication = Publication::default();
+        session.tick().unwrap();
+        drawn_x(&mut session, &mut publication, 0.5);
+        session.submit(Command::Chart(
+            r4.id(),
+            ChartCommand::Move {
+                entity: mover,
+                point: EuclideanR4.chart_point(OBJECT_AT + Vec4::X),
+            },
+        ));
+        session.boundary(Input::default()).unwrap();
+        assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 1.0);
+        session.tick().unwrap();
+        assert_cached_matches_fresh(&mut session, &mut publication, 0.5);
+    }
+
+    #[test]
+    fn the_drawn_pose_is_the_published_instance_pose() {
+        let (mut session, r4, mover) = drawn_session(moving);
+        let mut publication = Publication::default();
+        session.tick().unwrap();
+        session.publish_at(&mut publication, 0.3).unwrap();
+        let drawn = session.domains().read(r4).unwrap().drawn_pose(mover, 0.3);
+        assert_eq!(
+            drawn.map(|pose| EuclideanR4.chart_pose(&pose)),
+            Some(publication.views[0].records.instances.rows()[0].pose)
+        );
+    }
+
+    #[test]
+    fn image_of_reads_the_drawn_pose_not_the_tick_pose() {
+        let (mut session, r4, mover) = drawn_session(moving);
+        let mut publication = Publication::default();
+        session.tick().unwrap();
+        session.publish_at(&mut publication, 0.5).unwrap();
+        let published = &publication.views[0];
+        let domain = session.domains().get(r4.id()).unwrap();
+        assert_eq!(
+            domain.image_of(published.target.view, mover),
+            Some(published.records.instances.rows()[0].image_point)
+        );
+    }
+
+    #[test]
+    fn a_body_swapped_into_a_despawned_row_keeps_its_blend() {
+        let (mut session, r4, doomed) = drawn_session(|_| None);
+        let prepared = session.prepare(lines());
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let swapped = session
+            .dispatch(|dispatch| {
+                dispatch.spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose::at(OBJECT_AT))
+                        .instance(Instance::new(prepared, material)),
+                )
+            })
+            .unwrap();
+        session.system(
+            Phase::Simulation,
+            "rise",
+            move |ctx: Ctx<'_, Probe>| -> Result<(), DomainError> {
+                let y = ctx.step.tick.0 as f32 + 1.0;
+                ctx.domains
+                    .typed(r4)?
+                    .set_pose(swapped, Pose::at(OBJECT_AT + Vec4::Y * y))
+            },
+        );
+        let mut publication = Publication::default();
+        let drawn_y = |session: &mut Session<Probe>, publication: &mut Publication, alpha| {
+            session.publish_at(publication, alpha).unwrap();
+            let rows = publication.views[0].records.instances.rows();
+            let record = rows.iter().find(|record| record.entity == swapped).unwrap();
+            record.pose.coordinates[1] - OBJECT_AT.y
+        };
+        session.tick().unwrap();
+        assert_eq!(drawn_y(&mut session, &mut publication, 0.25), 0.25);
+        session
+            .dispatch(|dispatch| dispatch.despawn(doomed))
+            .unwrap();
+        assert_eq!(drawn_y(&mut session, &mut publication, 0.75), 0.75);
+    }
+
+    #[test]
+    fn a_rotor_sign_flip_between_ticks_is_drawn_without_a_turn() {
+        let (mut session, r4, mover) = drawn_session(|_| None);
+        let turned = Rotor4::from_rotation_arc(Vec4::X, Vec4::new(1.0, 1.0, 0.0, 1.0).normalize());
+        session
+            .domains_mut()
+            .typed(r4)
+            .unwrap()
+            .set_frame(mover, turned)
+            .unwrap();
+        session.system(
+            Phase::Simulation,
+            "flip",
+            move |ctx: Ctx<'_, Probe>| -> Result<(), DomainError> {
+                let domain = ctx.domains.typed(r4)?;
+                let frame = domain
+                    .poses()
+                    .get(mover)
+                    .ok_or(DomainError::Stale(mover))?
+                    .frame;
+                let minus = Rotor4 {
+                    s: -1.0,
+                    ..Rotor4::IDENTITY
+                };
+                domain.set_frame(mover, frame * minus)
+            },
+        );
+        let mut publication = Publication::default();
+        session.tick().unwrap();
+        session.publish_at(&mut publication, 0.5).unwrap();
+        let drawn = publication.views[0].records.instances.rows()[0].pose.frame;
+        let expected = EuclideanR4.chart_pose(&Pose {
+            point: OBJECT_AT,
+            frame: turned,
+        });
+        for (column, expected) in drawn.iter().zip(expected.frame) {
+            for (value, expected) in column.iter().zip(expected) {
+                assert!((value - expected).abs() < 1e-5, "{drawn:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_nan_alpha_draws_the_tick_pose() {
+        let (mut session, _, _) = drawn_session(moving);
+        let mut publication = Publication::default();
+        session.tick().unwrap();
+        assert_eq!(drawn_x(&mut session, &mut publication, f32::NAN), 1.0);
+    }
+
+    #[test]
+    fn a_moving_h3_body_is_not_rebuilt_between_ticks() {
+        let mut session = Session::new(Probe::default(), SimConfig::default());
+        let h3 = session.register_domain(
+            DomainBuilder::new("h3", HyperbolicH3).tracked(LogCapacity::default()),
+        );
+        let stub = session.prepare(PreparedGeometry::Lines3 {
+            segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
+        });
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        let body = session.dispatch(|dispatch| {
+            let eye = dispatch
+                .spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO)))
+                .unwrap();
+            dispatch
+                .domains
+                .typed(h3)
+                .unwrap()
+                .add_view(ViewSpec::new(root, eye, Klein))
+                .unwrap();
+            dispatch
+                .spawn(
+                    SpawnBundle::new()
+                        .at(h3, Pose::at(Vec3::new(0.0, 0.0, -0.5)))
+                        .instance(Instance::new(stub, material)),
+                )
+                .unwrap()
+        });
+        session.system(
+            Phase::Simulation,
+            "drift",
+            move |ctx: Ctx<'_, Probe>| -> Result<(), DomainError> {
+                ctx.domains.typed(h3)?.walk(body, Vec3::X, ctx.step.dt)
+            },
+        );
+        let mut publication = Publication::default();
+        session.tick().unwrap();
+        session.publish_at(&mut publication, 0.2).unwrap();
+        let built = publication.views[0].records.built();
+        session.publish_at(&mut publication, 0.6).unwrap();
+        assert_eq!(publication.views[0].records.built(), built);
+    }
+
+    #[test]
+    fn a_second_publication_redraws_a_stopped_body_at_rest() {
+        let (mut session, _, _) = drawn_session(|tick| (tick.0 == 0).then_some((1.0, false)));
+        let mut first = Publication::default();
+        let mut second = Publication::default();
+        session.tick().unwrap();
+        drawn_x(&mut session, &mut first, 0.5);
+        drawn_x(&mut session, &mut second, 0.5);
+        session.tick().unwrap();
+        assert_eq!(drawn_x(&mut session, &mut first, 0.5), 1.0);
+        assert_eq!(drawn_x(&mut session, &mut second, 0.5), 1.0);
     }
 
     #[test]

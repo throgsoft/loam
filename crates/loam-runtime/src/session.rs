@@ -7,8 +7,8 @@ use crate::command::{
     Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
 };
 use crate::domain::{
-    ChartCommand, ChartPoint, DomainBuilder, DomainError, DomainHandle, DomainId, DomainSnapshot,
-    DomainSpace, Domains,
+    presented_alpha, ChartCommand, ChartPoint, DomainBuilder, DomainError, DomainHandle, DomainId,
+    DomainSnapshot, DomainSpace, Domains,
 };
 use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
 use crate::input::Input;
@@ -269,6 +269,7 @@ pub struct PublishedView {
 pub struct Publication {
     pub views: Vec<PublishedView>,
     pub stamp: Stamp,
+    pub alpha: f32,
     source: Option<SceneId>,
 }
 
@@ -888,6 +889,7 @@ impl<A: Stores> Session<A> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
+        let alpha = presented_alpha(alpha);
         let step = Step {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
@@ -896,7 +898,7 @@ impl<A: Stores> Session<A> {
         self.run_phase(Phase::Publication, step)?;
         self.domains.synchronize();
         for domain in self.domains.iter_mut() {
-            domain.collect_moving();
+            domain.present(alpha);
         }
         let scene = self.scene();
         if into.source != Some(scene) {
@@ -947,6 +949,7 @@ impl<A: Stores> Session<A> {
             }
             into.views.truncate(count);
             into.stamp = stamp;
+            into.alpha = alpha;
             Ok::<(), DomainError>(())
         })();
         if let Err(error) = extracted {
