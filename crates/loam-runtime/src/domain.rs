@@ -282,6 +282,7 @@ pub trait DomainSpace:
 
     type Relative: Copy + Send + Sync + 'static;
 
+    /// False when `blend` returns `to`, so publication draws tick poses and skips the blend bookkeeping.
     const BLENDS: bool = true;
 
     fn origin(&self) -> Self::Point;
@@ -1850,6 +1851,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         S::BLENDS && self.poses.is_tracked()
     }
 
+    /// The pose `publish_at(alpha)` draws: blended across the last tick when only that tick wrote the pose, otherwise the current pose.
     pub fn drawn_pose(&self, entity: Entity, alpha: f32) -> Option<Pose<S>> {
         self.drawn(entity, presented_alpha(alpha))
     }

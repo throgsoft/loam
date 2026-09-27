@@ -29,6 +29,7 @@ pub struct InputHook<'a, A: Stores> {
 pub struct FrameHook<'a, A: Stores> {
     pub session: &'a Session<A>,
     pub published: &'a Publication,
+    /// The alpha `published` was drawn at; pass it to `drawn_pose` for anything drawn beside the instances.
     pub alpha: f32,
     pub sections: &'a [Section],
     #[cfg(feature = "egui")]

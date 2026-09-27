@@ -269,6 +269,7 @@ pub struct PublishedView {
 pub struct Publication {
     pub views: Vec<PublishedView>,
     pub stamp: Stamp,
+    /// The clamped alpha the records were drawn at.
     pub alpha: f32,
     source: Option<SceneId>,
 }
@@ -884,7 +885,7 @@ impl<A: Stores> Session<A> {
         self.publish_at(into, 1.0)
     }
 
-    /// Draws each pose `alpha` of the way from where it stood before the last tick to where it stands now.
+    /// Draws each pose `alpha` of the way from where it stood before the last tick to where it stands now, with `alpha` clamped to [0, 1] and NaN taken as 1.
     pub fn publish_at(&mut self, into: &mut Publication, alpha: f32) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
