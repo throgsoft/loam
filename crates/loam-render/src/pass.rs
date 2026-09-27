@@ -385,9 +385,6 @@ impl PassSchedule {
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
     ) -> Result<(), PassExecutionError> {
-        let Some(depth) = target.depth else {
-            return Ok(());
-        };
         let _scope = loam_time::frame_trace::scope(SCENE_PASS);
         let started = Instant::now();
         let signal = self.signal.as_deref();
@@ -430,13 +427,15 @@ impl PassSchedule {
                         store: StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                    view: depth,
-                    depth_ops: Some(Operations {
-                        load: run.depth,
-                        store: run.depth_store,
-                    }),
-                    stencil_ops: None,
+                depth_stencil_attachment: target.depth.map(|view| {
+                    RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(Operations {
+                            load: run.depth,
+                            store: run.depth_store,
+                        }),
+                        stencil_ops: None,
+                    }
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
@@ -635,7 +634,7 @@ impl Plan {
             ColorLoad::Load if start == 0 => LoadOp::Clear(self.background),
             ColorLoad::Load => LoadOp::Load,
         };
-        let depth = if self.depth_written {
+        let depth = if self.depth_written && first.color_load() == ColorLoad::Load {
             LoadOp::Load
         } else {
             LoadOp::Clear(self.depth_clear)
@@ -1183,6 +1182,30 @@ fn fragment() -> @location(0) vec4<f32> {
         assert_eq!(steps(&passes), opened(StoreOp::Discard));
         passes.push(unshared(PassStage::Overlay, true));
         assert_eq!(steps(&passes), opened(StoreOp::Store));
+    }
+
+    #[test]
+    fn a_sky_after_a_depth_writing_pass_clears_depth_as_its_own_pass_did() {
+        let writer = Box::new(Planned {
+            stage: PassStage::Background,
+            shares: false,
+            load: ColorLoad::Load,
+            writes: true,
+            reads: false,
+        });
+        assert_eq!(
+            steps(&[writer, sky(), faces()]),
+            [
+                Step::Clear,
+                Step::Alone(0),
+                shared(
+                    1..3,
+                    LoadOp::Clear(HORIZON),
+                    LoadOp::Clear(DEPTH_CLEAR),
+                    StoreOp::Discard
+                ),
+            ]
+        );
     }
 
     #[test]
