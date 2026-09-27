@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, Mul};
 
+use loam_math::Bivector;
 use loam_time::par;
 use loam_time::StateHash;
 
@@ -121,6 +122,8 @@ struct IslandSolve<S: PhysicsSpace> {
     units: Vec<ScratchUnit>,
     points: Vec<ContactPoint<S>>,
     residual: f32,
+    push: Vec<f32>,
+    saved: Vec<RigidBody<S>>,
 }
 
 impl<S: PhysicsSpace> Default for IslandSolve<S> {
@@ -131,6 +134,8 @@ impl<S: PhysicsSpace> Default for IslandSolve<S> {
             units: Vec::new(),
             points: Vec::new(),
             residual: 0.0,
+            push: Vec::new(),
+            saved: Vec::new(),
         }
     }
 }
@@ -772,9 +777,9 @@ impl<S: PhysicsSpace> World<S> {
         self.integrate(dt);
         self.update_manifolds();
         self.collect_constraints();
-        self.prepare_solve(dt);
+        self.prepare_solve();
         self.warm_start();
-        self.solve();
+        self.solve(dt);
 
         self.time = next_time;
         Ok(())
@@ -1027,7 +1032,7 @@ impl<S: PhysicsSpace> World<S> {
     }
 
     // Restitution uses velocities from before the warm-start impulse.
-    fn prepare_solve(&mut self, dt: f32)
+    fn prepare_solve(&mut self)
     where
         S::Vector: VectorOps,
     {
@@ -1044,20 +1049,11 @@ impl<S: PhysicsSpace> World<S> {
                     - self.space.velocity_at_point(a, cp.world_point);
                 let v_n = VectorOps::dot(v_rel, cp.normal);
 
-                let restitution_bias = if v_n < -RESTITUTION_THRESHOLD {
+                cp.velocity_bias = if v_n < -RESTITUTION_THRESHOLD {
                     manifold.restitution * v_n
                 } else {
                     0.0
                 };
-
-                let baumgarte_bias = if dt > 0.0 {
-                    let target = (cp.penetration - PENETRATION_SLOP).max(0.0) * BAUMGARTE_BETA / dt;
-                    -target.min(MAX_LINEAR_CORRECTION / dt)
-                } else {
-                    0.0
-                };
-
-                cp.velocity_bias = restitution_bias + baumgarte_bias;
 
                 cp.tangent_impulse = 0.0;
                 cp.tangent_dir = VectorOps::zero();
@@ -1091,7 +1087,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn solve(&mut self)
+    fn solve(&mut self, dt: f32)
     where
         S::Vector: VectorOps,
     {
@@ -1109,13 +1105,13 @@ impl<S: PhysicsSpace> World<S> {
         let workers = islands.len() / ISLANDS_PER_SOLVE_WORKER;
         if workers < 2 {
             for island in islands.iter_mut() {
-                solve_island(space, iterations, island);
+                solve_island(space, iterations, dt, island);
             }
         } else {
             let chunk = islands.len().div_ceil(workers);
             par::for_each_chunk(islands, chunk, |chunk| {
                 for island in chunk {
-                    solve_island(space, iterations, island);
+                    solve_island(space, iterations, dt, island);
                 }
             });
         }
@@ -1471,7 +1467,7 @@ fn gather_body<S: PhysicsSpace>(
 }
 
 // Catto 2005, "Iterative Dynamics with Temporal Coherence", accumulated impulses with warm start.
-fn solve_island<S>(space: &S, iterations: usize, island: &mut IslandSolve<S>)
+fn solve_island<S>(space: &S, iterations: usize, dt: f32, island: &mut IslandSolve<S>)
 where
     S: PhysicsSpace,
     S::Vector: VectorOps,
@@ -1481,6 +1477,8 @@ where
         units,
         points,
         residual,
+        push,
+        saved,
         ..
     } = island;
     *residual = 0.0;
@@ -1493,6 +1491,47 @@ where
                 *residual = residual.max(solve_normal_then_tangent(space, a, b, cp));
             }
         }
+    }
+    if dt <= 0.0 {
+        return;
+    }
+    // Split impulse: a dropped pseudo velocity translates bodies apart, adding no energy or creep.
+    saved.clear();
+    saved.extend_from_slice(bodies);
+    for body in bodies.iter_mut() {
+        body.velocity = VectorOps::zero();
+        body.angular_velocity = S::AngVel::zero();
+    }
+    push.clear();
+    push.resize(points.len(), 0.0);
+    for _ in 0..iterations {
+        for unit in units.iter() {
+            let (a, b) = split_two_mut(bodies, unit.a as usize, unit.b as usize);
+            let range = unit.first as usize..(unit.first + unit.count) as usize;
+            for (cp, accumulated) in points[range.clone()].iter().zip(&mut push[range]) {
+                let depth = (cp.penetration - PENETRATION_SLOP).max(0.0);
+                let target = (depth * BAUMGARTE_BETA).min(MAX_LINEAR_CORRECTION) / dt;
+                let k_n = a.inv_mass() + b.inv_mass();
+                if k_n <= 0.0 {
+                    continue;
+                }
+                let v_rel = b.velocity - a.velocity;
+                let next =
+                    (*accumulated + (target - VectorOps::dot(v_rel, cp.normal)) / k_n).max(0.0);
+                let impulse = next - *accumulated;
+                *accumulated = next;
+                if impulse != 0.0 {
+                    a.velocity = a.velocity - cp.normal * (impulse * a.inv_mass());
+                    b.velocity = b.velocity + cp.normal * (impulse * b.inv_mass());
+                }
+            }
+        }
+    }
+    for (body, before) in bodies.iter_mut().zip(saved.iter()) {
+        let from = body.position;
+        integrate_body(space, body, dt);
+        body.velocity = space.parallel_transport(from, body.position, before.velocity);
+        body.angular_velocity = before.angular_velocity;
     }
 }
 
@@ -3685,11 +3724,11 @@ mod tests {
         let (mut world, _, _) = settled_islands(DT, 120);
         world.step(DT).unwrap();
         assert!(!world.constraints.is_empty(), "the fixture solves nothing");
-        world.solve();
+        world.solve(DT);
 
         let bytes = bytes_allocated_by(|| {
             for _ in 0..16 {
-                world.solve();
+                world.solve(DT);
             }
         })
         .expect("the counting allocator is installed");
@@ -3839,7 +3878,7 @@ mod tests {
     }
 
     #[test]
-    fn r4_wall_bias_pushes_toward_the_near_face() {
+    fn r4_wall_correction_pushes_toward_the_near_face() {
         use crate::euclidean_r4::{sphere_body_r4, tesseract_vertices};
         use glam::Vec4;
         use loam_math::EuclideanR4;
@@ -3864,7 +3903,7 @@ mod tests {
                 sphere_body_r4(Vec4::new(x, 0.0, 0.0, 0.0), Vec4::ZERO, 0.1, 1.0).unwrap(),
             );
             world.step(1.0 / 240.0).unwrap();
-            assert!(world.bodies[ball].velocity.x < 0.0, "x={x}");
+            assert!(world.bodies[ball].position.x < x, "x={x}");
         }
     }
 }
