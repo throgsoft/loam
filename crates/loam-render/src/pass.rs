@@ -2,10 +2,14 @@ use std::fmt;
 use std::time::Duration;
 
 use web_time::Instant;
-use wgpu::{CommandEncoder, TextureFormat, TextureView};
+use wgpu::{
+    Color, CommandEncoder, LoadOp, Operations, RenderPass, RenderPassColorAttachment,
+    RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureFormat, TextureView,
+};
 
 use crate::device::{GpuContext, LossSignal, UncapturedGpuError};
 use crate::gpu_timer::SectionTimer;
+use crate::view::DEPTH_CLEAR;
 use crate::DepthConvention;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -80,6 +84,34 @@ pub trait FramePass {
 
     fn depth_read(&self) -> Option<DepthConvention> {
         None
+    }
+
+    /// True joins the stage's shared render pass, so `attach` must build pipelines against the frame's color and depth formats.
+    fn shares_pass(&self) -> bool {
+        false
+    }
+
+    /// Read before `prepare`, and only when `color_load` is `Clear`.
+    fn clear_color(&self) -> Color {
+        Color::BLACK
+    }
+
+    /// Encoder work for a sharing pass; runs just before its render pass opens, not at frame start.
+    fn prepare(
+        &mut self,
+        _encoder: &mut CommandEncoder,
+        _target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Runs inside the shared pass, which owns the load ops; viewport and scissor carry over from earlier draws.
+    fn draw(
+        &mut self,
+        _pass: &mut RenderPass<'_>,
+        _target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn record(
@@ -272,14 +304,165 @@ impl PassSchedule {
         let sections = &mut self.sections;
         let signal = self.signal.as_deref();
         for pass in self.passes.iter_mut().filter(|pass| pass.stage() == stage) {
-            let name = pass.name();
-            run_pass(signal, name, PassPhase::Record, || {
-                time_section(timer, sections, name, encoder, |encoder| {
-                    pass.record(encoder, target)
-                })
-            })?;
+            record_alone(signal, timer, sections, pass.as_mut(), encoder, target)?;
         }
         Ok(())
+    }
+
+    /// Replaces `record` for Background and Scene and includes the frame clear.
+    pub fn record_scene(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+        background: Color,
+    ) -> Result<(), PassExecutionError> {
+        let depth_clear = depth_clear(self.convention);
+        if self.unattached.is_some() {
+            self.clear(encoder, target, background, depth_clear);
+            return Ok(());
+        }
+        let mut plan = Plan::new(
+            &self.passes,
+            target.depth.is_some(),
+            background,
+            depth_clear,
+        );
+        while let Some(step) = plan.next(&self.passes) {
+            match step {
+                Step::Clear => self.clear(encoder, target, background, depth_clear),
+                Step::Alone(index) => record_alone(
+                    self.signal.as_deref(),
+                    &mut self.timer,
+                    &mut self.sections,
+                    self.passes[index].as_mut(),
+                    encoder,
+                    target,
+                )?,
+                Step::Shared(run) => self.record_shared(run, encoder, target)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn clear(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+        background: Color,
+        depth_clear: f32,
+    ) {
+        self.section("present-clear", encoder, |encoder| {
+            encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("loam-render present clear"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: target.color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(background),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: target.depth.map(|view| {
+                    RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(Operations {
+                            load: LoadOp::Clear(depth_clear),
+                            store: StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        });
+    }
+
+    fn record_shared(
+        &mut self,
+        run: Run,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> Result<(), PassExecutionError> {
+        let _scope = loam_time::frame_trace::scope(SCENE_PASS);
+        let started = Instant::now();
+        let signal = self.signal.as_deref();
+        let timer = &mut self.timer;
+        let sections = &mut self.sections;
+        let passes = &mut self.passes[run.start..run.end];
+        let first = sections.len();
+        sections.push(Section {
+            name: SCENE_PASS,
+            cpu: Duration::ZERO,
+            gpu: GpuTime::Unavailable,
+        });
+        for pass in passes.iter_mut() {
+            let name = pass.name();
+            let begun = Instant::now();
+            let outcome = run_pass(signal, name, PassPhase::Record, || {
+                pass.prepare(encoder, target)
+            });
+            sections.push(Section {
+                name,
+                cpu: begun.elapsed(),
+                gpu: GpuTime::Unavailable,
+            });
+            outcome?;
+        }
+        // Timestamps resolve only at render pass boundaries, so members share one GPU slot.
+        let slot = timer
+            .as_mut()
+            .and_then(|timer| timer.open(encoder, SCENE_PASS));
+        let mut outcome = Ok(());
+        {
+            let mut render = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("loam-render scene pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: target.color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: run.color,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: target.depth.map(|view| {
+                    RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(Operations {
+                            load: run.depth,
+                            store: run.depth_store,
+                        }),
+                        stencil_ops: None,
+                    }
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            for (offset, pass) in passes.iter_mut().enumerate() {
+                let begun = Instant::now();
+                outcome = run_pass(signal, pass.name(), PassPhase::Record, || {
+                    pass.draw(&mut render, target)
+                });
+                sections[first + 1 + offset].cpu += begun.elapsed();
+                if outcome.is_err() {
+                    break;
+                }
+            }
+        }
+        let gpu = match (timer.as_mut(), slot) {
+            (Some(timer), Some(slot)) => {
+                timer.close(encoder, slot);
+                timer
+                    .elapsed(slot)
+                    .map_or(GpuTime::Unavailable, GpuTime::Measured)
+            }
+            _ => GpuTime::Unavailable,
+        };
+        sections[first].cpu = started.elapsed();
+        sections[first].gpu = gpu;
+        outcome
     }
 
     pub fn end_frame(&mut self, encoder: &mut CommandEncoder) {
@@ -348,6 +531,138 @@ fn time_section<T>(
     };
     sections.push(Section { name, cpu, gpu });
     outcome
+}
+
+fn record_alone(
+    signal: Option<&LossSignal>,
+    timer: &mut Option<SectionTimer>,
+    sections: &mut Vec<Section>,
+    pass: &mut dyn FramePass,
+    encoder: &mut CommandEncoder,
+    target: &FrameTarget<'_>,
+) -> Result<(), PassExecutionError> {
+    let name = pass.name();
+    run_pass(signal, name, PassPhase::Record, || {
+        time_section(timer, sections, name, encoder, |encoder| {
+            pass.record(encoder, target)
+        })
+    })
+}
+
+const SCENE_PASS: &str = "scene-pass";
+
+fn depth_clear(convention: DepthConvention) -> f32 {
+    match convention {
+        DepthConvention::StandardZ => 1.0,
+        DepthConvention::ReversedZ => DEPTH_CLEAR,
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Step {
+    Clear,
+    Alone(usize),
+    Shared(Run),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct Run {
+    start: usize,
+    end: usize,
+    color: LoadOp<Color>,
+    depth: LoadOp<f32>,
+    depth_store: StoreOp,
+}
+
+struct Plan {
+    scene_end: usize,
+    shareable: bool,
+    background: Color,
+    depth_clear: f32,
+    at: usize,
+    opened: bool,
+    depth_written: bool,
+}
+
+impl Plan {
+    fn new(
+        passes: &[Box<dyn FramePass>],
+        shareable: bool,
+        background: Color,
+        depth_clear: f32,
+    ) -> Self {
+        Self {
+            scene_end: passes.partition_point(|pass| pass.stage() < PassStage::Overlay),
+            shareable,
+            background,
+            depth_clear,
+            at: 0,
+            opened: false,
+            depth_written: false,
+        }
+    }
+
+    fn joins(&self, pass: &dyn FramePass) -> bool {
+        self.shareable && pass.shares_pass()
+    }
+
+    fn next(&mut self, passes: &[Box<dyn FramePass>]) -> Option<Step> {
+        let scene = &passes[..self.scene_end];
+        if !self.opened {
+            self.opened = true;
+            if !scene.first().is_some_and(|pass| self.joins(pass.as_ref())) {
+                return Some(Step::Clear);
+            }
+        }
+        let start = self.at;
+        let first = scene.get(start)?;
+        if !self.joins(first.as_ref()) {
+            self.at += 1;
+            self.depth_written |= first.depth_convention().is_some();
+            return Some(Step::Alone(start));
+        }
+        let end = start
+            + 1
+            + scene[start + 1..]
+                .iter()
+                .take_while(|pass| {
+                    self.joins(pass.as_ref()) && pass.color_load() == ColorLoad::Load
+                })
+                .count();
+        let color = match first.color_load() {
+            ColorLoad::Clear => LoadOp::Clear(first.clear_color()),
+            ColorLoad::Load if start == 0 => LoadOp::Clear(self.background),
+            ColorLoad::Load => LoadOp::Load,
+        };
+        let depth = if self.depth_written && first.color_load() == ColorLoad::Load {
+            LoadOp::Load
+        } else {
+            LoadOp::Clear(self.depth_clear)
+        };
+        // Only a sharing pass is held to its depth_read declaration.
+        let kept = passes[end..].iter().enumerate().any(|(offset, pass)| {
+            end + offset >= self.scene_end
+                || !self.joins(pass.as_ref())
+                || pass.depth_convention().is_some()
+                || pass.depth_read().is_some()
+        });
+        let writes = scene[start..end]
+            .iter()
+            .any(|pass| pass.depth_convention().is_some());
+        self.depth_written = kept && (self.depth_written || writes);
+        self.at = end;
+        Some(Step::Shared(Run {
+            start,
+            end,
+            color,
+            depth,
+            depth_store: if kept {
+                StoreOp::Store
+            } else {
+                StoreOp::Discard
+            },
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -734,6 +1049,179 @@ fn fragment() -> @location(0) vec4<f32> {
         assert_eq!(
             schedule.names().collect::<Vec<_>>(),
             ["background", "scene", "overlay"]
+        );
+    }
+
+    struct Planned {
+        stage: PassStage,
+        shares: bool,
+        load: ColorLoad,
+        writes: bool,
+        reads: bool,
+    }
+
+    impl FramePass for Planned {
+        fn name(&self) -> &'static str {
+            "planned"
+        }
+
+        fn stage(&self) -> PassStage {
+            self.stage
+        }
+
+        fn color_load(&self) -> ColorLoad {
+            self.load
+        }
+
+        fn depth_convention(&self) -> Option<DepthConvention> {
+            self.writes.then_some(DepthConvention::ReversedZ)
+        }
+
+        fn depth_read(&self) -> Option<DepthConvention> {
+            self.reads.then_some(DepthConvention::ReversedZ)
+        }
+
+        fn shares_pass(&self) -> bool {
+            self.shares
+        }
+
+        fn clear_color(&self) -> Color {
+            HORIZON
+        }
+
+        fn record(
+            &mut self,
+            _encoder: &mut CommandEncoder,
+            _target: &FrameTarget<'_>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    const HORIZON: Color = Color::GREEN;
+    const BACKGROUND: Color = Color::BLUE;
+
+    fn sky() -> Box<dyn FramePass> {
+        Box::new(Planned {
+            stage: PassStage::Background,
+            shares: true,
+            load: ColorLoad::Clear,
+            writes: true,
+            reads: false,
+        })
+    }
+
+    fn faces() -> Box<dyn FramePass> {
+        Box::new(Planned {
+            stage: PassStage::Scene,
+            shares: true,
+            load: ColorLoad::Load,
+            writes: true,
+            reads: true,
+        })
+    }
+
+    fn unshared(stage: PassStage, reads: bool) -> Box<dyn FramePass> {
+        Box::new(Planned {
+            stage,
+            shares: false,
+            load: ColorLoad::Load,
+            writes: false,
+            reads,
+        })
+    }
+
+    fn steps(passes: &[Box<dyn FramePass>]) -> Vec<Step> {
+        let mut plan = Plan::new(passes, true, BACKGROUND, DEPTH_CLEAR);
+        std::iter::from_fn(|| plan.next(passes)).collect()
+    }
+
+    fn shared(
+        passes: std::ops::Range<usize>,
+        color: LoadOp<Color>,
+        depth: LoadOp<f32>,
+        depth_store: StoreOp,
+    ) -> Step {
+        Step::Shared(Run {
+            start: passes.start,
+            end: passes.end,
+            color,
+            depth,
+            depth_store,
+        })
+    }
+
+    #[test]
+    fn a_shared_pass_that_opens_the_frame_clears_the_depth_the_last_frame_left() {
+        assert_eq!(
+            steps(&[faces(), faces()]),
+            [shared(
+                0..2,
+                LoadOp::Clear(BACKGROUND),
+                LoadOp::Clear(DEPTH_CLEAR),
+                StoreOp::Discard
+            )]
+        );
+    }
+
+    #[test]
+    fn a_depth_reader_in_the_overlay_keeps_the_scene_depth_stored() {
+        let mut passes = vec![sky(), faces(), faces()];
+        let opened = |depth_store| {
+            [shared(
+                0..3,
+                LoadOp::Clear(HORIZON),
+                LoadOp::Clear(DEPTH_CLEAR),
+                depth_store,
+            )]
+        };
+        assert_eq!(steps(&passes), opened(StoreOp::Discard));
+        passes.push(unshared(PassStage::Overlay, true));
+        assert_eq!(steps(&passes), opened(StoreOp::Store));
+    }
+
+    #[test]
+    fn a_sky_after_a_depth_writing_pass_clears_depth_as_its_own_pass_did() {
+        let writer = Box::new(Planned {
+            stage: PassStage::Background,
+            shares: false,
+            load: ColorLoad::Load,
+            writes: true,
+            reads: false,
+        });
+        assert_eq!(
+            steps(&[writer, sky(), faces()]),
+            [
+                Step::Clear,
+                Step::Alone(0),
+                shared(
+                    1..3,
+                    LoadOp::Clear(HORIZON),
+                    LoadOp::Clear(DEPTH_CLEAR),
+                    StoreOp::Discard
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pass_that_does_not_share_splits_the_run_and_loads_what_was_drawn_before_it() {
+        assert_eq!(
+            steps(&[sky(), unshared(PassStage::Scene, false), faces()]),
+            [
+                shared(
+                    0..1,
+                    LoadOp::Clear(HORIZON),
+                    LoadOp::Clear(DEPTH_CLEAR),
+                    StoreOp::Store
+                ),
+                Step::Alone(1),
+                shared(2..3, LoadOp::Load, LoadOp::Load, StoreOp::Discard),
+            ]
         );
     }
 }

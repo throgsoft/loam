@@ -439,7 +439,7 @@ fn checked_pose_edits_update_the_body_and_mirror_before_step() {
 #[test]
 fn a_ball_dropped_on_a_half_space_floor_rests_at_the_hand_derived_height() {
     const SETTLE_TICKS: u32 = 120;
-    const HAND_REST_Y: f32 = 0.493_611_1;
+    const HAND_REST_Y: f32 = 0.493_888_9;
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let r4 = session.register_domain(
         DomainBuilder::new("r4", EuclideanR4)

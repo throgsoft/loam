@@ -3,10 +3,7 @@ use std::rc::Rc;
 
 use glam::Vec2;
 use loam_runtime::{DomainId, Eye, PublishedView, Rigid, SegmentRecord, Stamp, ViewTarget};
-use wgpu::{
-    Color, CommandEncoder, Device, LoadOp, Operations, Queue, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureFormat, TextureView,
-};
+use wgpu::{Color, CommandEncoder, Device, Queue, RenderPass, TextureFormat, TextureView};
 
 use crate::depth::DepthBuffer;
 use crate::device::GpuContext;
@@ -15,7 +12,7 @@ use crate::pass::{
     Section,
 };
 use crate::triangle_pass::TriangleFeed;
-use crate::view::{DEPTH_CLEAR, DEPTH_FORMAT};
+use crate::view::DEPTH_FORMAT;
 use crate::{DepthConvention, DepthMode, FragmentShading, LineRasterNode};
 
 struct ViewLines {
@@ -96,6 +93,21 @@ impl FramePass for PublishedLines {
 
     fn depth_read(&self) -> Option<DepthConvention> {
         Some(DepthConvention::ReversedZ)
+    }
+
+    fn shares_pass(&self) -> bool {
+        true
+    }
+
+    fn draw(&mut self, pass: &mut RenderPass<'_>, _target: &FrameTarget<'_>) -> anyhow::Result<()> {
+        let views = self.views.borrow();
+        for slot in views.iter() {
+            slot.opaque.draw(pass, None);
+        }
+        for slot in views.iter() {
+            slot.translucent.draw(pass, None);
+        }
+        Ok(())
     }
 
     fn record(
@@ -252,33 +264,7 @@ impl Presenter {
             depth: Some(&depth.view),
             size,
         };
-        self.schedule.section("present-clear", encoder, |encoder| {
-            encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("loam-render present clear"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(background),
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                    view: &depth.view,
-                    depth_ops: Some(Operations {
-                        load: LoadOp::Clear(DEPTH_CLEAR),
-                        store: StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-        });
-        self.schedule
-            .record(PassStage::Background, encoder, &frame)?;
-        self.schedule.record(PassStage::Scene, encoder, &frame)
+        self.schedule.record_scene(encoder, &frame, background)
     }
 
     /// Call after `record_scene` with the same target and encoder.
@@ -315,7 +301,8 @@ mod tests {
         Records, Session, SimConfig, SpawnBundle, ViewSpec,
     };
     use wgpu::{
-        BackendOptions, Backends, InstanceDescriptor, NoopBackendOptions, TextureDescriptor,
+        BackendOptions, Backends, InstanceDescriptor, LoadOp, NoopBackendOptions, Operations,
+        RenderPassColorAttachment, RenderPassDescriptor, StoreOp, TextureDescriptor,
         TextureDimension, TextureFormat, TextureUsages,
     };
 

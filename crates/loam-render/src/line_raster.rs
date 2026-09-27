@@ -325,8 +325,15 @@ impl LineRasterNode {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
+        self.draw(&mut rp, viewport);
+    }
+
+    pub fn draw(&self, rp: &mut wgpu::RenderPass<'_>, viewport: Option<&crate::Viewport>) {
+        if self.instance_count == 0 {
+            return;
+        }
         if let Some(vp) = viewport {
-            vp.apply(&mut rp);
+            vp.apply(rp);
         }
         rp.set_pipeline(&self.pipeline);
         rp.set_bind_group(0, &self.bind_group, &[]);

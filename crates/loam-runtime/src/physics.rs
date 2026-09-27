@@ -491,7 +491,7 @@ where
         Ok(Outcome::Done)
     }
 
-    fn move_to(&mut self, id: BodyId, position: S::Point) -> Result<Outcome, Rejection> {
+    fn move_to(&mut self, id: BodyId, position: S::Point) -> Result<bool, Rejection> {
         let orientation = self
             .world
             .body(id)
@@ -509,13 +509,13 @@ where
                     return Err(Rejection::Edit(EditError::NotFinite));
                 }
                 held.target = target;
-                return Ok(Outcome::Done);
+                return Ok(false);
             }
         }
         self.world
             .set_pose(id, position, orientation)
             .map_err(Rejection::Edit)?;
-        Ok(Outcome::Done)
+        Ok(true)
     }
 
     fn move_to_and_mirror(
@@ -523,11 +523,12 @@ where
         id: BodyId,
         point: S::Point,
         poses: &mut Store<Pose<S>>,
-    ) -> Result<Outcome, Rejection> {
+    ) -> Result<(), Rejection> {
         self.mirror_entity(id, poses).map_err(Rejection::Edit)?;
-        let outcome = self.move_to(id, point)?;
-        self.mirror_pose(id, poses).map_err(Rejection::Edit)?;
-        Ok(outcome)
+        if self.move_to(id, point)? {
+            self.mirror_pose(id, poses).map_err(Rejection::Edit)?;
+        }
+        Ok(())
     }
 
     fn grab(&mut self, id: BodyId, point: S::Point) -> Result<Outcome, Rejection> {
@@ -638,7 +639,7 @@ where
         needed.clamp(self.min_substeps, self.max_substeps)
     }
 
-    fn sync_poses(&mut self, poses: &mut Store<Pose<S>>) {
+    fn sync_poses(&mut self, poses: &mut Store<Pose<S>>, rewrite: bool) {
         let space = *self.world.space();
         let scene = poses.scene();
         let to_entity = &self.to_entity;
@@ -646,11 +647,20 @@ where
             let Some(key) = entity_at(to_entity, id) else {
                 continue;
             };
-            let Some(pose) = poses.get_mut(Entity::new(scene, key)) else {
+            let entity = Entity::new(scene, key);
+            let next =
+                space.pose_of(space.iso_compose(space.transvection(row.position), row.orientation));
+            if !rewrite
+                && poses
+                    .get(entity)
+                    .is_some_and(|pose| space.chart_pose(pose) == space.chart_pose(&next))
+            {
+                continue;
+            }
+            let Some(pose) = poses.get_mut(entity) else {
                 continue;
             };
-            *pose =
-                space.pose_of(space.iso_compose(space.transvection(row.position), row.orientation));
+            *pose = next;
         }
     }
 }
@@ -685,13 +695,13 @@ where
         for _ in 0..substeps {
             self.world.step(dt)?;
         }
-        self.sync_poses(poses);
+        self.sync_poses(poses, true);
         self.released = None;
         Ok(())
     }
 
     fn synchronize(&mut self, poses: &mut Store<Pose<S>>, _owner: Owner) {
-        self.sync_poses(poses);
+        self.sync_poses(poses, false);
     }
 
     fn set_pose(
@@ -718,7 +728,6 @@ where
         let id = self.body(entity)?;
         Some(
             self.move_to_and_mirror(id, point, poses)
-                .map(|_| ())
                 .map_err(|error| domain_rejection(entity, error)),
         )
     }
@@ -853,11 +862,19 @@ mod tests {
     use loam_time::alloc::bytes_allocated_by;
 
     use super::*;
-    use crate::domain::{DomainId, DomainOwner};
+    use crate::command::{Command, SpawnBundle};
+    use crate::domain::{DomainId, DomainOwner, DomainSpace, Instance};
     use crate::entity::{Entities, Epoch, RuntimeId, SceneId};
+    use crate::input::Input;
     use crate::phase::Tick;
+    use crate::session::{Material, PreparedGeometry, Publication, Session, SimConfig};
     use crate::store::DEFAULT_LOG_CAPACITY;
-    use crate::view::Vec4;
+    use crate::view::{Section4, Vec4, ViewSpec};
+
+    crate::stores! {
+        #[derive(Default)]
+        pub struct Bare {}
+    }
 
     const MOVING: usize = 64;
     const WARM_STEPS: u64 = 8;
@@ -1035,6 +1052,91 @@ mod tests {
             far_neighbor.position.x,
             far_neighbor.velocity.x
         );
+    }
+
+    #[test]
+    fn a_held_body_dragged_and_thrown_between_ticks_keeps_its_blend() {
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        let r4 = session.register_domain(
+            DomainBuilder::new("r4", EuclideanR4)
+                .tracked(DEFAULT_LOG_CAPACITY)
+                .physics(
+                    PhysicsConfig::new(register_default_narrowphase)
+                        .grab(GrabConfig::new(20.0, 20.0, 400.0)),
+                )
+                .unwrap(),
+        );
+        let geometry = session.prepare(PreparedGeometry::Lines4 {
+            segments: vec![[[0.1, 0.0, 0.0, 0.0], [-0.1, 0.0, 0.0, 0.0]]],
+        });
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        let body = session.dispatch(|dispatch| {
+            let eye = dispatch
+                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::Z * 4.0)))
+                .unwrap();
+            let body = dispatch
+                .spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose::at(Vec4::ZERO))
+                        .instance(Instance::new(geometry, material)),
+                )
+                .unwrap();
+            let domain = dispatch.domains.typed(r4).unwrap();
+            domain
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .unwrap();
+            domain
+                .spawn_body(
+                    body,
+                    sphere_body_r4(Vec4::ZERO, Vec4::ZERO, 0.5, 1.0).unwrap(),
+                )
+                .unwrap();
+            body
+        });
+        let chart = |x: f32| EuclideanR4.chart_point(Vec4::X * x);
+        session.submit(Command::Chart(
+            r4.id(),
+            ChartCommand::Grab {
+                entity: body,
+                point: chart(0.0),
+            },
+        ));
+        session.submit(Command::Chart(
+            r4.id(),
+            ChartCommand::Move {
+                entity: body,
+                point: chart(5.0),
+            },
+        ));
+        session.boundary(Input::default()).unwrap();
+        session.tick().unwrap();
+        let mut publication = Publication::default();
+        let mut drawn_x = |session: &mut Session<Bare>| {
+            session.publish_at(&mut publication, 0.5).unwrap();
+            publication.views[0].records.instances.rows()[0]
+                .pose
+                .coordinates[0]
+        };
+        let blended = drawn_x(&mut session);
+        assert!(blended > 0.0);
+        session.submit(Command::Chart(
+            r4.id(),
+            ChartCommand::Move {
+                entity: body,
+                point: chart(6.0),
+            },
+        ));
+        session.boundary(Input::default()).unwrap();
+        session
+            .domains_mut()
+            .typed(r4)
+            .unwrap()
+            .physics_mut()
+            .unwrap()
+            .throw(body, Vec4::X)
+            .unwrap();
+        assert_eq!(drawn_x(&mut session), blended);
     }
 
     #[test]

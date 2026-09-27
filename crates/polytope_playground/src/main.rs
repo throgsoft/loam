@@ -808,6 +808,7 @@ impl Scratch {
 fn collect(
     session: &Session<Playground>,
     domain: DomainHandle<EuclideanR4>,
+    alpha: f32,
     scratch: &mut Scratch,
 ) {
     let active = *session.app.active.get();
@@ -844,7 +845,7 @@ fn collect(
         return;
     };
     for (at, (entity, entry, size)) in scratch.slots.iter().enumerate() {
-        let Some(pose) = r4.poses().get(*entity) else {
+        let Some(pose) = r4.drawn_pose(*entity, alpha) else {
             continue;
         };
         if scratch.anchors.get(at).is_some_and(|held| held.0 == active) {
@@ -858,7 +859,7 @@ fn collect(
         if display.surface == Surface::Sdf
             || (display.surface == Surface::Raster && entry.shape.polytope4().is_none())
         {
-            scratch.bodies.push(scene::body_of(entry, pose, *size));
+            scratch.bodies.push(scene::body_of(entry, &pose, *size));
         }
     }
     scratch.center = sum / scratch.slots.len().max(1) as f32;
@@ -899,7 +900,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
                     .is_some_and(|context| context.wants_keyboard_input()),
             camera.cursor_policy,
         );
-        collect(hook.session, domain, &mut scratch);
+        collect(hook.session, domain, hook.alpha, &mut scratch);
         let eye = hook
             .session
             .views()
@@ -932,7 +933,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
             &eye,
             gimbal_renderer.rings(&hook.session.app.control.get().gimbal, scratch.center),
         );
-        guides.update(hook.session, domain);
+        guides.update(hook.session, domain, hook.alpha);
         guide_pass.publish(&eye, &guides.lines);
         grab_point.publish(&eye, &guides.points);
         let shown = *hook.session.app.hud.get();
@@ -946,7 +947,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
             &mut lines,
         );
         if let Some(context) = hook.ui {
-            toy::fill_depth_bands(hook.session, domain, &mut scratch.depths);
+            toy::fill_depth_bands(hook.session, domain, hook.alpha, &mut scratch.depths);
             ui::draw(
                 context,
                 hook.session,
@@ -1720,8 +1721,9 @@ mod tests {
             booted.session.tick().expect("the tick ran");
             records.publish(&mut booted.session).expect("published");
             let publication = records.lend().expect("the buffer is free");
+            let alpha = publication.alpha;
             records.release(publication);
-            collect(&booted.session, booted.domain, scratch);
+            collect(&booted.session, booted.domain, alpha, scratch);
             fill_strip(
                 &{ *booted.session.app.strip.get() },
                 turn_of(&booted.session),
@@ -2015,7 +2017,7 @@ mod tests {
         booted.session.boundary(Input::default()).expect("hold");
         booted.session.app.toybox_debug.set(true);
         let mut guides = guides::Guides::default();
-        guides.update(&booted.session, booted.domain);
+        guides.update(&booted.session, booted.domain, 1.0);
         assert_eq!(guides.points.len(), 1);
         assert_eq!(guides.lines.len(), 8);
         let anchor = guides.points[0].position;
@@ -2028,7 +2030,7 @@ mod tests {
             .session
             .boundary(Input::default())
             .expect("the boundary applied the move");
-        guides.update(&booted.session, booted.domain);
+        guides.update(&booted.session, booted.domain, 1.0);
         assert_eq!(guides.points[0].position, anchor);
         let refusal = booted
             .session
@@ -2069,7 +2071,7 @@ mod tests {
         );
 
         let release = booted.session.release_at(1.05).expect("the drag was live");
-        guides.update(&booted.session, booted.domain);
+        guides.update(&booted.session, booted.domain, 1.0);
         assert!(guides.points.is_empty());
         assert_eq!(guides.lines.len(), 4);
         send(&mut booted, Action::Throw(release.entity, release.velocity));

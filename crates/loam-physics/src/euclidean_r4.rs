@@ -602,6 +602,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_flat_landing_bounces_to_its_restitution_height_at_any_step_size() {
+        const HALF: f32 = 0.225;
+        const RESTITUTION: f32 = 0.05;
+        for dt in [1.0 / 240.0, 1.0 / 960.0, 1.0 / 1920.0] {
+            let mut world = World::new(EuclideanR4);
+            register_default_narrowphase(&mut world.narrowphase);
+            world
+                .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
+                .unwrap();
+            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
+            let body = world.push_body(
+                polytope_body_r4(
+                    Vec4::new(0.0, 4.0, 0.0, 0.0),
+                    Vec4::ZERO,
+                    tesseract_vertices(HALF),
+                    1.0,
+                )
+                .unwrap(),
+            );
+            world.bodies[floor].restitution = RESTITUTION;
+            world.bodies[body].restitution = RESTITUTION;
+            let mut landed = false;
+            let mut apex = f32::MIN;
+            for _ in 0..(2.0 / dt) as usize {
+                world.step(dt).unwrap();
+                let body = &world.bodies[body];
+                landed |= body.velocity.y > 0.0;
+                if landed {
+                    apex = apex.max(body.position.y);
+                }
+            }
+            // Restitution alone lifts an 8.3 m/s landing by (0.05 * 8.3)^2 / 19.6, under 1 cm.
+            assert!(
+                apex - HALF < 0.03,
+                "at dt {dt} the landing bounced {} above rest",
+                apex - HALF
+            );
+        }
+    }
+
     const CORNER_DROP_DT: f32 = 1.0 / 240.0;
     const CORNER_DROP_CIRCUMRADIUS: f32 = 0.45;
     const CORNER_DROP_GRAVITY: f32 = -9.8;
