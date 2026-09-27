@@ -440,6 +440,7 @@ impl<A: Stores> Inner<A> {
                         hook(&mut FrameHook {
                             session: &self.session,
                             published: &records,
+                            alpha: records.alpha,
                             sections: presenter.sections(),
                             #[cfg(feature = "egui")]
                             ui: context.as_ref(),
@@ -618,8 +619,8 @@ mod tests {
     use loam_render::device::FeatureRequest;
     use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
     use loam_runtime::{
-        ActionId, Bindings, Command, DomainBuilder, HostConfig, Identity3, Key, LogCapacity, Phase,
-        Pose, SimConfig, SpawnBundle, Tick, ViewSpec,
+        ActionId, Bindings, Command, DomainBuilder, HostConfig, Identity3, Key, LogCapacity,
+        Material, Phase, Pose, PreparedGeometry, SimConfig, SpawnBundle, Tick, ViewSpec,
     };
     use wgpu::{
         BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
@@ -1046,6 +1047,58 @@ struct Fragment {
             1,
             "the viewless publication was not reported exactly once: {lines:?}"
         );
+    }
+
+    #[test]
+    fn a_frame_between_ticks_draws_the_body_at_the_elapsed_fraction_of_the_tick() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        let r3 = session
+            .register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Lines3 {
+            segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
+        });
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        let body = session
+            .dispatch(|dispatch| {
+                let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::Z * 4.0)))?;
+                dispatch
+                    .domains
+                    .typed(r3)?
+                    .add_view(ViewSpec::new(root, eye, Identity3))?;
+                dispatch.spawn(
+                    SpawnBundle::new()
+                        .at(r3, Pose::at(Vec3::ZERO))
+                        .instance(loam_runtime::Instance::new(geometry, material)),
+                )
+            })
+            .expect("the body spawned");
+        session.system(
+            Phase::Simulation,
+            "move",
+            move |ctx: loam_runtime::Ctx<'_, Bare>| {
+                if ctx.step.tick == Tick(0) {
+                    ctx.domains.typed(r3)?.set_pose(body, Pose::at(Vec3::X))?;
+                }
+                Ok(())
+            },
+        );
+        let mut frame = Frame::new(session, host("alpha")).expect("the frame accepted the config");
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        let start = Instant::now();
+        let dt = Duration::from_nanos(1_000_000_000 / u64::from(SimConfig::default().fixed_hz));
+        run_at(&mut frame, &gpu, &texture, start);
+        run_at(&mut frame, &gpu, &texture, start + dt * 3 / 2);
+
+        let publication = frame.inner.records.lend().expect("the buffer is free");
+        let x = publication.views[0].records.instances.rows()[0]
+            .pose
+            .coordinates[0];
+        assert!((x - 0.5).abs() < 1e-3, "the body was drawn at x = {x}");
     }
 
     #[test]
