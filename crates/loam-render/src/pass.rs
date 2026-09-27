@@ -86,14 +86,17 @@ pub trait FramePass {
         None
     }
 
+    /// True joins the stage's shared render pass, so `attach` must build pipelines against the frame's color and depth formats.
     fn shares_pass(&self) -> bool {
         false
     }
 
+    /// Read before `prepare`, and only when `color_load` is `Clear`.
     fn clear_color(&self) -> Color {
         Color::BLACK
     }
 
+    /// Encoder work for a sharing pass; runs just before its render pass opens, not at frame start.
     fn prepare(
         &mut self,
         _encoder: &mut CommandEncoder,
@@ -102,6 +105,7 @@ pub trait FramePass {
         Ok(())
     }
 
+    /// Runs inside the shared pass, which owns the load ops; viewport and scissor carry over from earlier draws.
     fn draw(
         &mut self,
         _pass: &mut RenderPass<'_>,
@@ -305,6 +309,7 @@ impl PassSchedule {
         Ok(())
     }
 
+    /// Replaces `record` for Background and Scene and includes the frame clear.
     pub fn record_scene(
         &mut self,
         encoder: &mut CommandEncoder,
@@ -408,6 +413,7 @@ impl PassSchedule {
             });
             outcome?;
         }
+        // Timestamps resolve only at render pass boundaries, so members share one GPU slot.
         let slot = timer
             .as_mut()
             .and_then(|timer| timer.open(encoder, SCENE_PASS));
@@ -634,6 +640,7 @@ impl Plan {
         } else {
             LoadOp::Clear(self.depth_clear)
         };
+        // Only a sharing pass is held to its depth_read declaration.
         let kept = passes[end..].iter().enumerate().any(|(offset, pass)| {
             end + offset >= self.scene_end
                 || !self.joins(pass.as_ref())

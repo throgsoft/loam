@@ -1441,7 +1441,7 @@ struct Fragment {
             .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
         let start = Instant::now();
-        let expected_sections = ["present-clear", "triangles", "present-draw", "probe"];
+        let expected_sections = ["scene-pass", "triangles", "present-draw", "probe"];
 
         run_at(&mut frame, &gpu, &texture, start);
         assert_eq!(
