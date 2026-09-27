@@ -298,8 +298,16 @@ impl Default for Records {
 
 impl Records {
     pub fn publish<A: Stores>(&mut self, session: &mut Session<A>) -> Result<Stamp, PublishError> {
+        self.publish_at(session, 1.0)
+    }
+
+    pub fn publish_at<A: Stores>(
+        &mut self,
+        session: &mut Session<A>,
+        alpha: f32,
+    ) -> Result<Stamp, PublishError> {
         let buffer = self.idle.as_mut().ok_or(PublishError::Borrowed)?;
-        session.publish(buffer)?;
+        session.publish_at(buffer, alpha)?;
         Ok(buffer.stamp)
     }
 
@@ -852,15 +860,31 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             dt,
         };
-        for index in 0..self.phases.entries(Phase::Simulation).len() {
-            self.run_entry(Phase::Simulation, index, step)?;
+        for domain in self.domains.iter_mut() {
+            domain.begin_tick();
         }
+        let mut stepped = Ok(());
+        for index in 0..self.phases.entries(Phase::Simulation).len() {
+            stepped = self.run_entry(Phase::Simulation, index, step);
+            if stepped.is_err() {
+                break;
+            }
+        }
+        for domain in self.domains.iter_mut() {
+            domain.end_tick();
+        }
+        stepped?;
         self.tick = Tick(self.tick.0 + 1);
         self.unfinished = None;
         Ok(())
     }
 
     pub fn publish(&mut self, into: &mut Publication) -> Result<(), PhaseError> {
+        self.publish_at(into, 1.0)
+    }
+
+    /// Draws each pose `alpha` of the way from where it stood before the last tick to where it stands now.
+    pub fn publish_at(&mut self, into: &mut Publication, alpha: f32) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
@@ -871,6 +895,9 @@ impl<A: Stores> Session<A> {
         self.unfinished = Some(Phase::Publication);
         self.run_phase(Phase::Publication, step)?;
         self.domains.synchronize();
+        for domain in self.domains.iter_mut() {
+            domain.collect_moving();
+        }
         let scene = self.scene();
         if into.source != Some(scene) {
             *into = Publication::default();
@@ -908,7 +935,13 @@ impl<A: Stores> Session<A> {
                         ),
                     }
                     into.views[count].placement = placement;
-                    domain.publish(target.view, library, &mut into.views[count].records, stamp)?;
+                    domain.publish(
+                        target.view,
+                        library,
+                        &mut into.views[count].records,
+                        stamp,
+                        alpha,
+                    )?;
                     count += 1;
                 }
             }

@@ -938,6 +938,7 @@ pub struct ViewRecords {
     pub(crate) attachments: Cursor,
     pub(crate) revision: u32,
     pub(crate) built: Stamp,
+    pub(crate) alpha: f32,
 }
 
 impl ViewRecords {

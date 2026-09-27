@@ -517,6 +517,11 @@ impl<T> Store<T> {
         self.dense_index(entity).is_some()
     }
 
+    pub(crate) fn dense_versions(&self) -> Option<(&[EntityKey], &[Version])> {
+        let tracking = self.tracking.as_ref()?;
+        Some((&self.keys, &tracking.versions))
+    }
+
     /// Stable between structural boundaries and meaningless across them.
     pub fn dense_index(&self, entity: Entity) -> Option<usize> {
         if entity.scene() != self.scene {

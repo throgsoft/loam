@@ -14,8 +14,8 @@ use loam_math::blended::{
 };
 use loam_math::hyperbolic::{in_poincare_ball, poincare_to_hyperboloid};
 use loam_math::{
-    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Mat3, Rotor4,
-    Space, WPlane,
+    Bivector, EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, Iso3H, Iso4Flat, IsometryGroup, Mat3,
+    Rotor, Rotor4, Space, WPlane,
 };
 use loam_shape::polytope::{
     polytope_section_faces_append, polytope_section_perimeter_append, Polytope4,
@@ -30,7 +30,9 @@ use crate::phase::Step;
 use crate::session::{
     Library, MaterialId, PaletteId, PreparedGeometry, PreparedId, RestoreError, Stamp,
 };
-use crate::store::{Change, LogCapacity, Owner, Store, StoreError, StoreField, StoreSnapshot};
+use crate::store::{
+    Change, LogCapacity, Owner, Store, StoreError, StoreField, StoreSnapshot, Version,
+};
 use crate::view::{
     self, DomainRay, EntityOutput, ImageRay, ImageSpaceId, InstanceRecord, Pick, RefusalSource,
     Rigid, SegmentRecord, TriangleRecord, Vec3, Vec4, ViewId, ViewMapping, ViewRecords,
@@ -300,6 +302,9 @@ pub trait DomainSpace:
     }
 
     fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose;
+
+    /// The pose drawn a fraction `t` of the way through a tick that moved `from` to `to`.
+    fn blend(&self, from: &Pose<Self>, to: &Pose<Self>, t: f32) -> Pose<Self>;
 
     fn pose_from_chart(&self, pose: &ChartPose) -> Result<Pose<Self>, DomainError>;
 
@@ -581,6 +586,15 @@ impl DomainSpace for EuclideanR4 {
         Vec4::from_array(coordinates)
     }
 
+    // Geodesic R0 exp(t log(R0^-1 R1)), the SO(4) slerp (Shoemake 1985, section 3).
+    fn blend(&self, from: &Pose<Self>, to: &Pose<Self>, t: f32) -> Pose<Self> {
+        let relative = from.frame.inverse() * to.frame;
+        Pose {
+            point: from.point.lerp(to.point, t),
+            frame: from.frame * (relative.log() * t).exp(),
+        }
+    }
+
     fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose {
         ChartPose {
             chart: ChartId(0),
@@ -674,6 +688,11 @@ impl DomainSpace for HyperbolicH3 {
 
     fn local_point(&self, coordinates: [f32; 4]) -> Self::Point {
         Vec3::from_slice(&coordinates[..3])
+    }
+
+    // An Iso3H frame has no geodesic blend yet, so H3 draws each tick's pose until it does.
+    fn blend(&self, _from: &Pose<Self>, to: &Pose<Self>, _t: f32) -> Pose<Self> {
+        *to
     }
 
     fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose {
@@ -791,6 +810,13 @@ impl DomainSpace for EuclideanR3 {
         Vec3::from_slice(&coordinates[..3])
     }
 
+    fn blend(&self, from: &Pose<Self>, to: &Pose<Self>, t: f32) -> Pose<Self> {
+        Pose {
+            point: from.point.lerp(to.point, t),
+            frame: from.frame.slerp(to.frame, t),
+        }
+    }
+
     fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose {
         ChartPose {
             chart: ChartId(0),
@@ -900,6 +926,11 @@ where
 
     fn local_point(&self, coordinates: [f32; 4]) -> Self::Point {
         Vec3::from_slice(&coordinates[..3])
+    }
+
+    // A Mat3 frame has no geodesic blend yet, so blended spaces draw each tick's pose until it does.
+    fn blend(&self, _from: &Pose<Self>, to: &Pose<Self>, _t: f32) -> Pose<Self> {
+        *to
     }
 
     fn chart_pose(&self, pose: &Pose<Self>) -> ChartPose {
@@ -1654,6 +1685,7 @@ pub(crate) trait DomainOwner: Domain {
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
+        alpha: f32,
     ) -> Result<(), DomainError>;
 
     fn step(&mut self, step: Step) -> Result<(), DomainError>;
@@ -1671,6 +1703,12 @@ pub(crate) trait DomainOwner: Domain {
     fn restore(&mut self, from: &DomainSnapshot, scene: SceneId) -> Result<(), RestoreError>;
 
     fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection>;
+
+    fn begin_tick(&mut self);
+
+    fn end_tick(&mut self);
+
+    fn collect_moving(&mut self);
 }
 
 pub struct TypedDomain<S: DomainSpace> {
@@ -1687,6 +1725,11 @@ pub struct TypedDomain<S: DomainSpace> {
     view_stamps: Vec<ViewStyle<S>>,
     pub(crate) facilities: Vec<Box<dyn Facility<S>>>,
     compiler: FieldCompiler,
+    before_tick: Vec<(Entity, Pose<S>, Option<Version>)>,
+    moving: Vec<Entity>,
+    stopped: Vec<Entity>,
+    ticked: bool,
+    ticking: bool,
 }
 
 impl<S: DomainSpace> TypedDomain<S> {
@@ -1746,9 +1789,61 @@ impl<S: DomainSpace> TypedDomain<S> {
         put_row(fields, entity, field)
     }
 
+    /// Inside a tick the move is drawn blended across that tick; outside one it is drawn at once.
     pub fn set_pose(&mut self, entity: Entity, pose: Pose<S>) -> Result<(), DomainError> {
         self.check_pose(&pose)?;
-        self.apply_pose(entity, pose)
+        self.apply_pose(entity, pose)?;
+        if !self.ticking {
+            self.snap(entity);
+        }
+        Ok(())
+    }
+
+    /// Moves without drawing the poses in between, for a jump such as a respawn.
+    pub fn teleport(&mut self, entity: Entity, pose: Pose<S>) -> Result<(), DomainError> {
+        self.check_pose(&pose)?;
+        self.apply_pose(entity, pose)?;
+        self.snap(entity);
+        Ok(())
+    }
+
+    fn snap(&mut self, entity: Entity) {
+        let Some(pose) = self.poses.get(entity).copied() else {
+            return;
+        };
+        let dense = self.poses.dense_index(entity);
+        if let Some(entry) = dense
+            .and_then(|dense| self.before_tick.get_mut(dense))
+            .filter(|entry| entry.0 == entity)
+        {
+            entry.1 = pose;
+        }
+    }
+
+    #[inline]
+    fn drawn(&self, entity: Entity, alpha: f32) -> Option<Pose<S>> {
+        let pose = *self.poses.get(entity)?;
+        if alpha >= 1.0 {
+            return Some(pose);
+        }
+        Some(self.blended(entity, pose, alpha))
+    }
+
+    #[inline(never)]
+    fn blended(&self, entity: Entity, pose: Pose<S>, alpha: f32) -> Pose<S> {
+        let before = self
+            .poses
+            .dense_index(entity)
+            .and_then(|dense| self.before_tick.get(dense))
+            .filter(|entry| entry.0 == entity);
+        match before {
+            Some((_, from, version))
+                if version.is_none() || *version != self.poses.version(entity) =>
+            {
+                self.space.blend(from, &pose, alpha)
+            }
+            _ => pose,
+        }
     }
 
     fn apply_pose(&mut self, entity: Entity, pose: Pose<S>) -> Result<(), DomainError> {
@@ -1870,6 +1965,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
+        alpha: f32,
     ) {
         let ViewRecords {
             instances,
@@ -1885,7 +1981,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         triangles.clear();
         *refusals = ViewRefusals::default();
         output.clear();
-        let eye = match self.poses.get(spec.eye) {
+        let eye = match self.drawn(spec.eye, alpha) {
             Some(eye) if spec.style.enabled => eye,
             _ => {
                 instances.replace(std::iter::empty(), stamp);
@@ -1896,7 +1992,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         let projection = ViewProjection {
             space: &self.space,
             spec,
-            eye,
+            eye: &eye,
         };
         for (entity, instance) in self.instances.iter() {
             if spec.subject.is_some_and(|subject| subject != entity) {
@@ -1904,10 +2000,10 @@ impl<S: DomainSpace> TypedDomain<S> {
             }
             let section_start = segments.len();
             let triangle_start = triangles.len();
-            if let Some(pose) = self.poses.get(entity) {
+            if let Some(pose) = self.drawn(entity, alpha) {
                 if spec.style.section_edges || spec.style.section_faces {
                     if let Err(error) = projection
-                        .push_section(pose, &library, instance, scratch, segments, triangles)
+                        .push_section(&pose, &library, instance, scratch, segments, triangles)
                     {
                         refusals.record(entity, error, RefusalSource::Section);
                     }
@@ -1929,9 +2025,9 @@ impl<S: DomainSpace> TypedDomain<S> {
             .filter_map(|((entity, instance), cached)| {
                 let line_start = segments.len();
                 let mut record_refusals = ViewRefusals::default();
-                let record = self.poses.get(entity).and_then(|pose| {
+                let record = self.drawn(entity, alpha).and_then(|pose| {
                     projection.project_instance(
-                        pose,
+                        &pose,
                         &library,
                         instance,
                         entity,
@@ -1960,14 +2056,15 @@ impl<S: DomainSpace> TypedDomain<S> {
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
+        alpha: f32,
     ) -> bool {
-        let Some(eye) = self.poses.get(spec.eye) else {
+        let Some(eye) = self.drawn(spec.eye, alpha) else {
             return false;
         };
         let projection = ViewProjection {
             space: &self.space,
             spec,
-            eye,
+            eye: &eye,
         };
         let ViewRecords {
             instances,
@@ -1989,7 +2086,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             let Some(instance) = self.instances.get(entity) else {
                 continue;
             };
-            let Some(pose) = self.poses.get(entity) else {
+            let Some(pose) = self.drawn(entity, alpha) else {
                 return false;
             };
             let Some(cached) = output.get(entity).cloned() else {
@@ -2000,7 +2097,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             let mut section_refusals = ViewRefusals::default();
             if spec.style.section_edges || spec.style.section_faces {
                 if let Err(error) = projection.push_section(
-                    pose,
+                    &pose,
                     &library,
                     instance,
                     scratch,
@@ -2022,7 +2119,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             patch_segments.clear();
             let mut record_refusals = ViewRefusals::default();
             let record = projection.project_instance(
-                pose,
+                &pose,
                 &library,
                 instance,
                 entity,
@@ -2304,6 +2401,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
+        alpha: f32,
     ) -> Result<(), DomainError> {
         let spec = self
             .views
@@ -2324,6 +2422,13 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
                 Change::Removed(_) => pose_removed = true,
             }
         }
+        if alpha != into.alpha || !self.stopped.is_empty() {
+            into.changed.extend_from_slice(&self.moving);
+            into.changed.extend_from_slice(&self.stopped);
+            into.changed.sort_unstable();
+            into.changed.dedup();
+        }
+        into.alpha = alpha;
         let mut attachment_cursor = into.attachments;
         let mut attachment_changes = self.instances.changes(&mut attachment_cursor);
         let attachment_resync = attachment_changes.is_resync();
@@ -2339,7 +2444,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
                 into.instances.restamp(stamp);
                 true
             } else if spec.style.enabled && into.refusals.count == 0 {
-                self.patch_view(spec, library, into, stamp)
+                self.patch_view(spec, library, into, stamp, alpha)
             } else {
                 false
             };
@@ -2352,7 +2457,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         self.poses.catch_up(&mut into.poses);
         self.instances.catch_up(&mut into.attachments);
         into.revision = revision;
-        self.rebuild_view(spec, library, into, stamp);
+        self.rebuild_view(spec, library, into, stamp, alpha);
         Ok(())
     }
 
@@ -2444,6 +2549,9 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
             facility.bind(scene, Owner::new());
         }
         self.scene = scene;
+        self.before_tick.clear();
+        self.moving.clear();
+        self.stopped.clear();
         StoreField::restore(&mut self.poses, &from.poses, scene, Owner::new());
         StoreField::restore(&mut self.instances, &from.instances, scene, Owner::new());
         if let (Some(fields), Some(snapshot)) = (&mut self.fields, &from.fields) {
@@ -2483,6 +2591,53 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         self.view_stamps = self.views.iter().map(|view| view.style.clone()).collect();
         self.compiler.invalidate();
         Ok(())
+    }
+
+    fn begin_tick(&mut self) {
+        let poses = &self.poses;
+        self.before_tick.clear();
+        match poses.dense_versions() {
+            Some((_, versions)) => self.before_tick.extend(
+                poses
+                    .iter()
+                    .zip(versions)
+                    .map(|((entity, pose), version)| (entity, *pose, Some(*version))),
+            ),
+            None => self
+                .before_tick
+                .extend(poses.iter().map(|(entity, pose)| (entity, *pose, None))),
+        }
+        self.ticked = true;
+        self.ticking = true;
+    }
+
+    fn end_tick(&mut self) {
+        self.ticking = false;
+    }
+
+    fn collect_moving(&mut self) {
+        self.stopped.clear();
+        if !std::mem::take(&mut self.ticked) {
+            return;
+        }
+        self.stopped.append(&mut self.moving);
+        let poses = &self.poses;
+        let dense = poses.dense_versions();
+        self.moving.extend(
+            self.before_tick
+                .iter()
+                .enumerate()
+                .filter(|(index, (entity, _, version))| {
+                    let now = match dense {
+                        Some((keys, versions)) if keys.get(*index) == Some(&entity.key()) => {
+                            versions.get(*index).copied()
+                        }
+                        _ => poses.version(*entity),
+                    };
+                    version.is_none() || now != *version
+                })
+                .map(|(_, (entity, ..))| *entity),
+        );
     }
 
     fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection> {
@@ -2598,6 +2753,11 @@ impl<S: DomainSpace> DomainBuilder<S> {
             view_stamps: Vec::new(),
             facilities,
             compiler: FieldCompiler::new(),
+            before_tick: Vec::new(),
+            moving: Vec::new(),
+            stopped: Vec::new(),
+            ticked: false,
+            ticking: false,
         }
     }
 }
@@ -2772,6 +2932,7 @@ mod tests {
 
     use super::*;
     use crate::command::SpawnBundle;
+    use crate::phase::{Ctx, Phase, Tick};
     use crate::session::{Material, Publication, Session, SimConfig};
     use crate::store::LogCapacity;
     use crate::view::{Projection4, Section4};
@@ -2795,6 +2956,111 @@ mod tests {
                     [[x, 0.0, 0.0, 0.0], [-x, 0.0, 0.0, 0.0]]
                 })
                 .collect(),
+        }
+    }
+
+    fn drawn_session(
+        step: fn(Tick) -> Option<(f32, bool)>,
+    ) -> (Session<Probe>, DomainHandle<EuclideanR4>, Entity) {
+        let mut session = Session::new(Probe::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let prepared = session.prepare(lines());
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        let mover = session.dispatch(|dispatch| {
+            let eye = dispatch
+                .spawn(SpawnBundle::new().at(r4, Pose::at(EYE_AT)))
+                .unwrap();
+            let mover = dispatch
+                .spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose::at(OBJECT_AT))
+                        .instance(Instance::new(prepared, material)),
+                )
+                .unwrap();
+            dispatch
+                .domains
+                .typed(r4)
+                .unwrap()
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .unwrap();
+            mover
+        });
+        session.system(
+            Phase::Simulation,
+            "move",
+            move |ctx: Ctx<'_, Probe>| -> Result<(), DomainError> {
+                let Some((x, teleport)) = step(ctx.step.tick) else {
+                    return Ok(());
+                };
+                let domain = ctx.domains.typed(r4)?;
+                let pose = Pose::at(OBJECT_AT + Vec4::X * x);
+                if teleport {
+                    domain.teleport(mover, pose)
+                } else {
+                    domain.set_pose(mover, pose)
+                }
+            },
+        );
+        (session, r4, mover)
+    }
+
+    fn drawn_x(session: &mut Session<Probe>, publication: &mut Publication, alpha: f32) -> f32 {
+        session.publish_at(publication, alpha).unwrap();
+        publication.views[0].records.instances.rows()[0]
+            .pose
+            .coordinates[0]
+            - OBJECT_AT.x
+    }
+
+    #[test]
+    fn a_moving_body_is_drawn_between_its_last_two_ticks() {
+        let (mut session, _, _) = drawn_session(|tick| Some((tick.0 as f32 + 1.0, false)));
+        let mut publication = Publication::default();
+        session.tick().unwrap();
+        assert_eq!(drawn_x(&mut session, &mut publication, 0.25), 0.25);
+        assert_eq!(drawn_x(&mut session, &mut publication, 0.75), 0.75);
+        assert_eq!(drawn_x(&mut session, &mut publication, 1.0), 1.0);
+        session.tick().unwrap();
+        assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 1.5);
+    }
+
+    #[test]
+    fn jumps_are_drawn_at_their_destination_not_streaked_across_the_tick() {
+        let (mut session, r4, mover) = drawn_session(|_| Some((10.0, true)));
+        let mut publication = Publication::default();
+        session.tick().unwrap();
+        assert_eq!(drawn_x(&mut session, &mut publication, 0.25), 10.0);
+        session
+            .domains_mut()
+            .typed(r4)
+            .unwrap()
+            .set_pose(mover, Pose::at(OBJECT_AT + Vec4::X * 5.0))
+            .unwrap();
+        assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 5.0);
+    }
+
+    #[test]
+    fn a_body_that_stops_is_redrawn_at_rest_after_the_next_tick() {
+        let (mut session, _, _) = drawn_session(|tick| (tick.0 == 0).then_some((1.0, false)));
+        let mut publication = Publication::default();
+        session.tick().unwrap();
+        assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 0.5);
+        session.tick().unwrap();
+        assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 1.0);
+    }
+
+    #[test]
+    fn a_still_world_never_rebuilds_its_view_between_ticks() {
+        let (mut session, _, _) = drawn_session(|_| None);
+        let mut publication = Publication::default();
+        session.publish(&mut publication).unwrap();
+        let built = publication.views[0].records.built;
+        for alpha in [0.2, 0.6, 0.9] {
+            session.tick().unwrap();
+            drawn_x(&mut session, &mut publication, alpha);
+            assert_eq!(publication.views[0].records.built, built);
         }
     }
 
