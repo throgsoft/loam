@@ -40,6 +40,7 @@ pub struct FrameHook<'a, A: Stores> {
     pub(crate) cursor: &'a mut CursorCapture,
     pub(crate) background: &'a mut wgpu::Color,
     pub(crate) posts: &'a mut Posts,
+    pub(crate) redraw: &'a mut bool,
 }
 
 impl<A: Stores> FrameHook<'_, A> {
@@ -60,6 +61,17 @@ impl<A: Stores> FrameHook<'_, A> {
     pub fn post(&mut self, topic: &'static str, values: &[f32]) {
         self.posts.push(topic, values);
     }
+
+    pub fn request_redraw(&mut self) {
+        *self.redraw = true;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Redraw {
+    #[default]
+    EveryFrame,
+    OnChange,
 }
 
 #[derive(Default)]
@@ -161,6 +173,7 @@ pub struct SessionApp<A: Stores> {
     pub(crate) console: SessionConsole<A>,
     pub(crate) captures: Vec<CaptureRequest>,
     pub(crate) background: wgpu::Color,
+    pub(crate) redraw: Redraw,
     #[cfg(feature = "egui")]
     pub(crate) debug_layer: bool,
     pub(crate) script: Option<ScriptDriver>,
@@ -187,6 +200,7 @@ impl<A: Stores> SessionApp<A> {
             console,
             captures: Vec::new(),
             background: DEFAULT_BACKGROUND,
+            redraw: Redraw::default(),
             #[cfg(feature = "egui")]
             debug_layer: true,
             script: None,
@@ -279,6 +293,11 @@ impl<A: Stores> SessionApp<A> {
     /// Linear light; the present clear shows wherever no Background pass paints.
     pub fn background(mut self, rgb: [f32; 3]) -> Self {
         self.background = background_color(rgb);
+        self
+    }
+
+    pub fn redraw(mut self, policy: Redraw) -> Self {
+        self.redraw = policy;
         self
     }
 

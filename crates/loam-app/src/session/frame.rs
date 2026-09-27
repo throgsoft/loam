@@ -15,7 +15,7 @@ use loam_runtime::host::HostError;
 use loam_runtime::{Eye, Publication, PublishError, Records, Session, Stores};
 use loam_time::{frame_trace, FixedTimestep};
 
-use super::app::{CaptureControl, FrameHook, InputHook, Posts, SessionApp};
+use super::app::{CaptureControl, FrameHook, InputHook, Posts, Redraw, SessionApp};
 use super::cursor::CursorCapture;
 #[cfg(feature = "egui")]
 use super::debug_layer::DebugLayer;
@@ -32,6 +32,18 @@ pub(crate) fn failed(error: impl std::fmt::Display) -> HostError {
     HostError::Host(error.to_string())
 }
 
+#[derive(Clone, Copy, Default, PartialEq)]
+struct Shown {
+    content: u64,
+    eye: Eye,
+    size: (u32, u32),
+    background: wgpu::Color,
+}
+
+fn redraws(policy: Redraw, drawn: Option<&Shown>, next: &Shown, forced: bool) -> bool {
+    policy == Redraw::EveryFrame || forced || drawn != Some(next)
+}
+
 struct Inner<A: Stores> {
     session: Session<A>,
     records: Records,
@@ -42,6 +54,8 @@ struct Inner<A: Stores> {
     app: SessionApp<A>,
     posts: Posts,
     no_views_reported: bool,
+    shown: Shown,
+    drawn: Option<Shown>,
     #[cfg(test)]
     presented: Option<Eye>,
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
@@ -53,6 +67,7 @@ pub(crate) struct Frame<A: Stores> {
     #[cfg(feature = "egui")]
     layer: Option<DebugLayer>,
     inner: Inner<A>,
+    trace: Option<frame_trace::Scope>,
 }
 
 impl<A: Stores> Frame<A> {
@@ -76,12 +91,23 @@ impl<A: Stores> Frame<A> {
                 app,
                 posts: Posts::default(),
                 no_views_reported: false,
+                shown: Shown::default(),
+                drawn: None,
                 #[cfg(test)]
                 presented: None,
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
                 capture: crate::capture::Capture::new(),
             },
+            trace: None,
         })
+    }
+
+    pub(crate) fn redraw(&self) -> Redraw {
+        self.inner.app.redraw
+    }
+
+    pub(crate) fn invalidate(&mut self) {
+        self.inner.drawn = None;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -227,6 +253,7 @@ impl<A: Stores> Frame<A> {
     }
 
     pub(crate) fn recover(&mut self, gpu: &GpuContext) -> Result<(), HostError> {
+        self.invalidate();
         if let Some(presenter) = self.presenter.as_mut() {
             presenter.attach(gpu).map_err(failed)?;
         }
@@ -234,6 +261,7 @@ impl<A: Stores> Frame<A> {
     }
 
     pub(crate) fn resize(&mut self, width: u32, height: u32, scale: f32) {
+        self.invalidate();
         self.inner.input.resize(width, height, scale);
         #[cfg(feature = "egui")]
         if let Some(layer) = self.layer.as_ref() {
@@ -248,35 +276,68 @@ impl<A: Stores> Frame<A> {
         now: Instant,
         finish: impl FnMut(&mut CommandEncoder),
     ) -> Result<(), HostError> {
+        if self.update(gpu, target.size, now)? {
+            self.draw(gpu, target, now, finish)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn update(
+        &mut self,
+        gpu: &GpuContext,
+        size: (u32, u32),
+        now: Instant,
+    ) -> Result<bool, HostError> {
         self.inner.posts.clear();
-        let outcome = self.stepped(gpu, target, now, finish);
+        self.end_trace();
+        let outcome = self.updated(gpu, size, now);
         if let Err(error) = &outcome {
             tracing::error!("frame failed: {error}");
         }
         outcome
     }
 
-    fn stepped(
+    fn updated(
+        &mut self,
+        gpu: &GpuContext,
+        size: (u32, u32),
+        now: Instant,
+    ) -> Result<bool, HostError> {
+        gpu.device.poll(wgpu::PollType::Poll).map_err(failed)?;
+        if let Some(error) = gpu.take_uncaptured_error() {
+            return Err(failed(error));
+        }
+        let Some(presenter) = self.presenter.as_mut() else {
+            return Ok(false);
+        };
+        if size.0 == 0 || size.1 == 0 {
+            return Ok(false);
+        }
+        frame_trace::begin_frame();
+        self.trace = Some(frame_trace::scope("frame"));
+        let drawn = self.inner.update(
+            gpu,
+            size,
+            now,
+            presenter,
+            #[cfg(feature = "egui")]
+            self.layer.as_ref(),
+        );
+        if !matches!(drawn, Ok(true)) {
+            self.end_trace();
+        }
+        drawn
+    }
+
+    pub(crate) fn draw(
         &mut self,
         gpu: &GpuContext,
         target: &Target<'_>,
         now: Instant,
         finish: impl FnMut(&mut CommandEncoder),
     ) -> Result<(), HostError> {
-        gpu.device.poll(wgpu::PollType::Poll).map_err(failed)?;
-        if let Some(error) = gpu.take_uncaptured_error() {
-            return Err(failed(error));
-        }
-        let Some(presenter) = self.presenter.as_mut() else {
-            return Ok(());
-        };
-        if target.size.0 == 0 || target.size.1 == 0 {
-            return Ok(());
-        }
-        frame_trace::begin_frame();
-        let outcome = {
-            let _frame = frame_trace::scope("frame");
-            self.inner.drive(
+        let outcome = match self.presenter.as_mut() {
+            Some(presenter) => self.inner.draw(
                 gpu,
                 target,
                 now,
@@ -284,10 +345,21 @@ impl<A: Stores> Frame<A> {
                 presenter,
                 #[cfg(feature = "egui")]
                 self.layer.as_ref(),
-            )
+            ),
+            None => Ok(()),
         };
-        frame_trace::end_frame();
+        self.end_trace();
+        if let Err(error) = &outcome {
+            tracing::error!("frame failed: {error}");
+        }
         outcome
+    }
+
+    fn end_trace(&mut self) {
+        if self.trace.is_some() {
+            self.trace = None;
+            frame_trace::end_frame();
+        }
     }
 }
 
@@ -406,25 +478,25 @@ impl<A: Stores> Inner<A> {
         Ok((records, eye))
     }
 
-    fn drive(
+    fn update(
         &mut self,
         gpu: &GpuContext,
-        target: &Target<'_>,
+        size: (u32, u32),
         now: Instant,
-        mut finish: impl FnMut(&mut CommandEncoder),
         presenter: &mut Presenter,
         #[cfg(feature = "egui")] layer: Option<&DebugLayer>,
-    ) -> Result<(), HostError> {
+    ) -> Result<bool, HostError> {
         #[cfg(feature = "egui")]
         let context = layer.map(DebugLayer::begin);
         let faulted_before = self.session.faulted_phase();
         let scene_before = self.session.scene();
         let prepared = self.prepare(
             now,
-            target.size,
+            size,
             #[cfg(feature = "egui")]
             context.as_ref(),
         );
+        let mut requested = false;
         let terminal = match prepared {
             Ok((records, eye)) => {
                 {
@@ -444,12 +516,13 @@ impl<A: Stores> Inner<A> {
                             sections: presenter.sections(),
                             #[cfg(feature = "egui")]
                             ui: context.as_ref(),
-                            size: target.size,
+                            size,
                             sender: &sender,
                             capture: CaptureControl::new(captures),
                             cursor,
                             background,
                             posts,
+                            redraw: &mut requested,
                         });
                     }
                 }
@@ -462,9 +535,11 @@ impl<A: Stores> Inner<A> {
                     &gpu.device,
                     &gpu.queue,
                     &eye,
-                    Vec2::new(target.size.0 as f32, target.size.1 as f32),
+                    Vec2::new(size.0 as f32, size.1 as f32),
                     &records.views,
                 );
+                self.shown.content = records.content();
+                self.shown.eye = eye;
                 self.records.release(records);
                 None
             }
@@ -487,7 +562,7 @@ impl<A: Stores> Inner<A> {
         if let Some(driver) = self.app.script.as_mut() {
             driver.advance_console(&mut self.app.console);
         }
-        self.app.console.dispatch_pending();
+        let dispatched = self.app.console.dispatch_pending();
         #[cfg(feature = "egui")]
         if let Some(layer) = layer {
             layer.finish();
@@ -495,7 +570,39 @@ impl<A: Stores> Inner<A> {
         if let Some(error) = terminal {
             return Err(error);
         }
+        #[cfg(feature = "egui")]
+        let layered = layer.is_some();
+        #[cfg(not(feature = "egui"))]
+        let layered = false;
+        #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+        let capturing = !self.app.captures.is_empty() || self.capture.should_capture(now);
+        #[cfg(not(all(feature = "capture", not(target_arch = "wasm32"))))]
+        let capturing = false;
+        self.shown.size = size;
+        self.shown.background = self.app.background;
+        let draw = redraws(
+            self.app.redraw,
+            self.drawn.as_ref(),
+            &self.shown,
+            requested || dispatched || layered || capturing,
+        );
+        if draw {
+            self.drawn = None;
+        }
+        Ok(draw)
+    }
 
+    fn draw(
+        &mut self,
+        gpu: &GpuContext,
+        target: &Target<'_>,
+        now: Instant,
+        mut finish: impl FnMut(&mut CommandEncoder),
+        presenter: &mut Presenter,
+        #[cfg(feature = "egui")] layer: Option<&DebugLayer>,
+    ) -> Result<(), HostError> {
+        #[cfg(not(all(feature = "capture", not(target_arch = "wasm32"))))]
+        let _ = now;
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         let (wants_pre, wants_post) = self.capture_intent(now);
         let mut encoder = gpu
@@ -537,6 +644,7 @@ impl<A: Stores> Inner<A> {
         crate::trace::record_presentation(presenter.sections(), presenter.uploads());
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         self.consume_capture(&gpu.device, now, pre, post);
+        self.drawn = Some(self.shown);
         Ok(())
     }
 
@@ -843,6 +951,126 @@ fn fragment() -> @location(0) vec4<f32> {{
         frame
             .step(gpu, &target, now, |_| {})
             .expect("the frame stepped");
+    }
+
+    fn world(moves: bool) -> Session<Bare> {
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        let r3 = session
+            .register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Lines3 {
+            segments: vec![[[0.0; 3], [1.0, 0.0, 0.0]]],
+        });
+        let material = session.add_material(Material::lines([1.0; 4], 1.0));
+        let root = session.views().root();
+        let body = session
+            .dispatch(|dispatch| {
+                let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::Z * 4.0)))?;
+                dispatch
+                    .domains
+                    .typed(r3)?
+                    .add_view(ViewSpec::new(root, eye, Identity3))?;
+                dispatch.spawn(
+                    SpawnBundle::new()
+                        .at(r3, Pose::at(Vec3::ZERO))
+                        .instance(loam_runtime::Instance::new(geometry, material)),
+                )
+            })
+            .expect("the world spawned");
+        session.system(
+            Phase::Simulation,
+            "drift",
+            move |ctx: loam_runtime::Ctx<'_, Bare>| -> Result<(), loam_runtime::DomainError> {
+                if moves {
+                    let x = (ctx.step.tick.0 + 1) as f32;
+                    ctx.domains
+                        .typed(r3)?
+                        .set_pose(body, Pose::at(Vec3::X * x))?;
+                }
+                Ok(())
+            },
+        );
+        session
+    }
+
+    fn on_change(
+        session: Session<Bare>,
+        app: SessionApp<Bare>,
+        gpu: &GpuContext,
+    ) -> (Frame<Bare>, Arc<AtomicU32>) {
+        let recorded = Arc::new(AtomicU32::new(0));
+        let app = app.redraw(Redraw::OnChange).pass(Box::new(Probe {
+            recorded: recorded.clone(),
+            rebuilt: Arc::new(AtomicU32::new(0)),
+        }));
+        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
+        frame
+            .attach(gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        (frame, recorded)
+    }
+
+    #[test]
+    fn a_still_world_under_on_change_skips_the_draw_after_the_first_frame() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let hooked = Arc::new(AtomicU32::new(0));
+        let hooks = hooked.clone();
+        let app = host("still").on_frame(move |_| {
+            hooks.fetch_add(1, Ordering::Relaxed);
+        });
+        let (mut frame, recorded) = on_change(world(false), app, &gpu);
+        let start = Instant::now();
+        for millis in [0, 20, 25] {
+            run_at(
+                &mut frame,
+                &gpu,
+                &texture,
+                start + Duration::from_millis(millis),
+            );
+        }
+        assert_eq!(recorded.load(Ordering::Relaxed), 1);
+        assert_eq!(hooked.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn a_frame_whose_publish_patched_a_moving_body_is_drawn() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let (mut frame, recorded) = on_change(world(true), host("moving"), &gpu);
+        let start = Instant::now();
+        for millis in [0, 20, 25] {
+            run_at(
+                &mut frame,
+                &gpu,
+                &texture,
+                start + Duration::from_millis(millis),
+            );
+        }
+        assert_eq!(recorded.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn a_scale_change_redraws_a_frame_whose_content_is_unchanged() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let (mut frame, recorded) = on_change(world(false), host("scale"), &gpu);
+        let start = Instant::now();
+        run_at(&mut frame, &gpu, &texture, start);
+        run_at(
+            &mut frame,
+            &gpu,
+            &texture,
+            start + Duration::from_millis(20),
+        );
+        assert_eq!(recorded.load(Ordering::Relaxed), 1);
+        frame.resize(SIZE.0, SIZE.1, 2.0);
+        run_at(
+            &mut frame,
+            &gpu,
+            &texture,
+            start + Duration::from_millis(25),
+        );
+        assert_eq!(recorded.load(Ordering::Relaxed), 2);
     }
 
     #[test]

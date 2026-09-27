@@ -231,14 +231,17 @@ impl<A: Stores> SessionConsole<A> {
         }
     }
 
-    pub fn dispatch_pending(&mut self) {
-        for line in self.console.drain_pending() {
+    pub fn dispatch_pending(&mut self) -> bool {
+        let lines = self.console.drain_pending();
+        let dispatched = !lines.is_empty();
+        for line in lines {
             let Some(parsed) = CommandLine::parse(&line) else {
                 continue;
             };
             self.console
                 .dispatch(&parsed.name, &parsed.arg_refs(), &mut self.submit);
         }
+        dispatched
     }
 }
 
