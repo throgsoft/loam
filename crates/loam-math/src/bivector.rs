@@ -684,21 +684,39 @@ impl Rotor4 {
 const ARC_PLANE_EPSILON: f32 = 1e-6;
 const ROTATION_TOLERANCE: f32 = 1e-3;
 
+// The plane is built orthogonal to `held`, since from ^ to is rounding noise near an antipode.
 fn arc_holding(from: Vec4, to: Vec4, held: &[Vec4]) -> Rotor4 {
-    if Bivector4::wedge(from, to).magnitude() >= ARC_PLANE_EPSILON || from.dot(to) > 0.0 {
-        return Rotor4::from_rotation_arc(from, to);
-    }
-    let mut free = Vec4::ZERO;
-    for axis in [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W] {
-        let mut residual = axis - from * axis.dot(from);
+    let toward = beside(to, from, held);
+    let reach = toward.length();
+    let angle = reach.atan2(to.dot(from));
+    let direction = if reach >= ARC_PLANE_EPSILON {
+        toward
+    } else {
+        [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W]
+            .map(|axis| beside(axis, from, held))
+            .into_iter()
+            .fold(Vec4::ZERO, |free, residual| {
+                if residual.length_squared() > free.length_squared() {
+                    residual
+                } else {
+                    free
+                }
+            })
+    };
+    let plane = Bivector4::wedge(from, direction);
+    (plane * (angle / plane.magnitude())).exp().normalize()
+}
+
+// Parlett, The Symmetric Eigenvalue Problem, 1980, §6.9: Gram-Schmidt run twice is enough.
+fn beside(v: Vec4, from: Vec4, held: &[Vec4]) -> Vec4 {
+    let mut residual = v;
+    for _ in 0..2 {
+        residual -= from * (residual.dot(from) / from.length_squared());
         for fixed in held {
             residual -= *fixed * residual.dot(*fixed);
         }
-        if residual.length_squared() > free.length_squared() {
-            free = residual;
-        }
     }
-    (Bivector4::wedge(from, free.normalize()) * std::f32::consts::PI).exp()
+    residual
 }
 
 impl Mul for Rotor4 {
