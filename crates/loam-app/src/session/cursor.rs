@@ -14,6 +14,7 @@ pub(crate) struct CursorCapture {
     alt: [bool; 2],
     focused: bool,
     request: Option<bool>,
+    rig: bool,
 }
 
 impl CursorCapture {
@@ -32,6 +33,14 @@ impl CursorCapture {
             self.set_wanted(enabled && (policy != CursorPolicy::Hold || !self.alt_held()));
         } else if enabled && policy_changed && policy == CursorPolicy::Hold {
             self.set_wanted(!self.alt_held());
+        }
+    }
+
+    // Acts only when the rig's want changes, so a hook's own capture requests in between stand.
+    pub(crate) fn follow_rig(&mut self, wants: bool) {
+        if self.rig != wants {
+            self.rig = wants;
+            self.capture(wants, CursorPolicy::Toggle);
         }
     }
 
@@ -73,6 +82,7 @@ impl CursorCapture {
 
     pub(crate) fn suspend(&mut self) {
         self.enabled = false;
+        self.rig = false;
         self.wanted = false;
         self.request = Some(false);
     }

@@ -500,6 +500,19 @@ impl<A: Stores> Inner<A> {
         let terminal = match prepared {
             Ok((records, eye)) => {
                 {
+                    let root = self.session.views().root();
+                    let free = self
+                        .session
+                        .views()
+                        .get(root)
+                        .is_some_and(|image| image.rig.wants_cursor());
+                    #[cfg(feature = "egui")]
+                    let typing = context
+                        .as_ref()
+                        .is_some_and(|context| context.wants_keyboard_input());
+                    #[cfg(not(feature = "egui"))]
+                    let typing = false;
+                    self.cursor.follow_rig(free && !typing);
                     let sender = self.app.commands.sender();
                     let (hook, captures, cursor, background, posts) = (
                         self.app.frame.as_mut(),

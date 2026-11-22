@@ -9,6 +9,7 @@ use std::fmt;
 use std::ops::{Deref, DerefMut, Range};
 use std::sync::Arc;
 
+use crate::camera::Rig;
 use crate::domain::{ChartPoint, ChartPose, DomainError, DomainId, DomainSpace, Pose};
 use crate::entity::Entity;
 use crate::session::{MaterialId, PreparedId, Stamp};
@@ -115,6 +116,17 @@ impl Default for Eye {
 
 pub struct ImageSpace {
     pub eye: Eye,
+    pub rig: Rig,
+}
+
+impl ImageSpace {
+    /// Takes every field of `eye` except the aspect, which belongs to the surface.
+    pub fn look(&mut self, eye: Eye) {
+        self.eye = Eye {
+            aspect: self.eye.aspect,
+            ..eye
+        };
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -211,6 +223,7 @@ struct Placed {
 #[derive(Clone, Default)]
 pub struct ViewsSnapshot {
     root_eye: Eye,
+    root_rig: Rig,
     placed: Vec<Placed>,
 }
 
@@ -224,6 +237,7 @@ impl Views {
         Self {
             root: ImageSpace {
                 eye: Eye::default(),
+                rig: Rig::Manual,
             },
             placed: Vec::new(),
         }
@@ -355,12 +369,18 @@ impl Views {
     pub(crate) fn snapshot(&self) -> ViewsSnapshot {
         ViewsSnapshot {
             root_eye: self.root.eye,
+            root_rig: self.root.rig,
             placed: self.placed.clone(),
         }
     }
 
     pub(crate) fn restore(&mut self, from: &ViewsSnapshot) {
         self.root.eye = from.root_eye;
+        self.root.rig = from.root_rig;
+        // A snapshot taken before the first boundary holds an eye the rig has not yet written.
+        if let Some(eye) = self.root.rig.eye() {
+            self.root.look(eye);
+        }
         self.placed.clear();
         self.placed.extend_from_slice(&from.placed);
     }

@@ -5,6 +5,7 @@ use loam_shape::polytope::Polytope4Topology;
 use crate::bridge::{
     Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease, VELOCITY_SAMPLES,
 };
+use crate::camera::{self, Rig, CAMERA_RIG, CAMERA_TRAVEL};
 use crate::command::{
     Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
 };
@@ -575,11 +576,25 @@ impl<A: Stores> Session<A> {
         app.bind(scene, Owner::new());
         let mut phases = Phases::new();
         phases.push(
+            Phase::Dispatch,
+            SystemEntry::new(CAMERA_RIG, |ctx: Ctx<'_, A>| {
+                camera::steer(ctx.views, ctx.input);
+                Ok(())
+            }),
+        );
+        phases.push(
             Phase::Simulation,
             SystemEntry::new(DOMAIN_STEP, |ctx: Ctx<'_, A>| {
                 for domain in ctx.domains.iter_mut() {
                     domain.step(ctx.step)?;
                 }
+                Ok(())
+            }),
+        );
+        phases.push(
+            Phase::Simulation,
+            SystemEntry::new(CAMERA_TRAVEL, |ctx: Ctx<'_, A>| {
+                camera::travel(ctx.views, ctx.input, ctx.step.dt);
                 Ok(())
             }),
         );
@@ -662,6 +677,10 @@ impl<A: Stores> Session<A> {
 
     pub fn views_mut(&mut self) -> &mut Views {
         &mut self.views
+    }
+
+    pub fn set_rig(&mut self, rig: Rig) {
+        self.views.root_mut().rig = rig;
     }
 
     pub fn entities(&self) -> &Entities {

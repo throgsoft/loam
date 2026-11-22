@@ -16,7 +16,6 @@ stores! {
     #[derive(Default)]
     pub struct TesseractStores {
         spin: Store<Spin>,
-        camera: Value<Orbit>,
     }
 }
 
@@ -54,12 +53,10 @@ fn build(args: Args) -> Result<(Session<TesseractStores>, SessionApp<TesseractSt
     });
     session.reset_on(RESET);
 
-    let mut orbit = Orbit::around([0.0; 3], 5.0);
-    orbit.pitch = -0.15;
-    session.app.camera.set(orbit);
-    loam::app::session::orbit(&mut session, |app: &mut TesseractStores| {
-        app.camera.get_mut()
-    });
+    session.set_rig(Rig::Orbit(Orbit {
+        pitch: -0.15,
+        ..Orbit::around([0.0; 3], 5.0)
+    }));
 
     session.system(Phase::Simulation, "spin", move |ctx| {
         let r4 = ctx.domains.typed(r4)?;
