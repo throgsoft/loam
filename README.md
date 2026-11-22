@@ -31,19 +31,6 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 Open a new terminal after installation. On macOS, install the command line tools with `xcode-select --install`.
 
-
-
-<details>
-<summary>Ubuntu / Debian build dependencies</summary>
-
-```sh
-sudo apt-get update
-@@ -37,17 +40,14 @@ sudo apt-get install -y build-essential pkg-config libwayland-dev \
-  libxcursor-dev libxrandr-dev
-```
-
-</details>
-
 Clone the repository, then build and run the playground. Rustup installs the toolchain pinned by the project:
 
 ```sh
