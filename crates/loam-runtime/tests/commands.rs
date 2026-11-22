@@ -26,7 +26,7 @@ loam_runtime::stores! {
 
 fn session() -> (Session<Probe>, DomainHandle<EuclideanR4>) {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).untracked());
     (session, r4)
 }
 
@@ -97,12 +97,21 @@ impl Facility<EuclideanR4> for Drift {
     }
 }
 
+const MARKS: [ActionId; 6] = [
+    ActionId("0"),
+    ActionId("1"),
+    ActionId("2"),
+    ActionId("3"),
+    ActionId("4"),
+    ActionId("5"),
+];
+
 fn marks(values: &[u32]) -> Input {
     Input {
         actions: values
             .iter()
             .map(|&value| ActionEvent {
-                action: ActionId(value),
+                action: MARKS[value as usize],
                 pressed: true,
             })
             .collect(),
@@ -113,7 +122,7 @@ fn marks(values: &[u32]) -> Input {
 #[test]
 fn stale_attachments_do_not_claim_recycled_slots() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).untracked());
     let geometry = session.prepare(PreparedGeometry::Lines4 {
         segments: Vec::new(),
     });
@@ -204,7 +213,9 @@ fn commands_reorder_repeat_or_vanish_around_pause_and_catch_up() {
     let (mut session, _) = session();
     session.system(Phase::Dispatch, "marks", |ctx: Ctx<'_, Probe>| {
         for event in &ctx.input.actions {
-            ctx.commands.app(Mark(event.action.0));
+            if let Some(value) = MARKS.iter().position(|&mark| mark == event.action) {
+                ctx.commands.app(Mark(value as u32));
+            }
         }
         Ok(())
     });
@@ -329,7 +340,11 @@ fn a_spawn_is_live_at_once_through_dispatch_and_a_reserved_one_only_after_its_bo
 #[test]
 fn system_after_the_domain_step_does_not_see_the_steps_writes() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).facility(Drift));
+    let r4 = session.register_domain(
+        DomainBuilder::new("r4", EuclideanR4)
+            .untracked()
+            .facility(Drift),
+    );
     let walker = session
         .dispatch(|d| d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO))))
         .unwrap();

@@ -69,7 +69,8 @@ fn run<A: Stores>(
     args: Args,
     factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
 ) -> Result<(), HostError> {
-    let (session, app) = factory(args)?;
+    let (mut session, app) = factory(args)?;
+    session.capture_initial();
     let event_loop = EventLoop::new().map_err(failed)?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut host = Host::new(session, app)?;

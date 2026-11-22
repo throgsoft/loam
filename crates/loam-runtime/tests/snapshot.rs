@@ -27,7 +27,7 @@ loam_runtime::stores! {
 
 fn session() -> (Session<Probe>, DomainHandle<EuclideanR4>) {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).untracked());
     (session, r4)
 }
 
@@ -195,8 +195,11 @@ fn reset_or_restore_leaves_rows_relations_poses_or_the_tick_changed_or_resolves_
     assert_eq!(session.entities().resolve(live), None);
 
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let r4 =
-        session.register_domain(DomainBuilder::new("r4", EuclideanR4).facility(Drift { steps: 0 }));
+    let r4 = session.register_domain(
+        DomainBuilder::new("r4", EuclideanR4)
+            .untracked()
+            .facility(Drift { steps: 0 }),
+    );
     let (a, b) = session.dispatch(|d| {
         let a = d.spawn(placed(r4, Tag(1))).unwrap();
         let b = d.spawn(placed(r4, Tag(2))).unwrap();
@@ -328,7 +331,11 @@ impl Facility<EuclideanR4> for RejectStep {
 #[test]
 fn a_failed_cpu_phase_cannot_advance_or_publish_until_recovery() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    session.register_domain(DomainBuilder::new("r4", EuclideanR4).facility(RejectStep));
+    session.register_domain(
+        DomainBuilder::new("r4", EuclideanR4)
+            .untracked()
+            .facility(RejectStep),
+    );
     let captured = session.snapshot().unwrap();
     session.set_initial().unwrap();
 

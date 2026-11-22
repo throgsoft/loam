@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ActionId(pub u32);
+pub struct ActionId(pub &'static str);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActionEvent {
@@ -97,6 +97,12 @@ impl Input {
 
     pub fn is_held(&self, action: ActionId) -> bool {
         self.held.contains(&action)
+    }
+
+    /// 1.0 while only `positive` is held, -1.0 while only `negative` is, and 0.0 otherwise.
+    pub fn axis(&self, negative: ActionId, positive: ActionId) -> f32 {
+        let held = |action| if self.is_held(action) { 1.0 } else { 0.0 };
+        held(positive) - held(negative)
     }
 
     pub fn began(&self) -> Option<&Pointer> {

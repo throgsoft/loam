@@ -12,7 +12,7 @@ use crate::session::{
 };
 use crate::store::{Owner, StoreError};
 use crate::stores::{HasRelation, HasStore, Stores};
-use crate::view::Views;
+use crate::view::{ViewId, ViewMapping, ViewSpec, Views};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(u64);
@@ -479,6 +479,22 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         self.require_live(entity)?;
         self.domains.typed(domain)?.attach_field(entity, field)?;
         Ok(())
+    }
+
+    /// Spawns an eye entity at `eye` and adds a view through it into the root image.
+    pub fn add_view<S: DomainSpace>(
+        &mut self,
+        domain: DomainHandle<S>,
+        eye: Pose<S>,
+        mapping: impl ViewMapping<S>,
+    ) -> Result<ViewId, Rejection> {
+        let eye = self.spawn(SpawnBundle::new().at(domain, eye))?;
+        let root = self.views.root();
+        let view = self
+            .domains
+            .typed(domain)?
+            .add_view(ViewSpec::new(root, eye, mapping))?;
+        Ok(view)
     }
 
     fn attach_bundle(&mut self, entity: Entity, bundle: SpawnBundle<A>) -> Result<(), Rejection> {

@@ -1,10 +1,10 @@
 use loam::app::session::FreeCamera;
 use loam::runtime::ActionId;
 
-pub(crate) const RIGHT: ActionId = ActionId(20);
-pub(crate) const LEFT: ActionId = ActionId(21);
-pub(crate) const FORWARD: ActionId = ActionId(22);
-pub(crate) const BACKWARD: ActionId = ActionId(23);
+pub(crate) const RIGHT: ActionId = ActionId("right");
+pub(crate) const LEFT: ActionId = ActionId("left");
+pub(crate) const FORWARD: ActionId = ActionId("forward");
+pub(crate) const BACKWARD: ActionId = ActionId("backward");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CameraMode {

@@ -86,8 +86,8 @@ const DEFAULT_SEED: u64 = 0x10a3_5eed;
 const BOOT_ORBIT_DISTANCE: f32 = 4.0;
 const BOOT_ORBIT_PITCH: f32 = -0.12;
 
-const PAUSE: ActionId = ActionId(0);
-const RESEED: ActionId = ActionId(1);
+const PAUSE: ActionId = ActionId("pause");
+const RESEED: ActionId = ActionId("reseed");
 
 #[derive(Clone)]
 struct Letter {

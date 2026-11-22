@@ -57,6 +57,13 @@ impl From<RestoreError> for HostError {
     }
 }
 
+#[cfg(feature = "physics")]
+impl From<loam_physics::EditError> for HostError {
+    fn from(error: loam_physics::EditError) -> Self {
+        Self::Setup(Rejection::Edit(error))
+    }
+}
+
 impl From<PhaseError> for HostError {
     fn from(error: PhaseError) -> Self {
         Self::Phase(error)
@@ -72,6 +79,7 @@ pub fn run_headless<A: Stores>(
     alpha: f32,
     mut each: impl FnMut(u32, &mut Session<A>, &Publication) -> Result<(), HostError>,
 ) -> Result<Publication, HostError> {
+    session.capture_initial();
     let mut publication = Publication::default();
     let mut held: Vec<ActionId> = Vec::new();
     for step in 0..steps {

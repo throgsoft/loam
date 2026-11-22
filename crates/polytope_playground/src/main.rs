@@ -46,21 +46,21 @@ use mode::{Mode, Spin};
 use projection::Family;
 use strip::{Cell, Strip};
 
-const SPIN: ActionId = ActionId(0);
-const SLICE_UP: ActionId = ActionId(1);
-const SLICE_DOWN: ActionId = ActionId(2);
-const NEXT_MODE: ActionId = ActionId(3);
-const RESET: ActionId = ActionId(4);
-const GIMBAL: ActionId = ActionId(5);
-const STRIP: ActionId = ActionId(6);
-const CONTROLS: ActionId = ActionId(7);
+const SPIN: ActionId = ActionId("spin");
+const SLICE_UP: ActionId = ActionId("slice up");
+const SLICE_DOWN: ActionId = ActionId("slice down");
+const NEXT_MODE: ActionId = ActionId("next mode");
+const RESET: ActionId = ActionId("reset");
+const GIMBAL: ActionId = ActionId("gimbal");
+const STRIP: ActionId = ActionId("strip");
+const CONTROLS: ActionId = ActionId("controls");
 const PLANE: [ActionId; 6] = [
-    ActionId(10),
-    ActionId(11),
-    ActionId(12),
-    ActionId(13),
-    ActionId(14),
-    ActionId(15),
+    ActionId("plane xy"),
+    ActionId("plane xz"),
+    ActionId("plane xw"),
+    ActionId("plane yz"),
+    ActionId("plane yw"),
+    ActionId("plane zw"),
 ];
 
 const SECTION_COLOR: [f32; 4] = [1.0, 0.85, 0.35, 1.0];

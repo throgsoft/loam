@@ -34,7 +34,7 @@ fn spin_z(angle: f32) -> Iso3H {
 
 fn h3_walker() -> (Session<Probe>, DomainHandle<HyperbolicH3>, Entity) {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let h3 = session.register_domain(DomainBuilder::new("h3", HyperbolicH3));
+    let h3 = session.register_domain(DomainBuilder::new("h3", HyperbolicH3).untracked());
     let walker = session
         .dispatch(|d| d.spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO))))
         .unwrap();

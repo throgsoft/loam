@@ -30,7 +30,7 @@ fn blended_chart_place_keeps_a_positive_orthonormal_gauge_near_the_hyperbolic_ed
         LinearBlendX::new(-2.0, -1.0).expect("blend interval"),
     );
     let mut session = Session::new(Empty::default(), SimConfig::default());
-    let domain = session.register_domain(DomainBuilder::new("blend", space));
+    let domain = session.register_domain(DomainBuilder::new("blend", space).untracked());
     let entity = session
         .dispatch(|dispatch| {
             dispatch.spawn(SpawnBundle::new().at_chart(
@@ -73,7 +73,7 @@ fn blended_chart_walk_drifts_from_the_variational_path_and_frame() {
         LinearBlendX::new(-0.5, 0.5).expect("blend interval"),
     );
     let mut session = Session::new(Empty::default(), SimConfig::default());
-    let domain = session.register_domain(DomainBuilder::new("blend", space));
+    let domain = session.register_domain(DomainBuilder::new("blend", space).untracked());
 
     let scale = 0.850_117_44;
     let frame = Mat3::from_cols(

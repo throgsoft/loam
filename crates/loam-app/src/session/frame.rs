@@ -1101,7 +1101,7 @@ mod tests {
         let texture = offscreen(&gpu);
         let app = host::<Bare>("aspect");
         let mut session = Session::new(Bare::default(), SimConfig::default());
-        session.register_domain(DomainBuilder::new("r3", EuclideanR3));
+        session.register_domain(DomainBuilder::new("r3", EuclideanR3).untracked());
         session.system(
             Phase::Publication,
             "camera",
@@ -1127,7 +1127,7 @@ mod tests {
 
     #[test]
     fn installed_reset_key_recovers_the_fault_and_restores_cursor_capture_once() {
-        const RESET: ActionId = ActionId(0);
+        const RESET: ActionId = ActionId("reset");
 
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);

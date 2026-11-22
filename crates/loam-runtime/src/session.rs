@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use loam_shape::polytope::Polytope4Topology;
 
 use crate::bridge::{
@@ -11,8 +13,8 @@ use crate::domain::{
     DomainSnapshot, DomainSpace, Domains,
 };
 use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
-use crate::input::Input;
-use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, System, SystemEntry, Tick};
+use crate::input::{ActionId, Input};
+use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, SystemEntry, Tick};
 use crate::relation::{LinkId, Relation, RelationSnapshot};
 use crate::store::{Owner, SchemaId, StoreField};
 use crate::stores::Stores;
@@ -695,7 +697,12 @@ impl<A: Stores> Session<A> {
         self.assets.material(id)
     }
 
-    pub fn system(&mut self, phase: Phase, name: &'static str, system: impl System<A>) {
+    pub fn system(
+        &mut self,
+        phase: Phase,
+        name: &'static str,
+        system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+    ) {
         self.phases.push(phase, SystemEntry::new(name, system));
     }
 
@@ -705,10 +712,39 @@ impl<A: Stores> Session<A> {
         phase: Phase,
         order: Order,
         name: &'static str,
-        system: impl System<A>,
+        system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
     ) -> Option<()> {
         self.phases
             .insert(phase, order, SystemEntry::new(name, system))
+    }
+
+    /// Adds a dispatch system after those already registered that runs `apply` as a command named after `action` at each boundary where it is pressed. The closure cannot keep state between presses, so such state belongs in the app's stores.
+    pub fn on_action(
+        &mut self,
+        action: ActionId,
+        apply: impl Fn(&mut Dispatch<'_, A>) -> Result<(), Rejection> + Send + Sync + 'static,
+    ) {
+        let apply = Arc::new(apply);
+        self.submit_on(action, move || {
+            let apply = Arc::clone(&apply);
+            Command::try_app_fn(action.0, move |dispatch| {
+                apply(dispatch).map(|()| Outcome::Done)
+            })
+        });
+    }
+
+    /// Adds a dispatch system after those already registered that submits [`Command::Reset`] at each boundary where `action` is pressed. This system and the one [`Self::on_action`] adds take the action's name, so a system and an action should not share a name.
+    pub fn reset_on(&mut self, action: ActionId) {
+        self.submit_on(action, || Command::Reset);
+    }
+
+    fn submit_on(&mut self, action: ActionId, command: impl Fn() -> Command<A> + Send + 'static) {
+        self.system(Phase::Dispatch, action.0, move |ctx| {
+            if ctx.input.pressed(action) {
+                ctx.commands.submit(command());
+            }
+            Ok(())
+        });
     }
 
     pub fn entries(&self, phase: Phase) -> &[SystemEntry<A>] {
@@ -1062,6 +1098,13 @@ impl<A: Stores> Session<A> {
         self.unfinished = None;
         self.phase_error = None;
         Ok(())
+    }
+
+    /// Captures the initial snapshot when none exists and nothing is pending, and otherwise leaves it to the first boundary.
+    pub fn capture_initial(&mut self) {
+        if self.initial.is_none() {
+            self.initial = self.snapshot().ok();
+        }
     }
 
     pub fn set_initial(&mut self) -> Result<(), RestoreError> {

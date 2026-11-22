@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use crate::entity::SceneId;
 use crate::store::{Owner, StoreField, Version};
 
@@ -29,6 +31,14 @@ impl<T> Value<T> {
 
     pub fn version(&self) -> Version {
         self.version
+    }
+}
+
+impl<T> Deref for Value<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.value
     }
 }
 

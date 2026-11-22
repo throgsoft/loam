@@ -129,19 +129,6 @@ impl<A: Stores> Ctx<'_, A> {
     }
 }
 
-pub trait System<A>: Send + 'static {
-    fn run(&mut self, ctx: Ctx<'_, A>) -> Result<(), DomainError>;
-}
-
-impl<A: 'static, F> System<A> for F
-where
-    F: FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
-{
-    fn run(&mut self, ctx: Ctx<'_, A>) -> Result<(), DomainError> {
-        self(ctx)
-    }
-}
-
 type Runner<A> = Box<dyn FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send>;
 
 pub struct SystemEntry<A> {
@@ -150,11 +137,13 @@ pub struct SystemEntry<A> {
 }
 
 impl<A: 'static> SystemEntry<A> {
-    pub(crate) fn new(name: &'static str, system: impl System<A>) -> Self {
-        let mut system = system;
+    pub(crate) fn new(
+        name: &'static str,
+        system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+    ) -> Self {
         Self {
             name,
-            run: Box::new(move |ctx| system.run(ctx)),
+            run: Box::new(system),
         }
     }
 }

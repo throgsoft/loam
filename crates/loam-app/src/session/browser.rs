@@ -296,8 +296,9 @@ where
             HIDDEN.with(|hidden| hidden.set(!visible));
             crate::args::set_query_override(read_str("search"), read_str("hash"));
             let args = Args::current();
-            let (session, app) = factory(args.clone())
+            let (mut session, app) = factory(args.clone())
                 .map_err(|error| anyhow!("session factory failed: {error:?}"))?;
+            session.capture_initial();
             let width = read_u32("width").unwrap_or(800);
             let height = read_u32("height").unwrap_or(600);
             let dpr = messages::read_device_pixel_ratio(&data);

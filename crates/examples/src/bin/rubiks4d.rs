@@ -11,10 +11,10 @@ use loam::runtime::{
     ViewSpec,
 };
 
-const TWIST: ActionId = ActionId(0);
-const SCRAMBLE: ActionId = ActionId(1);
-const UNDO: ActionId = ActionId(2);
-const RESET: ActionId = ActionId(3);
+const TWIST: ActionId = ActionId("twist");
+const SCRAMBLE: ActionId = ActionId("scramble");
+const UNDO: ActionId = ActionId("undo");
+const RESET: ActionId = ActionId("reset");
 const TWIST_TICKS: u32 = 20;
 const SCRAMBLE_TWISTS: usize = 12;
 const PIECE_SPACING: f32 = 0.7;

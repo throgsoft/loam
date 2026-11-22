@@ -50,7 +50,7 @@ where
     M: ViewMapping<S> + 'static,
 {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let handle = session.register_domain(DomainBuilder::new("traced", space.clone()));
+    let handle = session.register_domain(DomainBuilder::new("traced", space.clone()).untracked());
     let geometry = session.prepare(geometry);
     let material = session.add_material(Material::flat([1.0; 4]));
     let root = session.views().root();

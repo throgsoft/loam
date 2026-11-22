@@ -2752,7 +2752,7 @@ impl<S: DomainSpace> DomainBuilder<S> {
         Self {
             name,
             space,
-            tracking: None,
+            tracking: Some(LogCapacity::default()),
             fields: false,
             facilities: Vec::new(),
         }
@@ -2760,6 +2760,11 @@ impl<S: DomainSpace> DomainBuilder<S> {
 
     pub fn tracked(mut self, capacity: LogCapacity) -> Self {
         self.tracking = Some(capacity);
+        self
+    }
+
+    pub fn untracked(mut self) -> Self {
+        self.tracking = None;
         self
     }
 

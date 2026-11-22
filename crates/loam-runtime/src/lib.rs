@@ -36,7 +36,7 @@ pub use host::{HostConfig, HostError};
 pub use input::{
     ActionEvent, ActionId, Bindings, HostMessages, Input, Key, Pointer, PointerButton, PointerPhase,
 };
-pub use phase::{Ctx, Order, Phase, PhaseError, Step, System, SystemEntry, Tick};
+pub use phase::{Ctx, Order, Phase, PhaseError, Step, SystemEntry, Tick};
 #[cfg(feature = "physics")]
 pub use physics::{GrabConfig, GrabHold, Physics, PhysicsConfig};
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};

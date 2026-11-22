@@ -3,9 +3,10 @@ pub use loam_math::{
     CoveringSpace, EuclideanR2, EuclideanR3, EuclideanR4, FlatTorus3, HyperbolicH3, Iso2, Iso3,
     Iso3H, Iso4, Iso4Flat, IsometryGroup, LensSpace, LinearBlendX, Mat3, Plane4, Projection,
     QuotientSpace, RasterizableSpace, Rotor, Rotor2, Rotor3, Rotor4, Space, SphericalS3,
-    SphericalS3Embedded, WPlane, WgslSpace,
+    SphericalS3Embedded, Vec2, Vec3, Vec4, WPlane, WgslSpace,
 };
 pub use loam_runtime::*;
+pub use loam_shape::polytope::Polytope4;
 pub use loam_shape::{
     Isovolume, LineMesh, NotVisualizable, PointMesh, Shape, ShapeKind, TriangleMesh, Visualizable,
 };
@@ -19,7 +20,7 @@ pub use loam_app::session::{
     InputHook, Orbit, SessionApp, Target,
 };
 #[cfg(feature = "app")]
-pub use loam_app::{LaunchMode, WasmConfig};
+pub use loam_app::{args::Args, LaunchMode, WasmConfig};
 #[cfg(feature = "render")]
 pub use loam_render::{
     DepthConvention, DepthMode, FragmentShading, FramePass, Ground, HyperslicePass, LinePass,

@@ -13,7 +13,7 @@ pub mod space;
 pub mod spherical;
 pub mod spherical_embedded;
 
-pub use glam::Mat3;
+pub use glam::{Mat3, Vec2, Vec3, Vec4};
 
 pub use bivector::{
     Bivector, Bivector2, Bivector3, Bivector4, Plane4, Rotor, Rotor2, Rotor3, Rotor4,

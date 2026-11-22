@@ -622,7 +622,7 @@ mod tests {
     static COUNTING_ALLOCATOR: loam_time::alloc::CountingAllocator<std::alloc::System> =
         loam_time::alloc::CountingAllocator::new(std::alloc::System);
 
-    const WALK: ActionId = ActionId(0);
+    const WALK: ActionId = ActionId("walk");
 
     loam_runtime::stores! {
         #[derive(Default)]
