@@ -6,7 +6,6 @@ pub mod gpu_timer;
 pub mod hypergimbal;
 pub mod lattice;
 pub mod line_raster;
-pub mod line_raster_static_r4;
 pub mod material;
 pub mod pass;
 pub mod passes;
@@ -22,7 +21,6 @@ pub mod view;
 pub use depth::DepthBuffer;
 pub use lattice::Viewport;
 pub use line_raster::{LineRasterNode, LineRasterUniforms};
-pub use line_raster_static_r4::{LineRasterStaticR4Node, LineRasterStaticR4Uniforms};
 pub use material::{MaterialPipeline, MaterialSpec};
 pub use pass::{
     ColorLoad, FrameFormat, FramePass, FrameTarget, GpuTime, PassError, PassExecutionError,

@@ -31,20 +31,6 @@ impl Sky {
 
 pub const SKY_HORIZON: Color = DEFAULT_SKY.horizon();
 
-/// Returns linear light.
-pub fn linear_from_srgb8(rgb: [u8; 3]) -> [f32; 3] {
-    // IEC 61966-2-1 sRGB electro-optical transfer function.
-    rgb.map(|byte| {
-        let c = f64::from(byte) / 255.0;
-        let linear = if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        };
-        linear as f32
-    })
-}
-
 pub const GROUND_DARK_GREY: [f32; 3] = [0.18, 0.20, 0.24];
 pub const GROUND_LIGHT_GREY: [f32; 3] = [0.30, 0.32, 0.36];
 

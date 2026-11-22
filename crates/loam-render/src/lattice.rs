@@ -17,17 +17,6 @@ impl Viewport {
         }
     }
 
-    /// Empty when the panel covers the framebuffer.
-    pub fn right_of_left_panel(panel_width: u32, framebuffer: [u32; 2]) -> Self {
-        let panel = panel_width.min(framebuffer[0]);
-        Self {
-            x: panel,
-            y: 0,
-            width: framebuffer[0] - panel,
-            height: framebuffer[1],
-        }
-    }
-
     pub fn apply(&self, rp: &mut wgpu::RenderPass<'_>) {
         rp.set_viewport(
             self.x as f32,

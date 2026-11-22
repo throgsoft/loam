@@ -172,33 +172,6 @@ pub fn register_ground_command<Ctx: 'static>(
     );
 }
 
-pub fn register_floor_command<Ctx: 'static>(
-    console: &mut Console<Ctx>,
-    reach: fn(&mut Ctx) -> &mut Environment,
-) {
-    console.register(
-        loam_console::cmd::<Ctx, _>(
-            "floor",
-            "toggle the ground plane (on | off; bare flips)",
-            move |args, ctx, out| {
-                let env = reach(ctx);
-                let next = match args.first().copied() {
-                    None => !env.floor_visible,
-                    Some("on") => true,
-                    Some("off") => false,
-                    Some(other) => {
-                        return Err(anyhow!("floor: unknown arg `{other}` (try on|off)"));
-                    }
-                };
-                env.floor_visible = next;
-                out.line(format!("floor: {}", if next { "on" } else { "off" }));
-                Ok(())
-            },
-        )
-        .with_args(&[&["on", "off"]]),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,7 +8,6 @@ use loam_render::shader::{assemble_wgsl, validate_wgsl, GEODESIC_MARCH_KERNEL};
 fn standalone_shader_files_validate() {
     for (name, source) in [
         ("line", include_str!("../src/line_raster.wgsl")),
-        ("line_r4", include_str!("../src/line_raster_static_r4.wgsl")),
         ("point", include_str!("../src/point_raster.wgsl")),
         ("triangle", include_str!("../src/triangle_raster.wgsl")),
         ("composite", include_str!("../src/composite.wgsl")),

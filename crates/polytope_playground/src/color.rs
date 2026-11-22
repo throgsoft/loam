@@ -1,7 +1,6 @@
 use loam::runtime::{EdgeShading, PaletteId};
 use loam::shape::polytope::{vertex_color_by_position, Polytope4Topology};
 
-// Matches the depth cue in the LineRasterStaticR4 shader.
 pub(crate) const W_DEPTH_BACK: [f32; 4] = [0.30, 0.42, 0.58, 1.0];
 
 pub(crate) const W_DEPTH_FRONT: [f32; 4] = [1.00, 0.78, 0.45, 1.0];

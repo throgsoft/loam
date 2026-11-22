@@ -1,5 +1,4 @@
 mod bivector_matrix;
-mod capture;
 pub mod console;
 pub mod dnd;
 mod floating;
@@ -7,7 +6,6 @@ pub mod media;
 mod slider_edit;
 
 pub use bivector_matrix::{bivector_matrix, cell_text as bivector_matrix_cell_text};
-pub use capture::UiCapture;
 pub use console::{
     cmd, console_echo_enabled, parse_line, render_line, set_console_echo, subcommands, Command,
     Console, ConsoleUi, ConsoleWriter, HistoryLine, Key, LineKind, SubcommandSet,

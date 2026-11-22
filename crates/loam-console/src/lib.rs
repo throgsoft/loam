@@ -2,7 +2,7 @@
 
 mod queue;
 
-pub use queue::{CommandLine, CommandQueue};
+pub use queue::CommandLine;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
