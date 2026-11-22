@@ -1,12 +1,14 @@
 use std::any::Any;
 
 use loam_math::{EuclideanR4, Space};
+use loam_runtime::host::run_headless;
 use loam_runtime::{
-    AppCommand, Command, Ctx, DepthEnvelope, Dispatch, DomainBuilder, DomainError, DomainHandle,
-    DomainRay, Entity, Eye, Facility, Growth, ImageRay, Input, Instance, LogCapacity, Material,
-    Outcome, Owner, Phase, PhaseError, Pose, PreparedGeometry, PreparedId, Projection4,
-    Publication, PublishError, Records, Rejection, Reservation, RestoreError, SchemaId, Section4,
-    Session, SimConfig, SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec, DOMAIN_STEP,
+    ActionEvent, ActionId, AppCommand, Bindings, Command, Ctx, DepthEnvelope, Dispatch,
+    DomainBuilder, DomainError, DomainHandle, DomainRay, Entity, Eye, Facility, Growth, HostConfig,
+    ImageRay, Input, Instance, Key, LogCapacity, Material, Outcome, Owner, Phase, PhaseError, Pose,
+    PreparedGeometry, PreparedId, Projection4, Publication, PublishError, Records, Rejection,
+    Reservation, RestoreError, SchemaId, Section4, Session, SimConfig, SpawnBundle, Step, Store,
+    Tick, ViewMapping, ViewSpec, ViewTarget, DOMAIN_STEP,
 };
 
 type Vec4 = <EuclideanR4 as Space>::Point;
@@ -648,4 +650,129 @@ fn a_reset_command_restores_the_first_boundary_once_and_later_requests_in_its_ba
     );
     assert_eq!(*session.app.log.get(), [2]);
     assert_eq!(session.current_tick(), Tick(0));
+}
+
+#[test]
+fn a_reset_action_pressed_with_another_handler_ends_the_boundary_in_the_initial_state() {
+    const MARK: ActionId = ActionId("mark");
+    const RESET: ActionId = ActionId("reset");
+    let press = |actions: &[ActionId]| Input {
+        actions: actions
+            .iter()
+            .map(|&action| ActionEvent {
+                action,
+                pressed: true,
+            })
+            .collect(),
+        ..Input::default()
+    };
+    let (mut session, r4) = session();
+    session.dispatch(|d| d.spawn(placed(r4, Tag(7)))).unwrap();
+    session.on_action(MARK, |d| {
+        d.app.log.get_mut().push(1);
+        Ok(())
+    });
+    session.reset_on(RESET);
+    session.set_initial().unwrap();
+
+    session.boundary(press(&[MARK])).unwrap();
+    session.tick().unwrap();
+    assert_eq!(*session.app.log.get(), [1]);
+    let epoch = session.scene().epoch();
+
+    session.boundary(press(&[RESET, MARK])).unwrap();
+    assert_eq!(session.scene().epoch(), epoch.advance());
+    assert!(
+        session.app.log.get().is_empty(),
+        "the other handler's write outlived the reset"
+    );
+    assert_eq!(session.current_tick(), Tick(0));
+    assert!(session.app.tags.iter().any(|(_, tag)| *tag == Tag(7)));
+    assert!(session
+        .results()
+        .iter()
+        .any(|result| result.name == "reset" && result.outcome == Ok(Outcome::Done)));
+}
+
+#[test]
+fn a_headless_launch_resets_to_the_setup_state_or_the_first_boundary_or_the_setups_own_snapshot() {
+    const MARK: ActionId = ActionId("mark");
+    let launch_then_reset = |setup: fn(&mut Session<Probe>, DomainHandle<EuclideanR4>)| {
+        let (mut session, r4) = session();
+        session.dispatch(|d| d.spawn(placed(r4, Tag(7)))).unwrap();
+        session.on_action(MARK, |d| {
+            d.app.log.get_mut().push(9);
+            Ok(())
+        });
+        setup(&mut session, r4);
+        let config = HostConfig::new("probe", Bindings::new().key(Key::Space, MARK));
+        let first_frame = [(Key::Space, 0..1)];
+        run_headless(
+            &mut session,
+            &config,
+            2,
+            &first_frame,
+            1.0,
+            |_, _, _| Ok(()),
+        )
+        .expect("a launch does not fail on what its setup left");
+        assert_eq!(session.current_tick(), Tick(2));
+        session.reset().unwrap();
+        assert_eq!(session.current_tick(), Tick(0));
+        let mut tags: Vec<u32> = session.app.tags.iter().map(|(_, tag)| tag.0).collect();
+        tags.sort_unstable();
+        (session.app.log.get().clone(), tags)
+    };
+
+    let (log, tags) = launch_then_reset(|_, _| {});
+    assert!(
+        log.is_empty(),
+        "the reset kept the first frame's input: {log:?}"
+    );
+    assert_eq!(tags, [7]);
+
+    let (log, _) = launch_then_reset(|session, _| {
+        session.submit(Command::App(Box::new(Mark(1))));
+    });
+    assert_eq!(log, [1, 9], "the first boundary is the fallback");
+
+    let (log, tags) = launch_then_reset(|session, r4| {
+        session.set_initial().unwrap();
+        session.dispatch(|d| d.spawn(placed(r4, Tag(8)))).unwrap();
+    });
+    assert!(log.is_empty());
+    assert_eq!(tags, [7], "the launch replaced the setup's own snapshot");
+}
+
+#[test]
+fn a_view_added_through_dispatch_publishes_into_the_root_image_from_the_given_eye_pose() {
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
+    let geometry = session.prepare(PreparedGeometry::Lines4 {
+        segments: Vec::new(),
+    });
+    let material = session.add_material(Material::flat([1.0; 4]));
+    let (view, drawn) = session.dispatch(|d| {
+        let view = d.add_view(r4, at([1.0, 0.0, -2.0, 3.0]), DropW).unwrap();
+        let drawn = d
+            .spawn(
+                SpawnBundle::new()
+                    .at(r4, at([5.0, 6.0, 7.0, 8.0]))
+                    .instance(Instance::new(geometry, material)),
+            )
+            .unwrap();
+        (view, drawn)
+    });
+
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+    let [published] = &publication.views[..] else {
+        panic!("{} views published", publication.views.len());
+    };
+    let image = session.views().root();
+    assert_eq!(published.target, ViewTarget { view, image });
+    let [row] = published.records.instances.rows() else {
+        panic!("the eye or nothing was drawn");
+    };
+    assert_eq!((row.entity, row.image_point), (drawn, [4.0, 6.0, 9.0]));
 }

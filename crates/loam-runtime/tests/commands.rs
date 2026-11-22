@@ -378,3 +378,76 @@ fn system_after_the_domain_step_does_not_see_the_steps_writes() {
     session.tick().unwrap();
     assert_eq!(*session.app.sample.get(), [Some(dt), Some(dt + dt)]);
 }
+
+#[test]
+fn an_action_handler_runs_once_per_press_at_its_place_in_dispatch_under_the_actions_name() {
+    const BUMP: ActionId = ActionId("bump");
+    const REFUSE: ActionId = ActionId("refuse");
+    let event = |action, pressed| Input {
+        actions: vec![ActionEvent { action, pressed }],
+        ..Input::default()
+    };
+    let observe = |base: u32| {
+        move |ctx: Ctx<'_, Probe>| {
+            let runs = ctx.app.log.get().iter().filter(|&&mark| mark == 1).count();
+            ctx.app.log.get_mut().push(base + runs as u32);
+            Ok(())
+        }
+    };
+
+    // A stopped clock is a paused program, and its keys still have to work.
+    let stopped = SimConfig::new(0, 1).unwrap();
+    let mut session = Session::new(Probe::default(), stopped);
+    session.system(Phase::Dispatch, "before", observe(10));
+    session.on_action(BUMP, |d| {
+        d.app.log.get_mut().push(1);
+        Ok(())
+    });
+    session.system(Phase::Dispatch, "after", observe(20));
+    session.on_action(REFUSE, |_| Err(Rejection::Unsupported("refused")));
+
+    session.boundary(event(BUMP, true)).unwrap();
+    assert_eq!(
+        *session.app.log.get(),
+        [10, 1, 21],
+        "the handler ran out of place or not exactly once"
+    );
+    let [result] = session.results() else {
+        panic!("{} results for one press", session.results().len());
+    };
+    assert_eq!((result.name, result.outcome), ("bump", Ok(Outcome::Done)));
+
+    session.boundary(event(BUMP, false)).unwrap();
+    assert_eq!(
+        *session.app.log.get(),
+        [10, 1, 21, 11, 21],
+        "a release ran the handler"
+    );
+    assert!(session.results().is_empty());
+
+    session.boundary(event(REFUSE, true)).unwrap();
+    let [result] = session.results() else {
+        panic!("{} results for one press", session.results().len());
+    };
+    assert_eq!(
+        (result.name, result.outcome),
+        ("refuse", Err(Rejection::Unsupported("refused")))
+    );
+}
+
+#[test]
+fn an_axis_is_the_held_direction_and_zero_when_both_or_neither_is_held() {
+    const LEFT: ActionId = ActionId("left");
+    const RIGHT: ActionId = ActionId("right");
+    let axis = |held: &[ActionId]| {
+        let input = Input {
+            held: held.to_vec(),
+            ..Input::default()
+        };
+        input.axis(LEFT, RIGHT)
+    };
+    assert_eq!(axis(&[RIGHT]), 1.0);
+    assert_eq!(axis(&[LEFT]), -1.0);
+    assert_eq!(axis(&[LEFT, RIGHT]), 0.0);
+    assert_eq!(axis(&[]), 0.0);
+}
