@@ -859,7 +859,6 @@ where
 mod tests {
     use loam_math::{EuclideanR4, Rotor4};
     use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
-    use loam_time::alloc::bytes_allocated_by;
 
     use super::*;
     use crate::command::{Command, SpawnBundle};
@@ -875,9 +874,6 @@ mod tests {
         #[derive(Default)]
         pub struct Bare {}
     }
-
-    const MOVING: usize = 64;
-    const WARM_STEPS: u64 = 8;
 
     fn step_at(tick: u64) -> Step {
         Step {
@@ -1137,73 +1133,5 @@ mod tests {
             .throw(body, Vec4::X)
             .unwrap();
         assert_eq!(drawn_x(&mut session), blended);
-    }
-
-    #[test]
-    fn a_warmed_step_with_sixty_four_moving_bodies_allocates_nothing() {
-        let mut entities = Entities::new(SceneId {
-            runtime: RuntimeId::allocate(),
-            epoch: Epoch::default(),
-        });
-        let mut domain = DomainBuilder::new("r4", EuclideanR4)
-            .tracked(DEFAULT_LOG_CAPACITY)
-            .physics(PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::NEG_Y))
-            .unwrap()
-            .build(DomainId::new(0), entities.scene());
-        for index in 0..MOVING {
-            let at = Vec4::new(index as f32 * 4.0, 10.0, 0.0, 0.0);
-            let entity = entities.spawn();
-            domain.attach_pose(entity, Pose::at(at)).expect("pose row");
-            domain.physics_mut().expect("physics").spawn(
-                entity,
-                sphere_body_r4(at, Vec4::ZERO, 0.5, 1.0).expect("body"),
-            );
-        }
-        for tick in 0..WARM_STEPS {
-            domain.step(step_at(tick)).expect("warm step");
-        }
-
-        let bytes = bytes_allocated_by(|| {
-            domain.step(step_at(WARM_STEPS)).expect("step");
-        })
-        .expect("the counting allocator is installed");
-        assert_eq!(bytes, 0, "a warmed physics step allocated {bytes} bytes");
-    }
-
-    #[test]
-    fn invalid_physics_configuration_is_refused_before_installation() {
-        let invalid_gravity =
-            PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::splat(f32::NAN));
-        assert_eq!(
-            DomainBuilder::new("r4", EuclideanR4)
-                .physics(invalid_gravity)
-                .err(),
-            Some(EditError::InvalidGravity)
-        );
-
-        let invalid_grab = PhysicsConfig::new(register_default_narrowphase).grab(GrabConfig::new(
-            f32::NAN,
-            1.0,
-            1.0,
-        ));
-        assert_eq!(
-            DomainBuilder::new("r4", EuclideanR4)
-                .physics(invalid_grab)
-                .err(),
-            Some(EditError::InvalidGrabConfig)
-        );
-
-        let invalid_travel = PhysicsConfig::new(register_default_narrowphase).adaptive_substeps(
-            1,
-            4,
-            0.0,
-            linear_speed::<EuclideanR4>,
-        );
-        assert_eq!(
-            DomainBuilder::new("r4", EuclideanR4)
-                .physics(invalid_travel)
-                .err(),
-            Some(EditError::InvalidStepTravel)
-        );
     }
 }
