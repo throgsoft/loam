@@ -7,8 +7,8 @@ use crate::command::{
     Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
 };
 use crate::domain::{
-    ChartCommand, ChartPoint, DomainBuilder, DomainError, DomainHandle, DomainId, DomainSnapshot,
-    DomainSpace, Domains,
+    presented_alpha, ChartCommand, ChartPoint, DomainBuilder, DomainError, DomainHandle, DomainId,
+    DomainSnapshot, DomainSpace, Domains,
 };
 use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
 use crate::input::Input;
@@ -269,7 +269,17 @@ pub struct PublishedView {
 pub struct Publication {
     pub views: Vec<PublishedView>,
     pub stamp: Stamp,
+    /// The clamped alpha the records were drawn at.
+    pub alpha: f32,
     source: Option<SceneId>,
+    content: u64,
+}
+
+impl Publication {
+    /// Changes only when a publish alters what a frame draws; a restamp alone leaves it as it was.
+    pub fn content(&self) -> u64 {
+        self.content
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -883,11 +893,12 @@ impl<A: Stores> Session<A> {
         self.publish_at(into, 1.0)
     }
 
-    /// Draws each pose `alpha` of the way from where it stood before the last tick to where it stands now.
+    /// Draws each pose `alpha` of the way from where it stood before the last tick to where it stands now, with `alpha` clamped to [0, 1] and NaN taken as 1.
     pub fn publish_at(&mut self, into: &mut Publication, alpha: f32) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
+        let alpha = presented_alpha(alpha);
         let step = Step {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
@@ -896,10 +907,11 @@ impl<A: Stores> Session<A> {
         self.run_phase(Phase::Publication, step)?;
         self.domains.synchronize();
         for domain in self.domains.iter_mut() {
-            domain.collect_moving();
+            domain.present(alpha);
         }
         let scene = self.scene();
-        if into.source != Some(scene) {
+        let reset = into.source != Some(scene);
+        if reset {
             *into = Publication::default();
         }
         let sequence = self.sequence.wrapping_add(1);
@@ -909,6 +921,7 @@ impl<A: Stores> Session<A> {
         };
         let extracted = (|| {
             let library = self.assets.library();
+            let mut changed = reset;
             let mut count = 0;
             for domain in self.domains.owned() {
                 for &target in domain.views() {
@@ -922,31 +935,39 @@ impl<A: Stores> Session<A> {
                         .iter()
                         .position(|view| view.domain == domain.id() && view.target == target);
                     match held {
-                        Some(index) if index != count => into.views.swap(index, count),
+                        Some(index) if index != count => {
+                            into.views.swap(index, count);
+                            changed = true;
+                        }
                         Some(_) => {}
-                        None => into.views.insert(
-                            count,
-                            PublishedView {
-                                domain: domain.id(),
-                                target,
-                                placement,
-                                records: ViewRecords::default(),
-                            },
-                        ),
+                        None => {
+                            into.views.insert(
+                                count,
+                                PublishedView {
+                                    domain: domain.id(),
+                                    target,
+                                    placement,
+                                    records: ViewRecords::default(),
+                                },
+                            );
+                            changed = true;
+                        }
                     }
-                    into.views[count].placement = placement;
-                    domain.publish(
-                        target.view,
-                        library,
-                        &mut into.views[count].records,
-                        stamp,
-                        alpha,
-                    )?;
+                    let view = &mut into.views[count];
+                    changed |= view.placement != placement;
+                    view.placement = placement;
+                    domain.publish(target.view, library, &mut view.records, stamp, alpha)?;
+                    changed |= view.records.built == stamp;
                     count += 1;
                 }
             }
+            changed |= into.views.len() != count;
             into.views.truncate(count);
             into.stamp = stamp;
+            if changed {
+                into.content = sequence;
+            }
+            into.alpha = alpha;
             Ok::<(), DomainError>(())
         })();
         if let Err(error) = extracted {

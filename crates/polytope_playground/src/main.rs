@@ -18,6 +18,11 @@ use loam::runtime::{
     Section4, Session, SimConfig, SpawnBundle, ViewId, ViewSpec,
 };
 
+#[cfg(test)]
+#[global_allocator]
+static COUNTING_ALLOCATOR: loam_time::alloc::CountingAllocator<std::alloc::System> =
+    loam_time::alloc::CountingAllocator::new(std::alloc::System);
+
 mod camera;
 mod catalog;
 mod color;
@@ -803,6 +808,7 @@ impl Scratch {
 fn collect(
     session: &Session<Playground>,
     domain: DomainHandle<EuclideanR4>,
+    alpha: f32,
     scratch: &mut Scratch,
 ) {
     let active = *session.app.active.get();
@@ -839,7 +845,7 @@ fn collect(
         return;
     };
     for (at, (entity, entry, size)) in scratch.slots.iter().enumerate() {
-        let Some(pose) = r4.poses().get(*entity) else {
+        let Some(pose) = r4.drawn_pose(*entity, alpha) else {
             continue;
         };
         if scratch.anchors.get(at).is_some_and(|held| held.0 == active) {
@@ -853,7 +859,7 @@ fn collect(
         if display.surface == Surface::Sdf
             || (display.surface == Surface::Raster && entry.shape.polytope4().is_none())
         {
-            scratch.bodies.push(scene::body_of(entry, pose, *size));
+            scratch.bodies.push(scene::body_of(entry, &pose, *size));
         }
     }
     scratch.center = sum / scratch.slots.len().max(1) as f32;
@@ -894,7 +900,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
                     .is_some_and(|context| context.wants_keyboard_input()),
             camera.cursor_policy,
         );
-        collect(hook.session, domain, &mut scratch);
+        collect(hook.session, domain, hook.alpha, &mut scratch);
         let eye = hook
             .session
             .views()
@@ -927,7 +933,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
             &eye,
             gimbal_renderer.rings(&hook.session.app.control.get().gimbal, scratch.center),
         );
-        guides.update(hook.session, domain);
+        guides.update(hook.session, domain, hook.alpha);
         guide_pass.publish(&eye, &guides.lines);
         grab_point.publish(&eye, &guides.points);
         let shown = *hook.session.app.hud.get();
@@ -941,7 +947,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
             &mut lines,
         );
         if let Some(context) = hook.ui {
-            toy::fill_depth_bands(hook.session, domain, &mut scratch.depths);
+            toy::fill_depth_bands(hook.session, domain, hook.alpha, &mut scratch.depths);
             ui::draw(
                 context,
                 hook.session,
@@ -1251,7 +1257,7 @@ fn headless(args: Args) -> Result<(), HostError> {
 mod tests {
     use loam::math::Rotor;
     use loam::render::raymarch::RaymarchShape;
-    use loam::runtime::{Command, Records};
+    use loam::runtime::{AppCommand, ChartCommand, ChartPoint, Command, Records};
     use loam::shape::polytope::Polytope4;
 
     use super::*;
@@ -1278,6 +1284,17 @@ mod tests {
         booted.session.submit(Command::App(Box::new(action)));
     }
 
+    fn slot_entity(booted: &Boot) -> Entity {
+        booted
+            .session
+            .app
+            .slots
+            .iter()
+            .map(|(entity, _)| entity)
+            .next()
+            .expect("the row has a slot")
+    }
+
     fn published<R>(
         session: &mut Session<Playground>,
         records: &mut Records,
@@ -1291,18 +1308,291 @@ mod tests {
     }
 
     #[test]
-    fn the_booted_playground_publishes_its_section_and_reset_returns_the_row_to_rest() {
+    fn a_reset_before_any_action_leaves_every_action_working() {
+        let mut booted = one_slot();
+        booted.session.submit(Command::Reset);
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the reset applied");
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        assert_eq!(*booted.session.app.mode.get(), Mode::Toybox);
+        assert!(
+            booted.session.results()[0].outcome.is_ok(),
+            "the first action after a reset was refused: {:?}",
+            booted.session.results()[0].outcome
+        );
+    }
+
+    #[test]
+    fn spin_is_refused_in_toybox_instead_of_reporting_done() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        send(&mut booted, Action::Running(Some(true)));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let outcome = &booted.session.results()[0].outcome;
+        assert!(
+            matches!(outcome, Err(Rejection::Unsupported(_))),
+            "spin in Toybox reported {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_mode_command_lands_in_the_store_at_the_next_boundary() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        assert_eq!(
+            *booted.session.app.mode.get(),
+            Mode::Rotate,
+            "an intent changed the store before any boundary applied it"
+        );
+
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        assert_eq!(*booted.session.app.mode.get(), Mode::Toybox);
+        assert_eq!(
+            booted.session.results().len(),
+            1,
+            "the boundary applied {} commands, not the one mode change",
+            booted.session.results().len()
+        );
+        assert!(booted.session.results()[0].outcome.is_ok());
+    }
+
+    #[test]
+    fn wireframe_and_perimeter_toggles_control_separate_edge_layers() {
+        let mut booted = one_slot();
+        booted.session.boundary(Input::default()).expect("boundary");
+        let mut records = Records::default();
+        for reset in [false, true] {
+            if reset {
+                send(&mut booted, Action::Reset);
+                booted.session.boundary(Input::default()).expect("reset");
+            }
+            published(&mut booted.session, &mut records, |publication| {
+                assert!(publication
+                    .views
+                    .iter()
+                    .all(|view| view.records.segments().is_empty()));
+                assert!(!publication.views[0].records.triangles().is_empty());
+            });
+        }
+        send(
+            &mut booted,
+            Action::Display(Display {
+                wireframe: true,
+                ..Display::default()
+            }),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let counts = published(&mut booted.session, &mut records, |publication| {
+            publication
+                .views
+                .iter()
+                .map(|view| view.records.segments().len())
+                .collect::<Vec<_>>()
+        });
+        assert!(counts[0] > 0);
+        assert_eq!(counts[1], 96);
+        let mut display = *booted.session.app.display.get();
+        display.section_perimeter = false;
+        send(&mut booted, Action::Display(display));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("perimeter off");
+        published(&mut booted.session, &mut records, |publication| {
+            assert!(publication.views[0].records.segments().is_empty());
+            assert_eq!(publication.views[1].records.segments().len(), 96);
+        });
+    }
+
+    #[test]
+    fn an_unmoved_row_under_an_unchanged_view_is_not_republished() {
         let mut booted = one_slot();
         let mut records = Records::default();
-        booted.session.boundary(Input::default()).expect("boundary");
-        published(&mut booted.session, &mut records, |publication| {
-            assert!(!publication.views[0].records.triangles().is_empty());
-        });
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let built = |session: &mut Session<Playground>, records: &mut Records| {
+            published(session, records, |publication| {
+                publication.views[0].records.built()
+            })
+        };
+        built(&mut booted.session, &mut records);
+        let first = built(&mut booted.session, &mut records);
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let idle = built(&mut booted.session, &mut records);
+        assert_eq!(first, idle, "publication rebuilt records nothing changed");
 
+        send(&mut booted, Action::Slice(0.4));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let moved = built(&mut booted.session, &mut records);
+        assert_ne!(
+            idle, moved,
+            "a new slice left the view's records at their old build"
+        );
+    }
+
+    #[test]
+    fn toybox_mode_parks_the_rotation_row_and_spawns_five_floor_cleared_toys() {
+        let mut booted = one_slot();
+        let original = slot_entity(&booted);
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        assert!(booted.session.app.hidden.contains(original));
+        assert!(!booted.session.app.slots.contains(original));
+        assert_eq!(booted.session.app.slots.len(), 5);
+        assert_eq!(booted.session.app.toys.len(), 5);
+        assert_eq!(booted.session.app.walls.len(), 8);
+        let expected = [
+            Polytope4::Cell24,
+            Polytope4::Tesseract,
+            Polytope4::Pentatope,
+            Polytope4::Cell16,
+            Polytope4::Tesseract,
+        ];
+        let slots: Vec<(Entity, Slot)> = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .map(|(entity, slot)| (entity, *slot))
+            .collect();
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain");
+        for &(entity, slot) in &slots {
+            assert_eq!(slot.entry.collider_polytope(), Some(expected[slot.index]));
+            let pose = r4.poses().get(entity).expect("the toy has a pose");
+            let polytope = expected[slot.index];
+            let lowest = polytope
+                .topology()
+                .vertices
+                .iter()
+                .map(|vertex| (pose.point + pose.frame.apply(*vertex * toy::BODY_SIZE)).y)
+                .fold(f32::INFINITY, f32::min);
+            assert!((lowest - consts::FLOOR_Y - 0.20).abs() < 1e-5);
+            assert!(r4
+                .physics()
+                .and_then(|physics| physics.body(entity))
+                .is_some());
+        }
+        for _ in 0..600 {
+            booted.session.tick().expect("the tick ran");
+        }
+        let toys: Vec<Entity> = booted
+            .session
+            .app
+            .toys
+            .iter()
+            .map(|(entity, _)| entity)
+            .collect();
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain");
+        let physics = r4.physics().expect("the domain has physics");
+        assert!(toys.iter().all(|entity| physics
+            .body(*entity)
+            .and_then(|body| physics.world().body(body))
+            .is_some_and(|body| body.is_sleeping())));
+        for (entity, slot) in slots {
+            let body = physics
+                .world()
+                .body(physics.body(entity).expect("body"))
+                .expect("body row");
+            let lowest = slot
+                .entry
+                .collider_polytope()
+                .expect("polytope")
+                .topology()
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    (body.position + body.orientation.rotation.apply(*vertex * toy::BODY_SIZE)).y
+                })
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                (consts::FLOOR_Y..=consts::FLOOR_Y + loam::physics::manifold::PENETRATION_SLOP)
+                    .contains(&lowest),
+                "{} rests at y={lowest}",
+                slot.entry.label
+            );
+        }
+    }
+
+    #[test]
+    fn row_edits_preserve_rotation_and_reset_keeps_authored_shapes() {
+        let mut booted = one_slot();
         send(&mut booted, Action::PlaneAngle(0, 0.4));
         send(&mut booted, Action::AddShape(4));
+        send(&mut booted, Action::AddShape(6));
+        send(&mut booted, Action::RemoveShape(0));
         booted.session.boundary(Input::default()).expect("edit row");
         assert!(booted.session.results().iter().all(|r| r.outcome.is_ok()));
+        let active = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .find(|(_, slot)| slot.index == *booted.session.app.active.get())
+            .expect("active shape")
+            .0;
+        let frame = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(active)
+            .expect("pose")
+            .frame;
+        send(&mut booted, Action::ReorderShape { from: 0, to: 2 });
+        booted.session.boundary(Input::default()).expect("reorder");
+        assert!(booted.session.results().iter().all(|r| r.outcome.is_ok()));
+        assert_eq!(booted.session.app.active.get(), &0);
+        assert_eq!(
+            booted
+                .session
+                .app
+                .slots
+                .get(active)
+                .expect("active shape")
+                .index,
+            0
+        );
         let rows: Vec<_> = booted
             .session
             .app
@@ -1316,11 +1606,14 @@ mod tests {
             .domains()
             .read(booted.domain)
             .expect("domain");
-        for (entity, _) in &rows {
+        for (entity, slot) in &rows {
+            assert_eq!(slot.rest, rest_of(slot.index, 2));
             let pose = domain.poses().get(*entity).expect("pose");
             assert_ne!(pose.frame, loam::math::Rotor4::IDENTITY);
+            assert_eq!(pose.frame, frame);
+            assert_eq!(pose.point, slot.rest);
+            assert_eq!(domain.instances().contains(*entity), slot.index == 1);
         }
-
         send(&mut booted, Action::Reset);
         booted.session.boundary(Input::default()).expect("reset");
         assert_eq!(booted.session.app.slots.len(), 2);
@@ -1334,13 +1627,359 @@ mod tests {
             assert_eq!(pose.point, slot.rest);
             assert_eq!(pose.frame, loam::math::Rotor4::IDENTITY);
         }
-        published(&mut booted.session, &mut records, |publication| {
-            assert!(!publication.views[0].records.triangles().is_empty());
-        });
     }
 
     #[test]
-    fn a_grabbed_toy_follows_the_drag_and_a_throw_leaves_it_asleep_inside_the_arena() {
+    fn rotate_pointer_drag_cannot_pick_or_translate_a_shape() {
+        let mut booted = one_slot();
+        booted.session.boundary(Input::default()).expect("boundary");
+        let entity = slot_entity(&booted);
+        let before = *booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(entity)
+            .expect("pose");
+        for (phase, ndc) in [
+            (PointerPhase::Began, [0.0, 0.0]),
+            (PointerPhase::Moved, [0.5, 0.0]),
+            (PointerPhase::Ended, [0.5, 0.0]),
+        ] {
+            let pointer = Pointer {
+                id: 0,
+                button: Some(PointerButton::Primary),
+                ndc,
+                delta: [0.5, 0.0],
+                phase,
+                time: 1.0,
+            };
+            booted
+                .session
+                .boundary(Input {
+                    pointers: vec![pointer],
+                    ..Input::default()
+                })
+                .expect("boundary");
+        }
+        assert!(booted.session.dragging().is_none());
+        let after = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(entity)
+            .expect("pose");
+        assert_eq!(after.point, before.point);
+        assert_eq!(after.frame, before.frame);
+    }
+
+    #[test]
+    fn a_warmed_frame_with_every_overlay_on_asks_the_allocator_for_nothing() {
+        let mut booted = one_slot();
+        booted
+            .session
+            .dispatch(|dispatch| Action::Gimbal(None).apply(dispatch))
+            .expect("handles");
+        booted
+            .session
+            .dispatch(|dispatch| Action::Hud(None).apply(dispatch))
+            .expect("readout");
+        send(&mut booted, Action::Color(ColorMode::WDepth));
+        send(
+            &mut booted,
+            Action::Strip(Strip {
+                on: true,
+                w: true,
+                t: true,
+                ..Strip::default()
+            }),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        assert!(booted.session.results().iter().all(|r| r.outcome.is_ok()));
+
+        let mut records = Records::default();
+        let mut scratch = Scratch::new();
+        let mut gimbal = Gimbal::default();
+        gimbal.enabled = true;
+        let mut gimbal_renderer = gimbal::GimbalRenderer::default();
+        let mut lines = String::new();
+        let frame = |booted: &mut Boot,
+                     records: &mut Records,
+                     scratch: &mut Scratch,
+                     gimbal_renderer: &mut gimbal::GimbalRenderer,
+                     lines: &mut String| {
+            booted
+                .session
+                .boundary(Input::default())
+                .expect("the boundary ran");
+            booted.session.tick().expect("the tick ran");
+            records.publish(&mut booted.session).expect("published");
+            let publication = records.lend().expect("the buffer is free");
+            let alpha = publication.alpha;
+            records.release(publication);
+            collect(&booted.session, booted.domain, alpha, scratch);
+            fill_strip(
+                &{ *booted.session.app.strip.get() },
+                turn_of(&booted.session),
+                HEADLESS_FRAME,
+                0.0,
+                scratch,
+            );
+            gimbal_renderer.rings(&gimbal, scratch.center);
+            hud::write_readout(lines, &readout_of(&booted.session));
+        };
+        for _ in 0..16 {
+            frame(
+                &mut booted,
+                &mut records,
+                &mut scratch,
+                &mut gimbal_renderer,
+                &mut lines,
+            );
+        }
+
+        let bytes = loam_time::alloc::bytes_allocated_by(|| {
+            for _ in 0..16 {
+                frame(
+                    &mut booted,
+                    &mut records,
+                    &mut scratch,
+                    &mut gimbal_renderer,
+                    &mut lines,
+                );
+            }
+        })
+        .expect("the counting allocator is installed");
+        assert_eq!(
+            bytes, 0,
+            "sixteen warmed frames of boundary, tick, publication, collection, strip, gimbal, and readout asked the allocator for {bytes} bytes"
+        );
+    }
+
+    #[test]
+    fn reset_restyles_replacement_toys_even_when_the_row_count_does_not_change() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        send(&mut booted, Action::Color(ColorMode::UniqueEdge));
+        send(
+            &mut booted,
+            Action::Display(Display {
+                wireframe: true,
+                wireframe_width_px: 4.0,
+                wireframe_opacity: 0.2,
+                ..Display::default()
+            }),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("style toys");
+        let mut records = Records::default();
+        published(&mut booted.session, &mut records, |_| ());
+        let instances = |booted: &Boot| {
+            booted
+                .session
+                .domains()
+                .read(booted.domain)
+                .expect("domain")
+                .instances()
+                .iter()
+                .map(|(_, instance)| *instance)
+                .collect::<Vec<_>>()
+        };
+        let before = instances(&booted);
+        assert_eq!(before.len(), 5);
+        assert!(before
+            .iter()
+            .all(|i| i.line_width_px == Some(4.0) && i.line_opacity == Some(0.2)));
+        send(&mut booted, Action::Reset);
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("reset toys");
+        published(&mut booted.session, &mut records, |_| ());
+        assert_eq!(instances(&booted), before);
+    }
+
+    #[test]
+    fn a_primary_grab_does_not_block_secondary_orbit_or_wheel_zoom() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted.session.boundary(Input::default()).expect("toybox");
+        let center = toy::pose_at(Polytope4::Pentatope, 0.0).point.truncate();
+        booted.session.app.control.get_mut().orbit = Orbit::around(center.to_array(), EYE_BACK);
+        let mut input = loam::app::session::input::InputMap::default();
+        input.resize(800, 600, 1.0);
+        input.button([0.0; 2], PointerButton::Primary, true);
+        booted.session.boundary(input.take()).expect("grab");
+        let picked = booted.session.dragging().expect("grab");
+        booted.session.boundary(Input::default()).expect("hold");
+
+        input.button([0.0; 2], PointerButton::Secondary, true);
+        input.moved([0.05, 0.05]);
+        input.wheel([0.0, 1.0]);
+        let movement = input.take();
+        booted.session.boundary(movement).expect("move");
+        let orbit = booted.session.app.control.get().orbit;
+        let root = booted.session.views().root();
+        let eye = booted.session.views().get(root).expect("root view").eye;
+        assert!(orbit.yaw < -0.1 && orbit.pitch > 0.08);
+        assert!(orbit.distance < EYE_BACK);
+        let held = booted.session.dragging().expect("still grabbed");
+        assert_eq!(held.entity, picked.entity);
+        let clip = loam::render::view::root_view_projection(&eye)
+            * glam::Vec3::from(held.image_point()).extend(1.0);
+        assert!((clip.x / clip.w - 0.05).abs() < 1e-5);
+        assert!((clip.y / clip.w - 0.05).abs() < 1e-5);
+        let physics = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain");
+        assert!(physics.physics().expect("physics").is_held(picked.entity));
+    }
+
+    fn flicked(step_ndc: f32) -> (Vec4, Vec4, Vec4) {
+        use loam::physics::PhysicsSpace;
+
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted.session.boundary(Input::default()).expect("toybox");
+        let entity = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .find(|(_, slot)| slot.index == 2)
+            .map(|(entity, _)| entity)
+            .expect("middle toy");
+        let center = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .poses()
+            .get(entity)
+            .expect("pose")
+            .point
+            .truncate();
+        booted.session.app.control.get_mut().orbit = Orbit::around(center.to_array(), EYE_BACK);
+        booted.session.boundary(Input::default()).expect("aim");
+        booted.session.grab([0.0; 2], 0.0).expect("grab");
+        booted.session.boundary(Input::default()).expect("hold");
+        booted.session.tick().expect("tick");
+        let mut time = 0.0;
+        for step in 1..=6 {
+            time = f64::from(step) / 60.0;
+            booted
+                .session
+                .drag([0.0, step_ndc * step as f32], time)
+                .expect("drag");
+            booted.session.boundary(Input::default()).expect("carry");
+            booted.session.tick().expect("tick");
+        }
+        let release = booted.session.release_at(time).expect("held");
+        send(&mut booted, Action::Throw(release.entity, release.velocity));
+        booted.session.boundary(Input::default()).expect("throw");
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain");
+        let physics = r4.physics().expect("physics");
+        let body = physics
+            .world()
+            .body(physics.body(entity).expect("body"))
+            .expect("row");
+        let handle = physics.released_anchor(entity).expect("released");
+        let slip = EuclideanR4.velocity_at_point(body, handle) - body.velocity;
+        let flick = glam::Vec3::from(release.velocity).extend(0.0);
+        (body.velocity, slip, flick)
+    }
+
+    #[test]
+    fn a_rigid_flick_spins_the_toy_the_way_it_moved_the_grab_point() {
+        let (_, slip, flick) = flicked(0.06);
+        assert!(
+            slip.dot(flick.normalize()) > 0.5,
+            "a flick along {flick} left the grab point turning at {slip}"
+        );
+    }
+
+    #[test]
+    fn a_flick_past_the_carry_cap_still_throws_faster() {
+        let (fast, _, _) = flicked(0.22);
+        let (faster, _, _) = flicked(0.35);
+        assert!(
+            faster.length() > 1.4 * fast.length(),
+            "a faster flick moved the throw only from {} to {}",
+            fast.length(),
+            faster.length()
+        );
+    }
+
+    #[test]
+    fn a_carry_by_the_camera_alone_throws_with_its_motion() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::Mode(Mode::Toybox));
+        booted.session.boundary(Input::default()).expect("toybox");
+        let center = toy::pose_at(Polytope4::Pentatope, 0.0).point.truncate();
+        booted.session.app.control.get_mut().orbit = Orbit::around(center.to_array(), EYE_BACK);
+        let pointer = |phase, time| Pointer {
+            id: 0,
+            button: Some(PointerButton::Primary),
+            ndc: [0.0; 2],
+            delta: [0.0; 2],
+            phase,
+            time,
+        };
+        booted
+            .session
+            .boundary(Input {
+                pointers: vec![pointer(PointerPhase::Began, 0.0)],
+                ..Input::default()
+            })
+            .expect("grab");
+        let picked = booted.session.dragging().expect("grab").entity;
+        for step in 1..=12 {
+            booted.session.app.control.get_mut().orbit.distance -= 0.1;
+            booted
+                .session
+                .boundary(Input {
+                    time: step as f64 * 0.016,
+                    ..Input::default()
+                })
+                .expect("carry");
+            booted.session.tick().expect("the carry tick ran");
+        }
+        booted
+            .session
+            .boundary(Input {
+                pointers: vec![pointer(PointerPhase::Ended, 13.0 * 0.016)],
+                time: 13.0 * 0.016,
+                ..Input::default()
+            })
+            .expect("release");
+        let physics = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("domain")
+            .physics()
+            .expect("physics");
+        let body = physics.body(picked).expect("body");
+        let velocity = physics.world().body(body).expect("body row").velocity;
+        assert!(velocity.z < -1.0, "a camera carry released at {velocity}");
+    }
+
+    #[test]
+    fn a_toybox_drag_stays_held_between_samples_and_reports_its_guides() {
         let mut booted = one_slot();
         send(&mut booted, Action::Mode(Mode::Toybox));
         booted
@@ -1376,14 +2015,12 @@ mod tests {
             .expect("the ray through the slot center picks it");
         assert_eq!(picked.entity, entity);
         booted.session.boundary(Input::default()).expect("hold");
-        let anchor = booted
-            .session
-            .domains()
-            .read(booted.domain)
-            .expect("the r4 domain")
-            .physics()
-            .and_then(|physics| physics.held_anchor(picked.entity))
-            .expect("the toy is held");
+        booted.session.app.toybox_debug.set(true);
+        let mut guides = guides::Guides::default();
+        guides.update(&booted.session, booted.domain, 1.0);
+        assert_eq!(guides.points.len(), 1);
+        assert_eq!(guides.lines.len(), 8);
+        let anchor = guides.points[0].position;
 
         let target = booted
             .session
@@ -1393,6 +2030,27 @@ mod tests {
             .session
             .boundary(Input::default())
             .expect("the boundary applied the move");
+        guides.update(&booted.session, booted.domain, 1.0);
+        assert_eq!(guides.points[0].position, anchor);
+        let refusal = booted
+            .session
+            .dispatch(|dispatch| {
+                dispatch.apply(Command::Chart(
+                    booted.domain.id(),
+                    ChartCommand::Move {
+                        entity: picked.entity,
+                        point: ChartPoint {
+                            chart: target.chart,
+                            coordinates: [f32::NAN, 0.0, 0.0, 0.0],
+                        },
+                    },
+                ))
+            })
+            .expect_err("a held body accepted a nonfinite target");
+        assert!(matches!(
+            refusal,
+            Rejection::Domain(loam::runtime::DomainError::InvalidCoordinate("x"))
+        ));
         for _ in 0..120 {
             booted.session.tick().expect("the tick ran");
         }
@@ -1405,7 +2063,7 @@ mod tests {
             .physics()
             .and_then(|physics| physics.held_anchor(picked.entity))
             .expect("the toy is held");
-        let goal = anchor.y + target.coordinates[1] - center.y;
+        let goal = anchor[1] + target.coordinates[1] - center.y;
         assert!(
             (grip.y - goal).abs() < 0.1,
             "the grab point stopped following at y {} before its goal {goal}",
@@ -1413,6 +2071,9 @@ mod tests {
         );
 
         let release = booted.session.release_at(1.05).expect("the drag was live");
+        guides.update(&booted.session, booted.domain, 1.0);
+        assert!(guides.points.is_empty());
+        assert_eq!(guides.lines.len(), 4);
         send(&mut booted, Action::Throw(release.entity, release.velocity));
         booted
             .session
@@ -1452,14 +2113,57 @@ mod tests {
             body.position.w,
             body.velocity.w
         );
-        assert!(
-            body.position.x.abs() < toy::ARENA_HALF
-                && body.position.z.abs() < toy::ARENA_HALF
-                && body.position.y > consts::FLOOR_Y,
-            "the thrown toy came to rest outside the arena at {}",
-            body.position
-        );
         assert!(body.is_sleeping());
+    }
+
+    #[test]
+    fn a_shape_card_respawns_the_slot_in_place_with_the_new_polytopes_edges() {
+        let mut booted = one_slot();
+        send(
+            &mut booted,
+            Action::Display(Display {
+                wireframe: true,
+                ..Display::default()
+            }),
+        );
+        send(&mut booted, Action::Slice(consts::W_RANGE));
+        let rest = booted
+            .session
+            .app
+            .slots
+            .iter()
+            .map(|(_, slot)| slot.rest)
+            .next()
+            .expect("the row has a slot");
+
+        send(&mut booted, Action::Shape(0, 0));
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+
+        let held: Vec<Slot> = booted.session.app.slots.iter().map(|(_, s)| *s).collect();
+        assert_eq!(held.len(), 1, "the swap left {} slots", held.len());
+        assert_eq!(held[0].entry.label, "5-cell");
+        assert_eq!(held[0].index, 0);
+        assert_eq!(
+            held[0].rest, rest,
+            "the replacement moved off the slot's rest"
+        );
+
+        let mut records = Records::default();
+        let counts = published(&mut booted.session, &mut records, |publication| {
+            publication
+                .views
+                .iter()
+                .map(|view| view.records.segments().len())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            counts,
+            [0, 10],
+            "the swapped slot still publishes the old polytope's edges"
+        );
     }
 
     #[test]
@@ -1491,6 +2195,137 @@ mod tests {
 
         assert!((scrubbed(1) - scrubbed(TICKS)).abs() < 1e-6);
         assert!(scrubbed(1) > 0.0);
+    }
+
+    #[test]
+    fn the_gimbal_rotor_turns_the_row_by_the_angle_its_ring_names() {
+        use loam::math::{Bivector, Plane4, Rotor};
+
+        let mut booted = one_slot();
+        const ANGLE: f32 = 0.4;
+        let domain = booted.domain;
+        booted.session.dispatch(|d| {
+            mode::turn_row(
+                d.app,
+                d.domains,
+                domain,
+                (Plane4::Xw.unit_bivector() * ANGLE).exp(),
+            )
+            .expect("the turn applies")
+        });
+
+        let entity = slot_entity(&booted);
+        let r4 = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain");
+        let turned = r4.poses().get(entity).expect("pose").frame.apply(Vec4::X);
+        let expected = Vec4::new(ANGLE.cos(), 0.0, 0.0, ANGLE.sin());
+        assert!(
+            (turned - expected).length() < 1e-5,
+            "the ring's rotor sent x to {turned} rather than the analytic {expected}"
+        );
+    }
+
+    #[test]
+    fn a_press_on_a_ring_turns_the_row_only_while_the_filmstrip_is_off() {
+        fn press_and_drag(booted: &mut Boot, ndc: [f32; 2]) -> bool {
+            let mut at = |phase, ndc, time| {
+                let pointer = Pointer {
+                    id: 0,
+                    button: Some(PointerButton::Primary),
+                    ndc,
+                    delta: [0.0; 2],
+                    phase,
+                    time,
+                };
+                booted
+                    .session
+                    .boundary(Input {
+                        pointers: vec![pointer],
+                        ..Input::default()
+                    })
+                    .expect("pointer boundary");
+                booted.session.app.control.get().gimbal.held()
+            };
+            let taken = at(PointerPhase::Began, ndc, 0.0);
+            at(PointerPhase::Moved, [ndc[0] + 0.2, ndc[1] + 0.2], 1.0);
+            taken
+        }
+
+        let mut booted = one_slot();
+        booted
+            .session
+            .dispatch(|dispatch| Action::Gimbal(None).apply(dispatch))
+            .expect("handles");
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let on_ring = gimbal::widget(glam::Vec3::new(0.0, BODY_Y, 0.0)).rings()[0].point(0.0);
+        let ndc = booted
+            .session
+            .views()
+            .ndc(on_ring.to_array())
+            .expect("the ring is in front of the eye");
+
+        assert!(
+            press_and_drag(&mut booted, ndc),
+            "the press missed the ring, so the strip has nothing to mask"
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let entity = slot_entity(&booted);
+        let turned = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain")
+            .poses()
+            .get(entity)
+            .expect("pose")
+            .frame;
+        assert_ne!(
+            turned,
+            loam::math::Rotor4::IDENTITY,
+            "the ring drag never turned the row, so the check below proves nothing"
+        );
+
+        send(
+            &mut booted,
+            Action::Strip(Strip {
+                on: true,
+                ..Strip::default()
+            }),
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        assert!(
+            !press_and_drag(&mut booted, ndc),
+            "the gimbal took a press while the filmstrip covered it"
+        );
+        booted
+            .session
+            .boundary(Input::default())
+            .expect("the boundary ran");
+        let held = booted
+            .session
+            .domains()
+            .read(booted.domain)
+            .expect("the r4 domain")
+            .poses()
+            .get(entity)
+            .expect("pose")
+            .frame;
+        assert_eq!(
+            held, turned,
+            "an invisible gimbal turned the row under the filmstrip"
+        );
     }
 
     #[test]
@@ -1551,6 +2386,114 @@ mod tests {
         assert!(
             booted.session.drag([0.5, 0.0], 2.0).is_err(),
             "the grab survived the focus change that cancelled the pointer"
+        );
+    }
+
+    #[test]
+    fn a_raster_cut_is_duplicated_in_the_projection_layer() {
+        const TESSERACT: ShapeEntry = ShapeEntry {
+            shape: RaymarchShape::Polytope(Polytope4::Tesseract),
+            body_color: [0.30, 0.55, 0.95],
+            label: "8-cell",
+            long_name: "tesseract",
+            category: catalog::Category::RegularPolychoron,
+        };
+        let mut booted = boot(&[TESSERACT]).expect("the session boots");
+        booted.session.boundary(Input::default()).expect("boundary");
+        let mut records = Records::default();
+        published(&mut booted.session, &mut records, |publication| {
+            assert_eq!(publication.views[0].records.triangles().len(), 24);
+            assert!(publication.views[1].records.triangles().is_empty());
+        });
+    }
+
+    #[test]
+    fn filmstrip_recenters_after_single_and_restores_the_single_camera() {
+        let focus = (true, 0, Mode::Rotate);
+        let single_target = [-2.4, 0.0, 0.0];
+        let mut orbit = Orbit::around(single_target, 5.0);
+        orbit.yaw = 0.3;
+        orbit.pitch = -0.4;
+        let mut camera_focus = Some(focus);
+        let mut filmstrip_return = None;
+        let strip = Strip {
+            on: true,
+            ..Strip::default()
+        };
+
+        focus_camera(
+            &mut orbit,
+            &mut camera_focus,
+            &mut filmstrip_return,
+            strip,
+            focus,
+            glam::Vec3::from(single_target),
+        );
+        assert_eq!(orbit.target, [0.0; 3]);
+        assert_eq!((orbit.yaw, orbit.pitch, orbit.distance), (0.3, -0.4, 5.0));
+
+        focus_camera(
+            &mut orbit,
+            &mut camera_focus,
+            &mut filmstrip_return,
+            Strip { t: true, ..strip },
+            focus,
+            glam::Vec3::from(single_target),
+        );
+        assert_eq!(orbit.target, [0.0, BODY_Y, 0.0]);
+
+        focus_camera(
+            &mut orbit,
+            &mut camera_focus,
+            &mut filmstrip_return,
+            Strip { on: false, ..strip },
+            focus,
+            glam::Vec3::from(single_target),
+        );
+        assert_eq!(orbit.target, single_target);
+        assert_eq!((orbit.yaw, orbit.pitch, orbit.distance), (0.3, -0.4, 5.0));
+    }
+
+    #[test]
+    fn the_marcher_takes_one_strip_cell_per_grid_rectangle_and_none_once_the_strip_is_off() {
+        let mut scratch = Scratch::new();
+        let strip = Strip {
+            on: true,
+            w: true,
+            t: true,
+            count_w: 5,
+            count_t: 3,
+            ..Strip::default()
+        };
+        fill_strip(&strip, Bivector4::ZERO, HEADLESS_FRAME, 0.25, &mut scratch);
+        assert_eq!(scratch.strip.len(), 15, "a 5 by 3 grid is fifteen draws");
+        let covered: u64 = scratch
+            .strip
+            .iter()
+            .map(|(viewport, _, _)| u64::from(viewport.width) * u64::from(viewport.height))
+            .sum();
+        assert_eq!(
+            covered,
+            u64::from(HEADLESS_FRAME.0) * u64::from(HEADLESS_FRAME.1),
+            "the cells the marcher draws leave a gap or overlap"
+        );
+        let slices: Vec<f32> = scratch.strip.iter().map(|(_, w, _)| *w).collect();
+        assert!(
+            (slices[0] - (0.25 - BODY_SIZE)).abs() < 1e-6
+                && (slices[14] - (0.25 + BODY_SIZE)).abs() < 1e-6,
+            "the strip does not span the body around the slider: {slices:?}"
+        );
+
+        fill_strip(
+            &Strip { on: false, ..strip },
+            Bivector4::ZERO,
+            HEADLESS_FRAME,
+            0.25,
+            &mut scratch,
+        );
+        assert!(
+            scratch.strip.is_empty(),
+            "a stale strip kept the filmstrip on screen after it was switched off"
         );
     }
 }

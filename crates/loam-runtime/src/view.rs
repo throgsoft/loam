@@ -939,6 +939,8 @@ pub struct ViewRecords {
     pub(crate) revision: u32,
     pub(crate) built: Stamp,
     pub(crate) alpha: f32,
+    pub(crate) merged: Vec<Entity>,
+    pub(crate) generation: u64,
 }
 
 impl ViewRecords {

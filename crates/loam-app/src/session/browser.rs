@@ -522,6 +522,7 @@ fn install_animation_frame<A: Stores>(endpoint: Endpoint, worker: Rc<RefCell<Opt
                 return;
             };
             worker.frame.reset_clock(Instant::now());
+            worker.frame.invalidate();
             drop(held);
             request_frame(&scope_for_restart, &callback_for_restart);
         }));
@@ -821,6 +822,7 @@ impl<A: Stores> Worker<A> {
         self.flush_cursor_request();
         if let Some(enabled) = self.frame.app_mut().vsync.take() {
             self.surface.set_vsync(&self.rd.context.device, enabled);
+            self.frame.invalidate();
         }
         let now = Instant::now();
         if let Pace::Wait(_) = self.frame.app_mut().pacer.decide(now) {

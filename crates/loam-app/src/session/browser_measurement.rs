@@ -24,6 +24,7 @@ struct Sample {
 
 #[derive(Default)]
 struct Skips {
+    unchanged: u64,
     paced: u64,
     empty: u64,
     reconfigured: u64,
@@ -146,6 +147,7 @@ impl Probe {
         cpu_ms: f64,
     ) -> Option<String> {
         match attempt {
+            Attempt::Unchanged => self.skips.unchanged += 1,
             Attempt::Paced => self.skips.paced += 1,
             Attempt::EmptySurface => self.skips.empty += 1,
             Attempt::ReconfiguredSurface => self.skips.reconfigured += 1,
@@ -231,7 +233,7 @@ impl Probe {
         };
         let (width, height, scale) = self.resolution;
         format!(
-            "Loam browser measurement\nLong-press this text to copy.\n\nrequested sample: {} s\nrequested warmup: {} s\ncompleted warmup: {:.3} ms, {} successful presents\nmonotonic start: {:.3} ms\nmonotonic end: {:.3} ms\nactual sample window: {:.3} ms\nbuffer: {} x {} = {} pixels\neffective pixel scale: {:.6}\npixel budget: {}\nsuccessful presents: {}\nsuccessful-present cadence: {:.3} Hz across {} intervals / {:.3} ms\nframe interval: p95 {:.3} ms, p99 {:.3} ms\nCPU host wall duration: total {:.3} ms, mean {:.3} ms, p50 {:.3} ms, p95 {:.3} ms, max {:.3} ms\npercentile sample: {}, {} pairs, {} dropped after fixed capacity\nrun-total skipped attempts: paced {}, empty surface {}, reconfigured surface {}, timeout {}, other surface {}\nrun-total excluded periods: hidden {}, focus/pause {}, resize {}, device recovery {}\nrun-total discarded partial samples: {} windows, {} successful presents",
+            "Loam browser measurement\nLong-press this text to copy.\n\nrequested sample: {} s\nrequested warmup: {} s\ncompleted warmup: {:.3} ms, {} successful presents\nmonotonic start: {:.3} ms\nmonotonic end: {:.3} ms\nactual sample window: {:.3} ms\nbuffer: {} x {} = {} pixels\neffective pixel scale: {:.6}\npixel budget: {}\nsuccessful presents: {}\nsuccessful-present cadence: {:.3} Hz across {} intervals / {:.3} ms\nframe interval: p95 {:.3} ms, p99 {:.3} ms\nCPU host wall duration: total {:.3} ms, mean {:.3} ms, p50 {:.3} ms, p95 {:.3} ms, max {:.3} ms\npercentile sample: {}, {} pairs, {} dropped after fixed capacity\nrun-total skipped attempts: unchanged {}, paced {}, empty surface {}, reconfigured surface {}, timeout {}, other surface {}\nrun-total excluded periods: hidden {}, focus/pause {}, resize {}, device recovery {}\nrun-total discarded partial samples: {} windows, {} successful presents",
             self.sample_seconds,
             self.warmup_seconds,
             self.warmup.1,
@@ -259,6 +261,7 @@ impl Probe {
             percentile_scope,
             self.samples.len(),
             self.dropped_samples,
+            self.skips.unchanged,
             self.skips.paced,
             self.skips.empty,
             self.skips.reconfigured,

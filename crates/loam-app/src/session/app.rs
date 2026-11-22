@@ -29,6 +29,8 @@ pub struct InputHook<'a, A: Stores> {
 pub struct FrameHook<'a, A: Stores> {
     pub session: &'a Session<A>,
     pub published: &'a Publication,
+    /// The alpha `published` was drawn at; pass it to `drawn_pose` for anything drawn beside the instances.
+    pub alpha: f32,
     pub sections: &'a [Section],
     #[cfg(feature = "egui")]
     pub ui: Option<&'a egui::Context>,
@@ -38,6 +40,7 @@ pub struct FrameHook<'a, A: Stores> {
     pub(crate) cursor: &'a mut CursorCapture,
     pub(crate) background: &'a mut wgpu::Color,
     pub(crate) posts: &'a mut Posts,
+    pub(crate) redraw: &'a mut bool,
 }
 
 impl<A: Stores> FrameHook<'_, A> {
@@ -58,6 +61,19 @@ impl<A: Stores> FrameHook<'_, A> {
     pub fn post(&mut self, topic: &'static str, values: &[f32]) {
         self.posts.push(topic, values);
     }
+
+    /// Draws this frame under `Redraw::OnChange`.
+    pub fn request_redraw(&mut self) {
+        *self.redraw = true;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Redraw {
+    #[default]
+    EveryFrame,
+    /// Draws only when the publication content, root eye, size or background changed since the last draw, or a hook called `request_redraw`.
+    OnChange,
 }
 
 #[derive(Default)]
@@ -159,6 +175,7 @@ pub struct SessionApp<A: Stores> {
     pub(crate) console: SessionConsole<A>,
     pub(crate) captures: Vec<CaptureRequest>,
     pub(crate) background: wgpu::Color,
+    pub(crate) redraw: Redraw,
     #[cfg(feature = "egui")]
     pub(crate) debug_layer: bool,
     pub(crate) script: Option<ScriptDriver>,
@@ -185,6 +202,7 @@ impl<A: Stores> SessionApp<A> {
             console,
             captures: Vec::new(),
             background: DEFAULT_BACKGROUND,
+            redraw: Redraw::default(),
             #[cfg(feature = "egui")]
             debug_layer: true,
             script: None,
@@ -277,6 +295,11 @@ impl<A: Stores> SessionApp<A> {
     /// Linear light; the present clear shows wherever no Background pass paints.
     pub fn background(mut self, rgb: [f32; 3]) -> Self {
         self.background = background_color(rgb);
+        self
+    }
+
+    pub fn redraw(mut self, policy: Redraw) -> Self {
+        self.redraw = policy;
         self
     }
 

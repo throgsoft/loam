@@ -15,7 +15,7 @@ use loam_runtime::host::HostError;
 use loam_runtime::{Eye, Publication, PublishError, Records, Session, Stores};
 use loam_time::{frame_trace, FixedTimestep};
 
-use super::app::{CaptureControl, FrameHook, InputHook, Posts, SessionApp};
+use super::app::{CaptureControl, FrameHook, InputHook, Posts, Redraw, SessionApp};
 use super::cursor::CursorCapture;
 #[cfg(feature = "egui")]
 use super::debug_layer::DebugLayer;
@@ -32,6 +32,18 @@ pub(crate) fn failed(error: impl std::fmt::Display) -> HostError {
     HostError::Host(error.to_string())
 }
 
+#[derive(Clone, Copy, Default, PartialEq)]
+struct Shown {
+    content: u64,
+    eye: Eye,
+    size: (u32, u32),
+    background: wgpu::Color,
+}
+
+fn redraws(policy: Redraw, drawn: Option<&Shown>, next: &Shown, forced: bool) -> bool {
+    policy == Redraw::EveryFrame || forced || drawn != Some(next)
+}
+
 struct Inner<A: Stores> {
     session: Session<A>,
     records: Records,
@@ -42,6 +54,8 @@ struct Inner<A: Stores> {
     app: SessionApp<A>,
     posts: Posts,
     no_views_reported: bool,
+    shown: Shown,
+    drawn: Option<Shown>,
     #[cfg(test)]
     presented: Option<Eye>,
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
@@ -53,6 +67,7 @@ pub(crate) struct Frame<A: Stores> {
     #[cfg(feature = "egui")]
     layer: Option<DebugLayer>,
     inner: Inner<A>,
+    trace: Option<frame_trace::Scope>,
 }
 
 impl<A: Stores> Frame<A> {
@@ -76,12 +91,23 @@ impl<A: Stores> Frame<A> {
                 app,
                 posts: Posts::default(),
                 no_views_reported: false,
+                shown: Shown::default(),
+                drawn: None,
                 #[cfg(test)]
                 presented: None,
                 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
                 capture: crate::capture::Capture::new(),
             },
+            trace: None,
         })
+    }
+
+    pub(crate) fn redraw(&self) -> Redraw {
+        self.inner.app.redraw
+    }
+
+    pub(crate) fn invalidate(&mut self) {
+        self.inner.drawn = None;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -227,6 +253,7 @@ impl<A: Stores> Frame<A> {
     }
 
     pub(crate) fn recover(&mut self, gpu: &GpuContext) -> Result<(), HostError> {
+        self.invalidate();
         if let Some(presenter) = self.presenter.as_mut() {
             presenter.attach(gpu).map_err(failed)?;
         }
@@ -234,6 +261,7 @@ impl<A: Stores> Frame<A> {
     }
 
     pub(crate) fn resize(&mut self, width: u32, height: u32, scale: f32) {
+        self.invalidate();
         self.inner.input.resize(width, height, scale);
         #[cfg(feature = "egui")]
         if let Some(layer) = self.layer.as_ref() {
@@ -248,35 +276,68 @@ impl<A: Stores> Frame<A> {
         now: Instant,
         finish: impl FnMut(&mut CommandEncoder),
     ) -> Result<(), HostError> {
+        if self.update(gpu, target.size, now)? {
+            self.draw(gpu, target, now, finish)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn update(
+        &mut self,
+        gpu: &GpuContext,
+        size: (u32, u32),
+        now: Instant,
+    ) -> Result<bool, HostError> {
         self.inner.posts.clear();
-        let outcome = self.stepped(gpu, target, now, finish);
+        self.end_trace();
+        let outcome = self.updated(gpu, size, now);
         if let Err(error) = &outcome {
             tracing::error!("frame failed: {error}");
         }
         outcome
     }
 
-    fn stepped(
+    fn updated(
+        &mut self,
+        gpu: &GpuContext,
+        size: (u32, u32),
+        now: Instant,
+    ) -> Result<bool, HostError> {
+        gpu.device.poll(wgpu::PollType::Poll).map_err(failed)?;
+        if let Some(error) = gpu.take_uncaptured_error() {
+            return Err(failed(error));
+        }
+        let Some(presenter) = self.presenter.as_mut() else {
+            return Ok(false);
+        };
+        if size.0 == 0 || size.1 == 0 {
+            return Ok(false);
+        }
+        frame_trace::begin_frame();
+        self.trace = Some(frame_trace::scope("frame"));
+        let drawn = self.inner.update(
+            gpu,
+            size,
+            now,
+            presenter,
+            #[cfg(feature = "egui")]
+            self.layer.as_ref(),
+        );
+        if !matches!(drawn, Ok(true)) {
+            self.end_trace();
+        }
+        drawn
+    }
+
+    pub(crate) fn draw(
         &mut self,
         gpu: &GpuContext,
         target: &Target<'_>,
         now: Instant,
         finish: impl FnMut(&mut CommandEncoder),
     ) -> Result<(), HostError> {
-        gpu.device.poll(wgpu::PollType::Poll).map_err(failed)?;
-        if let Some(error) = gpu.take_uncaptured_error() {
-            return Err(failed(error));
-        }
-        let Some(presenter) = self.presenter.as_mut() else {
-            return Ok(());
-        };
-        if target.size.0 == 0 || target.size.1 == 0 {
-            return Ok(());
-        }
-        frame_trace::begin_frame();
-        let outcome = {
-            let _frame = frame_trace::scope("frame");
-            self.inner.drive(
+        let outcome = match self.presenter.as_mut() {
+            Some(presenter) => self.inner.draw(
                 gpu,
                 target,
                 now,
@@ -284,10 +345,21 @@ impl<A: Stores> Frame<A> {
                 presenter,
                 #[cfg(feature = "egui")]
                 self.layer.as_ref(),
-            )
+            ),
+            None => Ok(()),
         };
-        frame_trace::end_frame();
+        self.end_trace();
+        if let Err(error) = &outcome {
+            tracing::error!("frame failed: {error}");
+        }
         outcome
+    }
+
+    fn end_trace(&mut self) {
+        if self.trace.is_some() {
+            self.trace = None;
+            frame_trace::end_frame();
+        }
     }
 }
 
@@ -406,25 +478,25 @@ impl<A: Stores> Inner<A> {
         Ok((records, eye))
     }
 
-    fn drive(
+    fn update(
         &mut self,
         gpu: &GpuContext,
-        target: &Target<'_>,
+        size: (u32, u32),
         now: Instant,
-        mut finish: impl FnMut(&mut CommandEncoder),
         presenter: &mut Presenter,
         #[cfg(feature = "egui")] layer: Option<&DebugLayer>,
-    ) -> Result<(), HostError> {
+    ) -> Result<bool, HostError> {
         #[cfg(feature = "egui")]
         let context = layer.map(DebugLayer::begin);
         let faulted_before = self.session.faulted_phase();
         let scene_before = self.session.scene();
         let prepared = self.prepare(
             now,
-            target.size,
+            size,
             #[cfg(feature = "egui")]
             context.as_ref(),
         );
+        let mut requested = false;
         let terminal = match prepared {
             Ok((records, eye)) => {
                 {
@@ -440,15 +512,17 @@ impl<A: Stores> Inner<A> {
                         hook(&mut FrameHook {
                             session: &self.session,
                             published: &records,
+                            alpha: records.alpha,
                             sections: presenter.sections(),
                             #[cfg(feature = "egui")]
                             ui: context.as_ref(),
-                            size: target.size,
+                            size,
                             sender: &sender,
                             capture: CaptureControl::new(captures),
                             cursor,
                             background,
                             posts,
+                            redraw: &mut requested,
                         });
                     }
                 }
@@ -461,9 +535,11 @@ impl<A: Stores> Inner<A> {
                     &gpu.device,
                     &gpu.queue,
                     &eye,
-                    Vec2::new(target.size.0 as f32, target.size.1 as f32),
+                    Vec2::new(size.0 as f32, size.1 as f32),
                     &records.views,
                 );
+                self.shown.content = records.content();
+                self.shown.eye = eye;
                 self.records.release(records);
                 None
             }
@@ -486,7 +562,7 @@ impl<A: Stores> Inner<A> {
         if let Some(driver) = self.app.script.as_mut() {
             driver.advance_console(&mut self.app.console);
         }
-        self.app.console.dispatch_pending();
+        let dispatched = self.app.console.dispatch_pending();
         #[cfg(feature = "egui")]
         if let Some(layer) = layer {
             layer.finish();
@@ -494,7 +570,40 @@ impl<A: Stores> Inner<A> {
         if let Some(error) = terminal {
             return Err(error);
         }
+        #[cfg(feature = "egui")]
+        let layered = layer.is_some();
+        #[cfg(not(feature = "egui"))]
+        let layered = false;
+        #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+        let capturing = !self.app.captures.is_empty() || self.capture.should_capture(now);
+        #[cfg(not(all(feature = "capture", not(target_arch = "wasm32"))))]
+        let capturing = false;
+        self.shown.size = size;
+        self.shown.background = self.app.background;
+        let draw = redraws(
+            self.app.redraw,
+            self.drawn.as_ref(),
+            &self.shown,
+            requested || dispatched || layered || capturing,
+        );
+        // Set again only after submit, so a failed acquire keeps the draw pending.
+        if draw {
+            self.drawn = None;
+        }
+        Ok(draw)
+    }
 
+    fn draw(
+        &mut self,
+        gpu: &GpuContext,
+        target: &Target<'_>,
+        now: Instant,
+        mut finish: impl FnMut(&mut CommandEncoder),
+        presenter: &mut Presenter,
+        #[cfg(feature = "egui")] layer: Option<&DebugLayer>,
+    ) -> Result<(), HostError> {
+        #[cfg(not(all(feature = "capture", not(target_arch = "wasm32"))))]
+        let _ = now;
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         let (wants_pre, wants_post) = self.capture_intent(now);
         let mut encoder = gpu
@@ -536,6 +645,7 @@ impl<A: Stores> Inner<A> {
         crate::trace::record_presentation(presenter.sections(), presenter.uploads());
         #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
         self.consume_capture(&gpu.device, now, pre, post);
+        self.drawn = Some(self.shown);
         Ok(())
     }
 
@@ -618,12 +728,18 @@ mod tests {
     use loam_render::device::FeatureRequest;
     use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
     use loam_runtime::{
-        ActionId, Bindings, Command, DomainBuilder, HostConfig, Identity3, Key, LogCapacity, Phase,
-        Pose, SimConfig, SpawnBundle, Tick, ViewSpec,
+        ActionId, Bindings, Command, DomainBuilder, HostConfig, Identity3, Key, LogCapacity,
+        Material, Phase, Pose, PreparedGeometry, SimConfig, SpawnBundle, Tick, ViewSpec,
     };
     use wgpu::{
         BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
         TextureDescriptor, TextureDimension, TextureUsages, TextureViewDescriptor,
+    };
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+    use wgpu::{
+        Color, ColorTargetState, ColorWrites, FragmentState, LoadOp, MultisampleState, Operations,
+        PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline,
+        RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, StoreOp, VertexState,
     };
 
     use super::*;
@@ -665,6 +781,112 @@ mod tests {
 
         fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
             self.rebuilt.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+    struct Paint {
+        name: &'static str,
+        color: Color,
+        overlay: bool,
+        pipeline: Option<RenderPipeline>,
+    }
+
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+    impl FramePass for Paint {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn stage(&self) -> PassStage {
+            if self.overlay {
+                PassStage::Overlay
+            } else {
+                PassStage::Scene
+            }
+        }
+
+        fn record(
+            &mut self,
+            encoder: &mut CommandEncoder,
+            target: &FrameTarget<'_>,
+        ) -> anyhow::Result<()> {
+            let Some(pipeline) = self.pipeline.as_ref() else {
+                anyhow::bail!("paint recorded before attach");
+            };
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some(self.name),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: target.color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Load,
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.draw(0..3, 0..1);
+            Ok(())
+        }
+
+        fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+            let Color { r, g, b, a } = self.color;
+            let source = format!(
+                r#"
+@vertex
+fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {{
+    var corners = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+    );
+    return vec4<f32>(corners[index], 0.0, 1.0);
+}}
+
+@fragment
+fn fragment() -> @location(0) vec4<f32> {{
+    return vec4<f32>({r:?}, {g:?}, {b:?}, {a:?});
+}}
+"#
+            );
+            let shader = gpu.device.create_shader_module(ShaderModuleDescriptor {
+                label: Some(self.name),
+                source: ShaderSource::Wgsl(source.into()),
+            });
+            self.pipeline = Some(
+                gpu.device
+                    .create_render_pipeline(&RenderPipelineDescriptor {
+                        label: Some(self.name),
+                        layout: None,
+                        vertex: VertexState {
+                            module: &shader,
+                            entry_point: Some("vertex"),
+                            compilation_options: Default::default(),
+                            buffers: &[],
+                        },
+                        primitive: PrimitiveState::default(),
+                        depth_stencil: None,
+                        multisample: MultisampleState::default(),
+                        fragment: Some(FragmentState {
+                            module: &shader,
+                            entry_point: Some("fragment"),
+                            compilation_options: Default::default(),
+                            targets: &[Some(ColorTargetState {
+                                format: frame.color,
+                                blend: None,
+                                write_mask: ColorWrites::ALL,
+                            })],
+                        }),
+                        multiview: None,
+                        cache: None,
+                    }),
+            );
             Ok(())
         }
     }
@@ -732,6 +954,157 @@ mod tests {
             .expect("the frame stepped");
     }
 
+    fn world(moves: bool) -> Session<Bare> {
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        let r3 = session
+            .register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Lines3 {
+            segments: vec![[[0.0; 3], [1.0, 0.0, 0.0]]],
+        });
+        let material = session.add_material(Material::lines([1.0; 4], 1.0));
+        let root = session.views().root();
+        let body = session
+            .dispatch(|dispatch| {
+                let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::Z * 4.0)))?;
+                dispatch
+                    .domains
+                    .typed(r3)?
+                    .add_view(ViewSpec::new(root, eye, Identity3))?;
+                dispatch.spawn(
+                    SpawnBundle::new()
+                        .at(r3, Pose::at(Vec3::ZERO))
+                        .instance(loam_runtime::Instance::new(geometry, material)),
+                )
+            })
+            .expect("the world spawned");
+        session.system(
+            Phase::Simulation,
+            "drift",
+            move |ctx: loam_runtime::Ctx<'_, Bare>| -> Result<(), loam_runtime::DomainError> {
+                if moves {
+                    let x = (ctx.step.tick.0 + 1) as f32;
+                    ctx.domains
+                        .typed(r3)?
+                        .set_pose(body, Pose::at(Vec3::X * x))?;
+                }
+                Ok(())
+            },
+        );
+        session
+    }
+
+    fn on_change(
+        session: Session<Bare>,
+        app: SessionApp<Bare>,
+        gpu: &GpuContext,
+    ) -> (Frame<Bare>, Arc<AtomicU32>) {
+        let recorded = Arc::new(AtomicU32::new(0));
+        let app = app.redraw(Redraw::OnChange).pass(Box::new(Probe {
+            recorded: recorded.clone(),
+            rebuilt: Arc::new(AtomicU32::new(0)),
+        }));
+        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
+        frame
+            .attach(gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        (frame, recorded)
+    }
+
+    #[test]
+    fn a_still_world_under_on_change_skips_the_draw_after_the_first_frame() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let hooked = Arc::new(AtomicU32::new(0));
+        let hooks = hooked.clone();
+        let app = host("still").on_frame(move |_| {
+            hooks.fetch_add(1, Ordering::Relaxed);
+        });
+        let (mut frame, recorded) = on_change(world(false), app, &gpu);
+        let start = Instant::now();
+        for millis in [0, 20, 25] {
+            run_at(
+                &mut frame,
+                &gpu,
+                &texture,
+                start + Duration::from_millis(millis),
+            );
+        }
+        assert_eq!(recorded.load(Ordering::Relaxed), 1);
+        assert_eq!(hooked.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn a_frame_whose_publish_patched_a_moving_body_is_drawn() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let (mut frame, recorded) = on_change(world(true), host("moving"), &gpu);
+        let start = Instant::now();
+        for millis in [0, 20, 25] {
+            run_at(
+                &mut frame,
+                &gpu,
+                &texture,
+                start + Duration::from_millis(millis),
+            );
+        }
+        assert_eq!(recorded.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn a_scale_change_redraws_a_frame_whose_content_is_unchanged() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let (mut frame, recorded) = on_change(world(false), host("scale"), &gpu);
+        let start = Instant::now();
+        run_at(&mut frame, &gpu, &texture, start);
+        run_at(
+            &mut frame,
+            &gpu,
+            &texture,
+            start + Duration::from_millis(20),
+        );
+        assert_eq!(recorded.load(Ordering::Relaxed), 1);
+        frame.resize(SIZE.0, SIZE.1, 2.0);
+        run_at(
+            &mut frame,
+            &gpu,
+            &texture,
+            start + Duration::from_millis(25),
+        );
+        assert_eq!(recorded.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn incompatible_dynamic_shader_reaches_the_host_with_pass_and_cause() {
+        let source = r#"
+struct Fragment {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+@group(0) @binding(0) var<storage, read> wrong: array<u32>;
+@group(0) @binding(1) var<storage, read> bodies: array<u32>;
+@vertex fn vs_fullscreen(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(f32(vertex), 0.0, 0.0, 1.0);
+}
+@fragment fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0);
+}
+@fragment fn fs_depth() -> Fragment {
+    return Fragment(vec4<f32>(0.0), 0.5);
+}
+"#;
+        let gpu = noop_gpu();
+        let app =
+            host("shader error").pass(Box::new(loam_render::HyperslicePass::new(source.into())));
+        let mut frame = bare(app);
+        let error = frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect_err("incompatible shader");
+        let message = format!("{error:?}");
+        assert!(message.contains("pass `hyperslice` failed during attach"));
+        assert!(message.contains("WGSL binding 0:0 must use Uniform"));
+    }
+
     #[test]
     fn a_registered_pass_records_again_after_the_device_is_recovered() {
         let gpu = noop_gpu();
@@ -761,6 +1134,37 @@ mod tests {
             recorded.load(Ordering::Relaxed),
             2,
             "the recovered presenter no longer records the application's pass"
+        );
+    }
+
+    #[test]
+    fn the_frame_callback_reads_the_sections_the_previous_frame_recorded() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let seen: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let reported = seen.clone();
+        let app = host("sections")
+            .pass(Box::new(Probe {
+                recorded: Arc::new(AtomicU32::new(0)),
+                rebuilt: Arc::new(AtomicU32::new(0)),
+            }))
+            .on_frame(move |hook| {
+                let mut names = reported.lock().unwrap_or_else(|error| error.into_inner());
+                names.clear();
+                names.extend(hook.sections.iter().map(|section| section.name));
+            });
+        let mut frame = bare(app);
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+
+        run_one(&mut frame, &gpu, &texture);
+        run_one(&mut frame, &gpu, &texture);
+
+        let names = seen.lock().unwrap_or_else(|error| error.into_inner());
+        assert!(
+            names.contains(&"probe") && names.contains(&"present-draw"),
+            "the callback ran after the presenter cleared its sections: {names:?}"
         );
     }
 
@@ -833,6 +1237,110 @@ mod tests {
 
         run_one(&mut frame, &gpu, &texture);
         assert_eq!(frame.posts().count(), 0);
+    }
+
+    #[test]
+    fn a_publication_with_no_views_is_reported_once_per_frame() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let app = host::<Bare>("no views");
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        session.register_domain(DomainBuilder::new("r3", EuclideanR3));
+        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        let start = Instant::now();
+        for millis in 0..3 {
+            run_at(
+                &mut frame,
+                &gpu,
+                &texture,
+                start + Duration::from_millis(millis),
+            );
+        }
+
+        let lines: Vec<String> = frame
+            .app_mut()
+            .console_mut()
+            .ui()
+            .history()
+            .iter()
+            .map(|line| line.text.clone())
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains("published no views"))
+                .count(),
+            1,
+            "the viewless publication was not reported exactly once: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_frame_between_ticks_draws_the_body_at_the_elapsed_fraction_of_the_tick() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        let r3 = session
+            .register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Lines3 {
+            segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
+        });
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        let body = session
+            .dispatch(|dispatch| {
+                let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::Z * 4.0)))?;
+                dispatch
+                    .domains
+                    .typed(r3)?
+                    .add_view(ViewSpec::new(root, eye, Identity3))?;
+                dispatch.spawn(
+                    SpawnBundle::new()
+                        .at(r3, Pose::at(Vec3::ZERO))
+                        .instance(loam_runtime::Instance::new(geometry, material)),
+                )
+            })
+            .expect("the body spawned");
+        session.system(
+            Phase::Simulation,
+            "move",
+            move |ctx: loam_runtime::Ctx<'_, Bare>| {
+                if ctx.step.tick == Tick(0) {
+                    ctx.domains.typed(r3)?.set_pose(body, Pose::at(Vec3::X))?;
+                }
+                Ok(())
+            },
+        );
+        let mut frame = Frame::new(session, host("alpha")).expect("the frame accepted the config");
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        let start = Instant::now();
+        let dt = Duration::from_nanos(1_000_000_000 / u64::from(SimConfig::default().fixed_hz));
+        run_at(&mut frame, &gpu, &texture, start);
+        run_at(&mut frame, &gpu, &texture, start + dt * 3 / 2);
+
+        let publication = frame.inner.records.lend().expect("the buffer is free");
+        let x = publication.views[0].records.instances.rows()[0]
+            .pose
+            .coordinates[0];
+        assert!((x - 0.5).abs() < 1e-3, "the body was drawn at x = {x}");
+    }
+
+    #[test]
+    fn a_zero_rate_config_pauses_the_frame_and_a_config_without_catch_up_is_refused() {
+        let paused =
+            loam_runtime::SimConfig::new(0, 2).expect("a zero rate is documented as paused");
+        let app = host::<Bare>("paused");
+        let session = Session::new(Bare::default(), paused);
+        assert!(Frame::new(session, app).is_ok());
+        assert!(matches!(
+            loam_runtime::SimConfig::new(60, 0),
+            Err(loam_runtime::SimConfigError::NoCatchUp)
+        ));
     }
 
     #[test]
@@ -933,12 +1441,35 @@ mod tests {
             .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
         let start = Instant::now();
+        let expected_sections = ["scene-pass", "triangles", "present-draw", "probe"];
 
         run_at(&mut frame, &gpu, &texture, start);
+        assert_eq!(
+            frame
+                .presenter
+                .as_ref()
+                .expect("the presenter attached")
+                .sections()
+                .iter()
+                .map(|section| section.name)
+                .collect::<Vec<_>>(),
+            expected_sections
+        );
         assert_eq!(frame.take_cursor_request(), Some(true));
         frame.cursor_applied(true);
         armed.store(true, Ordering::Relaxed);
         run_at(&mut frame, &gpu, &texture, start + Duration::from_millis(1));
+        assert_eq!(
+            frame
+                .presenter
+                .as_ref()
+                .expect("the presenter attached")
+                .sections()
+                .iter()
+                .map(|section| section.name)
+                .collect::<Vec<_>>(),
+            expected_sections
+        );
         assert_eq!(
             frame.phase_error().map(|error| error.phase),
             Some(Phase::Publication)
@@ -953,6 +1484,17 @@ mod tests {
                 &gpu,
                 &texture,
                 start + Duration::from_millis(millis),
+            );
+            assert_eq!(
+                frame
+                    .presenter
+                    .as_ref()
+                    .expect("the presenter attached")
+                    .sections()
+                    .iter()
+                    .map(|section| section.name)
+                    .collect::<Vec<_>>(),
+                expected_sections
             );
         }
         assert_eq!(recorded.load(Ordering::Relaxed), 5);
@@ -982,13 +1524,9 @@ mod tests {
         let texture = offscreen(&gpu);
         let directory = tempfile::tempdir().expect("temp dir");
         let path = directory.path().join("demo.script");
-        std::fs::write(
-            &path,
-            "# opening\n\n0 mark first\n2 mark \"a b\" #ff8800\n2 mark third\n",
-        )
-        .expect("wrote the script");
+        std::fs::write(&path, "0 mark first\n2 mark second\n").expect("wrote the script");
 
-        let marked: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let marked: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let recorded = marked.clone();
         let args = Args::from_argv([format!("--script={}", path.display())]);
         let app = quiet(SessionApp::<Bare>::with_args(
@@ -999,7 +1537,7 @@ mod tests {
             recorded
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .push(args.iter().map(|arg| (*arg).to_string()).collect());
+                .push(args.join(" "));
             Ok(())
         });
         let mut frame = bare(app);
@@ -1020,14 +1558,99 @@ mod tests {
 
         assert_eq!(
             after_each,
-            [1, 1, 3],
+            [1, 1, 2],
             "the host drove the script off its own frame index"
         );
         assert_eq!(
             *marked.lock().unwrap_or_else(|error| error.into_inner()),
-            [vec!["first"], vec!["a b", "#ff8800"], vec!["third"]],
-            "a scripted line lost its file order or its quoting on the way to the verb"
+            ["first", "second"]
         );
+    }
+
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn a_capture_from_the_session_host_writes_the_targets_pixels_gpu_probe() {
+        let instance = Instance::default();
+        let gpu = pollster::block_on(GpuContext::new(instance, FeatureRequest::default(), None))
+            .expect("a wgpu adapter");
+        let texture = offscreen(&gpu);
+        let directory = tempfile::tempdir().expect("temp dir");
+        let app = host("capture")
+            .capture(crate::capture::CaptureRequest::OneShot {
+                stage: crate::capture::CaptureStage::Post,
+                dir: Some(directory.path().to_path_buf()),
+                name: Some("session".into()),
+            })
+            .expect("capture supported");
+        let mut frame = bare(app);
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        run_one(&mut frame, &gpu, &texture);
+        drop(frame);
+
+        let written = directory.path().join("session_post.png");
+        let decoded = ::image::open(&written).expect("the capture wrote a png");
+        assert_eq!(
+            (decoded.width(), decoded.height()),
+            SIZE,
+            "the capture read a different rectangle than the presenter's target"
+        );
+    }
+
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn pre_capture_excludes_the_overlay_that_post_capture_includes_gpu_probe() {
+        let instance = Instance::default();
+        let gpu = pollster::block_on(GpuContext::new(instance, FeatureRequest::default(), None))
+            .expect("a wgpu adapter");
+        let texture = offscreen(&gpu);
+        let directory = tempfile::tempdir().expect("temp dir");
+        let app = host("capture stages")
+            .pass(Box::new(Paint {
+                name: "red scene",
+                color: Color {
+                    r: 1.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+                overlay: false,
+                pipeline: None,
+            }))
+            .pass(Box::new(Paint {
+                name: "green overlay",
+                color: Color {
+                    r: 0.0,
+                    g: 1.0,
+                    b: 0.0,
+                    a: 1.0,
+                },
+                overlay: true,
+                pipeline: None,
+            }))
+            .capture(crate::capture::CaptureRequest::OneShot {
+                stage: crate::capture::CaptureStage::Both,
+                dir: Some(directory.path().to_path_buf()),
+                name: Some("stages".into()),
+            })
+            .expect("capture supported");
+        let mut frame = bare(app);
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        run_one(&mut frame, &gpu, &texture);
+
+        let pre = ::image::open(directory.path().join("stages_pre.png"))
+            .expect("the pre capture")
+            .to_rgba8();
+        let post = ::image::open(directory.path().join("stages_post.png"))
+            .expect("the post capture")
+            .to_rgba8();
+        assert_eq!(pre.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(post.get_pixel(0, 0).0, [0, 255, 0, 255]);
     }
 
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]

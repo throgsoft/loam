@@ -4,15 +4,17 @@ use loam_runtime::host::HostError;
 use loam_runtime::Stores;
 use web_time::Instant;
 use wgpu::{
-    CompositeAlphaMode, Device, DownlevelFlags, Instance, PresentMode, Surface,
+    CommandEncoder, CompositeAlphaMode, Device, DownlevelFlags, Instance, PresentMode, Surface,
     SurfaceConfiguration, SurfaceTexture, TextureFormat, TextureUsages, TextureView,
     TextureViewDescriptor,
 };
 
+use super::app::Redraw;
 use super::frame::{failed, Frame, Target};
 
 pub(crate) enum Attempt {
     Presented,
+    Unchanged,
     #[cfg(target_arch = "wasm32")]
     Paced,
     #[cfg(target_arch = "wasm32")]
@@ -112,10 +114,40 @@ impl SurfaceHost {
         now: Instant,
         after_step: impl FnOnce(&mut Frame<A>, bool),
     ) -> std::result::Result<Attempt, HostError> {
+        match frame.redraw() {
+            Redraw::EveryFrame => self.draw(device, frame, |frame, target, finish| {
+                let stepped = frame.step(&device.context, target, now, finish);
+                after_step(frame, stepped.is_ok());
+                stepped
+            }),
+            Redraw::OnChange => {
+                let updated = frame.update(&device.context, self.size, now);
+                after_step(frame, updated.is_ok());
+                if !updated? {
+                    return Ok(Attempt::Unchanged);
+                }
+                self.draw(device, frame, |frame, target, finish| {
+                    frame.draw(&device.context, target, now, finish)
+                })
+            }
+        }
+    }
+
+    fn draw<A: Stores>(
+        &self,
+        device: &RenderDevice,
+        frame: &mut Frame<A>,
+        record: impl FnOnce(
+            &mut Frame<A>,
+            &Target<'_>,
+            &mut dyn FnMut(&mut CommandEncoder),
+        ) -> std::result::Result<(), HostError>,
+    ) -> std::result::Result<Attempt, HostError> {
         let (surface_frame, swap_view) = match self.begin_frame() {
             Ok(acquired) => acquired,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 self.reconfigure(&device.context.device);
+                frame.invalidate();
                 return Ok(Attempt::ReconfiguredSurface);
             }
             Err(wgpu::SurfaceError::Timeout) => {
@@ -138,13 +170,11 @@ impl SurfaceHost {
                 format: self.format(),
                 size: self.size,
             };
-            let stepped = frame.step(&device.context, &target, now, |encoder| {
+            record(frame, &target, &mut |encoder| {
                 if device.scene_view().is_some() {
                     device.composite_to_swap(encoder, &swap_view);
                 }
-            });
-            after_step(frame, stepped.is_ok());
-            stepped?;
+            })?;
         }
         surface_frame.present();
         Ok(Attempt::Presented)

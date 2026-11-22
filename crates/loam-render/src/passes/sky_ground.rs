@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use loam_runtime::Eye;
-use wgpu::{CommandEncoder, Queue};
+use wgpu::{Color, CommandEncoder, Queue, RenderPass};
 
 use crate::device::GpuContext;
 use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
@@ -60,6 +60,42 @@ impl FramePass for SkyGroundPass {
         Some(DepthConvention::ReversedZ)
     }
 
+    fn shares_pass(&self) -> bool {
+        true
+    }
+
+    fn clear_color(&self) -> Color {
+        self.shared.borrow().sky.horizon()
+    }
+
+    fn prepare(
+        &mut self,
+        _encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
+        let state = &mut *self.shared.borrow_mut();
+        let (Some(node), Some(queue)) = (state.node.as_mut(), state.queue.as_ref()) else {
+            return Ok(());
+        };
+        node.set_uniforms(
+            queue,
+            &SkyGroundUniforms::new(
+                crate::view::root_view_projection(&state.eye),
+                Viewport::full([target.size.0, target.size.1]),
+                state.sky,
+                state.ground,
+            ),
+        );
+        Ok(())
+    }
+
+    fn draw(&mut self, pass: &mut RenderPass<'_>, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+        if let Some(node) = self.shared.borrow().node.as_ref() {
+            node.draw(pass, Some(&Viewport::full([target.size.0, target.size.1])));
+        }
+        Ok(())
+    }
+
     fn record(
         &mut self,
         encoder: &mut CommandEncoder,
@@ -68,21 +104,15 @@ impl FramePass for SkyGroundPass {
         let Some(depth) = target.depth else {
             return Ok(());
         };
-        let state = &mut *self.shared.borrow_mut();
-        let (Some(node), Some(queue)) = (state.node.as_mut(), state.queue.as_ref()) else {
-            return Ok(());
-        };
-        let viewport = Viewport::full([target.size.0, target.size.1]);
-        node.set_uniforms(
-            queue,
-            &SkyGroundUniforms::new(
-                crate::view::root_view_projection(&state.eye),
-                viewport,
-                state.sky,
-                state.ground,
-            ),
-        );
-        node.record(encoder, target.color, depth, Some(&viewport));
+        self.prepare(encoder, target)?;
+        if let Some(node) = self.shared.borrow().node.as_ref() {
+            node.record(
+                encoder,
+                target.color,
+                depth,
+                Some(&Viewport::full([target.size.0, target.size.1])),
+            );
+        }
         Ok(())
     }
 

@@ -20,6 +20,7 @@ impl Guides {
         &mut self,
         session: &Session<Playground>,
         domain: DomainHandle<EuclideanR4>,
+        alpha: f32,
     ) {
         self.lines.clear();
         self.points.clear();
@@ -56,17 +57,20 @@ impl Guides {
             let anchor = r4
                 .physics()
                 .and_then(|physics| physics.held_anchor(drag.entity));
-            if let (Some(anchor), Some(placement), Some(view), Some(eye)) = (
+            if let (Some(anchor), Some(tick), Some(drawn), Some(placement), Some(view), Some(eye)) = (
                 anchor,
+                r4.poses().get(drag.entity),
+                r4.drawn_pose(drag.entity, alpha),
                 placement,
                 r4.view(drag.view),
-                r4.view_eye(drag.view),
+                r4.view_eye(drag.view)
+                    .and_then(|eye| r4.drawn_pose(eye, alpha)),
             ) {
-                if let Some(point) = r4
-                    .poses()
-                    .get(eye)
-                    .and_then(|eye| view.mapping().image_point(eye, anchor))
-                {
+                let anchor = drawn.point
+                    + drawn
+                        .frame
+                        .apply(tick.frame.inverse().apply(anchor - tick.point));
+                if let Some(point) = view.mapping().image_point(&eye, anchor) {
                     self.points.push(PointRecord {
                         position: placement.apply(point),
                         radius_px: 6.0,
@@ -75,7 +79,7 @@ impl Guides {
                 }
             }
         }
-        let Some(pose) = r4.poses().get(drag.entity) else {
+        let Some(pose) = r4.drawn_pose(drag.entity, alpha) else {
             return;
         };
         let mut min = Vec2::splat(f32::INFINITY);

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -14,7 +15,7 @@ use super::app::SessionApp;
 use super::frame::{failed, Frame};
 use super::input::{winit_alt, winit_key};
 use super::pacing::Pace;
-use super::surface::SurfaceHost;
+use super::surface::{Attempt, SurfaceHost};
 use crate::args::Args;
 use crate::WasmConfig;
 
@@ -55,6 +56,15 @@ fn install_tracing() {
         .try_init();
 }
 
+const FALLBACK_REFRESH_MILLIHERTZ: u32 = 60_000;
+
+fn refresh_period(millihertz: Option<u32>) -> Duration {
+    let millihertz = millihertz
+        .filter(|millihertz| *millihertz > 0)
+        .unwrap_or(FALLBACK_REFRESH_MILLIHERTZ);
+    Duration::from_nanos(1_000_000_000_000 / u64::from(millihertz))
+}
+
 fn run<A: Stores>(
     args: Args,
     factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
@@ -76,6 +86,7 @@ struct Host<A: Stores> {
     surface: Option<SurfaceHost>,
     device: Option<RenderDevice>,
     redraw_deadline: Option<Instant>,
+    refresh: Duration,
     failure: Option<HostError>,
 }
 
@@ -87,6 +98,7 @@ impl<A: Stores> Host<A> {
             surface: None,
             device: None,
             redraw_deadline: None,
+            refresh: refresh_period(None),
             failure: None,
         })
     }
@@ -109,6 +121,7 @@ impl<A: Stores> Host<A> {
             surface,
             device,
             redraw_deadline,
+            refresh,
             ..
         } = self;
         let Some(device) = device.as_mut() else {
@@ -131,6 +144,7 @@ impl<A: Stores> Host<A> {
 
         if let Some(enabled) = frame.app_mut().vsync.take() {
             surface.set_vsync(&device.context.device, enabled);
+            frame.invalidate();
         }
 
         let now = Instant::now();
@@ -146,11 +160,17 @@ impl<A: Stores> Host<A> {
         };
 
         let window = window.as_deref();
-        surface.present(device, frame, now, |frame, stepped| {
+        let attempt = surface.present(device, frame, now, |frame, stepped| {
             if stepped {
                 Self::apply_cursor_request(frame, window);
             }
         })?;
+        // ControlFlow::Poll would spin the loop on skipped frames.
+        if matches!(attempt, Attempt::Unchanged) && redraw_deadline.is_none() {
+            let deadline = now + *refresh;
+            *redraw_deadline = Some(deadline);
+            elwt.set_control_flow(ControlFlow::WaitUntil(deadline));
+        }
         Ok(())
     }
 
@@ -241,6 +261,11 @@ impl<A: Stores> ApplicationHandler for Host<A> {
         }
         self.surface = Some(surface);
         self.device = Some(device);
+        self.refresh = refresh_period(
+            window
+                .current_monitor()
+                .and_then(|monitor| monitor.refresh_rate_millihertz()),
+        );
         self.window = Some(window);
         self.frame.reset_clock(Instant::now());
     }

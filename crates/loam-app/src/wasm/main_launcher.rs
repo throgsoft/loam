@@ -72,12 +72,12 @@ pub(crate) fn fail_page(message: &str) {
     });
 }
 
-// Gecko copies a worker's WebGPU canvas back on every page repaint; only Gecko has navigator.buildID.
+// Gecko and WebKit stall on a worker's WebGPU canvas; only Chromium has navigator.userAgentData.
 fn runs_in_page(window: &Window) -> bool {
     match crate::args::Args::current().get("loam-session") {
         Some("page") => true,
         Some("worker") => false,
-        _ => js_sys::Reflect::has(&window.navigator(), &JsValue::from_str("buildID"))
+        _ => !js_sys::Reflect::has(&window.navigator(), &JsValue::from_str("userAgentData"))
             .unwrap_or(false),
     }
 }

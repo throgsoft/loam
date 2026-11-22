@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use glam::Vec2;
 use loam_runtime::{Eye, SegmentRecord};
-use wgpu::{CommandEncoder, Device, Queue};
+use wgpu::{CommandEncoder, Device, Queue, RenderPass};
 
 use crate::device::GpuContext;
 use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
@@ -65,14 +65,15 @@ impl FramePass for LinePass {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(
+    fn shares_pass(&self) -> bool {
+        true
+    }
+
+    fn prepare(
         &mut self,
-        encoder: &mut CommandEncoder,
+        _encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
     ) -> anyhow::Result<()> {
-        let Some(depth) = target.depth else {
-            return Ok(());
-        };
         let mut state = self.shared.borrow_mut();
         let State {
             eye,
@@ -97,7 +98,28 @@ impl FramePass for LinePass {
             node.upload_segments(device, queue, segments);
             *uploaded = true;
         }
-        node.record(encoder, target.color, Some(depth), None);
+        Ok(())
+    }
+
+    fn draw(&mut self, pass: &mut RenderPass<'_>, _target: &FrameTarget<'_>) -> anyhow::Result<()> {
+        if let Some(node) = self.shared.borrow().node.as_ref() {
+            node.draw(pass, None);
+        }
+        Ok(())
+    }
+
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
+        let Some(depth) = target.depth else {
+            return Ok(());
+        };
+        self.prepare(encoder, target)?;
+        if let Some(node) = self.shared.borrow().node.as_ref() {
+            node.record(encoder, target.color, Some(depth), None);
+        }
         Ok(())
     }
 

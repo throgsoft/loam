@@ -5,10 +5,11 @@ use glam::Mat4;
 use loam_math::{EuclideanR3, Projection};
 use loam_runtime::{Eye, Rigid, Version};
 use loam_shape::TriangleMesh;
-use wgpu::{CommandEncoder, Device, Queue};
+use wgpu::{Color, CommandEncoder, Device, Queue, RenderPass};
 
 use crate::device::GpuContext;
 use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
+use crate::sky_ground::SKY_HORIZON;
 use crate::view::placed_view_projection;
 use crate::{
     DepthConvention, DepthMode, FragmentShading, Ground, SkyGroundNode, SkyGroundUniforms,
@@ -150,14 +151,19 @@ impl FramePass for TrianglePass {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn record(
+    fn shares_pass(&self) -> bool {
+        true
+    }
+
+    fn clear_color(&self) -> Color {
+        SKY_HORIZON
+    }
+
+    fn prepare(
         &mut self,
-        encoder: &mut CommandEncoder,
+        _encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
     ) -> anyhow::Result<()> {
-        let Some(depth) = target.depth else {
-            return Ok(());
-        };
         let Some(built) = self.built.as_mut() else {
             return Ok(());
         };
@@ -182,11 +188,39 @@ impl FramePass for TrianglePass {
                     ground,
                 ),
             );
-            built.sky_ground.record(encoder, target.color, depth, None);
         }
         built
             .triangles
             .set_camera(&built.queue, input.view_projection);
+        Ok(())
+    }
+
+    fn draw(&mut self, pass: &mut RenderPass<'_>, _target: &FrameTarget<'_>) -> anyhow::Result<()> {
+        let Some(built) = self.built.as_ref() else {
+            return Ok(());
+        };
+        if let (ColorLoad::Clear, Some(_)) = (self.load, self.input.borrow().ground) {
+            built.sky_ground.draw(pass, None);
+        }
+        built.triangles.draw(pass, None);
+        Ok(())
+    }
+
+    fn record(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &FrameTarget<'_>,
+    ) -> anyhow::Result<()> {
+        let Some(depth) = target.depth else {
+            return Ok(());
+        };
+        self.prepare(encoder, target)?;
+        let Some(built) = self.built.as_ref() else {
+            return Ok(());
+        };
+        if let (ColorLoad::Clear, Some(_)) = (self.load, self.input.borrow().ground) {
+            built.sky_ground.record(encoder, target.color, depth, None);
+        }
         built
             .triangles
             .record(encoder, target.color, Some(depth), None);
