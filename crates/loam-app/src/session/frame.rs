@@ -741,8 +741,9 @@ mod tests {
     use loam_render::device::FeatureRequest;
     use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
     use loam_runtime::{
-        ActionId, Bindings, Command, DomainBuilder, HostConfig, Identity3, Key, LogCapacity,
-        Material, Phase, Pose, PreparedGeometry, SimConfig, SpawnBundle, Tick, ViewSpec,
+        ActionId, Bindings, Command, DomainBuilder, FreeCamera, HostConfig, Identity3, Key,
+        LogCapacity, Material, Phase, Pose, PreparedGeometry, Rig, SimConfig, SpawnBundle, Tick,
+        ViewSpec,
     };
     use wgpu::{
         BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
@@ -1247,6 +1248,114 @@ mod tests {
             start + Duration::from_secs(60) + Duration::from_millis(1),
         );
         assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
+    }
+
+    #[test]
+    fn the_shell_asks_for_the_cursor_once_per_change_in_a_free_rig_and_never_overrides_a_hooks_own_capture(
+    ) {
+        const RESET: ActionId = ActionId("reset");
+        const LAND: ActionId = ActionId("land");
+
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let own = Arc::new(AtomicBool::new(false));
+        let owns = own.clone();
+        let app = quiet(SessionApp::<Bare>::with_args(
+            HostConfig::new(
+                "rig cursor",
+                Bindings::new()
+                    .key(Key::Letter('r'), RESET)
+                    .key(Key::Letter('l'), LAND),
+            ),
+            Args::default(),
+        ))
+        .recover_on_fault(RESET)
+        .on_frame(move |hook| {
+            if owns.load(Ordering::Relaxed) {
+                hook.capture_cursor(true, CursorPolicy::Toggle);
+            }
+        });
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        session.set_rig(Rig::Free(FreeCamera::default()));
+        session.on_action(LAND, |dispatch| {
+            dispatch.views.root_mut().rig = Rig::Manual;
+            Ok(())
+        });
+        let armed = Arc::new(AtomicBool::new(false));
+        let trip = armed.clone();
+        session.system(
+            Phase::Publication,
+            "trip",
+            move |_ctx: loam_runtime::Ctx<'_, Bare>| {
+                if trip.swap(false, Ordering::Relaxed) {
+                    return Err(loam_runtime::DomainError::ChartBoundary);
+                }
+                Ok(())
+            },
+        );
+        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        let start = Instant::now();
+        let mut millis = 0;
+        let mut run = |frame: &mut Frame<Bare>| {
+            millis += 1;
+            run_at(frame, &gpu, &texture, start + Duration::from_millis(millis));
+            frame.take_cursor_request()
+        };
+
+        assert_eq!(
+            run(&mut frame),
+            Some(true),
+            "a free rig set before launch never asked for the cursor"
+        );
+        frame.cursor_applied(true);
+        assert_eq!(run(&mut frame), None);
+        frame.alt(0, true);
+        assert_eq!(frame.take_cursor_request(), Some(false));
+        frame.cursor_applied(false);
+        frame.alt(0, false);
+        assert_eq!(
+            run(&mut frame),
+            None,
+            "the rig took back a cursor the user freed with Alt"
+        );
+
+        armed.store(true, Ordering::Relaxed);
+        assert_eq!(run(&mut frame), Some(false));
+        assert_eq!(
+            frame.phase_error().map(|error| error.phase),
+            Some(Phase::Publication)
+        );
+        frame.action(Key::Letter('r'), true, false);
+        assert_eq!(
+            run(&mut frame),
+            Some(true),
+            "the recovered free rig did not ask for the cursor again"
+        );
+        assert_eq!(frame.phase_error(), None);
+        frame.cursor_applied(true);
+
+        frame.action(Key::Letter('l'), true, false);
+        assert_eq!(
+            run(&mut frame),
+            Some(false),
+            "the cursor stayed captured after the program left the free rig"
+        );
+        frame.cursor_applied(false);
+        assert_eq!(run(&mut frame), None);
+
+        own.store(true, Ordering::Relaxed);
+        assert_eq!(run(&mut frame), Some(true));
+        frame.cursor_applied(true);
+        for _ in 0..2 {
+            assert_eq!(
+                run(&mut frame),
+                None,
+                "the shell re-issued or released a capture the frame hook holds under a manual rig"
+            );
+        }
     }
 
     #[test]
