@@ -1,3 +1,5 @@
+use std::fmt::{self, Write as _};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use glam::Vec4;
@@ -7,15 +9,15 @@ use loam::math::{Bivector, Bivector4, EuclideanR4};
 use loam::render::pass::FramePass;
 use loam::render::raymarch::BodyUniform;
 use loam::render::{HyperslicePass, LinePass, PointPass, SkyGroundPass};
-use loam::runtime::host::run_headless;
+use loam::runtime::host::{run_headless, write_headless};
 use loam::runtime::host::{HostConfig, HostError};
 #[cfg(test)]
 use loam::runtime::Input;
 use loam::runtime::{
-    ActionId, AppCommand, Bindings, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle,
-    Domains, Entity, Eye, GrabHold, Instance, Key, LogCapacity, Material, MaterialId, Outcome,
-    Phase, Pointer, PointerButton, PointerPhase, Pose, PreparedGeometry, PreparedId, Rejection,
-    Section4, Session, SimConfig, SpawnBundle, ViewId, ViewSpec,
+    ActionId, AppCommand, Bindings, Command, Ctx, Dispatch, DomainBuilder, DomainError,
+    DomainHandle, Domains, Entity, Eye, GrabHold, Instance, Key, LogCapacity, Material, MaterialId,
+    Outcome, Phase, Pointer, PointerButton, PointerPhase, Pose, PreparedGeometry, PreparedId,
+    Rejection, Section4, Session, SimConfig, SpawnBundle, ViewId, ViewSpec,
 };
 
 mod camera;
@@ -66,6 +68,16 @@ const SECTION_WIDTH_PX: f32 = 2.0;
 const EDGE_WIDTH_PX: f32 = display::DEFAULT_WIREFRAME_WIDTH_PX;
 const HEADLESS_STEPS: u32 = 8;
 const HEADLESS_FRAME: (u32, u32) = (1280, 720);
+// The record dump keeps every 10th step so it stays short enough to diff.
+const RECORD_STRIDE: NonZeroU32 = NonZeroU32::new(10).expect("the record stride is nonzero");
+const RECORD_STEPS: u32 = 160;
+const RECORD_WIREFRAME_ON: u32 = 20;
+const RECORD_TOYBOX: u32 = 60;
+const RECORD_THROW_STEP: u32 = 80;
+const RECORD_WIREFRAME_OFF: u32 = 140;
+const RECORD_THROWN_SLOT: usize = 2;
+// A sideways flick that sends the center toy into its neighbour.
+const RECORD_THROW: [f32; 3] = [20.0, 8.0, 0.0];
 const CAMERA_DISTANCE: f32 = 8.0;
 const DOMAIN_NAME: &str = "r4";
 
@@ -1193,7 +1205,14 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
 }
 
 fn report(booted: &mut Boot, config: &HostConfig) -> Result<Vec<String>, HostError> {
-    let publication = run_headless(&mut booted.session, config, HEADLESS_STEPS, &[])?;
+    let publication = run_headless(
+        &mut booted.session,
+        config,
+        HEADLESS_STEPS,
+        &[],
+        1.0,
+        |_, _, _| Ok(()),
+    )?;
     let active = *booted.session.app.active.get();
     let entry = booted
         .session
@@ -1242,8 +1261,113 @@ fn headless(args: Args) -> Result<(), HostError> {
     let row = catalog::parse_row(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
     let mut booted = boot(&row)?;
     let config = HostConfig::new("polytope playground", bindings());
+    if args.has_bare_flag("records") {
+        return records(&mut booted, &config, &args);
+    }
     for line in report(&mut booted, &config)? {
         println!("{line}");
+    }
+    Ok(())
+}
+
+fn submit(session: &mut Session<Playground>, action: Action) {
+    session.submit(Command::App(Box::new(action)));
+}
+
+fn records(booted: &mut Boot, config: &HostConfig, args: &Args) -> Result<(), HostError> {
+    let alpha = match args.flag_value("alpha") {
+        None => 1.0,
+        Some(raw) => raw
+            .parse::<f32>()
+            .ok()
+            .filter(|alpha| alpha.is_finite())
+            .ok_or_else(|| HostError::Host(format!("--alpha {raw:?} is not a finite number")))?,
+    };
+    let surface = match args.flag_value("surface") {
+        None => None,
+        Some("raster") => Some(Surface::Raster),
+        Some("sdf") => Some(Surface::Sdf),
+        Some("off") => Some(Surface::Off),
+        Some(other) => {
+            return Err(HostError::Host(format!(
+                "--surface {other:?} is not raster, sdf or off"
+            )))
+        }
+    };
+    if let Some(surface) = surface {
+        let mut display = *booted.session.app.display.get();
+        display.surface = surface;
+        submit(&mut booted.session, Action::Display(display));
+    }
+    submit(&mut booted.session, Action::Running(Some(true)));
+    let domain = booted.domain;
+    let mut scratch = Scratch::new();
+    let mut dump = String::new();
+    write_headless(
+        &mut dump,
+        &mut booted.session,
+        config,
+        RECORD_STEPS,
+        alpha,
+        RECORD_STRIDE,
+        |step, session, out| {
+            match step + 1 {
+                RECORD_WIREFRAME_ON => wireframe(session, true),
+                RECORD_TOYBOX => submit(session, Action::Mode(Mode::Toybox)),
+                RECORD_THROW_STEP => throw(session)?,
+                RECORD_WIREFRAME_OFF => wireframe(session, false),
+                _ => {}
+            }
+            let Some(out) = out else {
+                return Ok(());
+            };
+            write_bodies(out, session, domain, alpha, &mut scratch)
+                .map_err(|_| HostError::Host("the record dump failed".into()))
+        },
+    )?;
+    print!("{dump}");
+    Ok(())
+}
+
+fn wireframe(session: &mut Session<Playground>, on: bool) {
+    let mut display = *session.app.display.get();
+    display.wireframe = on;
+    submit(session, Action::Display(display));
+}
+
+fn throw(session: &mut Session<Playground>) -> Result<(), HostError> {
+    let thrown = session
+        .app
+        .slots
+        .iter()
+        .find(|(entity, slot)| {
+            slot.index == RECORD_THROWN_SLOT && session.app.toys.contains(*entity)
+        })
+        .map(|(entity, _)| entity)
+        .ok_or_else(|| HostError::Host("the thrown toy is missing".into()))?;
+    submit(session, Action::Throw(thrown, RECORD_THROW));
+    Ok(())
+}
+
+fn write_bodies(
+    out: &mut String,
+    session: &Session<Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    alpha: f32,
+    scratch: &mut Scratch,
+) -> fmt::Result {
+    collect(session, domain, alpha, scratch);
+    for body in &scratch.bodies {
+        writeln!(
+            out,
+            "body position {:?} kind {:?} shape {:?} size {:?} color {:?} rotor {:?}",
+            body.position,
+            body.kind,
+            body.radius_or_shape,
+            body.polytope_size,
+            body.color,
+            body.rotor
+        )?;
     }
     Ok(())
 }

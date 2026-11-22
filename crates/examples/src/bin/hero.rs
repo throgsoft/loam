@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -872,11 +873,44 @@ fn headless(
     session: &mut Session<HeroStores>,
     r4: DomainHandle<EuclideanR4>,
     steps: u32,
+    records: bool,
 ) -> Result<(), HostError> {
-    host::run_headless(session, &HostConfig::new("hero", bindings()), steps, &[])?;
+    let config = HostConfig::new("hero", bindings());
+    if records {
+        let mut dump = String::new();
+        host::write_headless(
+            &mut dump,
+            session,
+            &config,
+            steps,
+            1.0,
+            RECORD_STRIDE,
+            |_, session, out| match out {
+                Some(out) => write_mesh(out, session.app.mesh.get())
+                    .map_err(|_| refused("the record dump failed")),
+                None => Ok(()),
+            },
+        )?;
+        print!("{dump}");
+        return Ok(());
+    }
+    host::run_headless(session, &config, steps, &[], 1.0, |_, _, _| Ok(()))?;
     let y = letter_height(session, r4, 0).ok_or_else(|| refused("the first letter has no pose"))?;
     let frame = session.app.stage.get().frame();
     println!("hero letter 0 after {steps} ticks (frame {frame}): y = {y:.4}");
+    Ok(())
+}
+
+// A record dump keeps every 20th step so it stays short enough to diff.
+const RECORD_STRIDE: NonZeroU32 = NonZeroU32::new(20).expect("the record stride is nonzero");
+
+fn write_mesh(out: &mut String, mesh: &TriangleMesh<3>) -> std::fmt::Result {
+    for (vertex, color) in mesh.vertices.iter().zip(&mesh.colors) {
+        writeln!(out, "vertex {vertex:?} color {color:?}")?;
+    }
+    for face in &mesh.indices {
+        writeln!(out, "face {face:?}")?;
+    }
     Ok(())
 }
 
@@ -893,7 +927,7 @@ fn main() -> ExitCode {
                 .and_then(|count| count.parse::<u32>().ok())
                 .ok_or_else(|| refused("--headless needs a tick count"))?;
             let (mut session, scene) = build()?;
-            headless(&mut session, scene.r4, steps)
+            headless(&mut session, scene.r4, steps, args.has_bare_flag("records"))
         },
     );
     match outcome {

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::num::NonZeroU32;
 use std::ops::Range;
 
 use crate::command::Rejection;
@@ -62,11 +63,14 @@ impl From<PhaseError> for HostError {
     }
 }
 
+/// Calls `each` after every publish; commands it submits apply at the next step's boundary.
 pub fn run_headless<A: Stores>(
     session: &mut Session<A>,
     config: &HostConfig,
     steps: u32,
     holds: &[(Key, Range<u32>)],
+    alpha: f32,
+    mut each: impl FnMut(u32, &mut Session<A>, &Publication) -> Result<(), HostError>,
 ) -> Result<Publication, HostError> {
     let mut publication = Publication::default();
     let mut held: Vec<ActionId> = Vec::new();
@@ -91,7 +95,116 @@ pub fn run_headless<A: Stores>(
             ..Input::default()
         })?;
         session.tick()?;
-        session.publish(&mut publication)?;
+        session.publish_at(&mut publication, alpha)?;
+        each(step, session, &publication)?;
     }
     Ok(publication)
+}
+
+/// Writes every `stride`th step's records and root eye to `out`; `each` gets `out` only on those steps, after them.
+pub fn write_headless<A: Stores, W: fmt::Write>(
+    out: &mut W,
+    session: &mut Session<A>,
+    config: &HostConfig,
+    steps: u32,
+    alpha: f32,
+    stride: NonZeroU32,
+    mut each: impl FnMut(u32, &mut Session<A>, Option<&mut W>) -> Result<(), HostError>,
+) -> Result<(), HostError> {
+    run_headless(
+        session,
+        config,
+        steps,
+        &[],
+        alpha,
+        |step, session, publication| {
+            if (step + 1) % stride.get() != 0 {
+                return each(step, session, None);
+            }
+            write_records(out, step, publication)
+                .and_then(|()| write_eye(out, session))
+                .map_err(|_| HostError::Host("the record dump failed".into()))?;
+            each(step, session, Some(&mut *out))
+        },
+    )?;
+    Ok(())
+}
+
+fn write_eye<A: Stores>(out: &mut impl fmt::Write, session: &Session<A>) -> fmt::Result {
+    let views = session.views();
+    let Some(image) = views.get(views.root()) else {
+        return writeln!(out, "eye none");
+    };
+    let eye = image.eye;
+    writeln!(
+        out,
+        "eye position {:?} right {:?} up {:?} forward {:?} fov_y {:?} aspect {:?} near {:?} far {:?}",
+        eye.position, eye.right, eye.up, eye.forward, eye.fov_y, eye.aspect, eye.near, eye.far
+    )
+}
+
+/// Writes one line per published record with every float in `{:?}`, so equal text means equal bits.
+pub fn write_records(
+    out: &mut impl fmt::Write,
+    step: u32,
+    publication: &Publication,
+) -> fmt::Result {
+    writeln!(
+        out,
+        "publication step {step} tick {} alpha {:?}",
+        publication.stamp.tick.0, publication.alpha
+    )?;
+    for view in &publication.views {
+        let placement = view.placement;
+        writeln!(
+            out,
+            "view {} {} {} rotation {:?} translation {:?} scale {:?}",
+            view.domain,
+            view.target.view,
+            view.target.image,
+            placement.pose.rotation.to_array(),
+            placement.pose.translation.to_array(),
+            placement.scale
+        )?;
+        for instance in view.records.instances.rows() {
+            writeln!(
+                out,
+                "instance {} geometry {} material {} chart {} coordinates {:?} frame {:?} image {:?}",
+                instance.entity,
+                instance.geometry.index(),
+                instance.material.index(),
+                instance.pose.chart.0,
+                instance.pose.coordinates,
+                instance.pose.frame,
+                instance.image_point
+            )?;
+        }
+        for segment in view.records.segments() {
+            writeln!(
+                out,
+                "segment {:?} {:?} colors {:?} {:?} width {:?}",
+                segment.start,
+                segment.end,
+                segment.start_color,
+                segment.end_color,
+                segment.width_px
+            )?;
+        }
+        for triangle in view.records.triangles() {
+            writeln!(
+                out,
+                "triangle {:?} color {:?}",
+                triangle.vertices, triangle.color
+            )?;
+        }
+        let refusals = view.records.refusals();
+        for refusal in [refusals.first, refusals.last].into_iter().flatten() {
+            writeln!(
+                out,
+                "refusal of {} {} {:?} from {:?}",
+                refusals.count, refusal.entity, refusal.error, refusal.source
+            )?;
+        }
+    }
+    Ok(())
 }
