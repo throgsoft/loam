@@ -1,20 +1,12 @@
 use std::f32::consts::FRAC_PI_2;
 
-use glam::Vec4;
-use loam::app::session::{launch, SessionApp};
-use loam::math::{Bivector, EuclideanR4, Iso4Flat, IsometryGroup, Plane4, Rotor, Rotor4};
-use loam::runtime::host::{HostConfig, HostError};
-use loam::runtime::{
-    ActionId, AppCommand, Bindings, Command, Ctx, Dispatch, DomainBuilder, DomainError,
-    DomainHandle, Eye, Instance, Key, LogCapacity, Material, MaterialId, Outcome, Phase, Pose,
-    PreparedGeometry, Projection4, Rejection, Session, SimConfig, SpawnBundle, TypedDomain, Value,
-    ViewSpec,
-};
+use loam::prelude::*;
 
 const TWIST: ActionId = ActionId("twist");
 const SCRAMBLE: ActionId = ActionId("scramble");
 const UNDO: ActionId = ActionId("undo");
 const RESET: ActionId = ActionId("reset");
+const BUSY: Rejection = Rejection::Unsupported("a twist is in progress");
 const TWIST_TICKS: u32 = 20;
 const SCRAMBLE_TWISTS: usize = 12;
 const PIECE_SPACING: f32 = 0.7;
@@ -143,7 +135,7 @@ struct Turning {
     ticks_left: u32,
 }
 
-loam::runtime::stores! {
+stores! {
     #[derive(Default)]
     pub struct CubeStores {
         pieces: Store<Piece>,
@@ -153,13 +145,6 @@ loam::runtime::stores! {
         turning: Value<Option<Turning>>,
         rng: Value<u64>,
     }
-}
-
-#[derive(Clone, Copy)]
-struct Puzzle {
-    domain: DomainHandle<EuclideanR4>,
-    highlight: MaterialId,
-    cell_materials: [MaterialId; 8],
 }
 
 fn place_cell(
@@ -224,73 +209,6 @@ fn random_twist(rng: &mut u64) -> Twist {
     }
 }
 
-struct TwistCommand {
-    twist: Twist,
-}
-
-impl AppCommand<CubeStores> for TwistCommand {
-    fn name(&self) -> &'static str {
-        "twist"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, CubeStores>) -> Result<Outcome, Rejection> {
-        if dispatch.app.turning.get().is_some() {
-            return Err(Rejection::Unsupported("a twist is in progress"));
-        }
-        dispatch.app.turning.set(Some(Turning {
-            twist: self.twist,
-            ticks_left: TWIST_TICKS,
-        }));
-        dispatch.app.history.get_mut().push(self.twist);
-        Ok(Outcome::Done)
-    }
-}
-
-struct Scramble {
-    puzzle: Puzzle,
-}
-
-impl AppCommand<CubeStores> for Scramble {
-    fn name(&self) -> &'static str {
-        "scramble"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, CubeStores>) -> Result<Outcome, Rejection> {
-        if dispatch.app.turning.get().is_some() {
-            return Err(Rejection::Unsupported("a twist is in progress"));
-        }
-        let r4 = dispatch.domains.typed(self.puzzle.domain)?;
-        for _ in 0..SCRAMBLE_TWISTS {
-            let twist = random_twist(dispatch.app.rng.get_mut());
-            commit(dispatch.app, r4, twist)?;
-            dispatch.app.history.get_mut().push(twist);
-        }
-        Ok(Outcome::Done)
-    }
-}
-
-struct Undo {
-    puzzle: Puzzle,
-}
-
-impl AppCommand<CubeStores> for Undo {
-    fn name(&self) -> &'static str {
-        "undo"
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, CubeStores>) -> Result<Outcome, Rejection> {
-        if dispatch.app.turning.get().is_some() {
-            return Err(Rejection::Unsupported("a twist is in progress"));
-        }
-        let Some(twist) = dispatch.app.history.get_mut().pop() else {
-            return Ok(Outcome::Done);
-        };
-        let r4 = dispatch.domains.typed(self.puzzle.domain)?;
-        commit(dispatch.app, r4, twist.inverse())?;
-        Ok(Outcome::Done)
-    }
-}
-
 fn sticker_cube() -> PreparedGeometry {
     let corner = |bits: u32| {
         let sign = |bit: u32| {
@@ -335,25 +253,16 @@ fn selected_twist(app: &CubeStores) -> Option<Twist> {
     })
 }
 
-fn build(
-    args: loam::app::args::Args,
-) -> Result<(Session<CubeStores>, SessionApp<CubeStores>), HostError> {
+fn build(args: Args) -> Result<(Session<CubeStores>, SessionApp<CubeStores>), HostError> {
     let stores = CubeStores {
         rng: Value::new(0),
         ..CubeStores::default()
     };
     let mut session = Session::new(stores, SimConfig::default());
-    let r4 = session
-        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
     let sticker_geometry = session.prepare(sticker_cube());
     let cell_materials = CELL_COLORS.map(|color| session.add_material(Material::flat(color)));
     let highlight = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
-    let puzzle = Puzzle {
-        domain: r4,
-        highlight,
-        cell_materials,
-    };
 
     session.dispatch(|d| -> Result<(), Rejection> {
         for grid in grid_points() {
@@ -391,116 +300,121 @@ fn build(
             }
         }
         let eye = Pose::at(Vec4::W * FOCAL_DISTANCE);
-        let eye = d.spawn(SpawnBundle::new().at(r4, eye))?;
         let projection = Projection4 {
             focal: FOCAL_DISTANCE,
         };
-        d.domains
-            .typed(r4)?
-            .add_view(ViewSpec::new(root, eye, projection))?;
+        d.add_view(r4, eye, projection)?;
         Ok(())
     })?;
     session.views_mut().root_mut().eye =
         Eye::looking_at([0.0, 2.0, 6.0], [0.0; 3], [0.0, 1.0, 0.0]);
 
-    session.system(
-        Phase::Dispatch,
-        "select",
-        move |ctx: Ctx<'_, CubeStores>| -> Result<(), DomainError> {
-            let Some(pointer) = ctx.input.began() else {
-                return Ok(());
-            };
-            let Some(pick) = ctx.pick(pointer.ndc) else {
-                return Ok(());
-            };
-            if !ctx.app.stickers.contains(pick.entity) {
-                return Ok(());
-            }
-            let previous = ctx
-                .app
-                .stickers
-                .iter()
-                .find_map(|(entity, sticker)| sticker.selected.then_some(entity));
-            if previous == Some(pick.entity) {
-                return Ok(());
-            };
-            let r4 = ctx.domains.typed(puzzle.domain)?;
-            if let Some(previous) = previous {
-                let sticker = ctx
-                    .app
-                    .stickers
-                    .get_mut(previous)
-                    .ok_or(DomainError::Stale(previous))?;
-                let material = puzzle.cell_materials[sticker.cell.color()];
-                sticker.selected = false;
-                let instance = r4
-                    .instance_mut(previous)
-                    .ok_or(DomainError::Stale(previous))?;
-                instance.material = material;
-            }
+    session.system(Phase::Dispatch, "select", move |ctx| {
+        let Some(pointer) = ctx.input.began() else {
+            return Ok(());
+        };
+        let Some(pick) = ctx.pick(pointer.ndc) else {
+            return Ok(());
+        };
+        if !ctx.app.stickers.contains(pick.entity) {
+            return Ok(());
+        }
+        let previous = ctx
+            .app
+            .stickers
+            .iter()
+            .find_map(|(entity, sticker)| sticker.selected.then_some(entity));
+        if previous == Some(pick.entity) {
+            return Ok(());
+        };
+        let r4 = ctx.domains.typed(r4)?;
+        if let Some(previous) = previous {
             let sticker = ctx
                 .app
                 .stickers
-                .get_mut(pick.entity)
-                .ok_or(DomainError::Stale(pick.entity))?;
-            sticker.selected = true;
+                .get_mut(previous)
+                .ok_or(DomainError::Stale(previous))?;
+            let material = cell_materials[sticker.cell.color()];
+            sticker.selected = false;
             let instance = r4
-                .instance_mut(pick.entity)
-                .ok_or(DomainError::Stale(pick.entity))?;
-            instance.material = puzzle.highlight;
-            Ok(())
-        },
-    );
+                .instance_mut(previous)
+                .ok_or(DomainError::Stale(previous))?;
+            instance.material = material;
+        }
+        let sticker = ctx
+            .app
+            .stickers
+            .get_mut(pick.entity)
+            .ok_or(DomainError::Stale(pick.entity))?;
+        sticker.selected = true;
+        let instance = r4
+            .instance_mut(pick.entity)
+            .ok_or(DomainError::Stale(pick.entity))?;
+        instance.material = highlight;
+        Ok(())
+    });
 
-    session.system(
-        Phase::Dispatch,
-        "actions",
-        move |ctx: Ctx<'_, CubeStores>| {
-            if ctx.input.pressed(TWIST) {
-                if let Some(twist) = selected_twist(ctx.app) {
-                    ctx.commands.app(TwistCommand { twist });
-                }
-            }
-            if ctx.input.pressed(SCRAMBLE) {
-                ctx.commands.app(Scramble { puzzle });
-            }
-            if ctx.input.pressed(UNDO) {
-                ctx.commands.app(Undo { puzzle });
-            }
-            if ctx.input.pressed(RESET) {
-                ctx.commands.submit(Command::Reset);
-            }
-            Ok(())
-        },
-    );
+    session.on_action(TWIST, |d| {
+        let Some(twist) = selected_twist(d.app) else {
+            return Ok(());
+        };
+        if d.app.turning.is_some() {
+            return Err(BUSY);
+        }
+        d.app.turning.set(Some(Turning {
+            twist,
+            ticks_left: TWIST_TICKS,
+        }));
+        d.app.history.get_mut().push(twist);
+        Ok(())
+    });
+    session.on_action(SCRAMBLE, move |d| {
+        if d.app.turning.is_some() {
+            return Err(BUSY);
+        }
+        let r4 = d.domains.typed(r4)?;
+        for _ in 0..SCRAMBLE_TWISTS {
+            let twist = random_twist(d.app.rng.get_mut());
+            commit(d.app, r4, twist)?;
+            d.app.history.get_mut().push(twist);
+        }
+        Ok(())
+    });
+    session.on_action(UNDO, move |d| {
+        if d.app.turning.is_some() {
+            return Err(BUSY);
+        }
+        let Some(twist) = d.app.history.get_mut().pop() else {
+            return Ok(());
+        };
+        let r4 = d.domains.typed(r4)?;
+        commit(d.app, r4, twist.inverse())?;
+        Ok(())
+    });
+    session.reset_on(RESET);
 
-    session.system(
-        Phase::Simulation,
-        "turn",
-        move |ctx: Ctx<'_, CubeStores>| -> Result<(), DomainError> {
-            let Some(mut turning) = *ctx.app.turning.get() else {
-                return Ok(());
-            };
-            let r4 = ctx.domains.typed(puzzle.domain)?;
-            turning.ticks_left = turning.ticks_left.saturating_sub(1);
-            let fraction = 1.0 - turning.ticks_left as f32 / TWIST_TICKS as f32;
-            place_cell(
-                ctx.app,
-                r4,
-                turning.twist.rotor(fraction),
-                turning.twist.cell,
-            )?;
-            if turning.ticks_left == 0 {
-                commit(ctx.app, r4, turning.twist)?;
-                ctx.app.turning.set(None);
-            } else {
-                ctx.app.turning.set(Some(turning));
-            }
-            Ok(())
-        },
-    );
+    session.system(Phase::Simulation, "turn", move |ctx| {
+        let Some(mut turning) = *ctx.app.turning else {
+            return Ok(());
+        };
+        let r4 = ctx.domains.typed(r4)?;
+        turning.ticks_left = turning.ticks_left.saturating_sub(1);
+        let fraction = 1.0 - turning.ticks_left as f32 / TWIST_TICKS as f32;
+        place_cell(
+            ctx.app,
+            r4,
+            turning.twist.rotor(fraction),
+            turning.twist.cell,
+        )?;
+        if turning.ticks_left == 0 {
+            commit(ctx.app, r4, turning.twist)?;
+            ctx.app.turning.set(None);
+        } else {
+            ctx.app.turning.set(Some(turning));
+        }
+        Ok(())
+    });
 
-    session.set_initial()?;
     let bindings = Bindings::new()
         .key(Key::Space, TWIST)
         .key(Key::Letter('s'), SCRAMBLE)

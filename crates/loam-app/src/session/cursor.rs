@@ -1,9 +1,4 @@
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CursorPolicy {
-    Hold,
-    #[default]
-    Toggle,
-}
+use loam_runtime::CursorPolicy;
 
 #[derive(Default)]
 pub(crate) struct CursorCapture {
@@ -14,7 +9,7 @@ pub(crate) struct CursorCapture {
     alt: [bool; 2],
     focused: bool,
     request: Option<bool>,
-    rig: bool,
+    rig: Option<CursorPolicy>,
 }
 
 impl CursorCapture {
@@ -37,10 +32,10 @@ impl CursorCapture {
     }
 
     // Acts only when the rig's want changes, so a hook's own capture requests in between stand.
-    pub(crate) fn follow_rig(&mut self, wants: bool) {
-        if self.rig != wants {
-            self.rig = wants;
-            self.capture(wants, CursorPolicy::Toggle);
+    pub(crate) fn follow_rig(&mut self, wanted: Option<CursorPolicy>) {
+        if self.rig != wanted {
+            self.rig = wanted;
+            self.capture(wanted.is_some(), wanted.unwrap_or_default());
         }
     }
 
@@ -82,7 +77,7 @@ impl CursorCapture {
 
     pub(crate) fn suspend(&mut self) {
         self.enabled = false;
-        self.rig = false;
+        self.rig = None;
         self.wanted = false;
         self.request = Some(false);
     }

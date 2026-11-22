@@ -2,23 +2,10 @@ use std::fmt::{self, Write as _};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use glam::Vec4;
-use loam::app::args::Args;
-use loam::app::session::{launch_or_headless, look, FrameHook, Orbit, SessionApp};
-use loam::math::{Bivector, Bivector4, EuclideanR4};
-use loam::render::pass::FramePass;
+use loam::app::session::launch_or_headless;
+use loam::prelude::*;
 use loam::render::raymarch::BodyUniform;
-use loam::render::{HyperslicePass, LinePass, PointPass, SkyGroundPass};
 use loam::runtime::host::{run_headless, write_headless};
-use loam::runtime::host::{HostConfig, HostError};
-#[cfg(test)]
-use loam::runtime::Input;
-use loam::runtime::{
-    ActionId, AppCommand, Bindings, Command, Ctx, Dispatch, DomainBuilder, DomainError,
-    DomainHandle, Domains, Entity, Eye, GrabHold, Instance, Key, LogCapacity, Material, MaterialId,
-    Outcome, Phase, Pointer, PointerButton, PointerPhase, Pose, PreparedGeometry, PreparedId,
-    Rejection, Section4, Session, SimConfig, SpawnBundle, ViewId, ViewSpec,
-};
 
 mod camera;
 mod catalog;
@@ -47,8 +34,6 @@ use projection::Family;
 use strip::{Cell, Strip};
 
 const SPIN: ActionId = ActionId("spin");
-const SLICE_UP: ActionId = ActionId("slice up");
-const SLICE_DOWN: ActionId = ActionId("slice down");
 const NEXT_MODE: ActionId = ActionId("next mode");
 const RESET: ActionId = ActionId("reset");
 const GIMBAL: ActionId = ActionId("gimbal");
@@ -103,29 +88,13 @@ pub(crate) struct HiddenSlot {
     pub(crate) instance: Option<Instance>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Control {
-    orbit: Orbit,
     gimbal: Gimbal,
     latest: Option<Pointer>,
     center: glam::Vec3,
     camera_focus: Option<(bool, usize, Mode)>,
     filmstrip_return: Option<Orbit>,
-}
-
-impl Default for Control {
-    fn default() -> Self {
-        let mut orbit = Orbit::around([0.0; 3], CAMERA_DISTANCE);
-        orbit.pitch = -0.25;
-        Self {
-            orbit,
-            gimbal: Gimbal::default(),
-            latest: None,
-            center: glam::Vec3::ZERO,
-            camera_focus: None,
-            filmstrip_return: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -156,7 +125,7 @@ pub(crate) struct Catalog {
     cards: Arc<[Card]>,
 }
 
-loam::runtime::stores! {
+stores! {
     #[derive(Default)]
     pub struct Playground {
         slots: Store<Slot>,
@@ -182,7 +151,7 @@ loam::runtime::stores! {
         guides: Value<bool>,
         toybox_debug: Value<bool>,
         rope: Value<bool>,
-        camera: Value<camera::Camera>,
+        parked: Value<Rig>,
         control: Value<Control>,
         catalog: Value<Catalog>,
     }
@@ -234,16 +203,14 @@ fn rest_of(index: usize, len: usize) -> Vec4 {
 pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
     let mut session = Session::new(
         Playground {
-            slots: loam::runtime::Store::tracked(LogCapacity::default()),
+            slots: Store::tracked(LogCapacity::default()),
+            parked: Value::new(Rig::Free(FreeCamera::default())),
             ..Playground::default()
         },
         SimConfig::default(),
     );
     let domain = session.register_domain(
-        DomainBuilder::new(DOMAIN_NAME, EuclideanR4)
-            .tracked(LogCapacity::default())
-            .physics(toy::physics_config())
-            .map_err(|error| HostError::Setup(Rejection::Edit(error)))?,
+        DomainBuilder::new(DOMAIN_NAME, EuclideanR4).physics(toy::physics_config())?,
     );
     let root = session.views().root();
 
@@ -274,12 +241,12 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
     })?;
     session.views_mut().root_mut().eye =
         Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
+    session.set_rig(Rig::Orbit(home([0.0; 3])));
     session.app.controls.set(true);
     session.app.guides.set(true);
 
-    let cards = session.app.catalog.get().cards.clone();
+    let cards = session.app.catalog.cards.clone();
     install_systems(&mut session, domain, layers, cards);
-    session.set_initial()?;
     Ok(Boot { session, domain })
 }
 
@@ -334,225 +301,205 @@ fn install_systems(
     layers: Layers,
     cards: Arc<[Card]>,
 ) {
-    session.system(
-        Phase::Dispatch,
-        "controls",
-        move |mut ctx: Ctx<'_, Playground>| {
-            control_camera(&mut ctx, domain);
-            control_primary(&mut ctx, domain);
-            if ctx.input.pressed(SPIN) && *ctx.app.mode.get() == Mode::Rotate {
-                let running = ctx.app.spin.get().running;
-                ctx.commands.app(Action::Running(Some(!running)));
-            }
-            if ctx.input.pressed(NEXT_MODE) {
-                let next = match *ctx.app.mode.get() {
-                    Mode::Rotate => Mode::Toybox,
-                    Mode::Toybox => Mode::Rotate,
-                };
-                ctx.commands.app(Action::Mode(next));
-            }
-            if ctx.input.pressed(RESET) {
-                ctx.commands.app(Action::Reset);
-            }
-            if ctx.input.pressed(GIMBAL) {
-                ctx.commands.app(Action::Gimbal(None));
-            }
-            if ctx.input.pressed(CONTROLS) {
-                ctx.commands.app(Action::Controls(None));
-            }
-            if ctx.input.pressed(STRIP) {
-                let mut strip = *ctx.app.strip.get();
-                strip.on = !strip.on;
-                ctx.commands.app(Action::Strip(strip));
-            }
-            for (index, action) in PLANE.into_iter().enumerate() {
-                if ctx.input.pressed(action) {
-                    ctx.commands.app(Action::Plane(index));
+    session
+        .system_at(
+            Phase::Dispatch,
+            Order::Before(CAMERA_RIG),
+            "camera focus",
+            move |ctx| {
+                let center = scene_center(ctx.app, ctx.domains, domain);
+                let focus = (ctx.app.display.single, *ctx.app.active, *ctx.app.mode);
+                let strip = *ctx.app.strip;
+                let orbit = camera::orbit_mut(ctx.views, ctx.app.parked.get_mut());
+                let control = ctx.app.control.get_mut();
+                for pointer in &ctx.input.pointers {
+                    control.latest = Some(*pointer);
                 }
-            }
-            Ok(())
-        },
-    );
-
-    session.system(
-        Phase::Dispatch,
-        "grab hold",
-        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
-            let hold = if *ctx.app.rope.get() {
-                GrabHold::Anchor
-            } else {
-                GrabHold::Center
+                control.center = center;
+                focus_camera(
+                    orbit,
+                    &mut control.camera_focus,
+                    &mut control.filmstrip_return,
+                    strip,
+                    focus,
+                    center,
+                );
+                Ok(())
+            },
+        )
+        .expect("Session::new registers the camera rig");
+    session.system(Phase::Dispatch, "pointer", move |mut ctx| {
+        control_primary(&mut ctx, domain);
+        Ok(())
+    });
+    session.on_action(SPIN, |d| {
+        if *d.app.mode == Mode::Rotate {
+            Action::Running(None).apply(d)?;
+        }
+        Ok(())
+    });
+    // One system, so the strip toggle reads the strip before the mode change in the same boundary clears it.
+    session.system(Phase::Dispatch, "keys", |ctx| {
+        let strip = *ctx.app.strip;
+        if ctx.input.pressed(NEXT_MODE) {
+            let next = match *ctx.app.mode {
+                Mode::Rotate => Mode::Toybox,
+                Mode::Toybox => Mode::Rotate,
             };
-            if let Some(physics) = ctx.domains.typed(domain)?.physics_mut() {
-                physics.set_grab_hold(hold);
-            }
-            Ok(())
-        },
-    );
+            ctx.commands.app(Action::Mode(next));
+        }
+        if ctx.input.pressed(RESET) {
+            ctx.commands.app(Action::Reset);
+        }
+        if ctx.input.pressed(GIMBAL) {
+            ctx.commands.app(Action::Gimbal(None));
+        }
+        if ctx.input.pressed(CONTROLS) {
+            ctx.commands.app(Action::Controls(None));
+        }
+        if ctx.input.pressed(STRIP) {
+            ctx.commands.app(Action::Strip(Strip {
+                on: !strip.on,
+                ..strip
+            }));
+        }
+        Ok(())
+    });
+    for (index, action) in PLANE.into_iter().enumerate() {
+        session.on_action(action, move |d| Action::Plane(index).apply(d).map(drop));
+    }
+
+    session.system(Phase::Dispatch, "grab hold", move |ctx| {
+        let hold = if *ctx.app.rope.get() {
+            GrabHold::Anchor
+        } else {
+            GrabHold::Center
+        };
+        if let Some(physics) = ctx.domains.typed(domain)?.physics_mut() {
+            physics.set_grab_hold(hold);
+        }
+        Ok(())
+    });
 
     let mut applied = None;
-    session.system(
-        Phase::Publication,
-        "slice view",
-        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
-            let w = *ctx.app.slice.get();
-            let revision = ctx.app.slice.version();
-            if Some(revision) == applied {
-                return Ok(());
-            }
-            let r4 = ctx.domains.typed(domain)?;
-            let spec = r4
-                .view_mut(layers.section)
-                .ok_or(DomainError::Unsupported("section view"))?;
-            spec.set_mapping(Section4 { w });
-            applied = Some(revision);
-            Ok(())
-        },
-    );
+    session.system(Phase::Publication, "slice view", move |ctx| {
+        let w = *ctx.app.slice.get();
+        let revision = ctx.app.slice.version();
+        if Some(revision) == applied {
+            return Ok(());
+        }
+        let r4 = ctx.domains.typed(domain)?;
+        let spec = r4
+            .view_mut(layers.section)
+            .ok_or(DomainError::Unsupported("section view"))?;
+        spec.set_mapping(Section4 { w });
+        applied = Some(revision);
+        Ok(())
+    });
 
     let mut styled = None;
     let mut styled_slots = loam::runtime::Cursor::default();
-    session.system(
-        Phase::Publication,
-        "shading",
-        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
-            let app = &mut *ctx.app;
-            let revision = (
-                app.color.version(),
-                app.strip.version(),
-                app.display.version(),
-                app.active.version(),
-            );
-            let slots_changed = app.slots.changed_since(&mut styled_slots);
-            if !slots_changed && styled == Some(revision) {
-                return Ok(());
-            }
-            let mode = *app.color.get();
-            let strip = app.strip.get().on;
-            let display = *app.display.get();
-            let active = *app.active.get();
-            let subject = if display.single {
-                app.slots
-                    .iter()
-                    .find(|(_, slot)| slot.index == active)
-                    .map(|(entity, _)| entity)
-            } else {
-                None
+    session.system(Phase::Publication, "shading", move |ctx| {
+        let app = &mut *ctx.app;
+        let revision = (
+            app.color.version(),
+            app.strip.version(),
+            app.display.version(),
+            app.active.version(),
+        );
+        let slots_changed = app.slots.changed_since(&mut styled_slots);
+        if !slots_changed && styled == Some(revision) {
+            return Ok(());
+        }
+        let mode = *app.color.get();
+        let strip = app.strip.get().on;
+        let display = *app.display.get();
+        let active = *app.active.get();
+        let subject = if display.single {
+            app.slots
+                .iter()
+                .find(|(_, slot)| slot.index == active)
+                .map(|(entity, _)| entity)
+        } else {
+            None
+        };
+        let r4 = ctx.domains.typed(domain)?;
+        r4.set_view_subject(layers.section, subject)?;
+        r4.set_view_subject(layers.projection, subject)?;
+        let spec = r4
+            .view_mut(layers.section)
+            .ok_or(DomainError::Unsupported("section view"))?;
+        spec.enabled = !strip;
+        spec.edges = false;
+        spec.section_edges = display.wireframe && display.section_perimeter;
+        spec.section_faces = display.surface == Surface::Raster;
+        let spec = r4
+            .view_mut(layers.projection)
+            .ok_or(DomainError::Unsupported("projection view"))?;
+        spec.enabled = display.wireframe && !strip;
+        spec.section_edges = false;
+        spec.section_faces = false;
+        for (entity, slot) in app.slots.iter() {
+            let Some(card) = card_of(&slot.entry).map(|index| cards[index]) else {
+                continue;
             };
-            let r4 = ctx.domains.typed(domain)?;
-            r4.set_view_subject(layers.section, subject)?;
-            r4.set_view_subject(layers.projection, subject)?;
-            let spec = r4
-                .view_mut(layers.section)
-                .ok_or(DomainError::Unsupported("section view"))?;
-            spec.enabled = !strip;
-            spec.edges = false;
-            spec.section_edges = display.wireframe && display.section_perimeter;
-            spec.section_faces = display.surface == Surface::Raster;
-            let spec = r4
-                .view_mut(layers.projection)
-                .ok_or(DomainError::Unsupported("projection view"))?;
-            spec.enabled = display.wireframe && !strip;
-            spec.section_edges = false;
-            spec.section_faces = false;
-            for (entity, slot) in app.slots.iter() {
-                let Some(card) = card_of(&slot.entry).map(|index| cards[index]) else {
-                    continue;
-                };
-                let Some(shades) = card.shades else {
-                    continue;
-                };
-                if let Some(instance) = r4.instance_mut(entity) {
-                    instance.shading = shades.of(mode);
-                    instance.section = (!strip).then_some(card.cut);
-                    instance.line_width_px = Some(display.wireframe_width_px);
-                    instance.line_opacity = Some(display.wireframe_opacity);
-                }
+            let Some(shades) = card.shades else {
+                continue;
+            };
+            if let Some(instance) = r4.instance_mut(entity) {
+                instance.shading = shades.of(mode);
+                instance.section = (!strip).then_some(card.cut);
+                instance.line_width_px = Some(display.wireframe_width_px);
+                instance.line_opacity = Some(display.wireframe_opacity);
             }
-            styled = Some(revision);
-            app.slots.catch_up(&mut styled_slots);
-            Ok(())
-        },
-    );
+        }
+        styled = Some(revision);
+        app.slots.catch_up(&mut styled_slots);
+        Ok(())
+    });
 
     let mut shown = None;
-    session.system(
-        Phase::Publication,
-        "projection view",
-        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
-            let family = *ctx.app.projection.get();
-            let slice = *ctx.app.slice.get();
-            let revision = (ctx.app.projection.version(), ctx.app.slice.version());
-            if shown == Some(revision) {
-                return Ok(());
-            }
-            let r4 = ctx.domains.typed(domain)?;
-            let spec = r4
-                .view_mut(layers.projection)
-                .ok_or(DomainError::Unsupported("projection view"))?;
-            spec.set_mapping(family.mapping(slice));
-            shown = Some(revision);
-            Ok(())
-        },
-    );
+    session.system(Phase::Publication, "projection view", move |ctx| {
+        let family = *ctx.app.projection.get();
+        let slice = *ctx.app.slice.get();
+        let revision = (ctx.app.projection.version(), ctx.app.slice.version());
+        if shown == Some(revision) {
+            return Ok(());
+        }
+        let r4 = ctx.domains.typed(domain)?;
+        let spec = r4
+            .view_mut(layers.projection)
+            .ok_or(DomainError::Unsupported("projection view"))?;
+        spec.set_mapping(family.mapping(slice));
+        shown = Some(revision);
+        Ok(())
+    });
 
-    session.system(
-        Phase::Simulation,
-        "slice scrub",
-        |ctx: Ctx<'_, Playground>| {
-            if ctx.app.camera.get().mode != camera::CameraMode::Orbit {
-                return Ok(());
-            }
-            let scrub =
-                f32::from(ctx.input.is_held(SLICE_UP)) - f32::from(ctx.input.is_held(SLICE_DOWN));
-            if scrub == 0.0 {
-                return Ok(());
-            }
-            let next = *ctx.app.slice.get() + scrub * W_SCRUB_RATE * ctx.step.dt;
-            let reach = slice_reach(*ctx.app.mode.get());
-            ctx.app.slice.set(next.clamp(-reach, reach));
-            Ok(())
-        },
-    );
-    session.system(
-        Phase::Simulation,
-        "spin",
-        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
-            if !ctx.app.spin.get().running || *ctx.app.mode.get() == Mode::Toybox {
-                return Ok(());
-            }
-            let time = *ctx.app.time.get() + ctx.step.dt * ctx.app.spin.get().rate;
-            display::seek(ctx.app, ctx.domains, domain, time)?;
-            Ok(())
-        },
-    );
-    session.system(
-        Phase::Simulation,
-        "free camera",
-        |ctx: Ctx<'_, Playground>| {
-            if ctx.app.camera.get().mode == camera::CameraMode::Freecam && ctx.input.cursor_locked {
-                let axes = [
-                    f32::from(ctx.input.is_held(camera::RIGHT))
-                        - f32::from(ctx.input.is_held(camera::LEFT)),
-                    f32::from(ctx.input.is_held(SLICE_UP))
-                        - f32::from(ctx.input.is_held(SLICE_DOWN)),
-                    f32::from(ctx.input.is_held(camera::FORWARD))
-                        - f32::from(ctx.input.is_held(camera::BACKWARD)),
-                ];
-                let camera = ctx.app.camera.get_mut();
-                camera.free.travel(axes, camera.speed * ctx.step.dt);
-                look(ctx.views, camera.free.eye);
-            }
-            Ok(())
-        },
-    );
-    session.system(
-        Phase::Simulation,
-        "toy settle",
-        move |ctx: Ctx<'_, Playground>| -> Result<(), DomainError> {
-            toy::settle(ctx.app, ctx.domains, domain, ctx.step)
-        },
-    );
+    session.system(Phase::Simulation, "slice scrub", |ctx| {
+        if camera::is_free(ctx.views) {
+            return Ok(());
+        }
+        // E and Q move the free camera, so the slice takes them only while the orbit holds the eye.
+        let scrub = ctx.input.axis(MOVE_DOWN, MOVE_UP);
+        if scrub == 0.0 {
+            return Ok(());
+        }
+        let next = *ctx.app.slice + scrub * W_SCRUB_RATE * ctx.step.dt;
+        let reach = slice_reach(*ctx.app.mode);
+        ctx.app.slice.set(next.clamp(-reach, reach));
+        Ok(())
+    });
+    session.system(Phase::Simulation, "spin", move |ctx| {
+        if !ctx.app.spin.running || *ctx.app.mode == Mode::Toybox {
+            return Ok(());
+        }
+        let time = *ctx.app.time + ctx.step.dt * ctx.app.spin.rate;
+        display::seek(ctx.app, ctx.domains, domain, time)?;
+        Ok(())
+    });
+    session.system(Phase::Simulation, "toy settle", move |ctx| {
+        toy::settle(ctx.app, ctx.domains, domain, ctx.step)
+    });
 }
 
 impl AppCommand<Playground> for Action {
@@ -594,7 +541,7 @@ impl AppCommand<Playground> for Action {
 
     fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
         let domain = dispatch.domains.named::<EuclideanR4>(DOMAIN_NAME)?;
-        let Catalog { cards } = dispatch.app.catalog.get().clone();
+        let cards = dispatch.app.catalog.cards.clone();
         match *self {
             Action::Mode(mode) => mode::set_mode(dispatch, domain, &cards, mode)?,
             Action::Active(slot) => {
@@ -610,14 +557,14 @@ impl AppCommand<Playground> for Action {
                 if !w.is_finite() {
                     return Err(Rejection::Unsupported("slice is not finite"));
                 }
-                let reach = slice_reach(*dispatch.app.mode.get());
+                let reach = slice_reach(*dispatch.app.mode);
                 dispatch.app.slice.set(w.clamp(-reach, reach));
             }
             Action::ExactSlice(w) => {
                 if !w.is_finite() {
                     return Err(Rejection::Unsupported("slice is not finite"));
                 }
-                let reach = slice_reach(*dispatch.app.mode.get());
+                let reach = slice_reach(*dispatch.app.mode);
                 if !(-reach..=reach).contains(&w) {
                     return Err(Rejection::Unsupported(
                         "slice is outside the mode's w range",
@@ -627,11 +574,11 @@ impl AppCommand<Playground> for Action {
             }
             Action::Plane(plane) => mode::toggle_plane(dispatch, plane)?,
             Action::Gimbal(setting) => {
-                let shown = *dispatch.app.gimbal.get();
+                let shown = *dispatch.app.gimbal;
                 dispatch.app.gimbal.set(setting.unwrap_or(!shown));
             }
             Action::Running(setting) => {
-                if *dispatch.app.mode.get() == Mode::Toybox {
+                if *dispatch.app.mode == Mode::Toybox {
                     return Err(Rejection::Unsupported("rotation belongs to Rotate"));
                 }
                 let running = dispatch.app.spin.get_mut();
@@ -644,7 +591,7 @@ impl AppCommand<Playground> for Action {
                 }
             }
             Action::NextProjection => {
-                let held = *dispatch.app.projection.get();
+                let held = *dispatch.app.projection;
                 let at = Family::ALL
                     .iter()
                     .position(|family| *family == held)
@@ -657,7 +604,7 @@ impl AppCommand<Playground> for Action {
             }
             Action::Color(mode) => dispatch.app.color.set(mode),
             Action::NextColor => {
-                let held = *dispatch.app.color.get();
+                let held = *dispatch.app.color;
                 let at = ColorMode::ALL
                     .iter()
                     .position(|mode| *mode == held)
@@ -668,7 +615,7 @@ impl AppCommand<Playground> for Action {
                     .set(ColorMode::ALL[(at + 1) % ColorMode::ALL.len()]);
             }
             Action::Hud(setting) => {
-                let shown = *dispatch.app.hud.get();
+                let shown = *dispatch.app.hud;
                 dispatch.app.hud.set(setting.unwrap_or(!shown));
             }
             Action::Strip(strip) => mode::set_strip(dispatch.app, strip)?,
@@ -681,27 +628,27 @@ impl AppCommand<Playground> for Action {
             Action::Display(display) => display::set(dispatch.app, display)?,
             Action::Reset => mode::reset(dispatch, domain, &cards)?,
             Action::Controls(setting) => {
-                let visible = *dispatch.app.controls.get();
+                let visible = *dispatch.app.controls;
                 dispatch.app.controls.set(setting.unwrap_or(!visible));
             }
             Action::Formula(setting) => {
-                let visible = *dispatch.app.formula.get();
+                let visible = *dispatch.app.formula;
                 dispatch.app.formula.set(setting.unwrap_or(!visible));
             }
             Action::Labels(setting) => {
-                let visible = *dispatch.app.labels.get();
+                let visible = *dispatch.app.labels;
                 dispatch.app.labels.set(setting.unwrap_or(!visible));
             }
             Action::Guides(setting) => {
-                let visible = *dispatch.app.guides.get();
+                let visible = *dispatch.app.guides;
                 dispatch.app.guides.set(setting.unwrap_or(!visible));
             }
             Action::Rope(setting) => {
-                let rope = *dispatch.app.rope.get();
+                let rope = *dispatch.app.rope;
                 dispatch.app.rope.set(setting.unwrap_or(!rope));
             }
             Action::ToyboxDebug(setting) => {
-                let visible = *dispatch.app.toybox_debug.get();
+                let visible = *dispatch.app.toybox_debug;
                 dispatch.app.toybox_debug.set(setting.unwrap_or(!visible));
             }
             Action::Time(time) => {
@@ -741,12 +688,12 @@ pub(crate) fn bindings() -> Bindings {
         .key(Key::Letter('g'), GIMBAL)
         .key(Key::Letter('f'), STRIP)
         .key(Key::Letter('h'), CONTROLS)
-        .key(Key::Letter('d'), camera::RIGHT)
-        .key(Key::Letter('a'), camera::LEFT)
-        .key(Key::Letter('w'), camera::FORWARD)
-        .key(Key::Letter('s'), camera::BACKWARD)
-        .key(Key::Letter('e'), SLICE_UP)
-        .key(Key::Letter('q'), SLICE_DOWN);
+        .key(Key::Letter('d'), MOVE_RIGHT)
+        .key(Key::Letter('a'), MOVE_LEFT)
+        .key(Key::Letter('w'), MOVE_FORWARD)
+        .key(Key::Letter('s'), MOVE_BACKWARD)
+        .key(Key::Letter('e'), MOVE_UP)
+        .key(Key::Letter('q'), MOVE_DOWN);
     for (index, action) in PLANE.into_iter().enumerate() {
         bound = bound.key(Key::Digit(index as u8 + 1), action);
     }
@@ -899,14 +846,6 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
         app = app.pass(pass);
     }
     app = console::install(app).on_frame(move |hook: &mut FrameHook<'_, Playground>| {
-        let camera = *hook.session.app.camera.get();
-        hook.capture_cursor(
-            camera.mode == camera::CameraMode::Freecam
-                && !hook
-                    .ui
-                    .is_some_and(|context| context.wants_keyboard_input()),
-            camera.cursor_policy,
-        );
         collect(hook.session, domain, hook.alpha, &mut scratch);
         let eye = hook
             .session
@@ -1001,12 +940,18 @@ fn focus_camera(
         camera_focus.is_some_and(|previous| previous.2 != focus.2 || previous.0 && !focus.0);
     let target = [center.x, 0.0, center.z];
     if reset {
-        *orbit = Orbit::around(target, CAMERA_DISTANCE);
-        orbit.pitch = -0.25;
+        *orbit = home(target);
     } else {
         orbit.target = target;
     }
     *camera_focus = Some(focus);
+}
+
+fn home(target: [f32; 3]) -> Orbit {
+    Orbit {
+        pitch: -0.25,
+        ..Orbit::around(target, CAMERA_DISTANCE)
+    }
 }
 
 fn slice_reach(mode: Mode) -> f32 {
@@ -1068,8 +1013,8 @@ fn scene_center(
     domains: &Domains,
     domain: DomainHandle<EuclideanR4>,
 ) -> glam::Vec3 {
-    let active = *app.active.get();
-    let single = app.display.get().single;
+    let active = *app.active;
+    let single = app.display.single;
     let Ok(r4) = domains.read(domain) else {
         return glam::Vec3::ZERO;
     };
@@ -1086,47 +1031,6 @@ fn scene_center(
         count += 1;
     }
     sum / count.max(1) as f32
-}
-
-fn control_camera(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR4>) {
-    let center = scene_center(ctx.app, ctx.domains, domain);
-    let focus = (
-        ctx.app.display.get().single,
-        *ctx.app.active.get(),
-        *ctx.app.mode.get(),
-    );
-    let strip = *ctx.app.strip.get();
-    {
-        let control = ctx.app.control.get_mut();
-        for pointer in &ctx.input.pointers {
-            control.latest = Some(*pointer);
-        }
-        control.center = center;
-        focus_camera(
-            &mut control.orbit,
-            &mut control.camera_focus,
-            &mut control.filmstrip_return,
-            strip,
-            focus,
-            center,
-        );
-    }
-    let mode = ctx.app.camera.get().mode;
-    let eye = match mode {
-        camera::CameraMode::Orbit => {
-            let control = ctx.app.control.get_mut();
-            control.orbit.apply(ctx.input);
-            control.orbit.eye()
-        }
-        camera::CameraMode::Freecam => {
-            let camera = ctx.app.camera.get_mut();
-            if ctx.input.cursor_locked {
-                camera.free.look(ctx.input.look);
-            }
-            camera.free.eye
-        }
-    };
-    look(ctx.views, eye);
 }
 
 fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR4>) {
@@ -1589,7 +1493,7 @@ mod tests {
             booted.session.app.spin.get_mut().running = false;
             for boundary in 0..boundaries {
                 let held = if boundary == 0 || boundaries > 1 {
-                    vec![SLICE_UP]
+                    vec![MOVE_UP]
                 } else {
                     Vec::new()
                 };

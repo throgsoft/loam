@@ -29,8 +29,12 @@ pub enum Rig {
 }
 
 impl Rig {
-    pub fn wants_cursor(&self) -> bool {
-        matches!(self, Rig::Free(_))
+    /// `None` while the rig leaves the cursor free.
+    pub fn cursor(&self) -> Option<CursorPolicy> {
+        match self {
+            Rig::Free(free) => Some(free.cursor),
+            Rig::Manual | Rig::Orbit(_) => None,
+        }
     }
 
     pub(crate) fn eye(&self) -> Option<Eye> {
@@ -85,11 +89,22 @@ pub(crate) fn travel(views: &mut Views, input: &Input, dt: f32) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorPolicy {
+    /// The cursor stays captured and is free only while Alt is held down.
+    Hold,
+    /// The cursor starts captured and each Alt press frees or recaptures it.
+    #[default]
+    Toggle,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FreeCamera {
     pub eye: Eye,
     /// Image-space units per second.
     pub speed: f32,
+    /// How the cursor is captured while this camera holds the eye.
+    pub cursor: CursorPolicy,
 }
 
 impl Default for FreeCamera {
@@ -97,6 +112,7 @@ impl Default for FreeCamera {
         Self {
             eye: Eye::default(),
             speed: FREE_SPEED,
+            cursor: CursorPolicy::default(),
         }
     }
 }

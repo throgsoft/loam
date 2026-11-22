@@ -1,10 +1,8 @@
 use anyhow::{anyhow, bail, Result};
 use loam::app::environment::Environment;
-use loam::app::session::SessionApp;
-use loam::app::CursorPolicy;
-use loam::runtime::Dispatch;
+use loam::prelude::*;
 
-use crate::camera::CameraMode;
+use crate::camera;
 use crate::color::ColorMode;
 use crate::display::{Surface, MAX_WIREFRAME_WIDTH_PX};
 use crate::mode::Mode;
@@ -41,15 +39,6 @@ fn projection(token: &str) -> Option<Family> {
         "w-pinhole" => Some(Family::Perspective),
         _ => Family::from_token(token),
     }
-}
-
-fn set_camera_mode(dispatch: &mut Dispatch<'_, Playground>, mode: CameraMode) {
-    let previous = dispatch.app.camera.get().mode;
-    if mode == CameraMode::Freecam && previous != CameraMode::Freecam {
-        let eye = dispatch.views.root_mut().eye;
-        dispatch.app.camera.get_mut().free.eye = eye;
-    }
-    dispatch.app.camera.get_mut().mode = mode;
 }
 
 pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground> {
@@ -397,27 +386,18 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         |args, submit, _out| {
             match args {
                 [] => submit.app_fn("camera", |dispatch: &mut Dispatch<'_, Playground>| {
-                    let mode = match dispatch.app.camera.get().mode {
-                        CameraMode::Orbit => CameraMode::Freecam,
-                        CameraMode::Freecam => CameraMode::Orbit,
-                    };
-                    set_camera_mode(dispatch, mode);
+                    let free = !camera::is_free(dispatch.views);
+                    camera::fly(dispatch.views, dispatch.app.parked.get_mut(), free);
                 }),
                 ["orbit"] | ["freecam"] => {
-                    let mode = if args[0] == "orbit" {
-                        CameraMode::Orbit
-                    } else {
-                        CameraMode::Freecam
-                    };
+                    let free = args[0] == "freecam";
                     submit.app_fn("camera", move |dispatch: &mut Dispatch<'_, Playground>| {
-                        set_camera_mode(dispatch, mode);
+                        camera::fly(dispatch.views, dispatch.app.parked.get_mut(), free);
                     });
                 }
                 ["speed"] => submit.inspect("camera speed", |dispatch, out| {
-                    out.line(format!(
-                        "camera speed: {:.2} u/sec",
-                        dispatch.app.camera.get().speed
-                    ));
+                    let speed = camera::free(dispatch.views, &dispatch.app.parked).speed;
+                    out.line(format!("camera speed: {speed:.2} u/sec"));
                 }),
                 ["speed", token] => {
                     let speed = number(token, "camera speed")?;
@@ -427,12 +407,13 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                     submit.app_fn(
                         "camera speed",
                         move |dispatch: &mut Dispatch<'_, Playground>| {
-                            dispatch.app.camera.get_mut().speed = speed;
+                            camera::free_mut(dispatch.views, dispatch.app.parked.get_mut()).speed =
+                                speed;
                         },
                     );
                 }
                 ["cursor"] => submit.inspect("camera cursor", |dispatch, out| {
-                    let policy = match dispatch.app.camera.get().cursor_policy {
+                    let policy = match camera::free(dispatch.views, &dispatch.app.parked).cursor {
                         CursorPolicy::Hold => "hold",
                         CursorPolicy::Toggle => "toggle",
                     };
@@ -447,7 +428,8 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                     submit.app_fn(
                         "camera cursor",
                         move |dispatch: &mut Dispatch<'_, Playground>| {
-                            dispatch.app.camera.get_mut().cursor_policy = policy;
+                            camera::free_mut(dispatch.views, dispatch.app.parked.get_mut())
+                                .cursor = policy;
                         },
                     );
                 }

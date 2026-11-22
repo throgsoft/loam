@@ -3,26 +3,18 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use glam::{Vec2, Vec3, Vec4};
-use loam::app::args::Args;
 use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
 use loam::app::environment::Environment;
-use loam::app::session::{launch_or_headless, FrameHook, SessionApp};
-use loam::math::{Bivector4, EuclideanR4, Rotor, WPlane};
+use loam::app::session::launch_or_headless;
 use loam::physics::body::MASK_ALL;
 use loam::physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
 };
 use loam::physics::BodyId;
-use loam::render::{FragmentShading, SkyGroundPass, TriangleFeed};
-use loam::runtime::host::{self, HostConfig, HostError};
-use loam::runtime::{
-    ActionId, Bindings, Command, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle, Domains,
-    Entity, Key, LogCapacity, Orbit, Order, Outcome, Phase, Physics, PhysicsConfig, Pose,
-    Rejection, Rig, Rigid, Session, SimConfig, SpawnBundle, DOMAIN_STEP,
-};
-use loam::shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
-use loam::shape::{Shape, TriangleMesh};
+use loam::prelude::*;
+use loam::render::TriangleFeed;
+use loam::runtime::host;
+use loam::shape::polytope::{polytope_section_faces_append, SectionScratch};
 use loam::text::ab_glyph::FontRef;
 use loam::text::glyph::{
     append_field_prism, layout_word, DistanceField2D, GlyphParams, GlyphSolid,
@@ -167,7 +159,7 @@ impl Default for Stage {
     }
 }
 
-loam::runtime::stores! {
+stores! {
     #[derive(Default)]
     pub struct HeroStores {
         letters: Store<Letter>,
@@ -539,12 +531,8 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
             max_ticks_per_frame: 2 * SUBSTEPS,
         },
     );
-    let r4 = session.register_domain(
-        DomainBuilder::new("r4", EuclideanR4)
-            .tracked(LogCapacity::default())
-            .physics(PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::Y * GRAVITY))
-            .map_err(|error| HostError::Setup(Rejection::Edit(error)))?,
-    );
+    let physics = PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::Y * GRAVITY);
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).physics(physics)?);
     session.dispatch(|d| -> Result<(), Rejection> {
         for letter in letters {
             let entry = letter.entry;
@@ -568,24 +556,21 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
         ..Orbit::around(centre.to_array(), BOOT_ORBIT_DISTANCE)
     }));
 
-    session.system(Phase::Dispatch, "keys", move |ctx: Ctx<'_, HeroStores>| {
-        if ctx.input.pressed(PAUSE) {
-            let paused = !ctx.app.stage.get().paused;
-            ctx.commands
-                .try_app_fn("pause", move |d: &mut Dispatch<'_, HeroStores>| {
-                    hold(d, r4, paused)?;
-                    d.app.stage.get_mut().paused = paused;
-                    Ok(Outcome::Done)
-                });
-        }
+    session.on_action(PAUSE, move |d| {
+        let paused = !d.app.stage.paused;
+        hold(d, r4, paused)?;
+        d.app.stage.get_mut().paused = paused;
+        Ok(())
+    });
+    // The seed is read at the press, because the reset lands before the reseed.
+    session.system(Phase::Dispatch, "keys", |ctx| {
         if ctx.input.pressed(RESEED) {
-            let seed = ctx.app.stage.get().seed.wrapping_add(1);
+            let seed = ctx.app.stage.seed.wrapping_add(1);
             ctx.commands.submit(Command::Reset);
-            ctx.commands
-                .try_app_fn("reseed", move |d: &mut Dispatch<'_, HeroStores>| {
-                    d.app.stage.set(Stage::seeded(seed));
-                    Ok(Outcome::Done)
-                });
+            ctx.commands.try_app_fn("reseed", move |d| {
+                d.app.stage.set(Stage::seeded(seed));
+                Ok(Outcome::Done)
+            });
         }
         Ok(())
     });
@@ -594,8 +579,8 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
         Phase::Simulation,
         Order::Before(DOMAIN_STEP),
         "assemble",
-        move |ctx: Ctx<'_, HeroStores>| -> Result<(), DomainError> {
-            let stage = *ctx.app.stage.get();
+        move |ctx| {
+            let stage = *ctx.app.stage;
             if stage.paused {
                 return Ok(());
             }
@@ -640,8 +625,8 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
         Phase::Simulation,
         Order::After(DOMAIN_STEP),
         "settle",
-        move |ctx: Ctx<'_, HeroStores>| -> Result<(), DomainError> {
-            let mut stage = *ctx.app.stage.get();
+        move |ctx| {
+            let mut stage = *ctx.app.stage;
             if stage.paused || stage.frame() >= SEQUENCE_FRAMES {
                 return Ok(());
             }
@@ -750,29 +735,26 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
     let mut local = Vec::new();
     let mut scratch = SectionScratch::default();
     let mut composed = None;
-    session.system(
-        Phase::Publication,
-        "compose",
-        move |ctx: Ctx<'_, HeroStores>| {
-            let tick = ctx.app.stage.get().tick;
-            let key = (tick, ctx.app.mesh.version());
-            if composed == Some(key) {
-                return Ok(());
-            }
-            compose(
-                ctx.app,
-                ctx.domains,
-                r4,
-                &mut morph,
-                &mut local,
-                &mut scratch,
-                half_depth,
-            );
-            composed = Some((tick, ctx.app.mesh.version()));
-            Ok(())
-        },
-    );
+    session.system(Phase::Publication, "compose", move |ctx| {
+        let tick = ctx.app.stage.tick;
+        let key = (tick, ctx.app.mesh.version());
+        if composed == Some(key) {
+            return Ok(());
+        }
+        compose(
+            ctx.app,
+            ctx.domains,
+            r4,
+            &mut morph,
+            &mut local,
+            &mut scratch,
+            half_depth,
+        );
+        composed = Some((tick, ctx.app.mesh.version()));
+        Ok(())
+    });
 
+    // Taken here so a reset straight after build has a state to return to.
     session.set_initial()?;
     Ok((session, Scene { r4 }))
 }

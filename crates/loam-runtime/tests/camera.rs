@@ -155,6 +155,7 @@ fn a_free_rig_walks_speed_times_dt_per_tick_and_looks_once_per_boundary_only_whi
         Rig::Free(FreeCamera {
             eye: start,
             speed: SPEED,
+            ..FreeCamera::default()
         }),
     );
     let seated = Eye {

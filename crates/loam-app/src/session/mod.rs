@@ -23,10 +23,10 @@ pub use app::{CaptureControl, FrameHook, InputHook, Redraw, SessionApp};
 pub use camera::{look, orbit, FreeCamera, Orbit};
 pub use commands::CommandSender;
 pub use console::{SessionConsole, Submit};
-pub use cursor::CursorPolicy;
 #[cfg(feature = "egui")]
 pub use debug_layer::{DebugLayer, DEBUG_LAYER};
 pub use frame::Target;
+pub use loam_runtime::CursorPolicy;
 pub use pacing::{Pace, Pacer};
 
 #[cfg(target_arch = "wasm32")]

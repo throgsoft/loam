@@ -18,8 +18,8 @@ pub mod view;
 
 pub use bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
 pub use camera::{
-    FreeCamera, Orbit, Rig, CAMERA_RIG, CAMERA_TRAVEL, MOVE_BACKWARD, MOVE_DOWN, MOVE_FORWARD,
-    MOVE_LEFT, MOVE_RIGHT, MOVE_UP,
+    CursorPolicy, FreeCamera, Orbit, Rig, CAMERA_RIG, CAMERA_TRAVEL, MOVE_BACKWARD, MOVE_DOWN,
+    MOVE_FORWARD, MOVE_LEFT, MOVE_RIGHT, MOVE_UP,
 };
 pub use command::{
     AppCommand, Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,

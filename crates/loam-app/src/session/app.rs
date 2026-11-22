@@ -4,11 +4,11 @@ use loam_egui::egui;
 use loam_render::pass::{FramePass, Section};
 use loam_runtime::host::HostConfig;
 use loam_runtime::host::HostError;
-use loam_runtime::{ActionId, Growth, Input, Publication, Session, Stores};
+use loam_runtime::{ActionId, CursorPolicy, Growth, Input, Publication, Session, Stores};
 
 use super::commands::{CommandInbox, CommandSender};
 use super::console::{SessionConsole, Submit};
-use super::cursor::{CursorCapture, CursorPolicy};
+use super::cursor::CursorCapture;
 use super::pacing::Pacer;
 use crate::args::Args;
 use crate::capture::{CaptureRequest, CaptureUnavailable};

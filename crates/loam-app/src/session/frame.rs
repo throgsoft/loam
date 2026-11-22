@@ -501,18 +501,18 @@ impl<A: Stores> Inner<A> {
             Ok((records, eye)) => {
                 {
                     let root = self.session.views().root();
-                    let free = self
+                    let wanted = self
                         .session
                         .views()
                         .get(root)
-                        .is_some_and(|image| image.rig.wants_cursor());
+                        .and_then(|image| image.rig.cursor());
                     #[cfg(feature = "egui")]
                     let typing = context
                         .as_ref()
                         .is_some_and(|context| context.wants_keyboard_input());
                     #[cfg(not(feature = "egui"))]
                     let typing = false;
-                    self.cursor.follow_rig(free && !typing);
+                    self.cursor.follow_rig(wanted.filter(|_| !typing));
                     let sender = self.app.commands.sender();
                     let (hook, captures, cursor, background, posts) = (
                         self.app.frame.as_mut(),
