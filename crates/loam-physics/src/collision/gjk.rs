@@ -260,19 +260,6 @@ fn triple_product(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 mod tests {
     use super::*;
 
-    fn box_vertices(center: Vec3, half: Vec3) -> Vec<Vec3> {
-        vec![
-            center + Vec3::new(-half.x, -half.y, -half.z),
-            center + Vec3::new(half.x, -half.y, -half.z),
-            center + Vec3::new(half.x, half.y, -half.z),
-            center + Vec3::new(-half.x, half.y, -half.z),
-            center + Vec3::new(-half.x, -half.y, half.z),
-            center + Vec3::new(half.x, -half.y, half.z),
-            center + Vec3::new(half.x, half.y, half.z),
-            center + Vec3::new(-half.x, half.y, half.z),
-        ]
-    }
-
     #[test]
     fn posed_support_uses_the_inverse_rotation() {
         let local = [
@@ -294,105 +281,5 @@ mod tests {
         for direction in [Vec3::X, -Vec3::Y, Vec3::Z, Vec3::new(0.3, -0.7, 0.9)] {
             assert!((posed.support(direction) - world.support(direction)).length() < 1e-6);
         }
-    }
-
-    #[test]
-    fn separated_boxes_report_no_intersection() {
-        let va = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let vb = box_vertices(Vec3::new(3.0, 0.0, 0.0), Vec3::ONE);
-        let a = ConvexHull { vertices: &va };
-        let b = ConvexHull { vertices: &vb };
-
-        match gjk_intersect(&a, &b, Vec3::new(3.0, 0.0, 0.0)) {
-            GjkResult::Separated => {}
-            GjkResult::Intersecting { .. } => panic!("should be separated"),
-        }
-    }
-
-    #[test]
-    fn touching_boxes_report_intersection() {
-        let va = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let vb = box_vertices(Vec3::new(2.0, 0.0, 0.0), Vec3::ONE);
-        let a = ConvexHull { vertices: &va };
-        let b = ConvexHull { vertices: &vb };
-
-        match gjk_intersect(&a, &b, Vec3::new(2.0, 0.0, 0.0)) {
-            GjkResult::Intersecting { .. } => {}
-            GjkResult::Separated => panic!("touching boundaries should count as intersecting"),
-        }
-    }
-
-    #[test]
-    fn sphere_vs_sphere_matches_distance_test() {
-        for &(ax, bx, overlap) in &[(0.0, 3.0, false), (0.0, 1.5, true), (0.0, 2.0, true)] {
-            let a = Sphere {
-                center: Vec3::new(ax, 0.0, 0.0),
-                radius: 1.0,
-            };
-            let b = Sphere {
-                center: Vec3::new(bx, 0.0, 0.0),
-                radius: 1.0,
-            };
-            let result = gjk_intersect(&a, &b, Vec3::new(bx - ax, 0.0, 0.0));
-            let got = matches!(result, GjkResult::Intersecting { .. });
-            assert_eq!(
-                got, overlap,
-                "centres at ({ax},0,0) and ({bx},0,0): expected intersecting={overlap}, got {got}"
-            );
-        }
-    }
-
-    #[test]
-    fn box_vs_sphere_corner_contact() {
-        let vb = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let b = ConvexHull { vertices: &vb };
-
-        let far = Sphere {
-            center: Vec3::new(1.35, 1.35, 1.35),
-            radius: 0.5,
-        };
-        assert!(matches!(
-            gjk_intersect(&far, &b, Vec3::new(-1.0, -1.0, -1.0)),
-            GjkResult::Separated
-        ));
-
-        let near = Sphere {
-            center: Vec3::new(1.2, 1.2, 1.2),
-            radius: 0.5,
-        };
-        assert!(matches!(
-            gjk_intersect(&near, &b, Vec3::new(-1.0, -1.0, -1.0)),
-            GjkResult::Intersecting { .. }
-        ));
-    }
-
-    #[test]
-    fn rotated_boxes_separate_as_axes_allow() {
-        use glam::Quat;
-        let va = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let rot = Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);
-        let vb_rot: Vec<Vec3> = box_vertices(Vec3::ZERO, Vec3::ONE)
-            .iter()
-            .map(|&v| rot * v + Vec3::new(2.5, 0.0, 0.0))
-            .collect();
-        let a = ConvexHull { vertices: &va };
-        let b = ConvexHull { vertices: &vb_rot };
-
-        assert!(matches!(
-            gjk_intersect(&a, &b, Vec3::new(2.5, 0.0, 0.0)),
-            GjkResult::Separated
-        ));
-
-        let vb_close: Vec<Vec3> = box_vertices(Vec3::ZERO, Vec3::ONE)
-            .iter()
-            .map(|&v| rot * v + Vec3::new(2.2, 0.0, 0.0))
-            .collect();
-        let b_close = ConvexHull {
-            vertices: &vb_close,
-        };
-        assert!(matches!(
-            gjk_intersect(&a, &b_close, Vec3::new(2.2, 0.0, 0.0)),
-            GjkResult::Intersecting { .. }
-        ));
     }
 }

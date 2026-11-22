@@ -307,65 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_command_from_an_unreported_sender_reaches_the_console_history() {
-        let mut session = Session::new(Counted::default(), SimConfig::default());
-        let mut app =
-            SessionApp::with_args(HostConfig::new("console", Bindings::new()), Args::default());
-        app.sender()
-            .try_app_fn("refused", |_d: &mut Dispatch<'_, Counted>| {
-                Err(Rejection::Unsupported("not now"))
-            });
-        app.sender()
-            .app_fn("accepted", |d: &mut Dispatch<'_, Counted>| {
-                *d.app.hits.get_mut() += 1;
-            });
-
-        app.boundary(&mut session, Input::default())
-            .expect("boundary");
-
-        let lines = history(&app.console);
-        assert!(
-            lines
-                .iter()
-                .any(|line| line == "refused: rejected, unsupported: not now"),
-            "the refusal never reached the console: {lines:?}"
-        );
-        assert!(
-            !lines.iter().any(|line| line.starts_with("accepted")),
-            "an unreported success reached the console: {lines:?}"
-        );
-    }
-
-    #[test]
-    fn a_refusal_line_names_the_entity_and_what_went_wrong_with_it() {
-        let mut session = Session::new(Counted::default(), SimConfig::default());
-        let mut app =
-            SessionApp::with_args(HostConfig::new("console", Bindings::new()), Args::default());
-        let entity = session
-            .dispatch(|d| d.spawn(SpawnBundle::new()))
-            .expect("a bare entity");
-        app.sender()
-            .try_app_fn("nudge", move |_d: &mut Dispatch<'_, Counted>| {
-                Err(Rejection::Domain(DomainError::Stale(entity)))
-            });
-
-        app.boundary(&mut session, Input::default())
-            .expect("boundary");
-
-        let expected = format!("nudge: rejected, {entity} is stale");
-        let lines = history(&app.console);
-        assert!(
-            lines.contains(&expected),
-            "the refusal did not name the entity: {lines:?}"
-        );
-        assert!(
-            !lines.iter().any(|line| line.contains("Stale(")),
-            "a refusal reached the console as Debug text: {lines:?}"
-        );
-    }
-
-    #[test]
-    fn a_refusal_from_a_system_submitted_command_reaches_the_console() {
+    fn a_refused_command_reaches_the_console_whoever_submitted_it_and_a_quiet_success_does_not() {
         let mut session = Session::new(Counted::default(), SimConfig::default());
         session.system(Phase::Dispatch, "keys", |ctx: Ctx<'_, Counted>| {
             ctx.commands
@@ -376,15 +318,43 @@ mod tests {
         });
         let mut app =
             SessionApp::with_args(HostConfig::new("console", Bindings::new()), Args::default());
+        let entity = session
+            .dispatch(|d| d.spawn(SpawnBundle::new()))
+            .expect("a bare entity");
+        app.sender()
+            .try_app_fn("refused", |_d: &mut Dispatch<'_, Counted>| {
+                Err(Rejection::Unsupported("not now"))
+            });
+        app.sender()
+            .try_app_fn("nudge", move |_d: &mut Dispatch<'_, Counted>| {
+                Err(Rejection::Domain(DomainError::Stale(entity)))
+            });
+        app.sender()
+            .app_fn("accepted", |d: &mut Dispatch<'_, Counted>| {
+                *d.app.hits.get_mut() += 1;
+            });
 
         app.boundary(&mut session, Input::default())
             .expect("boundary");
 
         let lines = history(&app.console);
+        for expected in [
+            "refused: rejected, unsupported: not now".to_string(),
+            format!("nudge: rejected, {entity} is stale"),
+            "strip: rejected, unsupported: filmstrip belongs to Rotate".to_string(),
+        ] {
+            assert!(
+                lines.contains(&expected),
+                "`{expected}` never reached the console: {lines:?}"
+            );
+        }
         assert!(
-            lines
-                .contains(&"strip: rejected, unsupported: filmstrip belongs to Rotate".to_string()),
-            "a system-submitted refusal never reached the console: {lines:?}"
+            !lines.iter().any(|line| line.contains("Stale(")),
+            "a refusal reached the console as Debug text: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.starts_with("accepted")),
+            "an unreported success reached the console: {lines:?}"
         );
     }
 

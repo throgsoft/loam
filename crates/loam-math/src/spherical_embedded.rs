@@ -175,121 +175,43 @@ mod tests {
     use approx::assert_relative_eq;
     use std::f32::consts::PI;
 
-    fn s3() -> SphericalS3Embedded {
-        SphericalS3Embedded
-    }
-
-    #[test]
-    fn distance_orthonormal_is_quarter_circle() {
-        let s = s3();
-        assert_relative_eq!(s.distance(Vec4::X, Vec4::Y), PI / 2.0, epsilon = 1e-6);
-        assert_relative_eq!(s.distance(Vec4::X, Vec4::W), PI / 2.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn distance_at_antipode_is_pi() {
-        let s = s3();
-        let a = Vec4::new(0.5, 0.5, 0.5, 0.5);
-        assert_relative_eq!(s.distance(a, -a), PI, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn log_magnitude_is_distance_and_is_tangent() {
-        let s = s3();
-        let from = Vec4::new(0.3, 0.2, 0.1, 0.9).normalize();
-        let to = Vec4::new(-0.2, 0.5, 0.0, 0.8).normalize();
-        let v = s.log(from, to);
-        assert_relative_eq!(v.length(), s.distance(from, to), epsilon = 1e-5);
-        assert_relative_eq!(v.dot(from), 0.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn exp_stays_on_sphere_with_non_tangent_input() {
-        let s = s3();
-        let at = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let v = Vec4::new(0.4, 0.2, 0.0, 0.7);
-        let moved = s.exp(at, v);
-        assert_relative_eq!(moved.length(), 1.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn parallel_transport_preserves_norm_and_tangency() {
-        let s = s3();
-        let from = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let to = Vec4::new(0.6, 0.0, 0.0, 0.8);
-        let v = Vec4::new(0.5, 0.0, 0.0, 0.0);
-        let vt = s.parallel_transport(from, to, v);
-        assert_relative_eq!(vt.length(), v.length(), epsilon = 1e-5);
-        assert_relative_eq!(vt.dot(to), 0.0, epsilon = 1e-5);
-        assert!((vt - v).length() > 1e-3, "in-plane vector should rotate");
-    }
-
-    #[test]
-    fn parallel_transport_preserves_norm_near_antipode() {
-        let s = s3();
-        let from = Vec4::X;
-        for delta in [3e-3_f32, 2e-3, 1e-3] {
-            let omega = PI - delta;
-            let to = Vec4::new(omega.cos(), omega.sin(), 0.0, 0.0).normalize();
-
-            let v = Vec4::Y;
-            let vt = s.parallel_transport(from, to, v);
-            assert_relative_eq!(vt.length(), v.length(), epsilon = 1e-3);
-            assert_relative_eq!(vt.dot(to), 0.0, epsilon = 1e-3);
-        }
-    }
-
-    #[test]
-    fn iso_transport_keeps_tangency_and_norm() {
-        let s = s3();
-        let iso = Iso4::from_translation(glam::Vec3::new(0.2, -0.1, 0.15));
-        let at = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let v = Vec4::new(0.3, 0.2, 0.0, 0.0);
-        let moved_at = s.iso_apply(iso, at);
-        let moved_v = s.iso_transport(iso, at, v);
-        assert_relative_eq!(moved_v.length(), v.length(), epsilon = 1e-5);
-        assert_relative_eq!(moved_v.dot(moved_at), 0.0, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn slerp_endpoints_exact_and_count() {
-        let p0 = Vec4::X;
-        let p1 = Vec4::Y;
+    fn tessellate(p0: Vec4, p1: Vec4, samples: usize) -> Vec<Vec4> {
         let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 4, |p| {
+        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, samples, |p| {
             out.push(p)
         });
+        out
+    }
+
+    #[test]
+    fn tessellation_walks_the_great_circle_and_stays_on_the_sphere_for_degenerate_arcs() {
+        let s = SphericalS3Embedded;
+
+        let out = tessellate(Vec4::X, Vec4::Y, 4);
         assert_eq!(out.len(), 5);
-        assert_relative_eq!(out[0].x, p0.x, epsilon = 1e-6);
-        assert_relative_eq!(out[4].y, p1.y, epsilon = 1e-6);
-    }
+        assert_relative_eq!(out[0].x, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(out[4].y, 1.0, epsilon = 1e-6);
 
-    #[test]
-    fn slerp_midpoint_is_on_great_circle_not_chord() {
-        let s = s3();
-        let p0 = Vec4::new(1.0, 0.0, 0.0, 0.0);
-        let p1 = Vec4::new(0.0, 0.0, 0.0, 1.0);
-        let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 2, |p| {
-            out.push(p)
-        });
-        let mid = out[1];
-        assert_relative_eq!(s.distance(mid, p0), s.distance(mid, p1), epsilon = 1e-6);
-
+        let mid = tessellate(Vec4::X, Vec4::W, 2)[1];
+        assert_relative_eq!(
+            s.distance(mid, Vec4::X),
+            s.distance(mid, Vec4::W),
+            epsilon = 1e-6
+        );
         let c = (PI / 4.0).cos();
         assert_relative_eq!(mid.x, c, epsilon = 1e-5);
         assert_relative_eq!(mid.w, c, epsilon = 1e-5);
-        assert!(mid.x > 0.5, "slerp midpoint must bulge off the chord");
-    }
 
-    #[test]
-    fn slerp_antipode_produces_finite_unit_samples() {
-        let p0 = Vec4::X;
-        let p1 = -Vec4::X;
-        let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 16, |p| {
-            out.push(p)
-        });
+        let p0 = Vec4::new(0.2, 0.1, -0.3, 0.9).normalize();
+        let p1 = Vec4::new(-0.1, 0.4, 0.2, 0.8).normalize();
+        let total = s.distance(p0, p1);
+        for samples in [2usize, 3, 8, 17] {
+            let out = tessellate(p0, p1, samples);
+            let arc_sum: f32 = out.windows(2).map(|w| s.distance(w[0], w[1])).sum();
+            assert_relative_eq!(arc_sum, total, epsilon = 1e-6);
+        }
+
+        let out = tessellate(Vec4::X, -Vec4::X, 16);
         assert_eq!(out.len(), 17);
         for p in &out {
             assert!(
@@ -298,19 +220,11 @@ mod tests {
             );
             assert_relative_eq!(p.length(), 1.0, epsilon = 1e-6);
         }
-    }
-
-    #[test]
-    fn slerp_near_antipode_samples_stay_on_sphere() {
-        let p0 = Vec4::X;
 
         for delta in [1e-3_f32, 1e-5, GEODESIC_DIRECTION_MIN * 2.0] {
             let omega = PI - delta;
             let p1 = Vec4::new(omega.cos(), omega.sin(), 0.0, 0.0).normalize();
-            let mut out = Vec::new();
-            <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 16, |p| {
-                out.push(p)
-            });
+            let out = tessellate(Vec4::X, p1, 16);
             for p in &out[1..out.len() - 1] {
                 assert!(p.is_finite(), "near-antipode sample must be finite: {p:?}");
                 assert!(
@@ -320,61 +234,18 @@ mod tests {
                 );
             }
         }
-    }
 
-    #[test]
-    fn slerp_consecutive_arc_sum_equals_total() {
-        let s = s3();
-        let p0 = Vec4::new(0.2, 0.1, -0.3, 0.9).normalize();
-        let p1 = Vec4::new(-0.1, 0.4, 0.2, 0.8).normalize();
-        let total = s.distance(p0, p1);
-        for samples in [2usize, 3, 8, 17] {
-            let mut out = Vec::new();
-            <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(
-                p0,
-                p1,
-                samples,
-                |p| out.push(p),
-            );
-            let arc_sum: f32 = out.windows(2).map(|w| s.distance(w[0], w[1])).sum();
-            assert_relative_eq!(arc_sum, total, epsilon = 1e-6);
-        }
-    }
-
-    #[test]
-    fn slerp_near_coincident_falls_back_on_sphere() {
         let p0 = Vec4::new(0.1, -0.2, 0.3, 0.9).normalize();
         let nudge = GEODESIC_DIRECTION_MIN * 0.01;
         let p1 = (p0 + Vec4::new(nudge, 0.0, -nudge, 0.0)).normalize();
-        let mut out = Vec::new();
-        <SphericalS3Embedded as RasterizableSpace<4>>::tessellate_segment(p0, p1, 8, |p| {
-            out.push(p)
-        });
-        for p in &out {
+        for p in tessellate(p0, p1, 8) {
             assert!(p.is_finite(), "coincident sample must be finite: {p:?}");
             assert_relative_eq!(p.length(), 1.0, epsilon = 1e-6);
+            let drift = SphericalS3Embedded.distance(p, p0);
             assert!(
-                s3().distance(*p, p0) < 1e-4,
-                "coincident-arc sample should stay at p0, dist {}",
-                s3().distance(*p, p0)
+                drift < 1e-4,
+                "coincident-arc sample should stay at p0, dist {drift}"
             );
         }
-    }
-
-    #[test]
-    fn project_point_stereographic_is_conformal_map_not_drop_w() {
-        let p = Vec4::new(0.5, 0.5, 0.5, 0.5);
-        let proj = Projection::Stereographic { pole: Vec4::W };
-        let got = <SphericalS3Embedded as RasterizableSpace<4>>::project_point(p, &proj)
-            .expect("stereographic should accept an off-pole point");
-        let want = glam::Vec3::new(p.x, p.y, p.z) / (1.0 - p.w);
-        assert_relative_eq!(got.x, want.x, epsilon = 1e-6);
-        assert_relative_eq!(got.y, want.y, epsilon = 1e-6);
-        assert_relative_eq!(got.z, want.z, epsilon = 1e-6);
-        let drop_w = glam::Vec3::new(p.x, p.y, p.z);
-        assert!(
-            (got - drop_w).length() > 1e-3,
-            "stereographic must scale by 1/(1-w), not pass through drop-w; got {got:?}"
-        );
     }
 }

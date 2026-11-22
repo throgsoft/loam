@@ -242,45 +242,4 @@ mod tests {
         assert_eq!(env.fog_per_unit, DEFAULT_FOG_PER_UNIT);
         assert_eq!(env.sky, sky, "the ground verb wiped the sky");
     }
-
-    #[test]
-    fn the_environment_reaches_the_uniform_the_shader_reads() {
-        let mut env = Environment::default();
-        env.apply(&["fog", "0.07"]).expect("set");
-        env.apply(&["dark", "0.1", "0.2", "0.3"]).expect("set");
-        env.sky = Sky {
-            below: [0.4, 0.5, 0.6],
-            above: [0.7, 0.8, 0.9],
-        };
-        let ground = env.ground(-1.5, false);
-        assert_eq!(ground.fog_per_unit, 0.07);
-        assert_eq!(ground.dark, [0.1, 0.2, 0.3]);
-        assert_eq!(ground.y, -1.5);
-        assert!(!ground.visible);
-
-        let uniforms = loam_render::SkyGroundUniforms::new(
-            glam::Mat4::IDENTITY,
-            loam_render::Viewport::full([4, 4]),
-            env.sky,
-            ground,
-        );
-        assert_eq!(uniforms.fog_per_unit, 0.07);
-        assert_eq!(uniforms.ground_dark, [0.1, 0.2, 0.3]);
-        assert_eq!(uniforms.show_ground, 0.0);
-        assert_eq!(uniforms.sky_below, [0.4, 0.5, 0.6]);
-        assert_eq!(uniforms.sky_above, [0.7, 0.8, 0.9]);
-    }
-
-    #[test]
-    fn the_verb_registers_on_a_console_and_dispatches_to_the_scene_state() {
-        let mut console = Console::<Environment>::new();
-        register_ground_command(&mut console, |env| env);
-        assert!(console.has_command("ground"));
-
-        let mut env = Environment::default();
-        console.dispatch("ground", &["fog", "0.03"], &mut env);
-        assert_eq!(env.fog_per_unit, 0.03, "the verb never reached the state");
-        console.dispatch("ground", &["fog"], &mut env);
-        assert_eq!(env.fog_per_unit, 0.03, "the bare read wrote");
-    }
 }

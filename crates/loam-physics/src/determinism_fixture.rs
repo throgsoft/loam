@@ -30,9 +30,8 @@ const ISLAND_RADIUS: f32 = 0.5;
 const ISLAND_X: [f32; 3] = [-4.0, 0.0, 4.0];
 const ISLAND_SIZES: [usize; 3] = [4, 2, 1];
 const ISLAND_GAP: f32 = 0.05;
-pub const MULTI_ISLAND_DT: f32 = 1.0 / 60.0;
-pub const MULTI_ISLAND_STEPS: usize = 240;
-pub fn multi_island_world() -> World<EuclideanR3> {
+const MULTI_ISLAND_DT: f32 = 1.0 / 60.0;
+fn multi_island_world() -> World<EuclideanR3> {
     let mut world = World::new(EuclideanR3);
     register_narrowphase_r3(&mut world.narrowphase);
     world

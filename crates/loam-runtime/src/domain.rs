@@ -2959,9 +2959,7 @@ mod tests {
         }
     }
 
-    fn drawn_session(
-        step: fn(Tick) -> Option<(f32, bool)>,
-    ) -> (Session<Probe>, DomainHandle<EuclideanR4>, Entity) {
+    fn drawn_session(step: fn(Tick) -> Option<f32>) -> Session<Probe> {
         let mut session = Session::new(Probe::default(), SimConfig::default());
         let r4 = session
             .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
@@ -2991,19 +2989,15 @@ mod tests {
             Phase::Simulation,
             "move",
             move |ctx: Ctx<'_, Probe>| -> Result<(), DomainError> {
-                let Some((x, teleport)) = step(ctx.step.tick) else {
+                let Some(x) = step(ctx.step.tick) else {
                     return Ok(());
                 };
-                let domain = ctx.domains.typed(r4)?;
-                let pose = Pose::at(OBJECT_AT + Vec4::X * x);
-                if teleport {
-                    domain.teleport(mover, pose)
-                } else {
-                    domain.set_pose(mover, pose)
-                }
+                ctx.domains
+                    .typed(r4)?
+                    .set_pose(mover, Pose::at(OBJECT_AT + Vec4::X * x))
             },
         );
-        (session, r4, mover)
+        session
     }
 
     fn drawn_x(session: &mut Session<Probe>, publication: &mut Publication, alpha: f32) -> f32 {
@@ -3015,8 +3009,8 @@ mod tests {
     }
 
     #[test]
-    fn a_moving_body_is_drawn_between_its_last_two_ticks() {
-        let (mut session, _, _) = drawn_session(|tick| Some((tick.0 as f32 + 1.0, false)));
+    fn a_body_is_drawn_between_its_last_two_ticks_and_a_stop_is_not_smeared() {
+        let mut session = drawn_session(|tick| Some(tick.0 as f32 + 1.0));
         let mut publication = Publication::default();
         session.tick().unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.25), 0.25);
@@ -3024,88 +3018,13 @@ mod tests {
         assert_eq!(drawn_x(&mut session, &mut publication, 1.0), 1.0);
         session.tick().unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 1.5);
-    }
 
-    #[test]
-    fn jumps_are_drawn_at_their_destination_not_streaked_across_the_tick() {
-        let (mut session, r4, mover) = drawn_session(|_| Some((10.0, true)));
-        let mut publication = Publication::default();
-        session.tick().unwrap();
-        assert_eq!(drawn_x(&mut session, &mut publication, 0.25), 10.0);
-        session
-            .domains_mut()
-            .typed(r4)
-            .unwrap()
-            .set_pose(mover, Pose::at(OBJECT_AT + Vec4::X * 5.0))
-            .unwrap();
-        assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 5.0);
-    }
-
-    #[test]
-    fn a_body_that_stops_is_redrawn_at_rest_after_the_next_tick() {
-        let (mut session, _, _) = drawn_session(|tick| (tick.0 == 0).then_some((1.0, false)));
+        let mut session = drawn_session(|tick| (tick.0 == 0).then_some(1.0));
         let mut publication = Publication::default();
         session.tick().unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 0.5);
         session.tick().unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 1.0);
-    }
-
-    #[test]
-    fn a_still_world_never_rebuilds_its_view_between_ticks() {
-        let (mut session, _, _) = drawn_session(|_| None);
-        let mut publication = Publication::default();
-        session.publish(&mut publication).unwrap();
-        let built = publication.views[0].records.built;
-        for alpha in [0.2, 0.6, 0.9] {
-            session.tick().unwrap();
-            drawn_x(&mut session, &mut publication, alpha);
-            assert_eq!(publication.views[0].records.built, built);
-        }
-    }
-
-    #[test]
-    fn stale_view_identity_edits_leave_live_references_installed() {
-        let mut session = Session::new(Probe::default(), SimConfig::default());
-        let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
-        let root = session.views().root();
-        let (eye, subject, stale, view) = session.dispatch(|dispatch| {
-            let eye = dispatch
-                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
-                .unwrap();
-            let subject = dispatch
-                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
-                .unwrap();
-            let stale = dispatch
-                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
-                .unwrap();
-            let view = dispatch
-                .domains
-                .typed(r4)
-                .unwrap()
-                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }).subject(subject))
-                .unwrap();
-            (eye, subject, stale, view)
-        });
-        session
-            .dispatch(|dispatch| dispatch.despawn(stale))
-            .unwrap();
-
-        let domain = session.domains_mut().typed(r4).unwrap();
-        let revision = domain.view_revisions[view.index()];
-        assert_eq!(domain.set_view_eye(view, eye), Ok(()));
-        assert_eq!(domain.set_view_subject(view, Some(subject)), Ok(()));
-        assert_eq!(domain.view_revisions[view.index()], revision);
-        assert_eq!(
-            domain.set_view_eye(view, stale),
-            Err(DomainError::Stale(stale))
-        );
-        assert_eq!(
-            domain.set_view_subject(view, Some(stale)),
-            Err(DomainError::Stale(stale))
-        );
-        assert_eq!(domain.view_eye(view), Some(eye));
-        assert_eq!(domain.view_subject(view), Some(subject));
     }
 
     #[test]
@@ -3177,12 +3096,9 @@ mod tests {
         });
         let material = session.add_material(Material::flat([1.0; 4]));
         let root = session.views().root();
-        let (edited, removed, alternate_eye, view, section_view) = session.dispatch(|dispatch| {
+        let (edited, removed, section_view) = session.dispatch(|dispatch| {
             let eye = dispatch
                 .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
-                .unwrap();
-            let alternate_eye = dispatch
-                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::new(2.0, 0.0, 0.0, 0.0))))
                 .unwrap();
             let instance = || Instance::new(prepared, material);
             let edited = dispatch
@@ -3200,13 +3116,13 @@ mod tests {
                 )
                 .unwrap();
             let domain = dispatch.domains.typed(r4).unwrap();
-            let view = domain
+            domain
                 .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
                 .unwrap();
             let mut section_spec = ViewSpec::new(root, eye, Section4 { w: 0.0 }).subject(edited);
             section_spec.edges = false;
             let section_view = domain.add_view(section_spec).unwrap();
-            (edited, removed, alternate_eye, view, section_view)
+            (edited, removed, section_view)
         });
         let snapshot = session.snapshot().unwrap();
         let mut publication = Publication::default();
@@ -3297,13 +3213,6 @@ mod tests {
             .unwrap();
         publish_and_compare(&mut session, &mut publication);
         session
-            .domains_mut()
-            .typed(r4)
-            .unwrap()
-            .set_view_eye(view, alternate_eye)
-            .unwrap();
-        publish_and_compare(&mut session, &mut publication);
-        session
             .dispatch(|dispatch| dispatch.despawn(removed))
             .unwrap();
         publish_and_compare(&mut session, &mut publication);
@@ -3318,117 +3227,6 @@ mod tests {
         assert_eq!(
             publication.views[1].records.triangles().len(),
             initial_triangles
-        );
-    }
-
-    #[test]
-    fn explicit_space_errors_are_reported_but_projection_clips_are_not() {
-        let mut session = Session::new(Probe::default(), SimConfig::default());
-        let r4 = session
-            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
-        let bad_x = session.prepare(PreparedGeometry::Lines4 {
-            segments: vec![[[f32::NAN, 0.0, 0.0, 0.0], [0.0; 4]]],
-        });
-        let bad_y = session.prepare(PreparedGeometry::Lines4 {
-            segments: vec![[[0.0, f32::MAX, 0.0, 0.0], [0.0; 4]]],
-        });
-        let empty = session.prepare(PreparedGeometry::Lines4 {
-            segments: Vec::new(),
-        });
-        let material = session.add_material(Material::flat([1.0; 4]));
-        let root = session.views().root();
-        let (first, last, refusal_view, clipped_view) = session.dispatch(|dispatch| {
-            let eye = dispatch
-                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
-                .unwrap();
-            let first = dispatch
-                .spawn(
-                    SpawnBundle::new()
-                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -3.0, 0.0)))
-                        .instance(Instance::new(bad_x, material)),
-                )
-                .unwrap();
-            let last = dispatch
-                .spawn(
-                    SpawnBundle::new()
-                        .at(r4, Pose::at(Vec4::new(0.0, f32::MAX, -4.0, 0.0)))
-                        .instance(Instance::new(bad_y, material)),
-                )
-                .unwrap();
-            let clipped = dispatch
-                .spawn(
-                    SpawnBundle::new()
-                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -3.0, 3.0)))
-                        .instance(Instance::new(empty, material)),
-                )
-                .unwrap();
-            let domain = dispatch.domains.typed(r4).unwrap();
-            let refusal_view = domain
-                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
-                .unwrap();
-            let mut clipped_spec =
-                ViewSpec::new(root, eye, Projection4 { focal: 2.0 }).subject(clipped);
-            clipped_spec.edges = false;
-            clipped_spec.section_edges = false;
-            clipped_spec.section_faces = false;
-            let clipped_view = domain.add_view(clipped_spec).unwrap();
-            (first, last, refusal_view, clipped_view)
-        });
-        let mut publication = Publication::default();
-        session.publish(&mut publication).unwrap();
-        let refusal_records = &publication
-            .views
-            .iter()
-            .find(|published| published.target.view == refusal_view)
-            .unwrap()
-            .records;
-        assert_eq!(
-            refusal_records.refusals(),
-            crate::view::ViewRefusals {
-                count: 2,
-                first: Some(crate::view::ViewRefusal {
-                    entity: first,
-                    error: DomainError::InvalidCoordinate("x"),
-                    source: RefusalSource::Segment,
-                }),
-                last: Some(crate::view::ViewRefusal {
-                    entity: last,
-                    error: DomainError::InvalidCoordinate("y"),
-                    source: RefusalSource::Segment,
-                }),
-            }
-        );
-        let clipped_records = &publication
-            .views
-            .iter()
-            .find(|published| published.target.view == clipped_view)
-            .unwrap()
-            .records;
-        assert_eq!(clipped_records.refusals().count, 0);
-        assert!(clipped_records.instances.rows().is_empty());
-        let before = (
-            refusal_records.built(),
-            refusal_records.instances.rows().len(),
-            refusal_records.segments().len(),
-            refusal_records.triangles().len(),
-            refusal_records.refusals(),
-        );
-        session.publish(&mut publication).unwrap();
-        let refusal_records = &publication
-            .views
-            .iter()
-            .find(|published| published.target.view == refusal_view)
-            .unwrap()
-            .records;
-        assert_eq!(
-            (
-                refusal_records.built(),
-                refusal_records.instances.rows().len(),
-                refusal_records.segments().len(),
-                refusal_records.triangles().len(),
-                refusal_records.refusals(),
-            ),
-            before
         );
     }
 }

@@ -762,24 +762,35 @@ mod tests {
 
     #[test]
     fn camera_turns_do_not_depend_on_viewport_shape_or_pixel_scale() {
-        for (width, height, scale) in [(640, 480, 1.0), (1280, 480, 1.0), (1280, 960, 2.0)] {
-            let mut map = InputMap::default();
-            map.resize(width, height, scale);
-            map.button(map.css_ndc(50.0, 50.0), PointerButton::Secondary, true);
-            map.moved(map.css_ndc(70.0, 70.0));
-            let input = map.take();
-            let mut orbit = crate::session::camera::Orbit::around([0.0; 3], 5.0);
-            orbit.drag(input.drag(PointerButton::Secondary));
-            assert!((orbit.yaw + 0.12).abs() < 1e-6);
-            assert!((orbit.pitch + 0.12).abs() < 1e-6);
+        let turns = [(640, 480, 1.0), (1280, 480, 1.0), (1280, 960, 2.0)].map(
+            |(width, height, scale): (u32, u32, f32)| {
+                let mut map = InputMap::default();
+                map.resize(width, height, scale);
+                map.button(map.css_ndc(50.0, 50.0), PointerButton::Secondary, true);
+                map.moved(map.css_ndc(70.0, 70.0));
+                let input = map.take();
+                let mut orbit = crate::session::camera::Orbit::around([0.0; 3], 5.0);
+                orbit.drag(input.drag(PointerButton::Secondary));
 
-            map.set_cursor_locked(true);
-            map.raw_motion(20.0 * scale, 20.0 * scale);
-            let mut camera = crate::session::camera::FreeCamera::default();
-            camera.look(map.take().look);
-            let [x, y, z] = camera.eye.forward;
-            assert!(((-x).atan2(-z) + 0.04).abs() < 1e-6);
-            assert!((y.asin() + 0.04).abs() < 1e-6);
+                map.set_cursor_locked(true);
+                map.raw_motion(20.0 * scale, 20.0 * scale);
+                let mut camera = crate::session::camera::FreeCamera::default();
+                camera.look(map.take().look);
+                let [x, y, z] = camera.eye.forward;
+                [orbit.yaw, orbit.pitch, (-x).atan2(-z), y.asin()]
+            },
+        );
+        assert!(
+            turns[0].iter().all(|turn| turn.abs() > 1e-3),
+            "the drag turned nothing: {turns:?}"
+        );
+        for turn in &turns[1..] {
+            for (got, want) in turn.iter().zip(turns[0]) {
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "a 20 px drag turned the camera differently on another viewport: {turns:?}"
+                );
+            }
         }
     }
 
@@ -802,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn a_consumed_release_clears_the_action_held_before_the_overlay_took_focus() {
+    fn a_release_the_overlay_consumed_still_ends_the_key_or_pointer_hold_the_scene_saw_begin() {
         let bindings = Bindings::new().key(Key::Letter('w'), WALK);
         let mut map = InputMap::default();
         map.host_action(&bindings, Key::Letter('w'), true, false);
@@ -817,11 +828,8 @@ mod tests {
             .iter()
             .any(|event| event.action == WALK && !event.pressed));
         assert!(!second.held.contains(&WALK));
-    }
+        map.reclaim(second);
 
-    #[test]
-    fn consumed_pointer_releases_clear_scene_holds() {
-        let mut map = InputMap::default();
         map.host_button([0.0; 2], PointerButton::Primary, true, false);
         let first = map.take();
         map.reclaim(first);

@@ -578,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn head_on_sphere_collision_is_elastic_only() {
+    fn colliding_spheres_bounce_apart_and_spin_only_when_the_hit_is_off_centre() {
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -610,10 +610,7 @@ mod tests {
         assert_close(b.angular_velocity.magnitude(), 0.0, 1e-3);
         assert!(a.velocity.x < 0.0, "a.velocity.x = {}", a.velocity.x);
         assert!(b.velocity.x > 0.0, "b.velocity.x = {}", b.velocity.x);
-    }
 
-    #[test]
-    fn off_center_glancing_hit_produces_angular_velocity() {
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -645,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn integrated_orientation_advances_a_body_point_along_the_world_frame_omega() {
+    fn integrated_orientation_follows_the_world_frame_omega_and_stays_a_unit_rotor() {
         let space = EuclideanR3;
         let start = Iso3 {
             rotation: rotor_to_quat(Bivector3::new(0.8, 1.2, 0.9).exp()),
@@ -664,11 +661,7 @@ mod tests {
              {residual} over a step of {}",
             (after - before).length()
         );
-    }
 
-    #[test]
-    fn integration_preserves_unit_rotor() {
-        let space = EuclideanR3;
         let mut iso = Iso3::IDENTITY;
         let omega = Bivector3::new(0.2, 0.3, -0.1);
         for _ in 0..1000 {

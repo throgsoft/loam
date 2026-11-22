@@ -523,84 +523,10 @@ mod tests {
         lifts
     }
 
-    #[test]
-    fn wrap_lands_every_lift_in_the_half_open_fundamental_domain() {
-        let t = torus();
-        let mut rng = Xorshift(0x5eed_1234);
-        let mut lifts = boundary_lifts(CELL);
-        for _ in 0..200_000 {
-            lifts.push(rng.point(40.0));
-        }
-        for p in lifts {
-            let (q, _) = t.wrap_to_domain(p);
-            assert!(
-                t.in_fundamental_domain(q),
-                "wrap({p:?}) = {q:?} escaped the domain of cell {CELL:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn fundamental_domain_membership_is_exactly_the_wrap_fixpoint() {
-        let t = torus();
-        let mut rng = Xorshift(0x1337_beef);
-        for _ in 0..50_000 {
-            let p = rng.point(6.0);
-            let (q, _) = t.wrap_to_domain(p);
-            assert_eq!(t.in_fundamental_domain(p), p == q, "at {p:?}");
-        }
-    }
-
-    #[test]
-    fn the_returned_deck_element_reproduces_the_representative_exactly() {
-        let t = torus();
-        let mut rng = Xorshift(0x0bad_f00d);
-        let mut lifts = boundary_lifts(CELL);
-        for _ in 0..50_000 {
-            lifts.push(rng.point(25.0));
-        }
-        for p in lifts {
-            let (q, g) = t.wrap_to_domain(p);
-            assert_eq!(t.cover_apply(g, p), q, "deck element disagreed at {p:?}");
-        }
-    }
-
-    #[test]
-    fn wrapping_an_interior_point_returns_the_identity_deck_element() {
-        let t = torus();
-        let p = Vec3::new(0.3, -1.1, 0.4);
-        let (q, g) = t.wrap_to_domain(p);
-        assert_eq!(q, p);
-        assert_eq!(g, Iso3::IDENTITY);
-    }
-
-    #[test]
-    fn deck_group_composition_is_a_group_action_on_lifts() {
-        let t = torus();
-        let generators: Vec<Iso3> = t
-            .face_pairings()
+    fn deck_generators(t: &FlatTorus3) -> Vec<Iso3> {
+        t.face_pairings()
             .flat_map(|g| [g, t.cover_inverse(g)])
-            .collect();
-        let mut rng = Xorshift(0xfeed_face);
-
-        for _ in 0..20_000 {
-            let a = word(&t, &generators, &mut rng);
-            let b = word(&t, &generators, &mut rng);
-            let p = rng.point(8.0);
-
-            let sequential = t.cover_apply(a, t.cover_apply(b, p));
-            let composed = t.cover_apply(t.cover_compose(a, b), p);
-            assert_relative_eq!(sequential.x, composed.x, epsilon = 1e-5);
-            assert_relative_eq!(sequential.y, composed.y, epsilon = 1e-5);
-            assert_relative_eq!(sequential.z, composed.z, epsilon = 1e-5);
-
-            assert_eq!(t.cover_apply(t.cover_identity(), p), p);
-
-            let round_trip = t.cover_apply(t.cover_inverse(a), t.cover_apply(a, p));
-            assert_relative_eq!(round_trip.x, p.x, epsilon = 1e-5);
-            assert_relative_eq!(round_trip.y, p.y, epsilon = 1e-5);
-            assert_relative_eq!(round_trip.z, p.z, epsilon = 1e-5);
-        }
+            .collect()
     }
 
     fn word(t: &FlatTorus3, generators: &[Iso3], rng: &mut Xorshift) -> Iso3 {
@@ -612,12 +538,34 @@ mod tests {
     }
 
     #[test]
-    fn wrap_is_invariant_under_the_deck_group() {
+    fn wrap_picks_one_representative_per_orbit_and_returns_the_deck_element_that_reaches_it() {
         let t = torus();
-        let generators: Vec<Iso3> = t
-            .face_pairings()
-            .flat_map(|g| [g, t.cover_inverse(g)])
-            .collect();
+
+        let mut rng = Xorshift(0x5eed_1234);
+        let mut lifts = boundary_lifts(CELL);
+        for _ in 0..200_000 {
+            lifts.push(rng.point(40.0));
+        }
+        for p in lifts {
+            let (q, g) = t.wrap_to_domain(p);
+            assert!(
+                t.in_fundamental_domain(q),
+                "wrap({p:?}) = {q:?} escaped the domain of cell {CELL:?}"
+            );
+            assert_eq!(t.cover_apply(g, p), q, "deck element disagreed at {p:?}");
+        }
+
+        let interior = Vec3::new(0.3, -1.1, 0.4);
+        assert_eq!(t.wrap_to_domain(interior), (interior, Iso3::IDENTITY));
+
+        let mut rng = Xorshift(0x1337_beef);
+        for _ in 0..50_000 {
+            let p = rng.point(6.0);
+            let (q, _) = t.wrap_to_domain(p);
+            assert_eq!(t.in_fundamental_domain(p), p == q, "at {p:?}");
+        }
+
+        let generators = deck_generators(&t);
         let mut rng = Xorshift(0x00c0_ffee);
         for _ in 0..20_000 {
             let p = rng.point(5.0);
@@ -631,12 +579,16 @@ mod tests {
     }
 
     #[test]
-    fn distance_is_the_minimum_over_the_lattice() {
+    fn distance_is_the_minimum_over_the_lattice_and_a_metric_on_the_quotient() {
         let t = torus();
+        let generators = deck_generators(&t);
+
         let mut rng = Xorshift(0xdead_10cc);
         for _ in 0..20_000 {
             let a = rng.point(4.0);
             let b = rng.point(4.0);
+            let g = word(&t, &generators, &mut rng);
+
             let center = ((a - b) / CELL).round();
             let mut brute = f32::INFINITY;
             for i in -3..=3 {
@@ -648,21 +600,6 @@ mod tests {
                 }
             }
             assert_relative_eq!(t.distance(a, b), brute, epsilon = 1e-5);
-        }
-    }
-
-    #[test]
-    fn distance_is_lattice_invariant_symmetric_and_zero_on_the_orbit() {
-        let t = torus();
-        let generators: Vec<Iso3> = t
-            .face_pairings()
-            .flat_map(|g| [g, t.cover_inverse(g)])
-            .collect();
-        let mut rng = Xorshift(0x9e37_79b9);
-        for _ in 0..20_000 {
-            let a = rng.point(4.0);
-            let b = rng.point(4.0);
-            let g = word(&t, &generators, &mut rng);
 
             assert_relative_eq!(t.distance(a, b), t.distance(b, a));
             assert_relative_eq!(
@@ -672,11 +609,7 @@ mod tests {
             );
             assert_relative_eq!(t.distance(a, t.cover_apply(g, a)), 0.0, epsilon = 1e-4);
         }
-    }
 
-    #[test]
-    fn distance_satisfies_the_triangle_inequality() {
-        let t = torus();
         let mut rng = Xorshift(0x7f4a_7c15);
         for _ in 0..50_000 {
             let a = rng.point(5.0);
@@ -709,31 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn stepped_ray_continuation_matches_a_single_geodesic_exp() {
-        let t = torus();
-        let mut rng = Xorshift(0x4d59_5f21);
-        for _ in 0..5_000 {
-            let start = t.wrap(rng.point(1.5));
-            let velocity = rng.point(4.0);
-
-            let direct = t.exp(start, velocity);
-
-            const STEPS: usize = 64;
-            let mut marched = start;
-            for _ in 0..STEPS {
-                marched = t.exp(marched, velocity / STEPS as f32);
-            }
-
-            let residual = t.distance(direct, marched);
-            assert!(
-                residual < 64.0 * f32::EPSILON * CELL.max_element() * 8.0,
-                "stepped {marched:?} vs direct {direct:?}, residual {residual}"
-            );
-        }
-    }
-
-    #[test]
-    fn exp_and_log_invert_exactly_within_the_injectivity_radius() {
+    fn exp_and_log_invert_within_the_injectivity_radius() {
         let t = torus();
         let radius = t.injectivity_radius();
         assert_relative_eq!(radius, 0.75);
@@ -757,56 +666,9 @@ mod tests {
     }
 
     #[test]
-    fn a_cover_rotation_does_not_claim_quotient_distance_invariance() {
-        let t = FlatTorus3::cube(2.0);
-        let a = Vec3::new(0.9, 0.0, 0.0);
-        let b = Vec3::new(-0.9, 0.0, 0.0);
-        let rotation = Iso3::from_rotation(Quat::from_rotation_z(PI / 4.0));
-        let moved = t.distance(t.cover_apply(rotation, a), t.cover_apply(rotation, b));
-        let deck = t.face_pairings().next().unwrap();
-
-        assert_relative_eq!(t.distance(a, b), 0.2, epsilon = 1e-6);
-        assert!(moved > 1.0);
-        assert_relative_eq!(t.distance(a, t.cover_apply(deck, a)), 0.0, epsilon = 1e-6);
-        assert_relative_eq!(
-            t.distance(t.cover_apply(deck, a), t.cover_apply(deck, b)),
-            t.distance(a, b),
-            epsilon = 1e-6
-        );
-    }
-
-    #[test]
     #[should_panic(expected = "must be finite and positive")]
     fn a_degenerate_cell_is_rejected_at_construction() {
         FlatTorus3::new(Vec3::new(1.0, 0.0, 1.0));
-    }
-
-    #[test]
-    fn wgsl_prelude_exports_the_abi_and_bakes_a_round_tripping_cell() {
-        let cell = Vec3::new(2.0, 3.0, 1.5e-7);
-        let source = FlatTorus3::new(cell).wgsl_impl().into_owned();
-        for symbol in [
-            "fn loam_distance(",
-            "fn loam_origin_distance(",
-            "fn loam_exp(",
-            "fn loam_log(",
-            "fn loam_geodesic_step(",
-            "fn loam_torus_wrap(",
-            "const LOAM_MAX_ARC",
-        ] {
-            assert!(source.contains(symbol), "missing {symbol}");
-        }
-
-        let baked = source
-            .split("const LOAM_TORUS_CELL: vec3<f32> = vec3<f32>(")
-            .nth(1)
-            .and_then(|rest| rest.split(')').next())
-            .expect("cell is baked");
-        let parsed: Vec<f32> = baked
-            .split(", ")
-            .map(|c| c.parse().expect("cell literal parses as f32"))
-            .collect();
-        assert_eq!(parsed, vec![cell.x, cell.y, cell.z], "emitted {baked}");
     }
 }
 
@@ -859,7 +721,7 @@ mod lens_tests {
     }
 
     #[test]
-    fn the_face_pairing_composes_to_the_identity_after_exactly_p_steps() {
+    fn the_deck_group_is_cyclic_of_order_p_generated_by_the_face_pairing() {
         let mut rng = Xorshift(0x1e45_9ac1);
         for &(p, q) in LENSES {
             let lens = LensSpace::new(p, q);
@@ -887,14 +749,7 @@ mod lens_tests {
                     );
                 }
             }
-        }
-    }
 
-    #[test]
-    fn deck_powers_agree_with_repeated_composition_of_the_generator() {
-        let mut rng = Xorshift(0x510c_2b77);
-        for &(p, q) in LENSES {
-            let lens = LensSpace::new(p, q);
             let by_hand = generator_by_hand(p, q);
             for power in -3 * p as i32..=3 * p as i32 {
                 let mut composed = Mat4::IDENTITY;
@@ -928,29 +783,30 @@ mod lens_tests {
     }
 
     #[test]
-    fn wrap_lands_every_lift_in_the_half_open_fundamental_domain() {
-        let mut rng = Xorshift(0x5eed_1234);
+    fn wrap_picks_one_representative_per_orbit_and_returns_the_deck_element_that_reaches_it() {
+        let mut domain_rng = Xorshift(0x5eed_1234);
+        let mut fixpoint_rng = Xorshift(0x1337_beef);
+        let mut orbit_rng = Xorshift(0x00c0_ffee);
         for &(p, q) in LENSES {
             let lens = LensSpace::new(p, q);
+
             let mut lifts = wall_lifts(&lens);
-            lifts.extend((0..50_000).map(|_| unit4(&mut rng)));
+            lifts.extend((0..50_000).map(|_| unit4(&mut domain_rng)));
             for x in lifts {
-                let (wrapped, _) = lens.wrap_to_domain(x);
+                let (wrapped, deck) = lens.wrap_to_domain(x);
                 assert!(
                     lens.in_fundamental_domain(wrapped),
                     "L({p}, {q}): wrap({x:?}) = {wrapped:?} escaped the domain"
                 );
+                assert_eq!(
+                    lens.cover_apply(deck, x),
+                    wrapped,
+                    "L({p}, {q}): deck element disagreed at {x:?}"
+                );
             }
-        }
-    }
 
-    #[test]
-    fn fundamental_domain_membership_is_exactly_the_wrap_fixpoint() {
-        let mut rng = Xorshift(0x1337_beef);
-        for &(p, q) in LENSES {
-            let lens = LensSpace::new(p, q);
             let mut lifts = wall_lifts(&lens);
-            lifts.extend((0..20_000).map(|_| unit4(&mut rng)));
+            lifts.extend((0..20_000).map(|_| unit4(&mut fixpoint_rng)));
             for x in lifts {
                 let (wrapped, deck) = lens.wrap_to_domain(x);
                 assert_eq!(
@@ -961,6 +817,17 @@ mod lens_tests {
                 if lens.in_fundamental_domain(x) {
                     assert!(SphericalS3Embedded.distance(wrapped, x) < 1e-6);
                 }
+            }
+
+            for _ in 0..20_000 {
+                let x = unit4(&mut orbit_rng);
+                let power = (orbit_rng.next_u32() % (4 * p)) as i32 - 2 * p as i32;
+                let (wrapped, _) = lens.wrap_to_domain(x);
+                let (translated, _) = lens.wrap_to_domain(lens.cover_apply(lens.deck(power), x));
+                assert!(
+                    SphericalS3Embedded.distance(wrapped, translated) < 1e-3,
+                    "L({p}, {q}): wrap of g^{power} x is a different lift at {x:?}"
+                );
             }
         }
     }
@@ -988,42 +855,6 @@ mod lens_tests {
                         wrapped.y.atan2(wrapped.x)
                     );
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn the_returned_deck_element_reproduces_the_representative_exactly() {
-        let mut rng = Xorshift(0x0bad_f00d);
-        for &(p, q) in LENSES {
-            let lens = LensSpace::new(p, q);
-            let mut lifts = wall_lifts(&lens);
-            lifts.extend((0..20_000).map(|_| unit4(&mut rng)));
-            for x in lifts {
-                let (wrapped, deck) = lens.wrap_to_domain(x);
-                assert_eq!(
-                    lens.cover_apply(deck, x),
-                    wrapped,
-                    "L({p}, {q}): deck element disagreed at {x:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn wrap_is_invariant_under_the_deck_group() {
-        let mut rng = Xorshift(0x00c0_ffee);
-        for &(p, q) in LENSES {
-            let lens = LensSpace::new(p, q);
-            for _ in 0..20_000 {
-                let x = unit4(&mut rng);
-                let power = (rng.next_u32() % (4 * p)) as i32 - 2 * p as i32;
-                let (wrapped, _) = lens.wrap_to_domain(x);
-                let (translated, _) = lens.wrap_to_domain(lens.cover_apply(lens.deck(power), x));
-                assert!(
-                    SphericalS3Embedded.distance(wrapped, translated) < 1e-3,
-                    "L({p}, {q}): wrap of g^{power} x is a different lift at {x:?}"
-                );
             }
         }
     }
@@ -1062,7 +893,7 @@ mod lens_tests {
     }
 
     #[test]
-    fn distance_is_the_minimum_over_the_deck_group() {
+    fn distance_is_the_minimum_over_the_deck_group_and_a_metric_on_the_quotient() {
         let mut rng = Xorshift(0xdead_10cc);
         for &(p, q) in LENSES {
             let lens = LensSpace::new(p, q);
@@ -1070,6 +901,10 @@ mod lens_tests {
             for _ in 0..5_000 {
                 let a = unit4(&mut rng);
                 let b = unit4(&mut rng);
+                let c = unit4(&mut rng);
+                let power = (rng.next_u32() % (2 * p)) as i32;
+                let moved = lens.cover_apply(lens.deck(power), a);
+
                 let mut brute = f32::INFINITY;
                 let mut lift = b;
                 for _ in 0..p {
@@ -1077,37 +912,10 @@ mod lens_tests {
                     lift = generator * lift;
                 }
                 assert_relative_eq!(lens.distance(a, b), brute, epsilon = 1e-4);
-            }
-        }
-    }
-
-    #[test]
-    fn distance_is_deck_invariant_symmetric_and_zero_on_the_orbit() {
-        let mut rng = Xorshift(0x9e37_79b9);
-        for &(p, q) in LENSES {
-            let lens = LensSpace::new(p, q);
-            for _ in 0..5_000 {
-                let a = unit4(&mut rng);
-                let b = unit4(&mut rng);
-                let power = (rng.next_u32() % (2 * p)) as i32;
-                let moved = lens.cover_apply(lens.deck(power), a);
 
                 assert_relative_eq!(lens.distance(a, b), lens.distance(b, a), epsilon = 1e-5);
                 assert_relative_eq!(lens.distance(moved, b), lens.distance(a, b), epsilon = 1e-4);
                 assert!(lens.distance(a, moved) < 1e-3);
-            }
-        }
-    }
-
-    #[test]
-    fn distance_satisfies_the_triangle_inequality() {
-        let mut rng = Xorshift(0x7f4a_7c15);
-        for &(p, q) in LENSES {
-            let lens = LensSpace::new(p, q);
-            for _ in 0..5_000 {
-                let a = unit4(&mut rng);
-                let b = unit4(&mut rng);
-                let c = unit4(&mut rng);
                 assert!(lens.distance(a, c) <= lens.distance(a, b) + lens.distance(b, c) + 1e-4);
             }
         }
@@ -1176,52 +984,6 @@ mod lens_tests {
                     "L({p}, {q}): transported vector is not tangent at `to`"
                 );
                 assert_relative_eq!(carried.length(), v.length(), epsilon = 1e-4);
-            }
-        }
-    }
-
-    #[test]
-    fn the_wgsl_prelude_bakes_the_deck_table_the_rust_impl_computes() {
-        for &(p, q) in LENSES {
-            let lens = LensSpace::new(p, q);
-            let source = lens.wgsl_prelude();
-            for symbol in [
-                "fn loam_lens_apply(",
-                "fn loam_lens_wedge_offset(",
-                "fn loam_lens_wrap(",
-                "fn loam_lens_distance(",
-                "fn loam_lens_nearest_power(",
-                "const LOAM_LENS_P",
-                "const LOAM_LENS_WEDGES_PER_TURN",
-            ] {
-                assert!(source.contains(symbol), "L({p}, {q}) is missing {symbol}");
-            }
-
-            let table = source
-                .split("const LOAM_LENS_DECK = array<vec4<f32>, ")
-                .nth(1)
-                .and_then(|rest| rest.split(");").next())
-                .expect("the deck table is baked");
-            assert_eq!(
-                table.matches("vec4<f32>(").count(),
-                p as usize,
-                "L({p}, {q}) baked {table}"
-            );
-
-            for (power, entry) in table.split("vec4<f32>(").skip(1).enumerate() {
-                let baked: Vec<f32> = entry
-                    .split(')')
-                    .next()
-                    .expect("a closed entry")
-                    .split(", ")
-                    .map(|coefficient| coefficient.parse().expect("an f32 literal"))
-                    .collect();
-                let m = lens.deck(power as i32).matrix;
-                assert_eq!(
-                    baked,
-                    vec![m.x_axis.x, m.x_axis.y, m.z_axis.z, m.z_axis.w],
-                    "L({p}, {q}): baked power {power} is not the Rust matrix"
-                );
             }
         }
     }

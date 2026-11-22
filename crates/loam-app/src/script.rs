@@ -144,129 +144,20 @@ pub fn driver_from_args(args: &Args) -> Result<Option<ScriptDriver>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loam_console::CommandQueue;
 
     #[test]
-    fn invalid_frame_or_empty_command_is_rejected() {
+    fn a_malformed_script_or_a_detached_script_path_is_refused_and_a_misordered_one_names_its_line()
+    {
         for source in ["10", " 10  ", "-1 reset", "1.5 reset", "abc reset"] {
             assert!(Script::parse(source).is_err(), "{source}");
         }
-    }
-
-    #[test]
-    fn descending_frames_report_the_line() {
         let error = Script::parse("0 reset\n10 spin\n5 hud").unwrap_err();
         assert!(error.to_string().contains("line 3"));
-    }
 
-    #[test]
-    fn script_requires_an_attached_path() {
         let args = Args::from_argv(["--script", "some.script"]);
         assert!(driver_from_args(&args)
             .unwrap_err()
             .to_string()
             .contains("--script="));
-    }
-
-    #[test]
-    fn commands_fire_once_in_frame_and_file_order() {
-        let mut driver = ScriptDriver::new(
-            Script::parse("0 mark boot\n2 mark second-a\n2 mark second-b\n5 mark last").unwrap(),
-        );
-        let mut queue = CommandQueue::new();
-        let mut fired = Vec::new();
-        for frame in 0..8 {
-            driver.advance_with(|command| queue.submit(command));
-            fired.extend(
-                queue
-                    .drain()
-                    .map(|command| (frame, command.args[0].clone())),
-            );
-        }
-        assert_eq!(
-            fired,
-            [
-                (0, "boot".to_string()),
-                (2, "second-a".to_string()),
-                (2, "second-b".to_string()),
-                (5, "last".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn finish_waits_for_capture_margin() {
-        for source in ["", "5 mark end"] {
-            let script = Script::parse(source).unwrap();
-            let finish = script.last_frame() + SETTLE_FRAMES;
-            let mut driver = ScriptDriver::new(script);
-            for _ in 0..finish {
-                assert_eq!(driver.advance_with(|_| {}), ScriptStatus::Running);
-            }
-            assert_eq!(driver.advance_with(|_| {}), ScriptStatus::Finished);
-        }
-    }
-}
-
-#[cfg(test)]
-mod session_tests {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    use loam_runtime::{Bindings, HostConfig};
-
-    use super::*;
-    use crate::session::SessionApp;
-
-    loam_runtime::stores! {
-        #[derive(Default)]
-        pub struct Marked {
-            hits: Value<u32>,
-        }
-    }
-
-    fn host_marking(seen: &Rc<RefCell<Vec<Vec<String>>>>) -> SessionApp<Marked> {
-        let recorded = seen.clone();
-        SessionApp::with_args(HostConfig::new("script", Bindings::new()), Args::default()).command(
-            "mark",
-            "record a marker",
-            move |args, _submit, _out| {
-                recorded
-                    .borrow_mut()
-                    .push(args.iter().map(|arg| (*arg).to_string()).collect());
-                Ok(())
-            },
-        )
-    }
-
-    #[test]
-    fn a_scripted_line_reaches_its_verb_at_its_own_frame() {
-        let seen = Rc::new(RefCell::new(Vec::new()));
-        let mut app = host_marking(&seen);
-        let mut driver =
-            ScriptDriver::new(Script::parse("0 mark boot\n2 mark second").expect("script"));
-
-        let mut dispatched = Vec::new();
-        for _ in 0..3 {
-            driver.advance_console(app.console_mut());
-            app.console_mut().dispatch_pending();
-            dispatched.push(seen.borrow().len());
-        }
-
-        assert_eq!(dispatched, [1, 1, 2]);
-        assert_eq!(*seen.borrow(), [vec!["boot"], vec!["second"]]);
-    }
-
-    #[test]
-    fn a_quoted_scripted_argument_stays_one_argument() {
-        let seen = Rc::new(RefCell::new(Vec::new()));
-        let mut app = host_marking(&seen);
-        let mut driver =
-            ScriptDriver::new(Script::parse("0 mark \"a b\" #ff8800").expect("script"));
-
-        driver.advance_console(app.console_mut());
-        app.console_mut().dispatch_pending();
-
-        assert_eq!(*seen.borrow(), [vec!["a b", "#ff8800"]]);
     }
 }

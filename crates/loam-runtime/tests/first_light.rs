@@ -77,33 +77,24 @@ impl ViewMapping<Blend> for ChartIdentity {
 }
 
 #[test]
-fn a_blended_local_answers_past_its_metric_error_budget() {
+fn a_blended_space_refuses_what_it_cannot_answer_within_its_error_budget() {
     let space = blend();
-    let pose = Pose::new(&space, Vec3::ZERO);
-    assert!(space.local(&pose, Vec3::X * 0.98).is_ok());
+    let origin = Pose::new(&space, Vec3::ZERO);
+    assert!(space.local(&origin, Vec3::X * 0.98).is_ok());
     assert_eq!(
-        space.local(&pose, Vec3::X * 0.995),
+        space.local(&origin, Vec3::X * 0.995),
         Err(DomainError::ErrorBudget)
     );
-}
 
-#[test]
-fn a_blended_local_answers_from_a_path_past_its_error_budget() {
-    let space = blend();
-    let pose = Pose::new(&space, Vec3::X * 0.8);
+    let off_center = Pose::new(&space, Vec3::X * 0.8);
     assert_eq!(
-        space.local(&pose, Vec3::new(-0.8, 0.1, 0.0)),
+        space.local(&off_center, Vec3::new(-0.8, 0.1, 0.0)),
         Err(DomainError::ErrorBudget)
     );
-    assert!(space.local(&pose, Vec3::new(0.7, 0.05, 0.0)).is_ok());
-}
+    assert!(space.local(&off_center, Vec3::new(0.7, 0.05, 0.0)).is_ok());
 
-#[test]
-fn blended_walk_refuses_an_incomplete_geodesic_step() {
-    let space = blend();
-    let pose = Pose::new(&space, Vec3::ZERO);
     assert_eq!(
-        space.walk(&pose, Vec3::splat(1.0e20), 1.0).err(),
+        space.walk(&origin, Vec3::splat(1.0e20), 1.0).err(),
         Some(DomainError::InvalidCoordinate("geodesic"))
     );
 }
@@ -326,8 +317,6 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
 
 #[test]
 fn the_h3_chart_reach_stays_finite_past_the_ball() {
-    use loam_runtime::DomainSpace;
-
     let at_bound =
         HyperbolicH3.chart_reach(Vec3::ZERO, loam_math::hyperbolic::POINCARE_R2_MAX.sqrt());
     for radius in [1.0_f32, 1.5, 40.0] {

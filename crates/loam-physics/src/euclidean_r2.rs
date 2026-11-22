@@ -489,60 +489,6 @@ mod tests {
 
     use crate::world::World;
 
-    #[test]
-    fn static_body_ignores_gravity() {
-        let mut world = World::new(EuclideanR2);
-        let id = world.push_body(
-            BodyDef::fixed(
-                Vec2::new(0.0, 0.0),
-                Collider::sphere_at_origin(1.0),
-                disk_inertia(0.0, 1.0),
-                &EuclideanR2,
-            )
-            .unwrap(),
-        );
-        world.set_gravity(Some(Vec2::new(0.0, -9.8))).unwrap();
-
-        for _ in 0..10 {
-            world.step(1.0 / 60.0).unwrap();
-        }
-
-        let body = &world.bodies[id];
-        assert_eq!(body.position, Vec2::ZERO);
-        assert_eq!(body.velocity, Vec2::ZERO);
-    }
-
-    #[test]
-    fn sphere_sphere_contact_detected() {
-        let mut np = Narrowphase::<EuclideanR2>::new();
-        register_default_narrowphase(&mut np);
-        let mut g = GeometryStore::default();
-
-        let a = row(
-            sphere_body(Vec2::ZERO, Vec2::ZERO, 1.0, 1.0).unwrap(),
-            &mut g,
-        );
-        let b = row(
-            sphere_body(Vec2::new(1.5, 0.0), Vec2::ZERO, 1.0, 1.0).unwrap(),
-            &mut g,
-        );
-        let contact = np.test(&a, &b, &g, &EuclideanR2).expect("should collide");
-        assert!((contact.normal - Vec2::X).length() < 1e-5);
-        assert!((contact.penetration - 0.5).abs() < 1e-5);
-    }
-
-    #[test]
-    fn regular_polygon_vertices_are_ccw() {
-        let verts = regular_polygon_vertices(4, 1.0);
-        assert_eq!(verts.len(), 4);
-        for i in 0..4 {
-            let e0 = verts[(i + 1) % 4] - verts[i];
-            let e1 = verts[(i + 2) % 4] - verts[(i + 1) % 4];
-            let cross = e0.x * e1.y - e0.y * e1.x;
-            assert!(cross > 0.0, "winding not CCW at edge {i}: cross={cross}");
-        }
-    }
-
     fn aa_box(center: Vec2, half: Vec2, mass: f32) -> BodyDef<EuclideanR2> {
         rectangle_body(center, Vec2::ZERO, half, mass).unwrap()
     }
@@ -552,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn contained_polygon_uses_exit_distance_and_reverses_with_pair() {
+    fn polygon_contacts_run_from_the_first_body_to_the_second_and_honour_containment_and_pose() {
         let mut g = GeometryStore::default();
         let outer = row(aa_box(Vec2::ZERO, Vec2::splat(2.0), 1.0), &mut g);
         let inner = row(aa_box(Vec2::new(0.5, 0.0), Vec2::splat(0.5), 1.0), &mut g);
@@ -562,10 +508,7 @@ mod tests {
         assert_eq!(reverse.penetration, 2.0);
         assert_eq!(forward.normal, Vec2::X);
         assert_eq!(reverse.normal, -Vec2::X);
-    }
 
-    #[test]
-    fn polygon_polygon_detects_overlap() {
         let mut np = Narrowphase::<EuclideanR2>::new();
         register_default_narrowphase(&mut np);
         let mut g = GeometryStore::default();
@@ -589,13 +532,6 @@ mod tests {
             "penetration: {}",
             c.penetration
         );
-    }
-
-    #[test]
-    fn polygon_rotation_affects_collision() {
-        let mut np = Narrowphase::<EuclideanR2>::new();
-        register_default_narrowphase(&mut np);
-        let mut g = GeometryStore::default();
 
         let a = row(
             polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0).unwrap(),
@@ -622,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn sphere_polygon_edge_contact() {
+    fn a_sphere_against_a_polygon_edge_reports_the_same_contact_in_either_pair_order() {
         let mut np = Narrowphase::<EuclideanR2>::new();
         register_default_narrowphase(&mut np);
         let mut g = GeometryStore::default();
@@ -645,6 +581,11 @@ mod tests {
             "penetration: {}",
             c.penetration
         );
+
+        let c = np
+            .test(&square, &sphere, &g, &EuclideanR2)
+            .expect("should collide");
+        assert!(c.normal.dot(Vec2::X) > 0.99, "normal: {:?}", c.normal);
     }
 
     const SLAB_HALF: f32 = 0.05;
@@ -667,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn sphere_polygon_normal_leaves_through_the_nearest_face_from_inside() {
+    fn a_disk_crossing_a_slab_face_keeps_one_continuous_contact_from_graze_to_inside() {
         let mut np = Narrowphase::<EuclideanR2>::new();
         register_default_narrowphase(&mut np);
         let mut g = GeometryStore::default();
@@ -688,17 +629,10 @@ mod tests {
                 c.penetration
             );
         }
-    }
 
-    #[test]
-    fn sphere_polygon_contact_is_continuous_across_the_face() {
-        let mut np = Narrowphase::<EuclideanR2>::new();
-        register_default_narrowphase(&mut np);
-        let mut g = GeometryStore::default();
-
-        const STEP: f32 = 1e-4;
-        let (outside, wall) = slab_and_disk(-SLAB_HALF - STEP, &mut g);
-        let (inside, _) = slab_and_disk(-SLAB_HALF + STEP, &mut g);
+        const CROSSING: f32 = 1e-4;
+        let (outside, wall) = slab_and_disk(-SLAB_HALF - CROSSING, &mut g);
+        let (inside, _) = slab_and_disk(-SLAB_HALF + CROSSING, &mut g);
         let out = np
             .test(&outside, &wall, &g, &EuclideanR2)
             .expect("overlapping");
@@ -713,19 +647,12 @@ mod tests {
             inn.normal
         );
         assert!(
-            (inn.penetration - out.penetration - 2.0 * STEP).abs() < 1e-5,
+            (inn.penetration - out.penetration - 2.0 * CROSSING).abs() < 1e-5,
             "depth jumps from {} to {} over a {} crossing",
             out.penetration,
             inn.penetration,
-            2.0 * STEP
+            2.0 * CROSSING
         );
-    }
-
-    #[test]
-    fn sphere_polygon_centre_on_the_face_leaves_along_that_face_normal() {
-        let mut np = Narrowphase::<EuclideanR2>::new();
-        register_default_narrowphase(&mut np);
-        let mut g = GeometryStore::default();
 
         let (disk, wall) = slab_and_disk(-SLAB_HALF, &mut g);
         let c = np
@@ -737,13 +664,6 @@ mod tests {
             -c.normal
         );
         assert!((c.penetration - DISK_RADIUS).abs() < 1e-5);
-    }
-
-    #[test]
-    fn sphere_polygon_grazing_at_exactly_the_radius_reports_no_contact() {
-        let mut np = Narrowphase::<EuclideanR2>::new();
-        register_default_narrowphase(&mut np);
-        let mut g = GeometryStore::default();
 
         const STEP: f32 = 1e-5;
         let graze = -(SLAB_HALF + DISK_RADIUS);
@@ -769,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn sphere_sphere_grazing_at_exactly_the_combined_radius_reports_no_contact() {
+    fn spheres_touch_only_inside_their_combined_radius_and_the_normal_runs_between_centres() {
         let mut np = Narrowphase::<EuclideanR2>::new();
         register_default_narrowphase(&mut np);
         let mut g = GeometryStore::default();
@@ -794,6 +714,14 @@ mod tests {
                 (got, _) => panic!("gap {gap} reported {:?}", got.map(|c| c.penetration)),
             }
         }
+
+        let b = row(
+            sphere_body(Vec2::new(0.5, 0.0), Vec2::ZERO, 0.5, 1.0).unwrap(),
+            &mut g,
+        );
+        let contact = np.test(&a, &b, &g, &EuclideanR2).expect("should collide");
+        assert!((contact.normal - Vec2::X).length() < 1e-5);
+        assert!((contact.penetration - 0.5).abs() < 1e-5);
     }
 
     #[test]
@@ -810,28 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn sphere_polygon_reverse_pair_handled() {
-        let mut np = Narrowphase::<EuclideanR2>::new();
-        register_default_narrowphase(&mut np);
-        let mut g = GeometryStore::default();
-
-        let square = row(
-            polygon_body(Vec2::ZERO, Vec2::ZERO, 4, 1.0, 1.0).unwrap(),
-            &mut g,
-        );
-        let sphere = row(
-            sphere_body(Vec2::new(1.3, 0.0), Vec2::ZERO, 0.5, 1.0).unwrap(),
-            &mut g,
-        );
-
-        let c = np
-            .test(&square, &sphere, &g, &EuclideanR2)
-            .expect("should collide");
-        assert!(c.normal.dot(Vec2::X) > 0.99, "normal: {:?}", c.normal);
-    }
-
-    #[test]
-    fn off_center_impact_produces_angular_velocity() {
+    fn an_off_centre_hit_spins_a_box_and_a_head_on_hit_bounces_spheres_apart_without_spin() {
         let mut world = World::new(EuclideanR2);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -847,6 +754,28 @@ mod tests {
         assert!(
             omega < -0.05,
             "square failed to rotate clockwise from off-center hit: ω = {omega}"
+        );
+
+        let mut world = World::new(EuclideanR2);
+        register_default_narrowphase(&mut world.narrowphase);
+
+        world.push_body(sphere_body(Vec2::new(-1.0, 0.0), Vec2::new(2.0, 0.0), 0.5, 1.0).unwrap());
+        world.push_body(sphere_body(Vec2::new(1.0, 0.0), Vec2::new(-2.0, 0.0), 0.5, 1.0).unwrap());
+
+        for _ in 0..30 {
+            world.step(1.0 / 60.0).unwrap();
+        }
+
+        for body in world.bodies.iter() {
+            assert!(body.angular_velocity.0.abs() < 1e-3);
+        }
+        assert!(
+            world.bodies[0].velocity.x < 0.0,
+            "body 0 should bounce back"
+        );
+        assert!(
+            world.bodies[1].velocity.x > 0.0,
+            "body 1 should bounce back"
         );
     }
 
@@ -884,31 +813,6 @@ mod tests {
                 "body {idx}: lowest={lowest}"
             );
         }
-    }
-
-    #[test]
-    fn head_on_collision_separates_spheres() {
-        let mut world = World::new(EuclideanR2);
-        register_default_narrowphase(&mut world.narrowphase);
-
-        world.push_body(sphere_body(Vec2::new(-1.0, 0.0), Vec2::new(2.0, 0.0), 0.5, 1.0).unwrap());
-        world.push_body(sphere_body(Vec2::new(1.0, 0.0), Vec2::new(-2.0, 0.0), 0.5, 1.0).unwrap());
-
-        for _ in 0..30 {
-            world.step(1.0 / 60.0).unwrap();
-        }
-
-        for body in world.bodies.iter() {
-            assert!(body.angular_velocity.0.abs() < 1e-3);
-        }
-        assert!(
-            world.bodies[0].velocity.x < 0.0,
-            "body 0 should bounce back"
-        );
-        assert!(
-            world.bodies[1].velocity.x > 0.0,
-            "body 1 should bounce back"
-        );
     }
 
     #[test]

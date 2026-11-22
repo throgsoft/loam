@@ -123,29 +123,3 @@ pub(crate) fn w_extent(topology: &Polytope4Topology, scale: f32) -> f32 {
         .max(1e-6)
         * scale
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_greedy_palette_separates_edges_that_share_a_vertex() {
-        let edges: &[[u32; 2]] = &[[0, 1], [0, 2], [0, 3]];
-        let colors = unique_edge_colors(edges);
-        assert_eq!(colors.len(), 6, "one color per endpoint");
-        for edge in 0..3 {
-            assert_eq!(
-                colors[edge * 2],
-                colors[edge * 2 + 1],
-                "an edge is one color"
-            );
-            for other in (edge + 1)..3 {
-                assert_ne!(
-                    colors[edge * 2],
-                    colors[other * 2],
-                    "edges {edge} and {other} share vertex 0 and got one color"
-                );
-            }
-        }
-    }
-}

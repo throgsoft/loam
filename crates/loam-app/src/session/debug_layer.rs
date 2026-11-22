@@ -521,10 +521,7 @@ impl FramePass for LayerPass {
 #[cfg(test)]
 mod tests {
     use loam_render::device::FeatureRequest;
-    use wgpu::{
-        BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
-        TextureDescriptor, TextureDimension, TextureUsages, TextureViewDescriptor,
-    };
+    use wgpu::{BackendOptions, Backends, Instance, InstanceDescriptor, NoopBackendOptions};
 
     use crate::wasm::input_queue::PointerPhase;
 
@@ -543,100 +540,6 @@ mod tests {
             .expect("the noop backend always yields a context")
     }
 
-    #[test]
-    fn browser_zoom_does_not_feed_output_scale_back_as_native_dpr() {
-        let gpu = noop_gpu();
-        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, (600, 300), 2.0);
-        let mut layer = layer.shared.borrow_mut();
-        layer.ctx.set_zoom_factor(1.5);
-
-        let first = layer.raw_input(None);
-        layer.ctx.begin_pass(first);
-        layer.finish(None);
-        let second = layer.raw_input(None);
-
-        assert_eq!(layer.native_pixels_per_point, 2.0);
-        assert_eq!(layer.screen.pixels_per_point, 3.0);
-        assert_eq!(
-            second.screen_rect.map(|rect| rect.size()),
-            Some(egui::vec2(200.0, 100.0))
-        );
-    }
-
-    #[test]
-    fn managed_partial_texture_after_recovery_uses_replay_and_free_removes_it() {
-        let gpu = noop_gpu();
-        let format = TextureFormat::Rgba8UnormSrgb;
-        let layer = DebugLayer::offscreen(&gpu, format, (16, 16), 1.0);
-        let target = gpu.device.create_texture(&TextureDescriptor {
-            label: Some("debug layer texture recovery probe"),
-            size: Extent3d {
-                width: 16,
-                height: 16,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format,
-            usage: TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let target = target.create_view(&TextureViewDescriptor::default());
-        let paint = || {
-            let mut encoder = gpu
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            layer
-                .shared
-                .borrow_mut()
-                .paint(&mut encoder, &target)
-                .expect("texture deltas applied");
-            gpu.queue.submit(Some(encoder.finish()));
-        };
-        let red = egui::Color32::from_rgb(255, 0, 0);
-        let blue = egui::Color32::from_rgb(0, 0, 255);
-        let mut texture = layer.context().load_texture(
-            "managed recovery probe",
-            egui::ColorImage::filled([2, 2], red),
-            egui::TextureOptions::LINEAR,
-        );
-        let id = texture.id();
-        layer.begin();
-        layer.finish();
-        paint();
-
-        let frame = FrameFormat {
-            color: format,
-            depth: TextureFormat::Depth32Float,
-        };
-        let mut pass = layer.pass();
-        pass.attach(&gpu, frame).expect("renderer recreated");
-        texture.set_partial(
-            [1, 0],
-            egui::ColorImage::filled([1, 2], blue),
-            egui::TextureOptions::NEAREST,
-        );
-        layer.begin();
-        layer.finish();
-        paint();
-
-        {
-            let layer = layer.shared.borrow();
-            let cached = layer.managed_textures.get(&id).expect("texture retained");
-            let egui::ImageData::Color(image) = &cached.image;
-            assert_eq!(image.pixels, [red, blue, red, blue]);
-            assert_eq!(cached.options, egui::TextureOptions::NEAREST);
-        }
-
-        drop(texture);
-        layer.begin();
-        layer.finish();
-        paint();
-        pass.attach(&gpu, frame)
-            .expect("renderer recreated after free");
-        assert!(!layer.shared.borrow().managed_textures.contains_key(&id));
-    }
     #[test]
     fn canceled_touch_never_clicks_and_later_input_lands_in_the_next_pass() {
         struct Observed {

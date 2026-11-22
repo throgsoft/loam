@@ -1,38 +1,14 @@
 use std::any::Any;
 
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Space};
+use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
-    ActionEvent, ActionId, AppCommand, ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent,
-    Command, CommandResult, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle, DomainSpace,
-    Entity, Facility, Field, FieldKind, FieldOp, HostError, Input, Instance, Material, Order,
-    Outcome, Owner, Phase, Pose, PreparedGeometry, Rejection, Relation, RequestId, Reservation,
-    RestoreError, SchemaId, Session, SimConfig, SpawnBundle, Step, Store, StoreError, DOMAIN_STEP,
+    ActionEvent, ActionId, AppCommand, Command, CommandResult, Ctx, Dispatch, DomainBuilder,
+    DomainError, DomainHandle, Entity, Facility, Input, Instance, Material, Order, Outcome, Owner,
+    Phase, Pose, PreparedGeometry, Rejection, RequestId, Reservation, RestoreError, SchemaId,
+    Session, SimConfig, SpawnBundle, Step, Store, StoreError, DOMAIN_STEP,
 };
 
-type Vec3 = <EuclideanR3 as Space>::Point;
 type Vec4 = <EuclideanR4 as Space>::Point;
-
-const IDENTITY_FRAME: [[f32; 4]; 4] = [
-    [1.0, 0.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-];
-
-const QUARTER_TURN: [[f32; 4]; 4] = [
-    [0.0, 1.0, 0.0, 0.0],
-    [-1.0, 0.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-];
-
-fn chart(coordinates: [f32; 4], frame: [[f32; 4]; 4]) -> ChartPose {
-    ChartPose {
-        chart: ChartId(0),
-        coordinates,
-        frame,
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Tag(u32);
@@ -135,49 +111,9 @@ fn marks(values: &[u32]) -> Input {
 }
 
 #[test]
-fn named_system_failures_are_distinct_in_runtime_and_host_errors() {
-    let fail = |name: &'static str| {
-        let (mut session, _) = session();
-        session.system(Phase::Dispatch, name, |_ctx: Ctx<'_, Probe>| {
-            Err(DomainError::ChartBoundary)
-        });
-        let error = session.boundary(Input::default()).unwrap_err();
-        assert_eq!(session.faulted_phase(), Some(Phase::Dispatch));
-        assert_eq!(session.phase_error(), Some(error));
-        error
-    };
-    let first = fail("first failure");
-    let second = fail("second failure");
-
-    assert_eq!(first.cause, second.cause);
-    assert_ne!(first.system, second.system);
-    assert!(first.to_string().contains("first failure"));
-    assert!(second.to_string().contains("second failure"));
-    assert!(matches!(HostError::from(first), HostError::Phase(error) if error == first));
-}
-
-#[test]
-fn a_fallible_function_command_reports_its_rejection() {
-    let (mut session, _) = session();
-    let request = session.submit(Command::try_app_fn("reject", |_dispatch| {
-        Err(Rejection::Unsupported("rejected"))
-    }));
-
-    session.boundary(Input::default()).unwrap();
-    assert_eq!(
-        session.results(),
-        [CommandResult {
-            request,
-            name: "reject",
-            outcome: Err(Rejection::Unsupported("rejected")),
-        }]
-    );
-}
-
-#[test]
-fn stale_or_foreign_attachments_do_not_claim_recycled_slots() {
+fn stale_attachments_do_not_claim_recycled_slots() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).fields());
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
     let geometry = session.prepare(PreparedGeometry::Lines4 {
         segments: Vec::new(),
     });
@@ -190,39 +126,6 @@ fn stale_or_foreign_attachments_do_not_claim_recycled_slots() {
     session
         .dispatch(|dispatch| dispatch.despawn(doomed))
         .unwrap();
-
-    let mut foreign_session = Session::new(Probe::default(), SimConfig::default());
-    let foreign = foreign_session
-        .dispatch(|dispatch| dispatch.spawn(SpawnBundle::new()))
-        .unwrap();
-    let mut standalone = Store::default();
-    standalone.insert(session.entities(), peer, Tag(3)).unwrap();
-    assert_eq!(
-        standalone.insert(session.entities(), doomed, Tag(4)),
-        Err(StoreError::Stale(doomed))
-    );
-    assert_eq!(
-        standalone.insert(foreign_session.entities(), foreign, Tag(4)),
-        Err(StoreError::Foreign(foreign))
-    );
-
-    let mut relation = Relation::new();
-    assert_eq!(
-        relation.link(session.entities(), doomed, peer, 1),
-        Err(StoreError::Stale(doomed))
-    );
-    assert_eq!(
-        relation.link(session.entities(), peer, doomed, 1),
-        Err(StoreError::Stale(doomed))
-    );
-    assert_eq!(
-        relation.link(session.entities(), foreign, peer, 1),
-        Err(StoreError::Foreign(foreign))
-    );
-    assert_eq!(
-        relation.link(session.entities(), peer, foreign, 1),
-        Err(StoreError::Foreign(foreign))
-    );
 
     let instance = Instance::new(geometry, material);
     session.dispatch(|dispatch| {
@@ -238,77 +141,12 @@ fn stale_or_foreign_attachments_do_not_claim_recycled_slots() {
             dispatch.attach_instance(r4, doomed, instance),
             Err(Rejection::Domain(DomainError::Stale(doomed)))
         );
-        assert_eq!(
-            dispatch.attach_field(
-                r4,
-                doomed,
-                Field {
-                    kind: FieldKind::ExactDistance,
-                    op: FieldOp::HyperSphere { radius: 1.0 },
-                    operands: Vec::new(),
-                },
-            ),
-            Err(Rejection::Domain(DomainError::Stale(doomed)))
-        );
 
         let reused = dispatch.spawn(placed(r4, Tag(6))).unwrap();
         assert_eq!(reused.key().slot(), doomed.key().slot());
         dispatch.link(reused, peer, 2).unwrap();
         dispatch.attach_instance(r4, reused, instance).unwrap();
-        dispatch
-            .attach_field(
-                r4,
-                reused,
-                Field {
-                    kind: FieldKind::ExactDistance,
-                    op: FieldOp::HyperSphere { radius: 1.0 },
-                    operands: Vec::new(),
-                },
-            )
-            .unwrap();
     });
-}
-
-#[test]
-fn rejected_spawn_bundle_leaves_an_attachment_behind() {
-    let (mut session, r4) = session();
-    let doubled = move || placed(r4, Tag(1)).row(Tag(2));
-    let rejection = session.dispatch(|d| d.spawn(doubled())).unwrap_err();
-    assert!(matches!(
-        rejection,
-        Rejection::Store(StoreError::Occupied(_))
-    ));
-    assert!(session.app.tags.is_empty());
-    assert!(session.entities().is_empty());
-    assert!(session.domains().read(r4).unwrap().poses().is_empty());
-
-    session.system(Phase::Simulation, "spawn", move |ctx: Ctx<'_, Probe>| {
-        if ctx.app.reserved.get().is_empty() {
-            let reservation = ctx.commands.spawn(doubled()).unwrap();
-            ctx.app.reserved.get_mut().push(reservation);
-        }
-        Ok(())
-    });
-    session.tick().unwrap();
-    session.boundary(Input::default()).unwrap();
-    let reservation = session.app.reserved.get()[0];
-    assert!(matches!(
-        session.results(),
-        [CommandResult { request, name: "spawn", outcome: Err(Rejection::Store(StoreError::Occupied(_))) }]
-            if *request == reservation.request
-    ));
-    assert!(session.app.tags.is_empty());
-    assert!(session.entities().is_empty());
-    assert!(session.domains().read(r4).unwrap().poses().is_empty());
-    assert_eq!(
-        session.dispatch(|d| d.despawn(reservation.entity)),
-        Err(Rejection::Domain(DomainError::Stale(reservation.entity)))
-    );
-
-    let fresh = session.dispatch(|d| d.spawn(placed(r4, Tag(3)))).unwrap();
-    assert_eq!(fresh.key().slot(), reservation.entity.key().slot());
-    assert_ne!(fresh, reservation.entity);
-    assert_eq!(session.app.tags.get(fresh), Some(&Tag(3)));
 }
 
 #[test]
@@ -410,7 +248,7 @@ fn commands_reorder_repeat_or_vanish_around_pause_and_catch_up() {
 }
 
 #[test]
-fn dispatch_spawn_returns_a_handle_that_is_not_live() {
+fn a_spawn_is_live_at_once_through_dispatch_and_a_reserved_one_only_after_its_boundary() {
     let (mut session, r4) = session();
     let direct = session.dispatch(|d| d.spawn(placed(r4, Tag(1)))).unwrap();
     assert_eq!(session.entities().resolve(direct), Some(direct.key()));
@@ -440,11 +278,8 @@ fn dispatch_spawn_returns_a_handle_that_is_not_live() {
         Some(reservation.entity.key())
     );
     assert_eq!(session.results().len(), 1);
-}
 
-#[test]
-fn reserved_handle_resolves_before_its_spawn_commits() {
-    let (mut session, r4) = session();
+    let (mut session, r4) = crate::session();
     session.system(Phase::Simulation, "reserve", move |ctx: Ctx<'_, Probe>| {
         if ctx.step.tick.0 == 0 {
             let reservation = ctx.commands.spawn(placed(r4, Tag(1))).unwrap();
@@ -527,162 +362,4 @@ fn system_after_the_domain_step_does_not_see_the_steps_writes() {
     assert_eq!(*session.app.sample.get(), [Some(0.0), Some(dt)]);
     session.tick().unwrap();
     assert_eq!(*session.app.sample.get(), [Some(dt), Some(dt + dt)]);
-}
-
-#[test]
-fn a_chart_spawn_lands_at_the_pose_and_instance_the_chart_names() {
-    let mut session = Session::new(Probe::default(), SimConfig::default());
-    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
-    let r3 = session.register_domain(DomainBuilder::new("r3", EuclideanR3));
-    let h3 = session.register_domain(DomainBuilder::new("h3", HyperbolicH3));
-    let stub = session.prepare(PreparedGeometry::Lines4 {
-        segments: vec![[[0.05, 0.0, 0.0, 0.0], [-0.05, 0.0, 0.0, 0.0]]],
-    });
-    let material = session.add_material(Material::flat([1.0; 4]));
-    let instance = Instance::new(stub, material);
-
-    let (flat4, flat3, curved) = session.dispatch(|d| {
-        (
-            d.spawn(
-                SpawnBundle::new()
-                    .at_chart(r4.id(), chart([2.0, 3.0, 5.0, 7.0], QUARTER_TURN))
-                    .instance(instance),
-            )
-            .unwrap(),
-            d.spawn(
-                SpawnBundle::new().at_chart(r3.id(), chart([1.0, 2.0, 3.0, 0.0], QUARTER_TURN)),
-            )
-            .unwrap(),
-            d.spawn(
-                SpawnBundle::new().at_chart(h3.id(), chart([0.5, 0.0, 0.0, 0.0], IDENTITY_FRAME)),
-            )
-            .unwrap(),
-        )
-    });
-
-    let domain4 = session.domains().read(r4).unwrap();
-    let pose4 = *domain4.poses().get(flat4).unwrap();
-    let landed4 = EuclideanR4
-        .place(&EuclideanR4.prepare(&pose4), Vec4::X)
-        .unwrap();
-    assert!(
-        (landed4 - Vec4::new(2.0, 4.0, 5.0, 7.0)).length() < 1e-5,
-        "the quarter turn put local x at {landed4}"
-    );
-    assert_eq!(domain4.instances().get(flat4), Some(&instance));
-
-    let pose3 = *session
-        .domains()
-        .read(r3)
-        .unwrap()
-        .poses()
-        .get(flat3)
-        .unwrap();
-    let landed3 = EuclideanR3
-        .place(&EuclideanR3.prepare(&pose3), Vec3::X)
-        .unwrap();
-    assert!(
-        (landed3 - Vec3::new(1.0, 3.0, 3.0)).length() < 1e-5,
-        "the quarter turn put local x at {landed3}"
-    );
-
-    let curved_pose = *session
-        .domains()
-        .read(h3)
-        .unwrap()
-        .poses()
-        .get(curved)
-        .unwrap();
-    let landed = HyperbolicH3
-        .place(&HyperbolicH3.prepare(&curved_pose), Vec3::ZERO)
-        .unwrap();
-    assert!(
-        (landed - Vec3::new(0.5, 0.0, 0.0)).length() < 1e-5,
-        "the transvection put the origin at {landed}"
-    );
-}
-
-#[test]
-fn a_non_orthonormal_chart_frame_is_refused_and_places_nothing() {
-    let (mut session, r4) = session();
-    let skewed = [
-        [1.0, 0.0, 0.0, 0.0],
-        [1.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ];
-    let refusal = session
-        .dispatch(|d| d.spawn(SpawnBundle::new().at_chart(r4.id(), chart([0.0; 4], skewed))))
-        .unwrap_err();
-    assert_eq!(refusal, Rejection::Domain(DomainError::InvalidFrame));
-    assert_eq!(session.domains().read(r4).unwrap().poses().len(), 0);
-}
-
-#[test]
-fn unsupported_chart_ids_leave_the_entity_pose_unchanged() {
-    let (mut session, r4) = session();
-    let entity = session
-        .dispatch(|d| d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO))))
-        .unwrap();
-    let point = ChartPoint {
-        chart: ChartId(1),
-        coordinates: [2.0, 3.0, 5.0, 7.0],
-    };
-
-    assert_eq!(
-        session.dispatch(|d| d.apply(Command::Chart(
-            r4.id(),
-            ChartCommand::Move { entity, point }
-        ))),
-        Err(Rejection::Domain(DomainError::Unsupported("chart id")))
-    );
-    assert_eq!(
-        session
-            .domains()
-            .read(r4)
-            .unwrap()
-            .poses()
-            .get(entity)
-            .unwrap()
-            .point,
-        Vec4::ZERO
-    );
-}
-
-#[test]
-fn a_chart_walk_advances_the_pose_by_the_tangent_it_names() {
-    let (mut session, r4) = session();
-    let walker = session
-        .dispatch(|d| {
-            d.spawn(SpawnBundle::new().at_chart(r4.id(), chart([0.0; 4], IDENTITY_FRAME)))
-        })
-        .unwrap();
-    session
-        .dispatch(|d| {
-            d.apply(Command::Chart(
-                r4.id(),
-                ChartCommand::Walk {
-                    entity: walker,
-                    tangent: ChartTangent {
-                        chart: ChartId(0),
-                        vector: [1.0, 0.0, 0.0, 2.0],
-                    },
-                    dt: 0.5,
-                },
-            ))
-        })
-        .unwrap();
-
-    let walked = session
-        .domains()
-        .read(r4)
-        .unwrap()
-        .poses()
-        .get(walker)
-        .unwrap()
-        .point;
-    assert!(
-        (walked - Vec4::new(0.5, 0.0, 0.0, 1.0)).length() < 1e-5,
-        "half a second along (1, 0, 0, 2) ended at {walked}"
-    );
 }

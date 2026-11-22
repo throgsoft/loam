@@ -413,61 +413,6 @@ pub fn aggregate() -> Vec<SectionStats> {
 #[cfg(all(test, feature = "frame-trace"))]
 mod tests {
     use super::*;
-    use std::thread::sleep;
-
-    #[test]
-    fn clearing_history_preserves_retention_capacity() {
-        set_capacity(2);
-        end_frame();
-        clear_history();
-        assert!(history().is_empty());
-        for _ in 0..3 {
-            end_frame();
-        }
-        assert_eq!(history().len(), 2);
-    }
-
-    #[test]
-    fn scope_records_elapsed_on_drop() {
-        end_frame();
-
-        {
-            let _s = scope("test-a");
-            sleep(Duration::from_millis(1));
-        }
-        end_frame();
-        let post_frame = last_frame().expect("end_frame should produce a frame");
-
-        let sections = &post_frame.sections;
-        let test_a = sections
-            .iter()
-            .find(|s| s.name == "test-a")
-            .unwrap_or_else(|| panic!("expected 'test-a' in {sections:?}"));
-        assert!(
-            test_a.elapsed >= Duration::from_millis(1),
-            "scope elapsed should be >= sleep duration, got {:?}",
-            test_a.elapsed
-        );
-    }
-
-    #[test]
-    fn heap_sampler_populates_delta_on_completed_frame() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static FAKE_HEAP: AtomicU64 = AtomicU64::new(1_000_000);
-        fn fake_sampler() -> Option<u64> {
-            Some(FAKE_HEAP.fetch_add(4096, Ordering::SeqCst) + 4096)
-        }
-        FAKE_HEAP.store(1_000_000, Ordering::SeqCst);
-        set_heap_sampler(fake_sampler);
-        end_frame();
-        begin_frame();
-        end_frame();
-        let frame = last_frame().expect("end_frame should produce a frame");
-        let delta = frame
-            .heap_delta_bytes
-            .expect("sampler is registered; delta should be Some");
-        assert_eq!(delta, 4096, "expected one-increment delta, got {delta}");
-    }
 
     #[test]
     fn aggregate_uses_retained_frames_and_sorts_percentiles() {

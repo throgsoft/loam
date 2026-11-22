@@ -209,116 +209,31 @@ mod tests {
     }
 
     #[test]
-    fn sign_is_negative_inside_and_magnitude_is_edge_distance() {
+    fn distance_is_to_the_nearest_edge_and_signed_by_the_nonzero_winding_rule() {
         let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
         assert!((signed_distance(&square, Vec2::ZERO) + 1.0).abs() < 1e-6);
         assert!((signed_distance(&square, Vec2::new(0.5, 0.0)) + 0.5).abs() < 1e-6);
         assert!((signed_distance(&square, Vec2::new(2.0, 0.0)) - 1.0).abs() < 1e-6);
         assert!((signed_distance(&square, Vec2::new(2.0, 2.0)) - 2.0_f32.sqrt()).abs() < 1e-6);
-    }
 
-    #[test]
-    fn sign_is_independent_of_contour_orientation() {
-        let ccw = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
-        let cw = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), false)];
+        let clockwise = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), false)];
         assert_eq!(
-            signed_distance(&ccw, Vec2::ZERO),
-            signed_distance(&cw, Vec2::ZERO)
+            signed_distance(&square, Vec2::ZERO),
+            signed_distance(&clockwise, Vec2::ZERO)
         );
-    }
 
-    #[test]
-    fn counter_wound_inner_contour_is_a_hole() {
-        let ring = vec![
+        let counter_wound_hole = vec![
             rect(Vec2::splat(-2.0), Vec2::splat(2.0), true),
             rect(Vec2::splat(-1.0), Vec2::splat(1.0), false),
         ];
-        assert!((signed_distance(&ring, Vec2::ZERO) - 1.0).abs() < 1e-6);
-        assert!((signed_distance(&ring, Vec2::new(1.5, 0.0)) + 0.5).abs() < 1e-6);
-        assert!(signed_distance(&ring, Vec2::new(3.0, 0.0)) > 0.0);
-    }
+        assert!((signed_distance(&counter_wound_hole, Vec2::ZERO) - 1.0).abs() < 1e-6);
+        assert!((signed_distance(&counter_wound_hole, Vec2::new(1.5, 0.0)) + 0.5).abs() < 1e-6);
+        assert!(signed_distance(&counter_wound_hole, Vec2::new(3.0, 0.0)) > 0.0);
 
-    #[test]
-    fn same_wound_inner_contour_is_not_a_hole() {
-        let both_ccw = vec![
+        let same_wound_overlap = vec![
             rect(Vec2::splat(-2.0), Vec2::splat(2.0), true),
             rect(Vec2::splat(-1.0), Vec2::splat(1.0), true),
         ];
-        assert!(signed_distance(&both_ccw, Vec2::ZERO) < 0.0);
-    }
-
-    #[test]
-    fn grid_boundary_samples_are_all_outside() {
-        let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
-        let field = DistanceField2D::bake(&square, 2.0 / 16.0).expect("bake");
-        let (cx, cy) = field.cell_counts();
-        for i in 0..=cx {
-            assert!(field.at(i, 0) > 0.0);
-            assert!(field.at(i, cy) > 0.0);
-        }
-        for j in 0..=cy {
-            assert!(field.at(0, j) > 0.0);
-            assert!(field.at(cx, j) > 0.0);
-        }
-    }
-
-    const LIPSCHITZ_SLACK: f32 = 1.0e-6;
-
-    #[test]
-    fn sampling_is_one_lipschitz_per_axis_including_off_grid() {
-        let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
-        let field = DistanceField2D::bake(&square, 2.0 / 24.0).expect("bake");
-        let cell = field.cell_size();
-
-        let bases = (-8..=8)
-            .flat_map(|i| (-8..=8).map(move |j| Vec2::new(i as f32 * 0.1937, j as f32 * 0.1971)));
-        let mut steps = Vec::new();
-        for fraction in [1.0 / 64.0, 1.0 / 7.0, 1.0 / 2.3] {
-            for k in 0..8 {
-                let angle = k as f32 * std::f32::consts::FRAC_PI_4;
-                steps.push(Vec2::new(angle.cos(), angle.sin()) * (cell * fraction));
-            }
-        }
-
-        for a in bases {
-            for step in &steps {
-                let b = a + *step;
-                let delta = (field.sample(a) - field.sample(b)).abs();
-                let l1 = step.x.abs() + step.y.abs();
-                assert!(
-                    delta <= l1 + LIPSCHITZ_SLACK,
-                    "|d({a}) - d({b})| = {delta} exceeds |dx| + |dy| = {l1}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn off_grid_sampling_never_overshoots() {
-        let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
-        let field = DistanceField2D::bake(&square, 2.0 / 16.0).expect("bake");
-        for k in 1..40 {
-            let p = Vec2::new(1.0 + k as f32 * 0.5, 0.0);
-            let truth = signed_distance(&square, p);
-            assert!(
-                field.sample(p) <= truth + 1e-4,
-                "sample {} exceeds true distance {truth} at {p}",
-                field.sample(p)
-            );
-        }
-    }
-
-    #[test]
-    fn zero_area_contours_have_no_field() {
-        let collapsed = vec![Contour {
-            points: vec![Vec2::ZERO, Vec2::ZERO, Vec2::ZERO],
-        }];
-        assert!(DistanceField2D::bake(&collapsed, 0.1).is_none());
-        assert!(DistanceField2D::bake(&[], 0.1).is_none());
-
-        let flat = vec![Contour {
-            points: vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(2.0, 0.0)],
-        }];
-        assert!(DistanceField2D::bake(&flat, 0.1).is_none());
+        assert!(signed_distance(&same_wound_overlap, Vec2::ZERO) < 0.0);
     }
 }

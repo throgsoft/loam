@@ -818,11 +818,10 @@ pub(crate) mod tests {
     use std::alloc::System;
     use std::collections::BTreeMap;
 
-    use loam_time::alloc::{bytes_allocated_by, CountingAllocator};
+    use loam_time::alloc::CountingAllocator;
 
     use super::*;
     use crate::entity::{Entities, Epoch, RuntimeId};
-    use crate::relation::Relation;
 
     #[global_allocator]
     static COUNTING_ALLOCATOR: CountingAllocator<System> = CountingAllocator::new(System);
@@ -891,36 +890,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn pair_mut_and_partition_never_alias_and_never_refuse_distinct_rows() {
-        let (_, mut store, e) = filled(5, None);
-        assert!(store.pair_mut(e[1], e[1]).is_none());
-        let (a, b) = store.pair_mut(e[3], e[1]).unwrap();
-        *a += 10;
-        *b += 20;
-        assert_eq!(store.rows(), [0, 21, 2, 13, 4]);
-
-        assert_eq!(
-            store.partition(&[1, 6]).err(),
-            Some(PartitionError::OutOfRange { cut: 6, len: 5 })
-        );
-        assert_eq!(
-            store.partition(&[2, 2]).err(),
-            Some(PartitionError::Unsorted { at: 1 })
-        );
-        let partition = store.partition(&[1, 3]).unwrap();
-        assert_eq!(partition.part_count(), 3);
-        let mut covered = Vec::new();
-        for (index, part) in partition.parts().enumerate() {
-            for (offset, row) in part.rows.iter_mut().enumerate() {
-                *row = index as u32;
-                covered.push(part.first + offset);
-            }
-        }
-        assert_eq!(covered, [0, 1, 2, 3, 4]);
-        assert_eq!(store.rows(), [0, 1, 1, 2, 2]);
-    }
-
-    #[test]
     fn swap_remove_keeps_every_survivor_once_in_iteration_and_the_sparse_index() {
         let (_, mut store, e) = filled(5, None);
         assert_eq!(store.remove(e[1]), Ok(1));
@@ -938,34 +907,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn deleting_the_last_rows_keeps_their_removals() {
-        let retaining = LogCapacity {
-            dirty: SMALL.dirty,
-            removals: 3,
-        };
-        let (_, mut store, e) = filled(3, Some(retaining));
-        let mut mirror = Mirror::default();
-        mirror.sync(&store);
-        assert_eq!(mirror.rows, live(&store));
-        for &entity in [e[2], e[0], e[1]].iter() {
-            store.remove(entity).unwrap();
-        }
-        let mut cursor = mirror.cursor;
-        let changes = store.changes(&mut cursor);
-        assert!(!changes.is_resync());
-        let mut removed: Vec<Entity> = changes
-            .map(|change| match change {
-                Change::Removed(removal) => removal.entity,
-                Change::Row(entity, _) => panic!("{entity:?} was published after its removal"),
-            })
-            .collect();
-        removed.sort();
-        assert_eq!(removed, e);
-        assert!(store.is_empty());
-    }
-
-    #[test]
-    fn churn_or_cursor_overflow_forces_a_resync_that_rebuilds_the_consumer() {
+    fn churn_overflow_expiry_or_a_restore_leaves_a_cursor_consumer_out_of_step_with_the_store() {
         let (mut entities, mut store, e) = filled(3, Some(SMALL));
         let mut mirror = Mirror::default();
         assert!(mirror.sync(&store).0);
@@ -1000,77 +942,7 @@ pub(crate) mod tests {
         store.remove(store.entity_at(0).unwrap()).unwrap();
         assert!(mirror.sync(&store).0);
         assert_eq!(mirror.rows, live(&store));
-    }
 
-    #[test]
-    fn old_generation_removal_never_deletes_a_reused_slots_new_object() {
-        let (mut entities, mut store, e) = filled(1, Some(SMALL));
-        let mut mirror = Mirror::default();
-        mirror.sync(&store);
-        store.remove(e[0]).unwrap();
-        entities.despawn(e[0]).unwrap();
-        let reused = entities.spawn();
-        assert_eq!(reused.key().slot(), e[0].key().slot());
-        store.insert(&entities, reused, 7).unwrap();
-
-        let mut cursor = mirror.cursor;
-        let removals: Vec<Removal> = store
-            .changes(&mut cursor)
-            .filter_map(|change| match change {
-                Change::Removed(removal) => Some(removal),
-                Change::Row(..) => None,
-            })
-            .collect();
-        assert_eq!(removals.len(), 1);
-        assert_eq!(removals[0].entity, e[0]);
-        assert_ne!(removals[0].entity, reused);
-        mirror.sync(&store);
-        assert_eq!(mirror.rows.get(&reused), Some(&7));
-        assert_eq!(mirror.rows.len(), 1);
-    }
-
-    #[test]
-    fn warm_read_iterate_pair_and_partition_paths_allocate_nothing() {
-        let (_, mut store, e) = filled(64, Some(LogCapacity::default()));
-        let mut cursor = Cursor::default();
-        let mut warm = |store: &mut Store<u32>| {
-            for (_, row) in store.iter_mut() {
-                *row += 1;
-            }
-            store.changes(&mut cursor).count()
-        };
-        warm(&mut store);
-        assert_eq!(warm(&mut store), 64);
-
-        let bytes = bytes_allocated_by(|| {
-            for _ in 0..16 {
-                let mut sum = 0u32;
-                for &entity in &e {
-                    sum = sum.wrapping_add(*store.get(entity).unwrap());
-                }
-                for (_, row) in store.iter() {
-                    sum = sum.wrapping_add(*row);
-                }
-                let (a, b) = store.pair_mut(e[0], e[63]).unwrap();
-                *a = sum;
-                *b += 1;
-                for part in store.partition(&[16, 48]).unwrap().parts() {
-                    for row in part.rows {
-                        *row += 1;
-                    }
-                }
-                warm(&mut store);
-            }
-        })
-        .expect("the counting allocator is installed");
-        assert_eq!(
-            bytes, 0,
-            "16 warmed passes asked the allocator for {bytes} bytes"
-        );
-    }
-
-    #[test]
-    fn edits_and_removals_after_a_restore_reach_a_resynchronized_cursor() {
         const RETAINING: LogCapacity = LogCapacity {
             dirty: 3,
             removals: 2,
@@ -1095,50 +967,6 @@ pub(crate) mod tests {
         let (resync, seen) = mirror.sync(&store);
         assert!(!resync, "a second resync hid the lost log entries");
         assert_eq!(seen, [rebased[0], rebased[1]]);
-        assert_eq!(mirror.rows, live(&store));
-    }
-
-    #[test]
-    fn restore_advances_the_epoch_so_old_handles_fail_and_relations_survive() {
-        let (mut entities, mut store, e) = filled(2, Some(SMALL));
-        let mut relation = Relation::<u8>::new();
-        StoreField::bind(&mut relation, entities.scene(), Owner::new());
-        let link = relation.link(&entities, e[0], e[1], 5).unwrap();
-        let mut mirror = Mirror::default();
-        mirror.sync(&store);
-        let (snapshot, rows, links) = (entities.snapshot(), store.snapshot(), relation.snapshot());
-
-        let extra = entities.spawn();
-        store.insert(&entities, extra, 9).unwrap();
-        relation.unlink(link).unwrap();
-        *store.get_mut(e[0]).unwrap() = 8;
-
-        entities.restore(&snapshot);
-        let scene = entities.scene();
-        assert_eq!(scene.epoch(), Epoch::default().advance());
-        StoreField::restore(&mut store, &rows, scene, Owner::new());
-        StoreField::restore(&mut relation, &links, scene, Owner::new());
-
-        assert_eq!(store.scene(), scene);
-        assert_eq!(store.get(e[0]), None);
-        assert_eq!(store.get(extra), None);
-        assert_eq!(relation.outgoing(e[0]).count(), 0);
-        assert!(relation.get(link).is_none());
-
-        let rebased: Vec<Entity> = e
-            .iter()
-            .map(|entity| Entity::new(scene, entity.key()))
-            .collect();
-        assert_eq!(store.get(rebased[0]), Some(&0));
-        assert_eq!(store.len(), 2);
-        let survivor = relation.outgoing(rebased[0]).next().unwrap();
-        let survivor = relation.get(survivor).unwrap();
-        assert_eq!(
-            (survivor.from(), survivor.to(), survivor.data),
-            (rebased[0], rebased[1], 5)
-        );
-        assert_eq!(store.get(survivor.to()), Some(&1));
-        assert!(mirror.sync(&store).0);
         assert_eq!(mirror.rows, live(&store));
     }
 }

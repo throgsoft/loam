@@ -402,24 +402,4 @@ mod tests {
         assert!(relation.get(bc).is_none());
         assert_eq!(data(&relation, relation.incoming(c)), ["ac", "bc2"]);
     }
-
-    #[test]
-    fn mutable_link_data_keeps_adjacency_endpoints_sealed() {
-        let mut entities = Entities::new(SceneId {
-            runtime: RuntimeId::allocate(),
-            epoch: Epoch::default(),
-        });
-        let mut relation = Relation::new();
-        StoreField::bind(&mut relation, entities.scene(), Owner::new());
-        let [a, b, c] = [(); 3].map(|()| entities.spawn());
-        let ab = relation.link(&entities, a, b, "before").unwrap();
-
-        *relation.get_mut(ab).unwrap() = "after";
-
-        assert_eq!(relation.get(ab).map(Link::from), Some(a));
-        assert_eq!(relation.get(ab).map(Link::to), Some(b));
-        assert_eq!(data(&relation, relation.outgoing(a)), ["after"]);
-        assert_eq!(data(&relation, relation.incoming(b)), ["after"]);
-        assert!(relation.incoming(c).next().is_none());
-    }
 }

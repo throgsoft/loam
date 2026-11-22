@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 #[test]
-fn overflow_releases_held_input_before_new_events() {
+fn overflow_releases_held_input_keeps_controls_and_drops_stale_pointer_bursts() {
     enqueue(InputMessage::Resize {
         width: 400,
         height: 300,
@@ -62,10 +62,7 @@ fn overflow_releases_held_input_before_new_events() {
     ));
     drain_messages_into(&mut batch);
     assert!(batch.is_empty());
-}
 
-#[test]
-fn overflow_discards_pointer_bursts_but_cancels_active_drag_and_keeps_controls() {
     let bindings = loam_runtime::Bindings::new();
     let mut map = InputMap::default();
     let mut batch = VecDeque::new();

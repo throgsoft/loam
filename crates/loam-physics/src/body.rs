@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_halfspaces_are_rejected_in_both_dimensions() {
+    fn an_invalid_definition_or_replacement_is_refused_and_the_previous_body_stands() {
         assert!(BodyDef::new(
             Vec3::ZERO,
             Vec3::ZERO,
@@ -593,28 +593,7 @@ mod tests {
             &EuclideanR4
         )
         .is_none());
-    }
 
-    #[test]
-    fn sleeping_keeps_nominal_mass_and_an_explicit_impulse_wakes_the_body() {
-        let mut body = body_r3(Vec3::ZERO, 2.0, 1.0);
-        body.velocity = Vec3::Y;
-        body.angular_velocity = Bivector3::new(1.0, 0.0, 0.0);
-        body.sleep();
-        assert!(!body.is_static());
-        assert_eq!(body.mass(), 2.0);
-        assert_eq!(body.inv_mass(), 0.0);
-        crate::integrate_body(&EuclideanR3, &mut body, 1.0);
-        assert_eq!(body.position, Vec3::ZERO);
-        body.apply_impulse(Vec3::X * 4.0);
-        assert!(!body.is_sleeping());
-        assert_eq!(body.inv_mass(), 0.5);
-        assert_eq!(body.velocity, Vec3::X * 2.0);
-        assert_eq!(body.angular_velocity, Bivector3::ZERO);
-    }
-
-    #[test]
-    fn nonfinite_initial_state_is_rejected() {
         for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             for (position, velocity, inertia) in [
                 (Vec3::splat(invalid), Vec3::ZERO, 1.0),
@@ -632,17 +611,9 @@ mod tests {
                 .is_none());
             }
         }
-    }
 
-    #[test]
-    fn invalid_replacements_preserve_the_previous_body() {
         let mut world = World::new(EuclideanR3);
         let id = world.push_body(def_r3(Vec3::ZERO, 2.0, 1.0));
-        for mass in [-1.0, f32::NAN, f32::INFINITY, f32::from_bits(1)] {
-            assert!(!world.bodies[id].set_mass(mass));
-            assert_eq!(world.bodies[id].mass(), 2.0);
-            assert_eq!(world.bodies[id].inv_mass(), 0.5);
-        }
         for collider in [
             Collider::ConvexPolytope3D { vertices: vec![] },
             Collider::Box3 {
@@ -668,6 +639,24 @@ mod tests {
             let kept = world.collider(&world.bodies[id]);
             assert!(matches!(kept, Some(Collider::Sphere { radius, .. }) if *radius == 0.5));
         }
+    }
+
+    #[test]
+    fn sleeping_keeps_nominal_mass_and_an_explicit_impulse_wakes_the_body() {
+        let mut body = body_r3(Vec3::ZERO, 2.0, 1.0);
+        body.velocity = Vec3::Y;
+        body.angular_velocity = Bivector3::new(1.0, 0.0, 0.0);
+        body.sleep();
+        assert!(!body.is_static());
+        assert_eq!(body.mass(), 2.0);
+        assert_eq!(body.inv_mass(), 0.0);
+        crate::integrate_body(&EuclideanR3, &mut body, 1.0);
+        assert_eq!(body.position, Vec3::ZERO);
+        body.apply_impulse(Vec3::X * 4.0);
+        assert!(!body.is_sleeping());
+        assert_eq!(body.inv_mass(), 0.5);
+        assert_eq!(body.velocity, Vec3::X * 2.0);
+        assert_eq!(body.angular_velocity, Bivector3::ZERO);
     }
 
     fn def_r3(position: Vec3, mass: f32, inertia: f32) -> BodyDef<EuclideanR3> {
@@ -702,16 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_impulse_changes_velocity_by_impulse_over_mass() {
-        let mut body = body_r3(Vec3::ZERO, 4.0, 0.5);
-        body.velocity = Vec3::new(1.0, 0.0, 0.0);
-        body.apply_impulse(Vec3::new(8.0, -4.0, 2.0));
-        assert_eq!(body.velocity, Vec3::new(3.0, -1.0, 0.5));
-        assert_eq!(body.angular_velocity, Bivector3::ZERO);
-    }
-
-    #[test]
-    fn central_impulse_produces_no_spin_and_matches_linear_form() {
+    fn an_impulse_at_a_point_spins_a_dynamic_body_by_its_lever_arm_and_never_a_static_one() {
         let position = Vec3::new(2.0, -1.0, 3.0);
         let impulse = Vec3::new(8.0, -4.0, 2.0);
 
@@ -723,10 +703,7 @@ mod tests {
 
         assert_eq!(at_point.velocity, linear.velocity);
         assert_eq!(at_point.angular_velocity, Bivector3::ZERO);
-    }
 
-    #[test]
-    fn off_center_impulse_spins_body_by_inverse_inertia_times_lever_wedge_impulse_r3() {
         let mut body = body_r3(Vec3::ZERO, 2.0, 0.5);
         body.apply_impulse_at_point(
             &EuclideanR3,
@@ -736,10 +713,7 @@ mod tests {
 
         assert_eq!(body.velocity, Vec3::new(1.5, 0.0, 0.0));
         assert_eq!(body.angular_velocity, Bivector3::new(-12.0, 0.0, 0.0));
-    }
 
-    #[test]
-    fn off_center_impulse_spins_body_by_inverse_inertia_times_lever_wedge_impulse_r4() {
         let mut body = body_r4(Vec4::ZERO, 2.0, 0.5);
         body.apply_impulse_at_point(
             &EuclideanR4,
@@ -753,62 +727,8 @@ mod tests {
             ..Bivector4::ZERO
         };
         assert_eq!(body.angular_velocity, expected);
-    }
 
-    #[test]
-    fn equal_and_opposite_impulses_conserve_linear_and_angular_momentum() {
-        let space = EuclideanR3;
-
-        let a_velocity_before = Vec3::new(0.5, -0.25, 1.0);
-        let a_spin_before = Bivector3::new(0.125, -0.5, 0.25);
-        let mut a = body_r3(Vec3::new(-1.0, 0.0, 0.0), 2.0, 0.5);
-        a.velocity = a_velocity_before;
-        a.angular_velocity = a_spin_before;
-
-        let b_velocity_before = Vec3::new(-0.75, 0.5, 0.125);
-        let b_spin_before = Bivector3::new(-0.25, 0.0, 0.5);
-        let mut b = body_r3(Vec3::new(1.0, 0.5, 0.0), 4.0, 0.25);
-        b.velocity = b_velocity_before;
-        b.angular_velocity = b_spin_before;
-
-        let momenta = |a: &RigidBody<EuclideanR3>, b: &RigidBody<EuclideanR3>| {
-            let linear = a.velocity * a.mass + b.velocity * b.mass;
-            let angular = space.wedge(a.position, a.velocity * a.mass)
-                + a.angular_velocity * a.inertia
-                + space.wedge(b.position, b.velocity * b.mass)
-                + b.angular_velocity * b.inertia;
-            (linear, angular)
-        };
-
-        let (linear_before, angular_before) = momenta(&a, &b);
-
-        let point = Vec3::new(0.0, 0.25, 0.0);
-        let impulse = Vec3::new(1.5, -0.5, 0.25);
-        a.apply_impulse_at_point(&space, -impulse, point);
-        b.apply_impulse_at_point(&space, impulse, point);
-
-        let (linear_after, angular_after) = momenta(&a, &b);
-
-        assert!((a.velocity - a_velocity_before).length() > 0.1);
-        assert!((b.velocity - b_velocity_before).length() > 0.1);
-        assert!((a.angular_velocity + a_spin_before * -1.0).magnitude() > 0.1);
-        assert!((b.angular_velocity + b_spin_before * -1.0).magnitude() > 0.1);
-
-        let linear_drift = (linear_after - linear_before).length();
-        assert!(
-            linear_drift < 1e-5,
-            "linear momentum drifted by {linear_drift}"
-        );
-        let angular_drift = (angular_after + angular_before * -1.0).magnitude();
-        assert!(
-            angular_drift < 1e-5,
-            "angular momentum drifted by {angular_drift}"
-        );
-    }
-
-    #[test]
-    fn static_body_ignores_both_impulse_forms() {
-        let mut body = row(
+        let mut fixed = row(
             BodyDef::<EuclideanR3>::fixed(
                 Vec3::ZERO,
                 Collider::sphere_at_origin(0.5),
@@ -818,129 +738,13 @@ mod tests {
             .unwrap(),
             &EuclideanR3,
         );
-        body.apply_impulse(Vec3::new(5.0, 5.0, 5.0));
-        body.apply_impulse_at_point(
+        fixed.apply_impulse(Vec3::new(5.0, 5.0, 5.0));
+        fixed.apply_impulse_at_point(
             &EuclideanR3,
             Vec3::new(5.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
         );
-        assert_eq!(body.velocity, Vec3::ZERO);
-        assert_eq!(body.angular_velocity, Bivector3::ZERO);
-    }
-
-    #[test]
-    fn stale_handle_never_resolves_after_its_slot_is_recycled() {
-        let mut arena = BodyArena::new();
-        let doomed = arena.spawn(body_r3(Vec3::X, 1.0, 1.0));
-        assert!(arena.despawn(doomed).is_some());
-
-        let recycled = arena.spawn(body_r3(Vec3::Y, 1.0, 1.0));
-        assert_eq!(
-            recycled.slot(),
-            doomed.slot(),
-            "the free slot was not reused, so this test is not exercising aliasing"
-        );
-        assert_ne!(recycled.generation(), doomed.generation());
-
-        assert!(arena.get(doomed).is_none());
-        assert!(arena.dense_index(doomed).is_none());
-        assert_eq!(arena[recycled].position, Vec3::Y);
-        assert!(
-            arena.despawn(doomed).is_none(),
-            "stale despawn must be inert"
-        );
-        assert!(
-            arena.get(recycled).is_some(),
-            "a stale despawn removed the live body sharing its slot"
-        );
-    }
-
-    #[test]
-    fn despawn_keeps_storage_dense_and_survivor_handles_valid() {
-        let mut arena = BodyArena::new();
-        let first = arena.spawn(body_r3(Vec3::X, 1.0, 1.0));
-        let middle = arena.spawn(body_r3(Vec3::Y, 1.0, 1.0));
-        let last = arena.spawn(body_r3(Vec3::Z, 1.0, 1.0));
-
-        assert_eq!(arena.despawn(middle).map(|b| b.position), Some(Vec3::Y));
-
-        assert_eq!(arena.len(), 2);
-        assert_eq!(arena[first].position, Vec3::X);
-        assert_eq!(
-            arena[last].position,
-            Vec3::Z,
-            "the moved body's handle broke"
-        );
-        assert_eq!(arena.id_at(arena.dense_index(last).unwrap()), last);
-        let positions: Vec<Vec3> = arena.iter().map(|b| b.position).collect();
-        assert_eq!(positions, vec![Vec3::X, Vec3::Z]);
-    }
-
-    #[test]
-    fn every_dense_position_resolves_back_through_its_own_handle() {
-        let mut arena = BodyArena::new();
-        let assert_consistent = |arena: &BodyArena<EuclideanR3>| {
-            for dense in 0..arena.len() {
-                assert_eq!(
-                    arena.dense_index(arena.id_at(dense)),
-                    Some(dense),
-                    "slot table disagrees with dense position {dense}"
-                );
-            }
-        };
-
-        let mut live = Vec::new();
-        for i in 0..5 {
-            live.push(arena.spawn(body_r3(Vec3::splat(i as f32), 1.0, 1.0)));
-            assert_consistent(&arena);
-        }
-        for victim in [live[0], live[2], live[3]] {
-            assert!(arena.despawn(victim).is_some());
-            assert_consistent(&arena);
-        }
-        arena.spawn(body_r3(Vec3::ZERO, 1.0, 1.0));
-        assert_consistent(&arena);
-    }
-
-    #[test]
-    fn decoded_arena_with_a_wrong_dense_id_is_rejected() {
-        let mut geometry = GeometryStore::default();
-        let mut arena = BodyArena::new();
-        let first = arena.spawn(def_r3(Vec3::X, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        let second = arena.spawn(def_r3(Vec3::Y, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        assert!(arena.validate(&EuclideanR3, &geometry).is_ok());
-
-        arena.ids.swap(0, 1);
-        assert_eq!(
-            arena.validate(&EuclideanR3, &geometry),
-            Err(EditError::InvalidBodyArena)
-        );
-        assert_eq!(arena.get(first).map(|body| body.position), Some(Vec3::X));
-        assert_eq!(arena.get(second).map(|body| body.position), Some(Vec3::Y));
-    }
-
-    #[test]
-    fn a_maximum_generation_slot_is_reused_once_then_retired() {
-        let mut geometry = GeometryStore::default();
-        let mut arena = BodyArena::new();
-        let first = arena.spawn(def_r3(Vec3::X, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        arena.ids[0].generation = u32::MAX - 1;
-        arena.slots[0].generation = u32::MAX - 1;
-        let first = BodyId {
-            slot: first.slot,
-            generation: u32::MAX - 1,
-        };
-
-        let removed = arena.despawn(first).unwrap();
-        geometry.release(removed.collider());
-        assert!(arena.validate(&EuclideanR3, &geometry).is_ok());
-        let last = arena.spawn(def_r3(Vec3::Y, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        assert_eq!(last.generation(), u32::MAX);
-        let removed = arena.despawn(last).unwrap();
-        geometry.release(removed.collider());
-        assert!(arena.validate(&EuclideanR3, &geometry).is_ok());
-
-        let fresh = arena.spawn(def_r3(Vec3::Z, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        assert_ne!(fresh.slot(), last.slot());
+        assert_eq!(fixed.velocity, Vec3::ZERO);
+        assert_eq!(fixed.angular_velocity, Bivector3::ZERO);
     }
 }

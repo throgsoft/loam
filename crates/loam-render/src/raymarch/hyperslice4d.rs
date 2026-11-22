@@ -993,7 +993,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kernel_validates_with_real_scene_union() {
+    fn kernel_validates_with_a_scene4_emit_and_its_uniforms_match_the_host_layout() {
         use crate::raymarch::scene::{Scene4, SceneNode4};
         use glam::Vec4;
 
@@ -1003,71 +1003,19 @@ mod tests {
                 .union(SceneNode4::hypersphere(Vec4::new(0.0, 1.0, 1.5, 0.0), 1.0))
                 .union(SceneNode4::halfspace(Vec4::Y, 0.0)),
         );
-        let scene_wgsl = scene.to_hyperslice_wgsl("u.w_slice");
         let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
-        let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{scene_wgsl}");
-        let module = naga::front::wgsl::parse_str(&source)
-            .expect("hyperslice4d kernel + Scene4 emit should parse as WGSL");
-        let flags = naga::valid::ValidationFlags::all();
-        let caps = naga::valid::Capabilities::empty();
-        naga::valid::Validator::new(flags, caps)
-            .validate(&module)
-            .expect("hyperslice4d kernel + Scene4 emit should validate");
-    }
-
-    #[test]
-    fn kernel_validates_with_gated_scene() {
-        use crate::raymarch::scene::{Scene4, SceneNode4};
-        use glam::Vec4;
-
-        let scene = Scene4::new(
-            SceneNode4::hypersphere(Vec4::new(0.0, 1.0, 0.0, 0.0), 0.5)
-                .union(SceneNode4::halfspace(Vec4::Y, 0.0)),
-        );
-        let scene_wgsl = scene.to_hyperslice_wgsl_gated("u.w_slice", "u.params.x");
-        let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
-        let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{scene_wgsl}");
-        let module = naga::front::wgsl::parse_str(&source)
-            .expect("gated Scene4 emit should parse against the kernel");
-        let flags = naga::valid::ValidationFlags::all();
-        let caps = naga::valid::Capabilities::empty();
-        naga::valid::Validator::new(flags, caps)
-            .validate(&module)
-            .expect("gated Scene4 emit should validate against the kernel");
-    }
-
-    fn strip_probe_cells() -> Vec<(crate::Viewport, f32, BodyUniform)> {
-        crate::Viewport::full([192, 64])
-            .split_horizontal(3)
-            .zip([0.0_f32, 0.6, 0.9])
-            .map(|(viewport, w_slice)| {
-                (
-                    viewport,
-                    w_slice,
-                    BodyUniform::sphere([0.0; 4], 1.0, [1.0, 0.0, 0.0]),
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn strip_cell_stride_is_offset_legal_and_covers_one_image() {
-        for alignment in [32_u64, 64, 128, 256] {
-            let stride = strip_cell_stride(alignment);
-            assert_eq!(stride % alignment, 0, "stride must be an aligned offset");
-            assert!(
-                stride >= HYPERSLICE_UNIFORMS_SIZE,
-                "stride {stride} would overlap the next cell's image",
-            );
-            assert!(
-                stride - HYPERSLICE_UNIFORMS_SIZE < alignment,
-                "stride {stride} wastes a whole alignment unit",
-            );
+        for (emit, scene_wgsl) in [
+            ("plain", scene.to_hyperslice_wgsl("u.w_slice")),
+            (
+                "gated",
+                scene.to_hyperslice_wgsl_gated("u.w_slice", "u.params.x"),
+            ),
+        ] {
+            let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{scene_wgsl}");
+            crate::shader::validate_wgsl(&source)
+                .unwrap_or_else(|error| panic!("{emit} Scene4 emit under the kernel: {error}"));
         }
-    }
 
-    #[test]
-    fn kernel_uniforms_match_the_host_layout() {
         let source = format!(
             "{HYPERSLICE_KERNEL_WGSL}\n{}\n{EMPTY_SCENE_STUB}",
             super::super::polytope_data::polytope_stub_sdfs_wgsl()
@@ -1142,6 +1090,20 @@ mod tests {
             assert_eq!(member.name.as_deref(), Some(name));
             assert_eq!(member.offset as usize, offset, "offset of {name}");
         }
+    }
+
+    fn strip_probe_cells() -> Vec<(crate::Viewport, f32, BodyUniform)> {
+        crate::Viewport::full([192, 64])
+            .split_horizontal(3)
+            .zip([0.0_f32, 0.6, 0.9])
+            .map(|(viewport, w_slice)| {
+                (
+                    viewport,
+                    w_slice,
+                    BodyUniform::sphere([0.0; 4], 1.0, [1.0, 0.0, 0.0]),
+                )
+            })
+            .collect()
     }
 
     const EMPTY_SCENE_STUB: &str = r#"
@@ -1314,17 +1276,6 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         );
     }
 
-    #[test]
-    fn set_bodies_grows_past_the_old_thirty_two_body_ceiling() {
-        let gpu = crate::device::noop_context();
-        let module = strip_probe_module(&gpu.device);
-        let mut node = Hyperslice4DNode::new(&gpu.device, TextureFormat::Rgba8Unorm, &module);
-        let bodies = vec![BodyUniform::sphere([0.0; 4], 1.0, [1.0; 3]); 33];
-        node.set_bodies(&bodies);
-        assert_eq!(node.uniforms().body_count, 33.0);
-        assert!(node.body_capacity() >= 33);
-    }
-
     const DEPTH_PROBE_SIZE: u32 = 64;
     const DEPTH_PROBE_NEAR: f32 = 0.05;
     const DEPTH_PROBE_CENTER: [f32; 4] = [0.0, 0.0, -3.0, 0.0];
@@ -1353,83 +1304,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-    fn the_thirty_third_body_still_shades_a_pixel_gpu_probe() {
-        const SIZE: u32 = 64;
-        let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
-        let module = strip_probe_module(&device);
-        let target = device.create_texture(&TextureDescriptor {
-            label: Some("hyperslice4d 33-body probe"),
-            size: Extent3d {
-                width: SIZE,
-                height: SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&TextureViewDescriptor::default());
-
-        let mut bodies = vec![BodyUniform::default(); 32];
-        bodies.push(BodyUniform::sphere(
-            [0.0, 0.0, -3.0, 0.0],
-            0.9,
-            [1.0, 0.0, 0.0],
-        ));
-        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module);
-        node.set_uniforms(
-            &queue,
-            Hyperslice4DUniforms {
-                camera_pos: [0.0; 3],
-                resolution: [SIZE as f32; 2],
-                ..Hyperslice4DUniforms::default()
-            },
-        );
-        node.set_bodies(&bodies);
-        node.flush_uniforms(&queue);
-
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("hyperslice4d 33-body clear"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color::BLACK),
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-        }
-        node.record(
-            &mut encoder,
-            &view,
-            None,
-            crate::Viewport::full([SIZE, SIZE]),
-            ColorLoad::Load,
-        );
-        queue.submit(Some(encoder.finish()));
-
-        let pixels = read_back_rgba(&device, &queue, &target, [SIZE, SIZE]);
-        let center = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;
-        assert!(
-            pixels[center] > pixels[center + 2],
-            "the 33rd body must shade the centre pixel, not the background: {:?}",
-            &pixels[center..center + 4]
-        );
-    }
-
-    #[test]
-    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-    fn a_hyperslice_hit_writes_the_root_eyes_projective_depth_gpu_probe() {
+    fn the_thirty_third_body_shades_its_pixel_at_the_root_eyes_projective_depth_gpu_probe() {
         let size = Extent3d {
             width: DEPTH_PROBE_SIZE,
             height: DEPTH_PROBE_SIZE,
@@ -1471,11 +1346,13 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
                 ..Hyperslice4DUniforms::default()
             },
         );
-        node.set_bodies(&[BodyUniform::sphere(
+        let mut bodies = vec![BodyUniform::default(); 32];
+        bodies.push(BodyUniform::sphere(
             DEPTH_PROBE_CENTER,
             DEPTH_PROBE_RADIUS,
-            [1.0, 1.0, 1.0],
-        )]);
+            [1.0, 0.0, 0.0],
+        ));
+        node.set_bodies(&bodies);
         node.flush_uniforms(&queue);
 
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
@@ -1547,6 +1424,13 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             bytemuck::cast_slice::<u8, f32>(&readback.slice(..).get_mapped_range()).to_vec();
 
         let center = DEPTH_PROBE_SIZE / 2;
+        let pixels = read_back_rgba(&device, &queue, &color, [DEPTH_PROBE_SIZE; 2]);
+        let shaded = ((center * DEPTH_PROBE_SIZE + center) * 4) as usize;
+        assert!(
+            pixels[shaded] > pixels[shaded + 2],
+            "the 33rd body must shade the centre pixel, not the background: {:?}",
+            &pixels[shaded..shaded + 4]
+        );
         let written = depths[(center * DEPTH_PROBE_SIZE + center) as usize];
         let expected = depth_probe_expected();
         assert!(

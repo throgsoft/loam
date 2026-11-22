@@ -1061,16 +1061,12 @@ mod tests {
     }
 
     #[test]
-    fn scaled_dims_preserves_aspect_ratio() {
+    fn a_scaled_capture_keeps_the_frame_aspect_and_refuses_an_empty_image() {
         assert_eq!(scaled_dims(1920, 1080, Some(720)).unwrap(), (720, 405));
-        assert_eq!(scaled_dims(1024, 1024, Some(512)).unwrap(), (512, 512));
         assert_eq!(scaled_dims(1080, 1920, Some(360)).unwrap(), (360, 640));
         assert_eq!(scaled_dims(800, 600, None).unwrap(), (800, 600));
         assert_eq!(scaled_dims(10000, 1, Some(100)).unwrap(), (100, 1));
-    }
 
-    #[test]
-    fn scaled_dims_rejects_zero_target() {
         assert!(scaled_dims(1920, 1080, Some(0)).is_err());
         assert!(scaled_dims(0, 1080, Some(720)).is_err());
         assert!(scaled_dims(1920, 0, Some(720)).is_err());

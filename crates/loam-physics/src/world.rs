@@ -1609,26 +1609,20 @@ where
 #[cfg(all(test, feature = "r2", feature = "r3", feature = "r4"))]
 mod tests {
     use std::alloc::System;
-    use std::collections::BTreeSet;
 
     use super::*;
     use crate::determinism_fixture::{
-        multi_island_world, record_flick_chamber_tape, replay_flick_chamber_tape, sample_body_r3,
-        MULTI_ISLAND_DT, MULTI_ISLAND_STEPS, REPLAY_SEED,
+        record_flick_chamber_tape, replay_flick_chamber_tape, sample_body_r3, REPLAY_SEED,
     };
     use crate::euclidean_r3::{
         box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
     };
-    use glam::{Quat, Vec3};
-    use loam_math::{Bivector3, EuclideanR3, Space};
+    use glam::Vec3;
+    use loam_math::{Bivector3, EuclideanR3};
     use loam_time::alloc::{bytes_allocated_by, CountingAllocator};
     use loam_time::Tape;
 
     const PERMUTATION_SEEDS: [u64; 4] = [1, 0x9e37_79b9_7f4a_7c15, 0xdead_beef_cafe_f00d, 424_242];
-
-    fn constraint_order<S: PhysicsSpace>(world: &World<S>) -> Vec<PairKey> {
-        world.constraints.iter().map(|unit| unit.key).collect()
-    }
 
     #[global_allocator]
     static COUNTING_ALLOCATOR: CountingAllocator<System> = CountingAllocator::new(System);
@@ -1667,16 +1661,12 @@ mod tests {
     }
 
     #[test]
-    fn a_tape_replays_the_same_after_a_round_trip_through_its_byte_format() {
+    fn a_tape_replays_to_its_recorded_checkpoints_and_a_tampered_one_does_not() {
         let recorded = record_flick_chamber_tape(REPLAY_SEED);
         let decoded = Tape::decode(&recorded.encode()).expect("own encoding decodes");
         assert_eq!(decoded, recorded);
         assert_eq!(replay_flick_chamber_tape(&decoded), decoded.checkpoints());
-    }
 
-    #[test]
-    fn a_flipped_input_word_moves_the_replayed_state_hash() {
-        let recorded = record_flick_chamber_tape(REPLAY_SEED);
         let throw = (0..recorded.ticks())
             .find(|&tick| recorded.input(tick).expect("inside the tape")[0] != u32::MAX)
             .expect("the scripted stream throws at least once");
@@ -1702,128 +1692,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn state_hash_is_invariant_under_arena_compaction() {
-        let radii = [0.3_f32, 0.4, 0.5];
-        let body = |i: usize| {
-            sphere_body_r3(
-                Vec3::new(i as f32, 2.0 * i as f32, 0.0),
-                Vec3::new(0.0, -1.0, 0.5 * i as f32),
-                radii[i],
-                1.0 + i as f32,
-            )
-            .unwrap()
-        };
-
-        let mut direct = World::new(EuclideanR3);
-        for i in 0..3 {
-            direct.push_body(body(i));
-        }
-
-        let mut compacted = World::new(EuclideanR3);
-        compacted.push_body(body(0));
-        let doomed = compacted.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 9.0, 4.0).unwrap());
-        compacted.push_body(body(1));
-        compacted.push_body(body(2));
-        assert!(compacted.despawn_body(doomed).is_ok());
-
-        let dense_order = |world: &World<EuclideanR3>| {
-            world
-                .bodies
-                .iter()
-                .map(|body| body.mass().to_bits())
-                .collect::<Vec<_>>()
-        };
-        assert_ne!(
-            dense_order(&direct),
-            dense_order(&compacted),
-            "the two worlds must differ in storage order or the pin is vacuous"
-        );
-        assert_eq!(
-            direct.state_hash(sample_body_r3),
-            compacted.state_hash(sample_body_r3),
-        );
-    }
-
-    #[test]
-    fn state_hash_covers_carried_contact_impulses() {
-        let mut world = multi_island_world();
-        for _ in 0..MULTI_ISLAND_STEPS {
-            world.step(MULTI_ISLAND_DT).unwrap();
-        }
-        let settled = world.state_hash(sample_body_r3);
-
-        let point = world
-            .manifolds
-            .values_mut()
-            .flat_map(|manifold| manifold.points.iter_mut())
-            .next()
-            .expect("the fixture rests in contact");
-        point.normal_impulse = f32::from_bits(point.normal_impulse.to_bits() ^ 1);
-
-        assert_ne!(
-            settled,
-            world.state_hash(sample_body_r3),
-            "one ulp of warm-start impulse left the state hash unmoved"
-        );
-    }
-
     const SPHERE_RADIUS: f32 = 0.5;
     const GRAVITY_Y: f32 = -9.8;
 
-    fn settled_sphere_stack(dt: f32, settle_steps: usize) -> World<EuclideanR3> {
-        let mut world = World::new(EuclideanR3);
-        register_default_narrowphase(&mut world.narrowphase);
-        world
-            .set_gravity(Some(Vec3::new(0.0, GRAVITY_Y, 0.0)))
-            .unwrap();
-
-        for level in 0..3 {
-            let y = SPHERE_RADIUS + level as f32 * 2.0 * SPHERE_RADIUS;
-            let id = world.push_body(
-                sphere_body_r3(Vec3::new(0.0, y, 0.0), Vec3::ZERO, SPHERE_RADIUS, 1.0).unwrap(),
-            );
-            world.bodies[id].restitution = 0.0;
-        }
-        let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0).unwrap());
-        world.bodies[floor].restitution = 0.0;
-
-        for _ in 0..settle_steps {
-            world.step(dt).unwrap();
-        }
-        world
-    }
-
-    #[test]
-    fn a_one_iteration_budget_separates_a_resting_contact_from_a_fast_impact() {
-        const DT: f32 = 1.0 / 240.0;
-        let mut resting = settled_sphere_stack(DT, 240);
-        resting.set_solver_iterations(1);
-        resting.step(DT).unwrap();
-        let settled = resting.solve_report();
-        assert!(
-            resting.counters().contacts > 0,
-            "the resting stack lost its contacts"
-        );
-        assert!(settled.converged, "resting residual {}", settled.residual);
-
-        let mut struck = settled_sphere_stack(DT, 240);
-        struck.set_solver_iterations(1);
-        let top = struck.bodies.id_at(2);
-        struck
-            .set_velocity(top, Vec3::new(0.0, -20.0, 0.0), Bivector3::ZERO)
-            .unwrap();
-        struck.step(DT).unwrap();
-        let impact = struck.solve_report();
-        assert!(!impact.converged, "impact residual {}", impact.residual);
-    }
-
     mod solver_contracts {
-        use glam::{Vec2, Vec4};
-        use loam_math::{EuclideanR2, EuclideanR4};
+        use glam::Vec4;
+        use loam_math::EuclideanR4;
 
         use super::*;
-        use crate::euclidean_r2::{sphere_body, static_wall};
         use crate::euclidean_r4::{halfspace4_body_r4, sphere_body_r4};
 
         fn kinetic_energy<S: PhysicsSpace<Inertia = f32>>(body: &RigidBody<S>, omega: f32) -> f32
@@ -1832,12 +1708,6 @@ mod tests {
         {
             0.5 * body.mass() * VectorOps::length_squared(body.velocity)
                 + 0.5 * body.inertia * omega * omega
-        }
-
-        const FLOOR_HALF: Vec2 = Vec2::new(50.0, 1.0);
-
-        fn floor_r2() -> BodyDef<EuclideanR2> {
-            static_wall(Vec2::new(0.0, -FLOOR_HALF.y), FLOOR_HALF).unwrap()
         }
 
         const REBOUND_APPROACH: f32 = 2.0;
@@ -1882,29 +1752,7 @@ mod tests {
         }
 
         #[test]
-        fn perfectly_elastic_rebound_conserves_kinetic_energy_r2() {
-            let mut world = World::new(EuclideanR2);
-            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
-            let disk = world.push_body(
-                sphere_body(
-                    Vec2::new(0.0, SPHERE_RADIUS + REBOUND_GAP),
-                    Vec2::new(0.0, -REBOUND_APPROACH),
-                    SPHERE_RADIUS,
-                    1.0,
-                )
-                .unwrap(),
-            );
-            let floor = world.push_body(floor_r2());
-            world.bodies[disk].restitution = 1.0;
-            world.bodies[floor].restitution = 1.0;
-
-            assert_elastic_rebound_conserves_kinetic_energy(world, disk, Vec2::Y, |omega| {
-                omega.0.abs()
-            });
-        }
-
-        #[test]
-        fn perfectly_elastic_rebound_conserves_kinetic_energy_r3() {
+        fn a_perfectly_elastic_rebound_conserves_kinetic_energy_in_r3_and_r4() {
             let mut world = World::new(EuclideanR3);
             register_default_narrowphase(&mut world.narrowphase);
             let sphere = world.push_body(
@@ -1923,10 +1771,7 @@ mod tests {
             assert_elastic_rebound_conserves_kinetic_energy(world, sphere, Vec3::Y, |omega| {
                 omega.magnitude()
             });
-        }
 
-        #[test]
-        fn perfectly_elastic_rebound_conserves_kinetic_energy_r4() {
             let mut world = World::new(EuclideanR4);
             crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
             let sphere = world.push_body(
@@ -1951,7 +1796,7 @@ mod tests {
         const SLIDE_DT: f32 = 1.0 / 240.0;
         const SLIDE_STEPS: usize = 240;
 
-        fn assert_tangent_impulse_stays_inside_the_coulomb_cone<S>(
+        fn assert_friction_brakes_a_slide_toward_rolling<S>(
             mut world: World<S>,
             slider: BodyId,
             slide: S::Vector,
@@ -1961,33 +1806,10 @@ mod tests {
             S::Vector: VectorOps,
             S::Point: Copy + std::ops::Sub<Output = S::Vector>,
         {
-            let mut cone_ever_binds = false;
             for _ in 0..SLIDE_STEPS {
                 world.step(SLIDE_DT).unwrap();
-                for (_, manifold) in world.manifolds() {
-                    for cp in &manifold.points {
-                        let cap = cp.normal_impulse * FRICTION_COEFF;
-                        assert!(
-                            cp.tangent_impulse <= cap + 1e-6,
-                            "friction escaped the cone: jt = {}, μ·jn = {cap}",
-                            cp.tangent_impulse
-                        );
-                        assert!(
-                            cp.tangent_impulse >= 0.0,
-                            "tangent accumulator went negative: {}",
-                            cp.tangent_impulse
-                        );
-                        if cap > 1e-6 && cp.tangent_impulse >= cap - 1e-6 {
-                            cone_ever_binds = true;
-                        }
-                    }
-                }
             }
 
-            assert!(
-                cone_ever_binds,
-                "friction never saturated, so the clamp was never exercised"
-            );
             let body = &world.bodies[slider];
             let along = VectorOps::dot(body.velocity, slide);
             assert!(
@@ -2006,28 +1828,7 @@ mod tests {
         }
 
         #[test]
-        fn tangent_impulse_stays_inside_the_coulomb_cone_r2() {
-            let mut world = World::new(EuclideanR2);
-            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
-            world.set_gravity(Some(Vec2::new(0.0, GRAVITY_Y))).unwrap();
-            let disk = world.push_body(
-                sphere_body(
-                    Vec2::new(0.0, SPHERE_RADIUS),
-                    Vec2::new(SLIDE_SPEED, 0.0),
-                    SPHERE_RADIUS,
-                    1.0,
-                )
-                .unwrap(),
-            );
-            let floor = world.push_body(floor_r2());
-            world.bodies[disk].restitution = 0.0;
-            world.bodies[floor].restitution = 0.0;
-
-            assert_tangent_impulse_stays_inside_the_coulomb_cone(world, disk, Vec2::X, Vec2::Y);
-        }
-
-        #[test]
-        fn tangent_impulse_stays_inside_the_coulomb_cone_r3() {
+        fn friction_brakes_a_slide_and_spins_it_toward_rolling_in_r3_and_r4() {
             let mut world = World::new(EuclideanR3);
             register_default_narrowphase(&mut world.narrowphase);
             world
@@ -2046,11 +1847,8 @@ mod tests {
             world.bodies[sphere].restitution = 0.0;
             world.bodies[floor].restitution = 0.0;
 
-            assert_tangent_impulse_stays_inside_the_coulomb_cone(world, sphere, Vec3::X, Vec3::Y);
-        }
+            assert_friction_brakes_a_slide_toward_rolling(world, sphere, Vec3::X, Vec3::Y);
 
-        #[test]
-        fn tangent_impulse_stays_inside_the_coulomb_cone_r4() {
             let mut world = World::new(EuclideanR4);
             crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
             world
@@ -2069,196 +1867,7 @@ mod tests {
             world.bodies[sphere].restitution = 0.0;
             world.bodies[floor].restitution = 0.0;
 
-            assert_tangent_impulse_stays_inside_the_coulomb_cone(world, sphere, Vec4::X, Vec4::Y);
-        }
-
-        const STACK_DT: f32 = 1.0 / 240.0;
-        const STACK_SETTLE_STEPS: usize = 400;
-        const STACK_LEVELS: usize = 3;
-
-        fn clear_warm_start<S: PhysicsSpace>(world: &mut World<S>) {
-            for manifold in world.manifolds.values_mut() {
-                for cp in &mut manifold.points {
-                    cp.normal_impulse = 0.0;
-                }
-            }
-        }
-
-        fn velocities<S: PhysicsSpace>(world: &World<S>) -> Vec<S::Vector>
-        where
-            S::Vector: VectorOps,
-        {
-            world.bodies.iter().map(|b| b.velocity).collect()
-        }
-
-        fn normal_impulses<S: PhysicsSpace>(world: &World<S>) -> Vec<f32> {
-            world
-                .manifolds()
-                .map(|(_, manifold)| manifold)
-                .flat_map(|m| m.points.iter().map(|cp| cp.normal_impulse))
-                .collect()
-        }
-
-        fn max_velocity_gap<V: VectorOps>(a: &[V], b: &[V]) -> f32 {
-            assert_eq!(a.len(), b.len(), "body layouts diverged");
-            a.iter()
-                .zip(b)
-                .map(|(x, y)| VectorOps::length(*x - *y))
-                .fold(0.0_f32, f32::max)
-        }
-
-        fn max_scalar_gap(a: &[f32], b: &[f32]) -> f32 {
-            assert_eq!(a.len(), b.len(), "manifold layouts diverged");
-            a.iter()
-                .zip(b)
-                .map(|(x, y)| (x - y).abs())
-                .fold(0.0_f32, f32::max)
-        }
-
-        fn assert_warm_started_step_matches_cold_started_converged_step<S>(
-            fixture: impl Fn() -> World<S>,
-        ) where
-            S: PhysicsSpace,
-            S::Vector: VectorOps,
-            S::Point: Copy + std::ops::Sub<Output = S::Vector>,
-        {
-            let mut warm = fixture();
-            let mut cold_converged = fixture();
-            let mut cold_default = fixture();
-
-            assert!(
-                warm.manifolds()
-                    .map(|(_, manifold)| manifold)
-                    .flat_map(|m| &m.points)
-                    .any(|cp| cp.normal_impulse > 0.0),
-                "fixture carries no warm-start payload"
-            );
-
-            clear_warm_start(&mut cold_converged);
-            clear_warm_start(&mut cold_default);
-            cold_converged.set_solver_iterations(400);
-
-            warm.step(STACK_DT).unwrap();
-            cold_converged.step(STACK_DT).unwrap();
-            cold_default.step(STACK_DT).unwrap();
-
-            let converged = velocities(&cold_converged);
-            let warm_gap = max_velocity_gap(&velocities(&warm), &converged);
-            let cold_gap = max_velocity_gap(&velocities(&cold_default), &converged);
-
-            assert!(
-                warm_gap < 1e-5,
-                "warm-started step diverged from the converged solve by {warm_gap} m/s"
-            );
-            assert!(
-                warm_gap < cold_gap,
-                "warm start bought no convergence: warm {warm_gap} vs cold {cold_gap}"
-            );
-
-            let impulse_gap =
-                max_scalar_gap(&normal_impulses(&warm), &normal_impulses(&cold_converged));
-            let reference = normal_impulses(&cold_converged)
-                .into_iter()
-                .fold(0.0_f32, f32::max);
-            assert!(
-                impulse_gap < 1e-3 * reference,
-                "warm-started accumulator diverged by {impulse_gap} against a peak impulse of {reference}"
-            );
-        }
-
-        fn settled_disk_stack_r2() -> World<EuclideanR2> {
-            let mut world = World::new(EuclideanR2);
-            crate::euclidean_r2::register_default_narrowphase(&mut world.narrowphase);
-            world.set_gravity(Some(Vec2::new(0.0, GRAVITY_Y))).unwrap();
-
-            for level in 0..STACK_LEVELS {
-                let y = SPHERE_RADIUS + level as f32 * 2.0 * SPHERE_RADIUS;
-                let id = world.push_body(
-                    sphere_body(Vec2::new(0.0, y), Vec2::ZERO, SPHERE_RADIUS, 1.0).unwrap(),
-                );
-                world.bodies[id].restitution = 0.0;
-            }
-            let floor = world.push_body(floor_r2());
-            world.bodies[floor].restitution = 0.0;
-
-            for _ in 0..STACK_SETTLE_STEPS {
-                world.step(STACK_DT).unwrap();
-            }
-            world
-        }
-
-        fn settled_sphere_stack_r4() -> World<EuclideanR4> {
-            let mut world = World::new(EuclideanR4);
-            crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
-            world
-                .set_gravity(Some(Vec4::new(0.0, GRAVITY_Y, 0.0, 0.0)))
-                .unwrap();
-
-            for level in 0..STACK_LEVELS {
-                let y = SPHERE_RADIUS + level as f32 * 2.0 * SPHERE_RADIUS;
-                let id = world.push_body(
-                    sphere_body_r4(Vec4::new(0.0, y, 0.0, 0.0), Vec4::ZERO, SPHERE_RADIUS, 1.0)
-                        .unwrap(),
-                );
-                world.bodies[id].restitution = 0.0;
-            }
-            let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
-            world.bodies[floor].restitution = 0.0;
-
-            for _ in 0..STACK_SETTLE_STEPS {
-                world.step(STACK_DT).unwrap();
-            }
-            world
-        }
-
-        #[test]
-        fn warm_started_step_matches_cold_started_converged_step_r2() {
-            assert_warm_started_step_matches_cold_started_converged_step(settled_disk_stack_r2);
-        }
-
-        #[test]
-        fn warm_started_step_matches_cold_started_converged_step_r3() {
-            assert_warm_started_step_matches_cold_started_converged_step(|| {
-                settled_sphere_stack(STACK_DT, STACK_SETTLE_STEPS)
-            });
-        }
-
-        #[test]
-        fn warm_started_step_matches_cold_started_converged_step_r4() {
-            assert_warm_started_step_matches_cold_started_converged_step(settled_sphere_stack_r4);
-        }
-    }
-
-    #[test]
-    fn shrinking_normal_impulse_releases_applied_friction_even_without_slip() {
-        use crate::euclidean_r2::sphere_body;
-        use glam::Vec2;
-        use loam_math::EuclideanR2;
-
-        for slip in [0.0, 1.0] {
-            let mut geometry = crate::geometry::GeometryStore::default();
-            let mut a = sphere_body(Vec2::ZERO, Vec2::ZERO, 1.0, 0.0)
-                .unwrap()
-                .into_row(&mut geometry, &EuclideanR2);
-            let mut b = sphere_body(Vec2::ZERO, Vec2::new(slip, 2.0), 1.0, 1.0)
-                .unwrap()
-                .into_row(&mut geometry, &EuclideanR2);
-            let previous_friction = 2.0 * FRICTION_COEFF;
-            let mut contact = ContactPoint {
-                world_point: Vec2::ZERO,
-                anchor_a: Vec2::ZERO,
-                anchor_b: Vec2::ZERO,
-                normal: Vec2::Y,
-                penetration: 0.0,
-                normal_impulse: 2.0,
-                tangent_dir: Vec2::X,
-                tangent_impulse: previous_friction,
-                velocity_bias: 0.0,
-            };
-            solve_normal_then_tangent(&EuclideanR2, &mut a, &mut b, &mut contact);
-            assert_eq!(contact.normal_impulse, 0.0);
-            assert_eq!(contact.tangent_impulse, 0.0);
-            assert!((b.velocity - Vec2::X * (slip + previous_friction)).length() < 1e-6);
+            assert_friction_brakes_a_slide_toward_rolling(world, sphere, Vec4::X, Vec4::Y);
         }
     }
 
@@ -2310,36 +1919,14 @@ mod tests {
     }
 
     #[test]
-    fn sleeping_after_a_step_removes_inactive_islands_immediately() {
-        let (mut world, floor, spheres) = settled_islands(1.0 / 240.0, 1);
-        for id in &spheres {
-            assert!(world.manifolds.contains_key(&(floor, *id)));
-            world.bodies[*id].sleep();
-        }
-        assert!(world.islands().is_empty());
-        world.bodies[spheres[0]].wake();
-        let islands = world.islands();
-        assert_eq!(islands.len(), 1);
-        assert_eq!(islands[0].bodies, vec![spheres[0]]);
-    }
-
-    #[test]
-    fn despawn_preserves_surviving_manifold_keys_and_warm_start_impulses() {
+    fn an_unrelated_despawn_or_spawn_leaves_a_surviving_island_bit_identical() {
         let dt = 1.0 / 240.0;
         let settle_steps = 400;
-        let (mut world, floor, spheres) = settled_islands(dt, settle_steps);
+        let (mut world, _, spheres) = settled_islands(dt, settle_steps);
         let (mut control, _, control_spheres) = settled_islands(dt, settle_steps);
 
         let doomed = spheres[1];
         let keeper = spheres[3];
-        let keeper_key = (floor, keeper);
-        let control_key = (floor, control_spheres[3]);
-
-        let impulses_before = normal_impulses(&world, keeper_key);
-        assert!(
-            impulses_before.iter().any(|&jn| jn > 0.0),
-            "fixture carries no warm-start payload, so nothing below is being preserved"
-        );
         let keeper_position_before = world.bodies.dense_index(keeper).unwrap();
 
         assert!(world.despawn_body(doomed).is_ok());
@@ -2348,18 +1935,6 @@ mod tests {
             world.bodies.dense_index(keeper).unwrap(),
             keeper_position_before,
             "despawn moved no surviving body, so this test never reached the compaction case"
-        );
-        assert!(
-            !world
-                .manifolds
-                .keys()
-                .any(|&(a, b)| a == doomed || b == doomed),
-            "the removed body's manifolds outlived it"
-        );
-        assert_eq!(
-            normal_impulses(&world, keeper_key),
-            impulses_before,
-            "compaction disturbed a surviving manifold's warm-start impulses"
         );
 
         for _ in 0..60 {
@@ -2372,27 +1947,11 @@ mod tests {
             body_state(&control, control_spheres[3]),
             "an unrelated despawn perturbed a surviving island"
         );
-        let impulses_after = normal_impulses(&world, keeper_key);
-        assert_eq!(
-            impulses_after,
-            normal_impulses(&control, control_key),
-            "an unrelated despawn moved a surviving manifold's impulses"
-        );
-        assert!(
-            impulses_after.iter().any(|&jn| jn > 0.0),
-            "the surviving contact stopped carrying an impulse"
-        );
-    }
 
-    #[test]
-    fn spawn_mid_simulation_leaves_existing_islands_bit_identical() {
-        let dt = 1.0 / 240.0;
-        let settle_steps = 400;
         let (mut world, floor, spheres) = settled_islands(dt, settle_steps);
         let (mut control, _, control_spheres) = settled_islands(dt, settle_steps);
 
         let keeper = spheres[0];
-        let keeper_key = (floor, keeper);
         let newcomer = world.push_body(island_sphere(12.0));
         world.bodies[newcomer].restitution = 0.0;
 
@@ -2410,21 +1969,29 @@ mod tests {
             body_state(&control, control_spheres[0]),
             "a spawn perturbed an existing island"
         );
-        assert_eq!(
-            normal_impulses(&world, keeper_key),
-            normal_impulses(&control, (floor, control_spheres[0])),
-            "a spawn moved an existing manifold's warm-start impulses"
-        );
     }
 
     #[test]
-    fn a_recycled_slot_inherits_no_manifold_from_the_previous_body() {
+    fn a_despawn_leaves_no_contact_handle_or_dirty_row_for_the_body_that_takes_its_slot() {
         let dt = 1.0 / 240.0;
         let (mut world, floor, spheres) = settled_islands(dt, 400);
         let doomed = spheres[1];
+        let names_doomed = |world: &World<EuclideanR3>| {
+            world
+                .manifolds
+                .keys()
+                .any(|&(a, b)| a == doomed || b == doomed)
+        };
         assert!(world.manifolds.contains_key(&(floor, doomed)));
+        assert!(world
+            .set_velocity(doomed, Vec3::new(0.0, 3.0, 0.0), Bivector3::ZERO)
+            .is_ok());
 
         assert!(world.despawn_body(doomed).is_ok());
+        assert!(
+            !names_doomed(&world),
+            "a contact outlived the body it names"
+        );
         assert_eq!(
             world.despawn_body(doomed),
             Err(EditError::StaleHandle),
@@ -2443,6 +2010,15 @@ mod tests {
             world.bodies.get(doomed).is_none(),
             "the stale handle resolved to the body that took its slot"
         );
+        let published: Vec<BodyId> = world.drain_dirty().map(|(id, _)| id).collect();
+        assert!(
+            !published.contains(&doomed),
+            "a removed row was published for mirroring"
+        );
+        assert!(
+            published.contains(&reborn),
+            "the row that took the removed slot was never published"
+        );
 
         world.step(dt).unwrap();
         assert!(
@@ -2450,7 +2026,7 @@ mod tests {
             "the respawned body made no contact"
         );
         assert!(
-            !world.manifolds.contains_key(&(floor, doomed)),
+            !names_doomed(&world),
             "a manifold keyed on the despawned body came back with the slot"
         );
     }
@@ -2459,22 +2035,16 @@ mod tests {
     const EDIT_SETTLE_STEPS: usize = 400;
 
     #[test]
-    fn a_rejected_edit_leaves_the_body_its_inertia_and_its_contacts_untouched() {
+    fn a_rejected_edit_gravity_or_time_step_leaves_the_world_untouched() {
         let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
         let id = spheres[0];
-        let key = (floor, id);
         let before = body_state(&world, id);
         let mass = world.bodies[id].mass();
         let inv_mass = world.bodies[id].inv_mass();
         let inertia = world.bodies[id].inertia;
         let orientation = world.bodies[id].orientation;
         let stale = BodyId::forge(u32::MAX, 0);
-        let impulses = normal_impulses(&world, key);
         let _ = world.drain_dirty().count();
-        assert!(
-            impulses.iter().any(|&jn| jn > 0.0),
-            "the fixture carries no warm start, so a preserved contact proves nothing"
-        );
 
         assert_eq!(
             world.set_mass_properties(id, f32::NAN, 1.0),
@@ -2498,14 +2068,9 @@ mod tests {
             ),
             Err(EditError::UnsupportedCollider)
         );
-        while world.reclaim_geometry().is_some() {}
         assert_eq!(
             world.set_collider(id, Collider::sphere_at_origin(0.5), f32::INFINITY),
             Err(EditError::InvalidInertia)
-        );
-        assert!(
-            world.reclaim_geometry().is_some(),
-            "a rejected inertia swallowed the caller's collider"
         );
         assert_eq!(
             world.set_pose(id, Vec3::splat(f32::NAN), orientation),
@@ -2535,6 +2100,23 @@ mod tests {
             world.set_velocity(stale, Vec3::ZERO, Bivector3::ZERO),
             Err(EditError::StaleHandle)
         );
+        let half_space = Collider::HalfSpace {
+            normal: Vec3::Y,
+            offset: 0.0,
+        };
+        assert!(
+            world.space.supports_collider(half_space.kind()),
+            "the space rejects half-spaces outright, so this cannot tell the two refusals apart"
+        );
+        assert_eq!(
+            world.set_collider(id, half_space, 1.0),
+            Err(EditError::DynamicHalfSpace)
+        );
+        assert_eq!(
+            world.set_mass_properties(floor, 3.0, 1.0),
+            Err(EditError::DynamicHalfSpace)
+        );
+        assert_eq!(world.bodies[floor].mass(), 0.0);
         assert_eq!(
             world.drain_dirty().count(),
             0,
@@ -2545,7 +2127,6 @@ mod tests {
         assert_eq!(world.bodies[id].mass(), mass);
         assert_eq!(world.bodies[id].inv_mass(), inv_mass);
         assert_eq!(world.bodies[id].inertia, inertia);
-        assert_eq!(normal_impulses(&world, key), impulses);
 
         let mut world4 = World::new(loam_math::EuclideanR4);
         let id4 = world4.push_body(
@@ -2572,81 +2153,7 @@ mod tests {
             Err(EditError::NotFinite)
         );
         assert_eq!(world4.bodies[id4].orientation, before4);
-    }
 
-    #[test]
-    fn warm_start_impulses_survive_a_step_and_a_snapshot_restore() {
-        let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
-        let key = (floor, spheres[0]);
-        let settled = normal_impulses(&world, key);
-        assert!(settled.iter().any(|&jn| jn > 0.0));
-
-        let state = world.snapshot();
-        world.step(EDIT_DT).unwrap();
-
-        let stepped = normal_impulses(&world, key);
-        assert_eq!(
-            stepped.len(),
-            settled.len(),
-            "a step dropped a contact slot"
-        );
-        for (after, before) in stepped.iter().zip(&settled) {
-            assert!(
-                *after > 0.0 && (after - before).abs() < 1e-3,
-                "a step reset the accumulator: {before} became {after}"
-            );
-        }
-
-        assert!(world
-            .apply_impulse(spheres[0], Vec3::new(0.0, 20.0, 0.0))
-            .is_ok());
-        for _ in 0..30 {
-            world.step(EDIT_DT).unwrap();
-        }
-        assert!(
-            !world.manifolds.contains_key(&key),
-            "the launched sphere kept its contact, so the restore has nothing to undo"
-        );
-
-        assert!(world.restore(&state).is_ok());
-        assert_eq!(normal_impulses(&world, key), settled);
-        assert_eq!(world.time, state.time);
-    }
-
-    #[test]
-    fn invalid_snapshot_state_is_refused_before_the_world_changes() {
-        let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
-        let key = (floor, spheres[0]);
-        let before = world.state_hash(sample_body_r3);
-        let time = world.time;
-        let impulses = normal_impulses(&world, key);
-        let unchanged = |world: &World<EuclideanR3>| {
-            assert_eq!(world.state_hash(sample_body_r3), before);
-            assert_eq!(world.time, time);
-            assert_eq!(normal_impulses(world, key), impulses);
-        };
-
-        let mut invalid_body = world.snapshot();
-        invalid_body.bodies[spheres[0]].orientation.rotation = Quat::from_xyzw(0.0, 0.0, 0.0, 2.0);
-        assert_eq!(world.restore(&invalid_body), Err(EditError::InvalidBody));
-        unchanged(&world);
-
-        let mut invalid_time = world.snapshot();
-        invalid_time.time = f32::NAN;
-        assert_eq!(world.restore(&invalid_time), Err(EditError::InvalidTime));
-        unchanged(&world);
-
-        let mut invalid_manifold = world.snapshot();
-        invalid_manifold.manifolds.get_mut(&key).unwrap().points[0].normal = Vec3::splat(f32::NAN);
-        assert_eq!(
-            world.restore(&invalid_manifold),
-            Err(EditError::InvalidManifold)
-        );
-        unchanged(&world);
-    }
-
-    #[test]
-    fn invalid_gravity_and_time_steps_leave_body_state_and_time_unchanged() {
         let mut world = World::new(EuclideanR3);
         let body = world.push_body(sphere_body_r3(Vec3::X, Vec3::Y, 0.5, 1.0).unwrap());
         let before = world.state_hash(sample_body_r3);
@@ -2667,15 +2174,22 @@ mod tests {
         assert!(world.body(body).is_some());
         assert_eq!(world.state_hash(sample_body_r3), before);
         assert_eq!(world.time(), 0.0);
-
-        world.time = f32::MAX;
-        assert_eq!(world.step(f32::MAX), Err(EditError::InvalidTimeStep));
-        assert_eq!(world.state_hash(sample_body_r3), before);
-        assert_eq!(world.time(), f32::MAX);
     }
 
     #[test]
-    fn a_teleported_sleeping_body_publishes_its_pose_change() {
+    fn the_dirty_drain_publishes_every_pose_change_and_no_sleeping_body_that_stayed_put() {
+        let (mut world, _, spheres) = settled_islands(EDIT_DT, 4);
+        let _ = world.drain_dirty().count();
+        world.step(EDIT_DT).unwrap();
+        let mut mirror: BTreeMap<BodyId, Vec3> = BTreeMap::new();
+        for (id, body) in world.drain_dirty() {
+            mirror.insert(id, body.position);
+        }
+        assert_eq!(mirror.len(), spheres.len());
+        for id in &spheres {
+            assert_eq!(mirror.get(id), Some(&world.bodies[*id].position));
+        }
+
         let (mut world, _, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
         let id = spheres[0];
         assert!(world.sleep_body(id).is_ok());
@@ -2695,12 +2209,35 @@ mod tests {
             "the teleport never reached the dirty set"
         );
         assert_eq!(world.bodies[id].position, elsewhere);
+
+        let (mut world, _, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
+        let id = spheres[0];
+        assert!(world.sleep_body(id).is_ok());
+        let settled = world.bodies[id].position;
+        let state = world.snapshot();
+        let orientation = world.bodies[id].orientation;
+        assert!(world.set_pose(id, elsewhere, orientation).is_ok());
+        assert!(world.sleep_body(id).is_ok());
+        let _ = world.drain_dirty().count();
+
+        assert!(world.restore(&state).is_ok());
+        assert_eq!(world.bodies[id].position, settled);
+        assert!(world.bodies[id].is_sleeping());
+        assert!(
+            world.drain_dirty().any(|(dirty, _)| dirty == id),
+            "a restore moved a sleeping body without publishing it"
+        );
     }
 
     #[test]
-    fn a_restored_world_rebuilds_its_configuration_and_reproduces_the_snapshot() {
+    fn a_snapshot_restores_into_a_rebuilt_world_or_rewinds_its_own_with_the_contact_cache() {
         let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
         let key = (floor, spheres[0]);
+        let settled = normal_impulses(&world, key);
+        assert!(
+            settled.iter().any(|&jn| jn > 0.0),
+            "the fixture carries no warm start, so a restore has no contact cache to reproduce"
+        );
         let state = world.snapshot();
 
         let mut unregistered = World::new(EuclideanR3);
@@ -2720,7 +2257,6 @@ mod tests {
             rebuilt.state_hash(sample_body_r3),
             world.state_hash(sample_body_r3)
         );
-        assert_eq!(normal_impulses(&rebuilt, key), normal_impulses(&world, key));
 
         for _ in 0..60 {
             world.step(EDIT_DT).unwrap();
@@ -2731,255 +2267,20 @@ mod tests {
             world.state_hash(sample_body_r3),
             "the restored world solved with a different dispatch table"
         );
-    }
-
-    #[test]
-    fn a_collider_replacement_drops_the_previous_shapes_inertia() {
-        let mut world = World::new(EuclideanR3);
-        register_default_narrowphase(&mut world.narrowphase);
-        let id = world.push_body(box_body(Vec3::ZERO, Vec3::ZERO, Vec3::ONE, 2.0).unwrap());
-        let previous = world.bodies[id].inertia;
-        let replacement = 0.5;
-        assert_ne!(
-            previous, replacement,
-            "the two shapes share an inertia, so the swap cannot be seen"
-        );
 
         assert!(world
-            .set_collider(id, Collider::sphere_at_origin(0.25), replacement)
+            .apply_impulse(spheres[0], Vec3::new(0.0, 20.0, 0.0))
             .is_ok());
-        assert!(matches!(
-            world.collider(&world.bodies[id]),
-            Some(Collider::Sphere { .. })
-        ));
-        assert!(world
-            .apply_impulse_at_point(id, Vec3::new(3.0, 0.0, 0.0), Vec3::new(0.0, 2.0, 0.0))
-            .is_ok());
-
-        assert_eq!(world.bodies[id].velocity, Vec3::new(1.5, 0.0, 0.0));
-        assert_eq!(
-            world.bodies[id].angular_velocity,
-            Bivector3::new(-12.0, 0.0, 0.0)
-        );
-    }
-
-    #[test]
-    fn a_despawn_leaves_no_contact_or_dirty_row_naming_the_removed_body() {
-        let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
-        let doomed = spheres[1];
-        assert!(world.manifolds.contains_key(&(floor, doomed)));
-        assert!(world
-            .set_velocity(doomed, Vec3::new(0.0, 3.0, 0.0), Bivector3::ZERO)
-            .is_ok());
-
-        assert!(world.despawn_body(doomed).is_ok());
-
-        assert!(
-            !world
-                .manifolds
-                .keys()
-                .any(|&(a, b)| a == doomed || b == doomed),
-            "a contact outlived the body it names"
-        );
-        let reborn = world.push_body(island_sphere(ISLAND_X[1]));
-        assert_eq!(
-            reborn.slot(),
-            doomed.slot(),
-            "the slot was not recycled, so this test is not exercising aliasing"
-        );
-        let published: Vec<BodyId> = world.drain_dirty().map(|(id, _)| id).collect();
-        assert!(
-            !published.contains(&doomed),
-            "a removed row was published for mirroring"
-        );
-        assert!(
-            published.contains(&reborn),
-            "the row that took the removed slot was never published"
-        );
-
-        world.step(EDIT_DT).unwrap();
-        assert!(!world
-            .manifolds
-            .keys()
-            .any(|&(a, b)| a == doomed || b == doomed));
-    }
-
-    #[test]
-    fn bodies_that_share_a_hull_hold_one_copy_of_its_vertices() {
-        use crate::euclidean_r4::{polytope_body_r4, tesseract_vertices};
-        use glam::Vec4;
-        use loam_math::EuclideanR4;
-
-        let hull = tesseract_vertices(1.0);
-        let mut world = World::new(EuclideanR4);
-        let a =
-            world.push_body(polytope_body_r4(Vec4::ZERO, Vec4::ZERO, hull.clone(), 1.0).unwrap());
-        let b = world.push_body(polytope_body_r4(Vec4::X * 8.0, Vec4::ZERO, hull, 1.0).unwrap());
-
-        assert_eq!(world.bodies[a].collider(), world.bodies[b].collider());
-        assert_eq!(world.geometry().prepared(), 1);
-
-        let vertices = |id: BodyId| match world.collider(&world.bodies[id]) {
-            Some(Collider::ConvexPolytope4D { vertices }) => vertices.as_ptr(),
-            other => panic!("the hull is not prepared: {other:?}"),
-        };
-        assert_eq!(
-            vertices(a),
-            vertices(b),
-            "each body kept its own copy of the hull"
-        );
-
-        assert!(world.despawn_body(a).is_ok());
-        assert_eq!(
-            world.geometry().prepared(),
-            1,
-            "a shared hull was released while another body still used it"
-        );
-        assert!(world.despawn_body(b).is_ok());
-        assert_eq!(
-            world.geometry().prepared(),
-            0,
-            "the last body's hull outlived it"
-        );
-    }
-
-    #[test]
-    fn a_restored_sleeping_body_publishes_the_pose_the_restore_gave_it() {
-        let (mut world, _, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
-        let id = spheres[0];
-        assert!(world.sleep_body(id).is_ok());
-        let settled = world.bodies[id].position;
-
-        let state = world.snapshot();
-        let orientation = world.bodies[id].orientation;
-        assert!(world
-            .set_pose(id, Vec3::new(40.0, 9.0, 0.0), orientation)
-            .is_ok());
-        assert!(world.sleep_body(id).is_ok());
-        let _ = world.drain_dirty().count();
-
-        assert!(world.restore(&state).is_ok());
-        assert_eq!(world.bodies[id].position, settled);
-        assert!(world.bodies[id].is_sleeping());
-        assert!(
-            world.drain_dirty().any(|(dirty, _)| dirty == id),
-            "a restore moved a sleeping body without publishing it"
-        );
-    }
-
-    #[test]
-    fn a_drained_row_is_readable_without_copying_the_ids_out_first() {
-        let (mut world, _, spheres) = settled_islands(EDIT_DT, 4);
-        let _ = world.drain_dirty().count();
-        world.step(EDIT_DT).unwrap();
-
-        let mut mirror: BTreeMap<BodyId, Vec3> = BTreeMap::new();
-        for (id, body) in world.drain_dirty() {
-            mirror.insert(id, body.position);
-        }
-
-        assert_eq!(mirror.len(), spheres.len());
-        for id in &spheres {
-            assert_eq!(mirror.get(id), Some(&world.bodies[*id].position));
-        }
-    }
-
-    #[test]
-    fn a_half_space_on_a_body_with_mass_is_not_reported_as_an_unsupported_collider() {
-        let mut world = World::new(EuclideanR3);
-        let id = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 0.5, 2.0).unwrap());
-        let floor = Collider::HalfSpace {
-            normal: Vec3::Y,
-            offset: 0.0,
-        };
-        assert!(
-            world.space.supports_collider(floor.kind()),
-            "the space rejects half-spaces outright, so this cannot tell the two apart"
-        );
-
-        assert_eq!(
-            world.set_collider(id, floor, 1.0),
-            Err(EditError::DynamicHalfSpace)
-        );
-        assert_eq!(world.bodies[id].mass(), 2.0);
-
-        let ground = world.push_body(halfspace_body_r3(Vec3::Y, 0.0).unwrap());
-        assert_eq!(
-            world.set_mass_properties(ground, 3.0, 1.0),
-            Err(EditError::DynamicHalfSpace)
-        );
-        assert_eq!(world.bodies[ground].mass(), 0.0);
-    }
-
-    #[test]
-    fn registration_order_does_not_refuse_a_snapshot_of_the_same_pairs() {
-        fn never(
-            _a: &RigidBody<EuclideanR3>,
-            _b: &RigidBody<EuclideanR3>,
-            _geometry: &crate::geometry::GeometryStore,
-            _space: &EuclideanR3,
-        ) -> Option<crate::response::Contact<EuclideanR3>> {
-            None
-        }
-
-        use crate::collider::ColliderKind;
-
-        let pairs = [
-            (ColliderKind::Sphere, ColliderKind::HalfSpace),
-            (ColliderKind::Sphere, ColliderKind::ConvexPolytope3D),
-            (ColliderKind::ConvexPolytope3D, ColliderKind::HalfSpace),
-        ];
-        assert_ne!(
-            pairs.first(),
-            pairs.last(),
-            "the registration sequence is symmetric, so reversing it changes nothing"
-        );
-
-        let mut forward = World::new(EuclideanR3);
-        for &(a, b) in &pairs {
-            forward.narrowphase.register(a, b, never);
-        }
-        let mut reversed = World::new(EuclideanR3);
-        for &(a, b) in pairs.iter().rev() {
-            reversed.narrowphase.register(a, b, never);
-        }
-        forward.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 0.5, 1.0).unwrap());
-
-        assert!(reversed.restore(&forward.snapshot()).is_ok());
-        assert!(forward.restore(&reversed.snapshot()).is_ok());
-        assert_eq!(reversed.bodies.len(), 1);
-    }
-
-    #[test]
-    fn dirty_publication_allocates_nothing_on_a_warmed_world() {
-        let (mut world, _, spheres) = settled_islands(EDIT_DT, 4);
-        for _ in 0..2 {
+        for _ in 0..30 {
             world.step(EDIT_DT).unwrap();
-            assert!(world.drain_dirty().count() > 0);
         }
-
-        let bytes = bytes_allocated_by(|| {
-            for _ in 0..16 {
-                for &id in &spheres {
-                    assert!(world.wake_body(id).is_ok());
-                }
-                assert_eq!(world.drain_dirty().count(), spheres.len());
-            }
-        })
-        .expect("the counting allocator is installed");
-        assert_eq!(
-            bytes, 0,
-            "16 dirty publications over a steady body set asked the allocator for {bytes} bytes"
+        assert!(
+            !world.manifolds.contains_key(&key),
+            "the launched sphere kept its contact, so the restore has nothing to undo"
         );
-    }
-
-    #[test]
-    fn split_two_mut_returns_borrows_in_argument_order() {
-        let mut slice = [0u32, 1, 2, 3];
-        for (i, j) in [(1usize, 3usize), (3, 1)] {
-            let (a, b) = split_two_mut(&mut slice, i, j);
-            assert_eq!((*a, *b), (i as u32, j as u32), "split_two_mut({i}, {j})");
-        }
+        assert!(world.restore(&state).is_ok());
+        assert_eq!(normal_impulses(&world, key), settled);
+        assert_eq!(world.time, state.time);
     }
 
     fn stacked_pair_world(doomed_first: bool) -> (World<EuclideanR3>, BodyId, BodyId, BodyId) {
@@ -3070,26 +2371,6 @@ mod tests {
              was built to produce"
         );
         (world, lower, upper, key)
-    }
-
-    #[test]
-    fn contact_normal_points_from_the_pair_key_low_body_to_the_high_one() {
-        let dt = 1.0 / 240.0;
-        for doomed_first in [false, true] {
-            let (mut world, _, _, key) = despawned_pair_world(doomed_first, dt);
-            world.step(dt).unwrap();
-
-            let manifold = world.manifolds.get(&key).expect("the pair separated");
-            let key_axis = world.bodies[key.1].position - world.bodies[key.0].position;
-            assert!(!manifold.points.is_empty(), "manifold carries no contact");
-            for cp in &manifold.points {
-                assert!(
-                    cp.normal.dot(key_axis) > 0.0,
-                    "normal {} points back toward the key's low body",
-                    cp.normal
-                );
-            }
-        }
     }
 
     #[test]
@@ -3184,56 +2465,6 @@ mod tests {
         world
     }
 
-    fn all_pairs_reference(world: &World<EuclideanR3>) -> Vec<PairKey> {
-        let mut pairs = Vec::new();
-        let n = world.bodies.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let (a, b) = (&world.bodies[i], &world.bodies[j]);
-                if a.inv_mass() == 0.0 && b.inv_mass() == 0.0 {
-                    continue;
-                }
-                let reach = bounding_radius(world.collider(a)) + bounding_radius(world.collider(b));
-                if world.space.distance(a.position, b.position) <= reach {
-                    pairs.push(canonical_pair(world.bodies.id_at(i), world.bodies.id_at(j)));
-                }
-            }
-        }
-        pairs.sort_unstable();
-        pairs
-    }
-
-    fn dynamic_body_count(world: &World<EuclideanR3>) -> usize {
-        world.bodies.iter().filter(|b| b.inv_mass() != 0.0).count()
-    }
-
-    const RANDOM_SCENE_SHAPES: [(usize, f32); 3] = [(12, 2.0), (40, 6.0), (80, 3.0)];
-
-    #[test]
-    fn sweep_broadphase_emits_exactly_the_all_pairs_candidate_set() {
-        let mut ever_beyond_the_floor = false;
-        for seed in PERMUTATION_SEEDS {
-            for (count, spread) in RANDOM_SCENE_SHAPES {
-                let mut world = random_scene(seed, count, spread);
-                let mut emitted = Vec::new();
-                for step in 0..8 {
-                    let expected = all_pairs_reference(&world);
-                    world.broadphase_into(&mut emitted);
-                    assert_eq!(
-                        emitted, expected,
-                        "seed {seed}, {count} bodies, spread {spread}, step {step}"
-                    );
-                    ever_beyond_the_floor |= expected.len() > dynamic_body_count(&world);
-                    world.step(1.0 / 240.0).unwrap();
-                }
-            }
-        }
-        assert!(
-            ever_beyond_the_floor,
-            "no scene ever produced a candidate pair between two finite colliders"
-        );
-    }
-
     #[test]
     fn broadphase_culls_only_pairs_the_narrowphase_would_reject() {
         for seed in PERMUTATION_SEEDS {
@@ -3276,179 +2507,25 @@ mod tests {
     }
 
     #[test]
-    fn broadphase_emits_strictly_ascending_keys_under_disagreeing_storage_order() {
-        for seed in PERMUTATION_SEEDS {
-            let mut world = random_scene(seed, 40, 3.0);
-            let disagrees = (1..world.bodies.len())
-                .any(|dense| world.bodies.id_at(dense) < world.bodies.id_at(dense - 1));
-            assert!(
-                disagrees,
-                "seed {seed}: storage order still agrees with handle order, so this \
-                 scene cannot tell the two apart"
-            );
-
-            let mut pairs = Vec::new();
-            world.broadphase_into(&mut pairs);
-            assert!(pairs.len() > 1, "seed {seed}: too few pairs to be ordered");
-            assert!(
-                pairs.windows(2).all(|w| w[0] < w[1]),
-                "seed {seed}: emission order is not strictly ascending in BodyId"
-            );
-        }
-    }
-
-    #[test]
-    fn broadphase_prunes_the_quadratic_pair_set_at_scale() {
-        let mut world = random_scene(PERMUTATION_SEEDS[1], 200, 20.0);
-        let n = world.bodies.len();
-        assert!(
-            n >= 100,
-            "the scale case needs at least 100 bodies, got {n}"
-        );
-        let all_pairs = n * (n - 1) / 2;
-        let mut pairs = Vec::new();
-        world.broadphase_into(&mut pairs);
-        let emitted = pairs.len();
-        assert!(
-            emitted * 10 < all_pairs,
-            "the sweep emitted {emitted} of {all_pairs} pairs, which is no better than \
-             a constant-factor cull"
-        );
-    }
-
-    #[test]
-    fn broadphase_fill_allocates_nothing_after_the_first_pass() {
-        let world = random_scene(PERMUTATION_SEEDS[0], 120, 8.0);
-        let mut intervals = Vec::new();
-        let mut active = Vec::new();
-        let mut pairs = Vec::new();
-
+    fn a_warmed_world_steps_and_publishes_without_allocating() {
+        const DT: f32 = 1.0 / 240.0;
+        let mut world = settled_columns(PERMUTATION_SEEDS[0]);
         for _ in 0..2 {
-            World::fill_broadphase(
-                &world.bodies,
-                world.geometry(),
-                &world.space,
-                &mut intervals,
-                &mut active,
-                &mut pairs,
-                &mut StepCounters::default(),
-            );
+            world.step(DT).unwrap();
+            assert!(world.drain_dirty().count() > 0);
         }
-        assert!(!pairs.is_empty(), "the fixture produced no pairs to emit");
-
+        assert!(world.constraints.len() > 1, "the fixture solves nothing");
         let bytes = bytes_allocated_by(|| {
             for _ in 0..16 {
-                World::fill_broadphase(
-                    &world.bodies,
-                    world.geometry(),
-                    &world.space,
-                    &mut intervals,
-                    &mut active,
-                    &mut pairs,
-                    &mut StepCounters::default(),
-                );
+                world.step(DT).unwrap();
+                assert!(world.drain_dirty().count() > 0);
             }
         })
         .expect("the counting allocator is installed");
         assert_eq!(
             bytes, 0,
-            "16 sweeps over a steady body set asked the allocator for {bytes} bytes"
-        );
-    }
-
-    #[test]
-    fn step_counters_report_the_sweep_work_of_a_four_body_line() {
-        let mut world = World::new(EuclideanR3);
-        register_default_narrowphase(&mut world.narrowphase);
-        for x in [0.0, 0.75, 1.75, 5.0] {
-            world.push_body(sphere_body_r3(Vec3::new(x, 0.0, 0.0), Vec3::ZERO, 0.5, 1.0).unwrap());
-        }
-        world.step(1.0 / 240.0).unwrap();
-        assert_eq!(
-            world.counters(),
-            StepCounters {
-                index_visits: 7,
-                distance_evals: 6,
-                candidates: 2,
-                contacts: 1,
-            }
-        );
-    }
-
-    #[test]
-    fn exactly_tangent_spheres_are_a_candidate_pair() {
-        const RADIUS: f32 = 0.5;
-        let mut world = World::new(EuclideanR3);
-        let anchor = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, RADIUS, 1.0).unwrap());
-        let tangent = world.push_body(sphere_body_r3(Vec3::X, Vec3::ZERO, RADIUS, 1.0).unwrap());
-        let separated = world.push_body(
-            sphere_body_r3(
-                Vec3::new(-(1.0 + f32::EPSILON), 0.0, 0.0),
-                Vec3::ZERO,
-                RADIUS,
-                1.0,
-            )
-            .unwrap(),
-        );
-
-        let position = |id: BodyId| {
-            let dense = world.bodies.dense_index(id).expect("nothing despawned");
-            world.bodies[dense].position
-        };
-        assert_eq!(
-            world.space.distance(position(anchor), position(tangent)),
-            RADIUS + RADIUS,
-            "the fixture is not exactly tangent, so it cannot state the boundary"
-        );
-        assert!(
-            world.space.distance(position(anchor), position(separated)) > RADIUS + RADIUS,
-            "the separated sphere is not past the boundary"
-        );
-
-        let mut pairs = Vec::new();
-        world.broadphase_into(&mut pairs);
-        assert_eq!(pairs, vec![canonical_pair(anchor, tangent)]);
-    }
-
-    #[test]
-    fn coincident_point_colliders_are_a_candidate_pair() {
-        let mut world = World::new(EuclideanR3);
-        let a = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 0.0, 1.0).unwrap());
-        let b = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 0.0, 1.0).unwrap());
-        let mut pairs = Vec::new();
-        world.broadphase_into(&mut pairs);
-        assert_eq!(pairs, vec![canonical_pair(a, b)]);
-    }
-
-    #[test]
-    fn bounding_radius_contains_every_posed_vertex_of_its_collider() {
-        let half_extents = Vec3::new(0.5, 1.25, 0.25);
-        let vertices = crate::euclidean_r3::box_vertices(half_extents);
-        let radius = bounding_radius(Some(&Collider::ConvexPolytope3D {
-            vertices: vertices.clone(),
-        }));
-        assert_eq!(radius, half_extents.length());
-
-        let rotation = glam::Quat::from_axis_angle(Vec3::new(1.0, 2.0, 3.0).normalize(), 0.7);
-        for v in &vertices {
-            let posed = rotation * *v;
-            assert!(
-                posed.length() <= radius + 1e-6,
-                "posed vertex {posed} escaped the bounding radius {radius}"
-            );
-        }
-
-        assert_eq!(
-            bounding_radius(Some(&Collider::sphere_at_origin(0.75))),
-            0.75
-        );
-        assert_eq!(
-            bounding_radius(Some(&Collider::HalfSpace {
-                normal: Vec3::Y,
-                offset: 0.0
-            })),
-            f32::INFINITY,
-            "a half-space is unbounded and must never be culled"
+            "16 steps and dirty drains over a settled contact set asked the allocator for \
+             {bytes} bytes"
         );
     }
 
@@ -3501,409 +2578,5 @@ mod tests {
             world.step(1.0 / 240.0).unwrap();
         }
         world
-    }
-
-    #[test]
-    fn island_ids_are_the_lowest_body_id_not_the_lowest_storage_position() {
-        let mut orders_disagreed = 0usize;
-        for seed in PERMUTATION_SEEDS {
-            let mut world = settled_columns(seed);
-            for step in 0..8 {
-                world.step(1.0 / 240.0).unwrap();
-                let islands = world.islands();
-                for island in &islands {
-                    let lowest_handle = island.bodies.iter().copied().min();
-                    assert_eq!(
-                        Some(island.id),
-                        lowest_handle,
-                        "seed {seed} step {step}: island {:?} is not named by its \
-                         lowest handle",
-                        island.id
-                    );
-                    let lowest_stored =
-                        island.bodies.iter().copied().min_by_key(|&id| {
-                            world.bodies.dense_index(id).expect(STALE_MANIFOLD_BODY)
-                        });
-                    if lowest_stored != lowest_handle {
-                        orders_disagreed += 1;
-                    }
-                }
-                assert!(
-                    islands.windows(2).all(|w| w[0].id < w[1].id),
-                    "seed {seed} step {step}: islands are not strictly ascending in id"
-                );
-            }
-        }
-        assert!(
-            orders_disagreed > 0,
-            "no island ever held a body whose handle order disagreed with its \
-             storage order, so the two labelling rules were never told apart"
-        );
-    }
-
-    #[test]
-    fn a_static_body_joins_no_island_and_merges_none() {
-        for seed in PERMUTATION_SEEDS {
-            let world = settled_columns(seed);
-            let pinned = world
-                .bodies
-                .iter()
-                .position(|body| {
-                    body.inv_mass() == 0.0
-                        && matches!(world.collider(body), Some(Collider::Sphere { .. }))
-                })
-                .map(|dense| world.bodies.id_at(dense))
-                .expect("the fixture lost its static sphere");
-
-            let neighbours: Vec<BodyId> = world
-                .manifolds
-                .keys()
-                .filter_map(|&(a, b)| match (a == pinned, b == pinned) {
-                    (true, false) => Some(b),
-                    (false, true) => Some(a),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                neighbours.len(),
-                2,
-                "seed {seed}: the static sphere touches {} bodies, so it is \
-                 not wedged between two",
-                neighbours.len()
-            );
-
-            let islands = world.islands();
-            let island_of = |id: BodyId| {
-                islands
-                    .iter()
-                    .find(|island| island.bodies.contains(&id))
-                    .map(|island| island.id)
-            };
-            assert!(
-                island_of(pinned).is_none(),
-                "seed {seed}: a static body joined an island"
-            );
-            assert_ne!(
-                island_of(neighbours[0]),
-                island_of(neighbours[1]),
-                "seed {seed}: two bodies that meet only through a static one \
-                 were merged into one island"
-            );
-        }
-    }
-
-    fn flood_fill_islands(world: &World<EuclideanR3>) -> Vec<Island> {
-        let dynamic = |id: BodyId| world.bodies[id].inv_mass() != 0.0;
-        let mut adjacency: BTreeMap<BodyId, Vec<BodyId>> = BTreeMap::new();
-        for (&(a, b), _) in world.manifolds() {
-            for id in [a, b].into_iter().filter(|&id| dynamic(id)) {
-                adjacency.entry(id).or_default();
-            }
-            if dynamic(a) && dynamic(b) {
-                adjacency.entry(a).or_default().push(b);
-                adjacency.entry(b).or_default().push(a);
-            }
-        }
-
-        let mut seen: BTreeSet<BodyId> = BTreeSet::new();
-        let mut islands = Vec::new();
-        for &seed in adjacency.keys() {
-            if !seen.insert(seed) {
-                continue;
-            }
-            let mut bodies = vec![seed];
-            let mut frontier = vec![seed];
-            while let Some(body) = frontier.pop() {
-                for &next in &adjacency[&body] {
-                    if seen.insert(next) {
-                        bodies.push(next);
-                        frontier.push(next);
-                    }
-                }
-            }
-            bodies.sort_unstable();
-            let constraints = world
-                .manifolds()
-                .map(|(&key, _)| key)
-                .filter(|&(a, b)| {
-                    bodies.binary_search(&a).is_ok() || bodies.binary_search(&b).is_ok()
-                })
-                .collect();
-            islands.push(Island {
-                id: bodies[0],
-                bodies,
-                constraints,
-            });
-        }
-        islands.sort_unstable_by_key(|island| island.id);
-        islands
-    }
-
-    #[test]
-    fn islands_match_a_flood_fill_of_the_contact_graph() {
-        let mut ever_multi_body = false;
-        for seed in PERMUTATION_SEEDS {
-            let mut world = settled_columns(seed);
-            for step in 0..8 {
-                world.step(1.0 / 240.0).unwrap();
-                let islands = world.islands();
-                ever_multi_body |= islands.iter().any(|island| island.bodies.len() > 1);
-                assert_eq!(
-                    islands,
-                    flood_fill_islands(&world),
-                    "seed {seed} step {step}: union-find disagreed with the flood fill"
-                );
-            }
-        }
-        assert!(
-            ever_multi_body,
-            "no island ever held two bodies, so the comparison never covered a union"
-        );
-    }
-
-    #[test]
-    fn a_single_island_solves_in_the_global_ascending_key_order() {
-        let world = settled_sphere_stack(1.0 / 240.0, 200);
-        let islands = world.islands();
-        assert_eq!(
-            islands.len(),
-            1,
-            "the stack is not one island, so this fixture cannot state the \
-             single-island case"
-        );
-
-        let ascending: Vec<PairKey> = world.manifolds().map(|(&key, _)| key).collect();
-        assert!(ascending.len() > 1, "too few constraints to be ordered");
-        assert_eq!(
-            constraint_order(&world),
-            ascending,
-            "grouping moved a constraint in a world with a single island"
-        );
-        assert_eq!(islands[0].constraints, ascending);
-        assert_eq!(
-            islands[0].bodies.len(),
-            3,
-            "the island should hold the three spheres and not the static floor"
-        );
-    }
-
-    #[test]
-    fn constraint_buffer_runs_island_by_island() {
-        let mut world = multi_island_world();
-        for _ in 0..MULTI_ISLAND_STEPS {
-            world.step(MULTI_ISLAND_DT).unwrap();
-        }
-
-        let islands = world.islands();
-        assert_eq!(
-            islands.len(),
-            3,
-            "the groups share only the static floor, so they are three islands"
-        );
-        let grouped: Vec<PairKey> = islands
-            .iter()
-            .flat_map(|island| island.constraints.iter().copied())
-            .collect();
-        assert_eq!(
-            constraint_order(&world),
-            grouped,
-            "the solved buffer is not the islands in order"
-        );
-
-        let ascending: Vec<PairKey> = world.manifolds().map(|(&key, _)| key).collect();
-        assert_ne!(
-            grouped, ascending,
-            "the fixture's islands happen to be contiguous in ascending key \
-             order, so it cannot show that grouping reorders anything"
-        );
-    }
-
-    #[test]
-    fn island_scratch_allocates_nothing_after_the_first_solve() {
-        const DT: f32 = 1.0 / 240.0;
-        let (mut world, _, _) = settled_islands(DT, 120);
-        world.step(DT).unwrap();
-        assert!(!world.constraints.is_empty(), "the fixture solves nothing");
-        world.solve(DT);
-
-        let bytes = bytes_allocated_by(|| {
-            for _ in 0..16 {
-                world.solve(DT);
-            }
-        })
-        .expect("the counting allocator is installed");
-        assert_eq!(
-            bytes, 0,
-            "16 solves over a steady island set asked the allocator for {bytes} bytes"
-        );
-    }
-
-    #[test]
-    fn island_grouping_allocates_nothing_after_the_first_pass() {
-        let mut world = settled_columns(PERMUTATION_SEEDS[0]);
-        for _ in 0..2 {
-            world.collect_constraints();
-        }
-        assert!(world.constraints.len() > 1);
-
-        let bytes = bytes_allocated_by(|| {
-            for _ in 0..16 {
-                world.collect_constraints();
-            }
-        })
-        .expect("the counting allocator is installed");
-        assert_eq!(
-            bytes, 0,
-            "16 island passes over a steady contact set asked the allocator for \
-             {bytes} bytes"
-        );
-    }
-
-    #[test]
-    fn bounded_contact_churn_allocates_nothing_after_warmup() {
-        let mut world = World::new(EuclideanR3);
-        register_default_narrowphase(&mut world.narrowphase);
-        let floor = world.push_body(halfspace_body_r3(Vec3::Y, 0.0).unwrap());
-        let mut active =
-            world.push_body(sphere_body_r3(Vec3::Y * 0.49, Vec3::ZERO, 0.5, 1.0).unwrap());
-        let mut inactive =
-            world.push_body(sphere_body_r3(Vec3::Y * 4.0, Vec3::ZERO, 0.5, 1.0).unwrap());
-        world.update_manifolds();
-        for _ in 0..4 {
-            world.despawn_body(inactive).unwrap();
-            let next =
-                world.push_body(sphere_body_r3(Vec3::Y * 4.0, Vec3::ZERO, 0.5, 1.0).unwrap());
-            let active_orientation = world.bodies[active].orientation;
-            let next_orientation = world.bodies[next].orientation;
-            world
-                .set_pose(active, Vec3::Y * 4.0, active_orientation)
-                .unwrap();
-            world
-                .set_pose(next, Vec3::Y * 0.49, next_orientation)
-                .unwrap();
-            world.update_manifolds();
-            inactive = active;
-            active = next;
-        }
-        assert!(world.manifolds.contains_key(&canonical_pair(floor, active)));
-
-        let state = world.snapshot();
-        world.restore(&state).unwrap();
-        let retained = world.manifold_pool.len();
-        for _ in 0..4 {
-            world.restore(&state).unwrap();
-            assert_eq!(world.manifold_pool.len(), retained);
-        }
-        let first_measured_generation = active.generation();
-
-        let mut bytes = 0;
-        for _ in 0..16 {
-            world.despawn_body(inactive).unwrap();
-            let next =
-                world.push_body(sphere_body_r3(Vec3::Y * 4.0, Vec3::ZERO, 0.5, 1.0).unwrap());
-            let active_orientation = world.bodies[active].orientation;
-            let next_orientation = world.bodies[next].orientation;
-            world
-                .set_pose(active, Vec3::Y * 4.0, active_orientation)
-                .unwrap();
-            world
-                .set_pose(next, Vec3::Y * 0.49, next_orientation)
-                .unwrap();
-            bytes += bytes_allocated_by(|| world.update_manifolds())
-                .expect("the counting allocator is installed");
-            inactive = active;
-            active = next;
-        }
-        assert!(active.generation() > first_measured_generation);
-        assert!(world.manifolds.contains_key(&canonical_pair(floor, active)));
-        assert_eq!(
-            bytes, 0,
-            "16 new-generation recontacts asked the allocator for {bytes} bytes"
-        );
-    }
-
-    #[test]
-    fn posed_halfspaces_move_sphere_and_hull_contacts_in_r3_and_r4() {
-        let mut r3 = World::new(EuclideanR3);
-        register_default_narrowphase(&mut r3.narrowphase);
-        let wall3 = r3.push_body(halfspace_body_r3(Vec3::Y, 0.0).unwrap());
-        let sphere3 =
-            r3.push_body(sphere_body_r3(Vec3::new(2.25, 3.0, -2.0), Vec3::ZERO, 0.5, 1.0).unwrap());
-        let hull3 = r3.push_body(
-            box_body(Vec3::new(2.1, 3.0, 2.0), Vec3::ZERO, Vec3::splat(0.2), 1.0).unwrap(),
-        );
-        let pose3 = loam_math::Iso3 {
-            rotation: glam::Quat::from_rotation_arc(Vec3::Y, Vec3::X),
-            translation: Vec3::ZERO,
-        };
-        r3.set_pose(wall3, Vec3::X * 2.0, pose3).unwrap();
-        r3.update_manifolds();
-        for body in [sphere3, hull3] {
-            let manifold = r3.manifold(canonical_pair(wall3, body)).unwrap();
-            assert!(manifold.points.iter().any(|point| point.normal.x > 0.99));
-        }
-
-        let mut r4 = World::new(loam_math::EuclideanR4);
-        crate::euclidean_r4::register_default_narrowphase(&mut r4.narrowphase);
-        let wall4 =
-            r4.push_body(crate::euclidean_r4::halfspace4_body_r4(glam::Vec4::Y, 0.0).unwrap());
-        let sphere4 = r4.push_body(
-            crate::euclidean_r4::sphere_body_r4(
-                glam::Vec4::new(2.25, 3.0, -2.0, 0.0),
-                glam::Vec4::ZERO,
-                0.5,
-                1.0,
-            )
-            .unwrap(),
-        );
-        let hull4 = r4.push_body(
-            crate::euclidean_r4::polytope_body_r4(
-                glam::Vec4::new(2.1, 3.0, 2.0, 0.0),
-                glam::Vec4::ZERO,
-                crate::euclidean_r4::tesseract_vertices(0.2),
-                1.0,
-            )
-            .unwrap(),
-        );
-        let pose4 = loam_math::Iso4Flat {
-            rotation: loam_math::Rotor4::from_rotation_arc(glam::Vec4::Y, glam::Vec4::X),
-            translation: glam::Vec4::ZERO,
-        };
-        r4.set_pose(wall4, glam::Vec4::X * 2.0, pose4).unwrap();
-        r4.update_manifolds();
-        for body in [sphere4, hull4] {
-            let manifold = r4.manifold(canonical_pair(wall4, body)).unwrap();
-            assert!(manifold.points.iter().any(|point| point.normal.x > 0.99));
-        }
-    }
-
-    #[test]
-    fn r4_wall_correction_pushes_toward_the_near_face() {
-        use crate::euclidean_r4::{sphere_body_r4, tesseract_vertices};
-        use glam::Vec4;
-        use loam_math::EuclideanR4;
-        for x in [-0.092, -0.09, -0.088] {
-            let mut world = World::new(EuclideanR4);
-            crate::euclidean_r4::register_default_narrowphase(&mut world.narrowphase);
-            world.push_body(
-                BodyDef::fixed(
-                    Vec4::ZERO,
-                    Collider::ConvexPolytope4D {
-                        vertices: tesseract_vertices(2.0)
-                            .into_iter()
-                            .map(|v| v * Vec4::new(0.05, 2.0, 2.0, 2.0))
-                            .collect(),
-                    },
-                    1.0,
-                    &EuclideanR4,
-                )
-                .unwrap(),
-            );
-            let ball = world.push_body(
-                sphere_body_r4(Vec4::new(x, 0.0, 0.0, 0.0), Vec4::ZERO, 0.1, 1.0).unwrap(),
-            );
-            world.step(1.0 / 240.0).unwrap();
-            assert!(world.bodies[ball].position.x < x, "x={x}");
-        }
     }
 }

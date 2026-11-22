@@ -48,7 +48,7 @@ fn torus_world(volume: &Isovolume<3>, x: f32) -> (World<EuclideanR3>, BodyId) {
 }
 
 #[test]
-fn a_body_dropped_on_an_sdf_extracted_torus_rests_on_its_surface() {
+fn a_body_rests_on_an_sdf_extracted_torus_and_falls_through_its_hole() {
     let volume = extract();
     let (mut world, sphere) = torus_world(&volume, MAJOR);
 
@@ -84,11 +84,7 @@ fn a_body_dropped_on_an_sdf_extracted_torus_rests_on_its_surface() {
         "sphere has not settled: |v| = {}",
         body.velocity.length()
     );
-}
 
-#[test]
-fn a_body_dropped_down_the_torus_axis_passes_through_the_hole() {
-    let volume = extract();
     let (mut world, sphere) = torus_world(&volume, 0.0);
     for _ in 0..600 {
         world.step(DT).unwrap();

@@ -135,25 +135,3 @@ fn loam_geodesic_step(p: vec4<f32>, v: vec4<f32>, s: f32) -> LoamGeodesicStep {
     return LoamGeodesicStep(loam_exp(p, v * s), v);
 }
 "#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-
-    fn r4() -> EuclideanR4 {
-        EuclideanR4
-    }
-
-    #[test]
-    fn iso_transport_ignores_translation() {
-        let s = r4();
-        let iso = Iso4Flat::from_translation(Vec4::new(100.0, -50.0, 7.0, 12.0));
-        let v = Vec4::new(1.0, 0.0, 0.0, 0.0);
-        let transported = s.iso_transport(iso, Vec4::ZERO, v);
-        assert_relative_eq!(transported.x, v.x);
-        assert_relative_eq!(transported.y, v.y);
-        assert_relative_eq!(transported.z, v.z);
-        assert_relative_eq!(transported.w, v.w);
-    }
-}

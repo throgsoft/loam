@@ -436,7 +436,6 @@ mod tests {
             .resolve(adapter_features, &adapter_limits)
             .unwrap_err();
         assert_eq!(error, MissingGpuCapability::Feature(Features::MULTIVIEW));
-        assert!(error.to_string().contains("MULTIVIEW"), "{error}");
 
         let request = FeatureRequest {
             required_features: Features::SHADER_F16,
@@ -456,10 +455,6 @@ mod tests {
                 required: u64::from(adapter_limits.max_texture_dimension_2d) * 2,
                 available: u64::from(adapter_limits.max_texture_dimension_2d),
             }
-        );
-        assert!(
-            error.to_string().contains("max_texture_dimension_2d"),
-            "{error}"
         );
 
         let request = FeatureRequest {

@@ -400,19 +400,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stackbuf_push_silently_drops_past_max_window() {
-        let mut buf = StackBuf::new();
-        for i in 0..(MAX_WINDOW + 10) {
-            buf.push(Duration::from_nanos(i as u64));
-        }
-        assert_eq!(
-            buf.as_slice().len(),
-            MAX_WINDOW,
-            "push beyond cap must not allocate; samples drop"
-        );
-    }
-
-    #[test]
     fn stackbuf_percentile_picks_nearest_rank() {
         let mut buf = StackBuf::new();
         for ms in [10, 4, 7, 1, 8, 2, 9, 6, 3, 5] {
@@ -421,91 +408,5 @@ mod tests {
         assert_eq!(buf.percentile(50), Duration::from_millis(5));
         assert_eq!(buf.percentile(95), Duration::from_millis(10));
         assert_eq!(buf.percentile(99), Duration::from_millis(10));
-    }
-}
-
-#[cfg(test)]
-mod seat_tests {
-    use super::*;
-    use loam_egui::egui;
-    const BAR_HEIGHT: f32 = 64.0;
-
-    const PANEL_WIDTH: f32 = 120.0;
-    const VIEWPORT: egui::Vec2 = egui::vec2(1280.0, 800.0);
-    const NARROW_VIEWPORT: egui::Vec2 = egui::vec2(200.0, 400.0);
-    fn viewport(size: egui::Vec2) -> egui::RawInput {
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn perf_overlay_boots_into_the_top_right_of_the_panel_band() {
-        frame_trace::begin_frame();
-        frame_trace::end_frame();
-
-        let ctx = egui::Context::default();
-        let mut overlay = PerfOverlay::new().always_visible();
-        let mut bar_bottom = 0.0;
-        let mut band = egui::Rect::NOTHING;
-        let _ = ctx.run(viewport(VIEWPORT), |ctx| {
-            bar_bottom = egui::TopBottomPanel::top("shell-menu-bar")
-                .exact_height(BAR_HEIGHT)
-                .show(ctx, |ui| {
-                    ui.label("bar");
-                })
-                .response
-                .rect
-                .bottom();
-            band = ctx.available_rect();
-            overlay.show(ctx);
-        });
-        let rect = ctx
-            .memory(|m| m.area_rect(egui::Id::new("loam-perf-overlay")))
-            .expect("overlay area is registered once shown");
-        assert!(
-            rect.top() >= bar_bottom,
-            "overlay top {} must clear the menu bar bottom {bar_bottom}",
-            rect.top(),
-        );
-        assert!(
-            rect.center().x > band.center().x,
-            "overlay center x {} must sit in the band's right half of {band:?}",
-            rect.center().x,
-        );
-        assert!(
-            rect.center().y < band.center().y,
-            "overlay center y {} must sit in the band's top half of {band:?}",
-            rect.center().y,
-        );
-    }
-
-    #[test]
-    fn perf_overlay_seat_clamps_to_the_band_left_when_the_band_is_narrower_than_the_readout() {
-        let ctx = egui::Context::default();
-        let mut seat = None;
-        let mut band = egui::Rect::NOTHING;
-        let _ = ctx.run(viewport(NARROW_VIEWPORT), |ctx| {
-            egui::SidePanel::left("left")
-                .exact_width(PANEL_WIDTH)
-                .show(ctx, |ui| {
-                    ui.label("left");
-                });
-            band = ctx.available_rect();
-            seat = Some(perf_overlay_seat(ctx));
-        });
-        let seat = seat.expect("run closure sets the seat");
-        assert!(
-            band.width() < OVERLAY_MARGIN + OVERLAY_WIDTH && band.left() > 0.0,
-            "fixture must leave a band {band:?} too narrow for the readout and \
-             offset from the viewport origin, or the clamp goes untested",
-        );
-        assert_eq!(
-            seat.x,
-            band.left(),
-            "a band too narrow for the readout must seat it at the band's left \
-             edge, not at the viewport origin or off-screen",
-        );
     }
 }

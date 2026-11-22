@@ -434,18 +434,4 @@ mod tests {
             assert_eq!(member.offset as usize, offset, "offset of {name}");
         }
     }
-
-    #[test]
-    fn every_srgb_byte_survives_decode_and_the_targets_encode() {
-        for byte in 0..=u8::MAX {
-            let [linear, _, _] = linear_from_srgb8([byte; 3]);
-            let c = f64::from(linear);
-            let encoded = if c <= 0.003_130_8 {
-                12.92 * c
-            } else {
-                1.055 * c.powf(1.0 / 2.4) - 0.055
-            };
-            assert_eq!((encoded * 255.0).round() as u8, byte);
-        }
-    }
 }

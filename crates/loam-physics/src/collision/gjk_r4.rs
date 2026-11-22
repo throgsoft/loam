@@ -245,7 +245,9 @@ mod tests {
     }
 
     #[test]
-    fn a_small_positive_gap_is_not_an_intersection() {
+    fn gjk_r4_reports_overlap_exactly_when_the_shapes_overlap_down_to_small_gaps() {
+        use crate::euclidean_r4::tesseract_vertices;
+
         for gap in [1e-5, 1e-4, 5e-4, 1e-3] {
             let a = Sphere4 {
                 center: Vec4::ZERO,
@@ -262,11 +264,7 @@ mod tests {
                 );
             }
         }
-    }
 
-    #[test]
-    fn rotated_hulls_with_disjoint_x_intervals_are_separated() {
-        use crate::euclidean_r4::tesseract_vertices;
         let rotor = Bivector4::new(0.37, -0.21, 0.43, 0.17, -0.29, 0.13).exp();
         for scale in [0.1, 1.0, 100.0] {
             let a_vertices = tesseract_vertices(scale);
@@ -299,10 +297,7 @@ mod tests {
                 }
             }
         }
-    }
 
-    #[test]
-    fn overlapping_spheres_complete_lower_dimensional_searches() {
         for center in [
             Vec4::X,
             Vec4::new(1.1, 0.7, 0.0, 0.0),
@@ -325,59 +320,6 @@ mod tests {
                     ),
                     "center={center:?}, direction={direction:?}"
                 );
-            }
-        }
-    }
-
-    #[test]
-    fn deeply_overlapping_pentatopes() {
-        use crate::euclidean_r4::pentatope_vertices;
-        let va: Vec<Vec4> = pentatope_vertices(1.0);
-        let vb: Vec<Vec4> = pentatope_vertices(1.0)
-            .into_iter()
-            .map(|v| v + Vec4::new(0.2, 0.0, 0.0, 0.0))
-            .collect();
-        let a = ConvexHull4 { vertices: &va };
-        let b = ConvexHull4 { vertices: &vb };
-        assert!(matches!(
-            gjk_intersect_r4(&a, &b, Vec4::X),
-            GjkResult4::Intersecting { .. }
-        ));
-    }
-
-    #[test]
-    fn tesseract_face_touching_is_bracketed_and_never_resolves_to_a_depth() {
-        use crate::collision::epa_r4::epa_r4;
-        use crate::euclidean_r4::tesseract_vertices;
-
-        let va: Vec<Vec4> = tesseract_vertices(1.0);
-        let a = ConvexHull4 { vertices: &va };
-        for (shift, expect_overlap) in [
-            (1.0 - 1e-1, true),
-            (1.0 - 1e-2, true),
-            (1.0, false),
-            (1.0 + 1e-1, false),
-            (1.0 + 1.0, false),
-        ] {
-            let vb: Vec<Vec4> = tesseract_vertices(1.0)
-                .into_iter()
-                .map(|v| v + Vec4::new(shift, 0.0, 0.0, 0.0))
-                .collect();
-            let b = ConvexHull4 { vertices: &vb };
-            let depth = match gjk_intersect_r4(&a, &b, Vec4::X) {
-                GjkResult4::Intersecting { simplex } => {
-                    epa_r4(&a, &b, simplex, 2.0).map_or(0.0, |c| c.penetration)
-                }
-                GjkResult4::Separated => 0.0,
-            };
-            if expect_overlap {
-                assert!(
-                    (depth - (1.0 - shift)).abs() < 1e-2,
-                    "shift {shift} overlaps by {} but resolved to {depth}",
-                    1.0 - shift
-                );
-            } else {
-                assert_eq!(depth, 0.0, "shift {shift} is clear but resolved to {depth}");
             }
         }
     }

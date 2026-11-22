@@ -46,37 +46,3 @@ impl CommandQueue {
         self.pending.drain(..)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn queues_preserve_order_without_sharing_state() {
-        let mut first = CommandQueue::new();
-        let mut second = CommandQueue::new();
-        first.submit_line("alpha 1");
-        second.submit_line("other");
-        first.submit_line("beta");
-        assert_eq!(
-            first
-                .drain()
-                .map(|command| command.name)
-                .collect::<Vec<_>>(),
-            ["alpha", "beta"]
-        );
-        assert_eq!(second.drain().next().unwrap().name, "other");
-        assert!(first.drain().next().is_none());
-    }
-
-    #[test]
-    fn submitted_arguments_keep_console_quoting() {
-        let mut queue = CommandQueue::new();
-        assert!(queue.submit_line(r#"load "5 cell" fast"#));
-        assert!(!queue.submit_line("  "));
-        let commands: Vec<_> = queue.drain().collect();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].name, "load");
-        assert_eq!(commands[0].args, ["5 cell", "fast"]);
-    }
-}

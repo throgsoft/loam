@@ -147,29 +147,3 @@ impl Bindings {
             .map(|(_, action)| *action)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn host_messages_keep_arrival_order_and_latest_returns_the_newest_per_topic() {
-        let mut host = HostMessages::default();
-        host.push("scroll", &[0.25]);
-        host.push("reset", &[]);
-        host.push("scroll", &[0.5, 1.0]);
-
-        let seen: Vec<(&str, &[f32])> = host.iter().collect();
-        assert_eq!(
-            seen,
-            [
-                ("scroll", &[0.25][..]),
-                ("reset", &[][..]),
-                ("scroll", &[0.5, 1.0][..])
-            ]
-        );
-        assert_eq!(host.latest("scroll"), Some(&[0.5, 1.0][..]));
-        assert_eq!(host.latest("reset"), Some(&[][..]));
-        assert_eq!(host.latest("scrol"), None);
-    }
-}

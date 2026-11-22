@@ -343,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn a_binding_made_after_a_snapshot_is_gone_after_the_restore() {
+    fn a_restore_rewinds_field_bindings_and_refuses_a_world_whose_field_list_differs() {
         let (mut world, _, field, ball) = ground_world();
         let saved = world.snapshot();
         world.bind_field(ball, field).expect("binding");
@@ -353,10 +353,7 @@ mod tests {
             world.field_bindings().is_empty(),
             "the binding survived a restore that predates it"
         );
-    }
 
-    #[test]
-    fn a_restore_whose_field_list_differs_is_refused_and_leaves_the_world_alone() {
         let (mut world, _, field, ball) = ground_world();
         world.bind_field(ball, field).expect("binding");
         for _ in 0..60 {
@@ -375,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn a_conservative_bound_field_refuses_a_sphere_and_names_the_field_kind() {
+    fn the_field_narrowphase_refuses_what_it_cannot_answer_and_names_why() {
         let world = one_body(Collider::sphere_at_origin(0.5), Vec3::new(0.0, 1.0, 0.0));
         let id = world.bodies.id_at(0);
         assert_eq!(
@@ -384,10 +381,7 @@ mod tests {
                 .err(),
             Some(FieldRefusal::Kind(FieldKind::ConservativeBound))
         );
-    }
 
-    #[test]
-    fn a_hull_body_refuses_an_exact_field_and_names_the_collider_kind() {
         let corners: Vec<Vec3> = (0..8)
             .map(|i| {
                 Vec3::new(
@@ -408,10 +402,7 @@ mod tests {
                 .err(),
             Some(FieldRefusal::Collider(ColliderKind::ConvexPolytope3D))
         );
-    }
 
-    #[test]
-    fn a_degenerate_gradient_refuses_rather_than_inventing_a_normal() {
         let world = one_body(Collider::sphere_at_origin(0.5), Vec3::ZERO);
         let id = world.bodies.id_at(0);
         assert_eq!(

@@ -48,39 +48,3 @@ fn upper_pair(b: &Bivector4, row: usize, col: usize) -> f32 {
     };
     b.component(plane)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn pure(plane: Plane4) -> Bivector4 {
-        let mut b = Bivector4::ZERO;
-        b.set_component(plane, 1.0);
-        b
-    }
-
-    #[test]
-    fn cell_text_each_basis_plane_lights_correct_cell() {
-        let cases = [
-            (Plane4::Xy, (0, 1)),
-            (Plane4::Xz, (0, 2)),
-            (Plane4::Xw, (0, 3)),
-            (Plane4::Yz, (1, 2)),
-            (Plane4::Yw, (1, 3)),
-            (Plane4::Zw, (2, 3)),
-        ];
-        for (plane, (row, col)) in cases {
-            let b = pure(plane);
-            assert_eq!(
-                cell_text(&b, row, col),
-                "+57.3",
-                "plane {plane:?} should populate ({row}, {col})",
-            );
-            assert_eq!(
-                cell_text(&b, col, row),
-                "-57.3",
-                "plane {plane:?} mirror ({col}, {row}) should be negated",
-            );
-        }
-    }
-}

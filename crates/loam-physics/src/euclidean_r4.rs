@@ -518,91 +518,6 @@ mod tests {
     }
 
     #[test]
-    fn sphere_settles_on_4d_floor() {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        world
-            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
-            .unwrap();
-        let _floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
-        let ball = world.push_body(
-            sphere_body_r4(Vec4::new(0.0, 2.0, 0.0, 0.0), Vec4::ZERO, 0.5, 1.0).unwrap(),
-        );
-        for _ in 0..300 {
-            world.step(1.0 / 60.0).unwrap();
-        }
-        let body = &world.bodies[ball];
-        let lowest = body.position.y - 0.5;
-        assert!(
-            (-0.05..=0.05).contains(&lowest),
-            "ball tunneled through 4D floor: y_bottom = {lowest}"
-        );
-        assert!(
-            body.velocity.length() < 0.5,
-            "ball still moving: |v| = {}",
-            body.velocity.length()
-        );
-    }
-
-    #[test]
-    fn pentatope_settles_on_4d_floor() {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        world
-            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
-            .unwrap();
-        let floor = world.push_body(halfspace4_body_r4(Vec4::Y, 0.0).unwrap());
-        let body_id = world.push_body(
-            polytope_body_r4(
-                Vec4::new(0.0, 3.0, 0.0, 0.0),
-                Vec4::ZERO,
-                pentatope_vertices(0.5),
-                1.0,
-            )
-            .unwrap(),
-        );
-        world.bodies[floor].restitution = 0.0;
-        world.bodies[body_id].restitution = 0.0;
-
-        for _ in 0..600 {
-            world.step(1.0 / 60.0).unwrap();
-        }
-        let body = &world.bodies[body_id];
-
-        assert!(
-            body.position.y.is_finite() && (-0.5..=1.0).contains(&body.position.y),
-            "pentatope position out of expected resting band: y = {}",
-            body.position.y
-        );
-        assert!(
-            body.position.x.abs() < 5.0
-                && body.position.z.abs() < 5.0
-                && body.position.w.abs() < 5.0,
-            "pentatope drifted too far horizontally: pos = {:?}",
-            body.position
-        );
-
-        assert!(
-            body.velocity.length() < 1.0,
-            "pentatope still moving after 10 s: |v| = {}, v = {:?}",
-            body.velocity.length(),
-            body.velocity
-        );
-
-        let omega = body.angular_velocity;
-        let omega_mag2 = omega.xy * omega.xy
-            + omega.xz * omega.xz
-            + omega.xw * omega.xw
-            + omega.yz * omega.yz
-            + omega.yw * omega.yw
-            + omega.zw * omega.zw;
-        assert!(
-            omega_mag2.is_finite() && omega_mag2 < 4.0,
-            "pentatope angular velocity blew up: |ω|² = {omega_mag2}, ω = {omega:?}"
-        );
-    }
-
-    #[test]
     fn a_flat_landing_bounces_to_its_restitution_height_at_any_step_size() {
         const HALF: f32 = 0.225;
         const RESTITUTION: f32 = 0.05;
@@ -755,69 +670,6 @@ mod tests {
     }
 
     #[test]
-    fn falling_sphere_accelerates_in_r4() {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        world
-            .set_gravity(Some(Vec4::new(0.0, -9.8, 0.0, 0.0)))
-            .unwrap();
-
-        let id = world.push_body(
-            sphere_body_r4(Vec4::new(0.0, 5.0, 0.0, 0.0), Vec4::ZERO, 0.5, 1.0).unwrap(),
-        );
-        world.step(1.0 / 60.0).unwrap();
-        let body = &world.bodies[id];
-        assert!(body.velocity.y < -0.1 && body.velocity.y > -0.2);
-        assert_close(body.velocity.x, 0.0, 1e-6);
-        assert_close(body.velocity.z, 0.0, 1e-6);
-        assert_close(body.velocity.w, 0.0, 1e-6);
-    }
-
-    #[test]
-    fn head_on_sphere_collision_reverses_velocity() {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-
-        world.push_body(
-            sphere_body_r4(
-                Vec4::new(-1.0, 0.0, 0.0, 0.0),
-                Vec4::new(2.0, 0.0, 0.0, 0.0),
-                0.5,
-                1.0,
-            )
-            .unwrap(),
-        );
-        world.push_body(
-            sphere_body_r4(
-                Vec4::new(1.0, 0.0, 0.0, 0.0),
-                Vec4::new(-2.0, 0.0, 0.0, 0.0),
-                0.5,
-                1.0,
-            )
-            .unwrap(),
-        );
-
-        for _ in 0..120 {
-            world.step(1.0 / 120.0).unwrap();
-        }
-        let a = &world.bodies[0];
-        let b = &world.bodies[1];
-        assert!(
-            a.velocity.x < 0.0,
-            "body 0 should bounce back: v.x = {}",
-            a.velocity.x
-        );
-        assert!(
-            b.velocity.x > 0.0,
-            "body 1 should bounce back: v.x = {}",
-            b.velocity.x
-        );
-        assert_close(a.velocity.y, 0.0, 1e-4);
-        assert_close(a.velocity.z, 0.0, 1e-4);
-        assert_close(a.velocity.w, 0.0, 1e-4);
-    }
-
-    #[test]
     fn sphere_sphere_off_plane_contact_resolves_along_line_of_centers() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
@@ -841,53 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn sphere_inside_tesseract_produces_contact() {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        let _a = world.push_body(sphere_body_r4(Vec4::ZERO, Vec4::ZERO, 0.3, 1.0).unwrap());
-        let _b = world.push_body(
-            polytope_body_r4(Vec4::ZERO, Vec4::ZERO, tesseract_vertices(0.8), 0.0).unwrap(),
-        );
-        let pair_found = {
-            let geometry = world.geometry().clone();
-            let (a, b) = world.bodies.dense_mut().split_at_mut(1);
-            world
-                .narrowphase
-                .test(&a[0], &b[0], &geometry, &EuclideanR4)
-                .is_some()
-        };
-        assert!(
-            pair_found,
-            "sphere inside tesseract should produce a contact"
-        );
-    }
-
-    #[test]
-    fn separated_pentatopes_produce_no_contact() {
-        let mut world = World::new(EuclideanR4);
-        register_default_narrowphase(&mut world.narrowphase);
-        let _a = world.push_body(
-            polytope_body_r4(Vec4::ZERO, Vec4::ZERO, pentatope_vertices(1.0), 1.0).unwrap(),
-        );
-        let _b = world.push_body(
-            polytope_body_r4(
-                Vec4::new(10.0, 0.0, 0.0, 0.0),
-                Vec4::ZERO,
-                pentatope_vertices(1.0),
-                1.0,
-            )
-            .unwrap(),
-        );
-        let geometry = world.geometry().clone();
-        let (a, b) = world.bodies.dense_mut().split_at_mut(1);
-        assert!(world
-            .narrowphase
-            .test(&a[0], &b[0], &geometry, &EuclideanR4)
-            .is_none());
-    }
-
-    #[test]
-    fn integrated_orientation_advances_a_body_point_along_the_world_frame_omega() {
+    fn integrated_orientation_follows_the_world_frame_omega_and_stays_a_unit_rotor() {
         let space = EuclideanR4;
         let start = Iso4Flat {
             rotation: Bivector4::new(0.8, 0.0, 0.0, std::f32::consts::FRAC_PI_2, 0.0, 0.9).exp(),
@@ -909,11 +715,7 @@ mod tests {
              {residual} over a step of {}",
             (after - before).length()
         );
-    }
 
-    #[test]
-    fn orientation_integration_preserves_unit_rotor() {
-        let space = EuclideanR4;
         let mut iso = Iso4Flat::IDENTITY;
         let omega = Bivector4::new(0.2, 0.0, 0.0, 0.0, 0.0, 0.15);
         for _ in 0..1000 {

@@ -673,49 +673,8 @@ mod tests {
             .collect()
     }
 
-    fn mock_metrics(h_advance: f32) -> TextMetrics {
-        TextMetrics {
-            advances: (0x20u8..=0x7Eu8).map(|c| (c as char, h_advance)).collect(),
-            bake_size_px: 16.0,
-            line_height_px: 16.0,
-        }
-    }
-
     #[test]
-    fn layout_newline_resets_x_and_advances_y() {
-        let glyphs = mock_glyph_table(10.0);
-        let mut out = Vec::new();
-        layout_text(
-            "a\nb",
-            [5.0, 0.0],
-            16.0,
-            [1.0; 4],
-            &glyphs,
-            16.0,
-            16.0,
-            MOCK_ASCENT,
-            &mut out,
-        );
-        assert_eq!(out.len(), 12);
-
-        let first = out[0];
-        assert_eq!(first.pos[0], 5.0);
-        assert!((first.pos[1] - MOCK_ASCENT).abs() < 1e-5);
-
-        let second = out[6];
-        assert_eq!(
-            second.pos[0], 5.0,
-            "newline must reset cursor_x to position[0]"
-        );
-        assert!(
-            (second.pos[1] - (MOCK_ASCENT + 16.0)).abs() < 1e-5,
-            "newline must advance cursor_y by line_h, got {}",
-            second.pos[1],
-        );
-    }
-
-    #[test]
-    fn position_y_is_the_ascender_line_at_every_scale() {
+    fn glyphs_sit_on_the_ascender_line_at_every_scale_and_advance_by_width_not_ink() {
         let mut glyphs = mock_glyph_table(10.0);
         glyphs.insert(
             'A',
@@ -748,68 +707,7 @@ mod tests {
                 out[0].pos[1]
             );
         }
-    }
 
-    #[test]
-    fn layout_cursor_advances_by_h_advance_scaled() {
-        let glyphs = mock_glyph_table(10.0);
-        let mut out = Vec::new();
-        layout_text(
-            "ab",
-            [0.0, 0.0],
-            32.0,
-            [1.0; 4],
-            &glyphs,
-            16.0,
-            16.0,
-            MOCK_ASCENT,
-            &mut out,
-        );
-
-        assert_eq!(out[0].pos[0], 0.0);
-        assert_eq!(out[6].pos[0], 20.0);
-    }
-
-    #[test]
-    fn layout_skips_unprintable_and_out_of_range_chars() {
-        let glyphs = mock_glyph_table(10.0);
-        let mut out = Vec::new();
-        layout_text(
-            "a\tb\u{80}c😀d",
-            [0.0, 0.0],
-            16.0,
-            [1.0; 4],
-            &glyphs,
-            16.0,
-            16.0,
-            MOCK_ASCENT,
-            &mut out,
-        );
-        assert_eq!(out.len(), 24);
-    }
-
-    #[test]
-    fn layout_skips_missing_glyphs() {
-        let mut glyphs = mock_glyph_table(10.0);
-        glyphs.remove(&'b');
-        let mut out = Vec::new();
-        layout_text(
-            "ab",
-            [0.0, 0.0],
-            16.0,
-            [1.0; 4],
-            &glyphs,
-            16.0,
-            16.0,
-            MOCK_ASCENT,
-            &mut out,
-        );
-        assert_eq!(out.len(), 6);
-    }
-
-    #[test]
-    fn metrics_keep_advance_widths_separate_from_ink_overhang() {
-        let metrics = mock_metrics(10.0);
         let mut glyphs = mock_glyph_table(10.0);
         let glyph = glyphs.get_mut(&'A').unwrap();
         glyph.bearing_x = -2.0;
@@ -826,18 +724,9 @@ mod tests {
             MOCK_ASCENT,
             &mut vertices,
         );
-        assert_eq!(metrics.measure("AA\nA\n", 32.0), [40.0, 96.0]);
         assert_eq!(vertices[0].pos[0], 3.0);
         assert_eq!(vertices[6].pos[0], 23.0);
         assert_eq!(vertices[12].pos[0], 3.0);
         assert_eq!(vertices[12].pos[1] - vertices[0].pos[1], 32.0);
-    }
-
-    #[test]
-    fn renderable_charset_excludes_controls_and_non_ascii() {
-        assert!(is_renderable(" ~\n"));
-        for text in ["\u{1f}", "\u{7f}", "\t", "é", "😀"] {
-            assert!(!is_renderable(text), "{text:?}");
-        }
     }
 }

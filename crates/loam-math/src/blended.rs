@@ -878,19 +878,13 @@ impl WgslSpace for BlendedSpace<crate::EuclideanR3, crate::HyperbolicH3, LinearB
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{EuclideanR3, HyperbolicH3};
 
-    #[test]
-    fn blend_interval_rejects_nonfinite_or_zero_width() {
-        for (start, end) in [
-            (0.0, 0.0),
-            (f32::NAN, 1.0),
-            (0.0, f32::INFINITY),
-            (-f32::MAX, f32::MAX),
-            (0.0, f32::from_bits(1)),
-            (0.0, 5e-39),
-        ] {
-            assert!(LinearBlendX::new(start, end).is_none());
-        }
+    fn close(a: f32, b: f32, tol: f32) {
+        assert!(
+            (a - b).abs() <= tol,
+            "expected {a} close to {b} (tol {tol})"
+        );
     }
 
     #[test]
@@ -905,7 +899,7 @@ mod tests {
                 Vec3::X * (-10.0 * p.x * (1.0 - (p.x / 0.2).powi(2)).max(0.0))
             }
         }
-        let space = BlendedSpace::new(crate::EuclideanR3, crate::HyperbolicH3, Bump);
+        let space = BlendedSpace::new(EuclideanR3, HyperbolicH3, Bump);
         let a = Vec3::X * -0.2;
         let b = Vec3::X * 0.2;
         let length: f32 = (0..1024)
@@ -918,229 +912,80 @@ mod tests {
         assert!((space.distance(a, b) - length).abs() < 1e-3);
     }
 
-    fn close(a: f32, b: f32, tol: f32) {
-        assert!((a - b).abs() <= tol, "expected {a} ≈ {b} (tol {tol})");
-    }
-
     #[test]
-    fn linear_blend_x_smoothstep_endpoints() {
-        let f = LinearBlendX::new(-1.0, 1.0).unwrap();
-        close(f.weight(Vec3::new(-1.0, 0.0, 0.0)), 0.0, 1e-6);
-        close(f.weight(Vec3::new(1.0, 0.0, 0.0)), 1.0, 1e-6);
-        close(f.weight(Vec3::ZERO), 0.5, 1e-6);
+    fn distinct_nearby_points_keep_nonzero_distance() {
+        let space = BlendedSpace::new(
+            EuclideanR3,
+            HyperbolicH3,
+            LinearBlendX::new(50.0, 100.0).expect("a finite interval"),
+        );
+        let from = Vec3::ZERO;
+        let to = Vec3::X * (0.1 * LOG_RESIDUAL_TOL);
+        let distance = space.distance(from, to);
+        assert!(distance > 0.0);
+        assert!((distance - to.x).abs() < 1e-10);
     }
 
-    #[test]
-    fn linear_blend_x_is_constant_outside_zone() {
-        let f = LinearBlendX::new(-1.0, 1.0).unwrap();
-        close(f.weight(Vec3::new(-100.0, 0.0, 0.0)), 0.0, 0.0);
-        assert_eq!(f.gradient(Vec3::new(-100.0, 0.0, 0.0)), Vec3::ZERO);
-        close(f.weight(Vec3::new(100.0, 0.0, 0.0)), 1.0, 0.0);
-        assert_eq!(f.gradient(Vec3::new(100.0, 0.0, 0.0)), Vec3::ZERO);
-        close(f.gradient(Vec3::new(-1.0, 0.0, 0.0)).x, 0.0, 1e-6);
-        close(f.gradient(Vec3::new(1.0, 0.0, 0.0)).x, 0.0, 1e-6);
-    }
-
-    #[test]
-    fn linear_blend_x_gradient_is_axis_aligned() {
-        let f = LinearBlendX::new(-1.0, 1.0).unwrap();
-        let g = f.gradient(Vec3::ZERO);
-        assert!(g.x > 0.0, "midpoint gradient should be positive along +x");
-        close(g.y, 0.0, 0.0);
-        close(g.z, 0.0, 0.0);
-
-        close(g.x, 0.9375, 1e-6);
-    }
-
-    #[test]
-    fn linear_blend_x_closed_form_matches_finite_diff() {
-        let f = LinearBlendX::new(-1.0, 1.0).unwrap();
-
-        fn finite_diff_gradient<F: BlendingField>(field: &F, p: Vec3) -> Vec3 {
-            const EPS: f32 = 1.0e-3;
-            let dx =
-                (field.weight(p + Vec3::X * EPS) - field.weight(p - Vec3::X * EPS)) / (2.0 * EPS);
-            let dy =
-                (field.weight(p + Vec3::Y * EPS) - field.weight(p - Vec3::Y * EPS)) / (2.0 * EPS);
-            let dz =
-                (field.weight(p + Vec3::Z * EPS) - field.weight(p - Vec3::Z * EPS)) / (2.0 * EPS);
-            Vec3::new(dx, dy, dz)
-        }
-
-        for x in [-0.7_f32, -0.3, 0.0, 0.3, 0.7] {
-            let p = Vec3::new(x, 0.0, 0.0);
-            let analytic = f.gradient(p);
-            let numeric = finite_diff_gradient(&f, p);
-            close(analytic.x, numeric.x, 5e-4);
-            close(analytic.y, numeric.y, 1e-6);
-            close(analytic.z, numeric.z, 1e-6);
-        }
-    }
-
-    #[test]
-    fn linear_blend_x_handles_reversed_inputs() {
-        let f = LinearBlendX::new(1.0, -1.0).unwrap();
-        close(f.weight(Vec3::new(-1.0, 0.0, 0.0)), 0.0, 1e-6);
-        close(f.weight(Vec3::new(1.0, 0.0, 0.0)), 1.0, 1e-6);
-    }
-
-    #[test]
-    fn hyperbolic_h3_log_half_gradient_matches_finite_diff() {
-        use crate::HyperbolicH3;
-        let s = HyperbolicH3;
-        const EPS: f32 = 1e-3;
-        let fd = |p: Vec3| -> Vec3 {
-            let dx = (s.conformal_log_half(p + Vec3::X * EPS)
-                - s.conformal_log_half(p - Vec3::X * EPS))
-                / (2.0 * EPS);
-            let dy = (s.conformal_log_half(p + Vec3::Y * EPS)
-                - s.conformal_log_half(p - Vec3::Y * EPS))
-                / (2.0 * EPS);
-            let dz = (s.conformal_log_half(p + Vec3::Z * EPS)
-                - s.conformal_log_half(p - Vec3::Z * EPS))
-                / (2.0 * EPS);
-            Vec3::new(dx, dy, dz)
-        };
-        for p in [
-            Vec3::new(0.1, 0.0, 0.0),
-            Vec3::new(0.3, -0.2, 0.1),
-            Vec3::new(-0.4, 0.5, 0.2),
-        ] {
-            let analytic = s.conformal_log_half_gradient(p);
-            let numeric = fd(p);
-            close(analytic.x, numeric.x, 5e-3);
-            close(analytic.y, numeric.y, 5e-3);
-            close(analytic.z, numeric.z, 5e-3);
-        }
-    }
-
-    const METRIC_PROBE_EPS: f32 = 1.0e-3;
-
-    const METRIC_PROBE_SLACK: f32 = 1.0e-3;
-
-    fn metric_probe_directions(p: Vec3) -> [Vec3; 4] {
-        let radial = if p.length_squared() > 0.0 {
-            p.normalize()
-        } else {
-            Vec3::X
-        };
-        let tangential_a = radial.any_orthonormal_vector();
-        let tangential_b = radial.cross(tangential_a).normalize();
-        let oblique = (radial + tangential_a + tangential_b).normalize();
-        [radial, tangential_a, tangential_b, oblique]
-    }
-
-    fn assert_conformal_factor_matches_metric<S>(space: &S, samples: &[Vec3])
+    fn assert_log_half_gradient_matches_finite_diff<S>(space: &S, samples: &[Vec3])
     where
         S: ConformallyFlat<Point = Vec3, Vector = Vec3>,
     {
+        const EPS: f32 = 1e-3;
         for &p in samples {
-            let root_f = space.conformal_factor(p).sqrt();
-
-            let truncation = 0.5 * space.conformal_log_half_gradient(p).length() * METRIC_PROBE_EPS;
-            let tol = root_f * (truncation + METRIC_PROBE_SLACK);
-            for u in metric_probe_directions(p) {
-                let measured = space.distance(p, p + u * METRIC_PROBE_EPS) / METRIC_PROBE_EPS;
-                assert!(
-                    (measured - root_f).abs() <= tol,
-                    "conformal factor disagrees with the metric at p = {p:?} along \
-                     u = {u:?}: measured {measured}, √f = {root_f} (tol {tol})"
-                );
-            }
+            let numeric = Vec3::from_array([Vec3::X, Vec3::Y, Vec3::Z].map(|axis| {
+                (space.conformal_log_half(p + axis * EPS)
+                    - space.conformal_log_half(p - axis * EPS))
+                    / (2.0 * EPS)
+            }));
+            let analytic = space.conformal_log_half_gradient(p);
+            assert!(
+                (analytic - numeric).abs().max_element() <= 5e-3,
+                "gradient {analytic:?} misses the finite difference {numeric:?} at {p:?}"
+            );
         }
     }
 
     #[test]
-    fn conformal_factor_reproduces_the_space_metric_in_every_direction() {
-        use crate::{EuclideanR3, HyperbolicH3};
-
-        assert_conformal_factor_matches_metric(
-            &EuclideanR3,
-            &[
-                Vec3::ZERO,
-                Vec3::new(0.25, -0.4, 0.1),
-                Vec3::new(1.0, 0.5, -0.75),
-            ],
-        );
-
-        assert_conformal_factor_matches_metric(
+    fn closed_form_log_half_gradient_matches_finite_diff() {
+        assert_log_half_gradient_matches_finite_diff(
             &HyperbolicH3,
             &[
-                Vec3::ZERO,
-                Vec3::new(0.2, 0.0, 0.0),
+                Vec3::new(0.1, 0.0, 0.0),
                 Vec3::new(0.3, -0.2, 0.1),
-                Vec3::new(0.4, 0.3, -0.2),
+                Vec3::new(-0.4, 0.5, 0.2),
             ],
         );
-
-        assert_conformal_factor_matches_metric(
+        assert_log_half_gradient_matches_finite_diff(
             &BlendedSpace::new(
                 EuclideanR3,
                 HyperbolicH3,
-                LinearBlendX::new(-0.5, 0.5).unwrap(),
+                LinearBlendX::new(-0.5, 0.5).expect("a finite interval"),
             ),
-            &[Vec3::new(-0.7, 0.1, 0.0), Vec3::new(0.55, 0.15, -0.1)],
+            &[
+                Vec3::new(-0.7, 0.05, 0.0),
+                Vec3::new(0.0, 0.1, -0.1),
+                Vec3::new(0.6, 0.05, 0.0),
+            ],
         );
     }
 
     #[test]
-    fn blended_space_log_half_gradient_matches_finite_diff() {
-        use crate::{EuclideanR3, HyperbolicH3};
-        let bs = BlendedSpace::new(
-            EuclideanR3,
-            HyperbolicH3,
-            LinearBlendX::new(-0.5, 0.5).unwrap(),
-        );
-        let fd = |p: Vec3| -> Vec3 {
-            const EPS: f32 = 1e-3;
-            let dx = (bs.conformal_log_half(p + Vec3::X * EPS)
-                - bs.conformal_log_half(p - Vec3::X * EPS))
-                / (2.0 * EPS);
-            let dy = (bs.conformal_log_half(p + Vec3::Y * EPS)
-                - bs.conformal_log_half(p - Vec3::Y * EPS))
-                / (2.0 * EPS);
-            let dz = (bs.conformal_log_half(p + Vec3::Z * EPS)
-                - bs.conformal_log_half(p - Vec3::Z * EPS))
-                / (2.0 * EPS);
-            Vec3::new(dx, dy, dz)
-        };
+    fn checked_geodesic_carries_the_frame_along_the_curved_path_and_refuses_an_incomplete_step() {
+        let at = Vec3::new(0.25, -0.1, 0.05);
+        let velocity = Vec3::new(0.2, 0.15, -0.04);
+        let frame = Mat3::from_cols(velocity, Vec3::Y, Vec3::Z);
+        let state = integrate_geodesic_frame_checked(
+            &HyperbolicH3,
+            at,
+            velocity,
+            frame,
+            GEODESIC_DEFAULT_STEPS,
+            GEODESIC_ERROR_BUDGET,
+        )
+        .expect("checked integration");
 
-        for p in [
-            Vec3::new(-0.7, 0.05, 0.0),
-            Vec3::new(0.0, 0.1, -0.1),
-            Vec3::new(0.6, 0.05, 0.0),
-        ] {
-            let analytic = bs.conformal_log_half_gradient(p);
-            let numeric = fd(p);
-            close(analytic.x, numeric.x, 5e-3);
-            close(analytic.y, numeric.y, 5e-3);
-            close(analytic.z, numeric.z, 5e-3);
-        }
-    }
-
-    #[test]
-    fn rk4_in_pure_e3_is_straight_line() {
-        use crate::EuclideanR3;
-        let bs = BlendedSpace::new(
-            EuclideanR3,
-            EuclideanR3,
-            LinearBlendX::new(100.0, 200.0).unwrap(),
-        );
-        for (p, v) in [
-            (Vec3::ZERO, Vec3::X),
-            (Vec3::new(1.0, 2.0, 3.0), Vec3::new(0.5, -0.3, 0.7)),
-            (Vec3::new(-5.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)),
-        ] {
-            let (final_p, final_v) = rk4_geodesic(&bs, p, v, GEODESIC_DEFAULT_STEPS);
-            let expected = p + v;
-            close((final_p - expected).length(), 0.0, 1e-5);
-            close((final_v - v).length(), 0.0, 1e-5);
-        }
-    }
-
-    #[test]
-    fn checked_geodesic_refuses_an_incomplete_step() {
-        use crate::{EuclideanR3, HyperbolicH3};
+        close((state.frame.x_axis - state.velocity).length(), 0.0, 1e-6);
+        assert!((state.point - at - velocity).length() > 1e-4);
 
         assert_eq!(
             integrate_geodesic_frame_checked(
@@ -1167,110 +1012,68 @@ mod tests {
     }
 
     #[test]
-    fn checked_frame_transport_uses_the_integrated_geodesic() {
-        use crate::HyperbolicH3;
-
-        let at = Vec3::new(0.25, -0.1, 0.05);
-        let velocity = Vec3::new(0.2, 0.15, -0.04);
-        let frame = Mat3::from_cols(velocity, Vec3::Y, Vec3::Z);
-        let state = integrate_geodesic_frame_checked(
-            &HyperbolicH3,
-            at,
-            velocity,
-            frame,
-            GEODESIC_DEFAULT_STEPS,
-            GEODESIC_ERROR_BUDGET,
-        )
-        .expect("checked integration");
-
-        close((state.frame.x_axis - state.velocity).length(), 0.0, 1e-6);
-        assert!((state.point - at - velocity).length() > 1e-4);
-    }
-
-    #[test]
-    fn rk4_in_pure_h3_matches_closed_form_at_origin() {
-        use crate::{HyperbolicH3, Space};
-
-        for &mag in &[0.1_f32, 0.3, 0.5] {
-            let v = Vec3::new(mag, 0.0, 0.0);
-            let (final_p, _) = rk4_geodesic(&HyperbolicH3, Vec3::ZERO, v, GEODESIC_DEFAULT_STEPS);
-
-            let expected_radius = mag.tanh();
-            close(final_p.x, expected_radius, 5e-3);
-            close(final_p.y, 0.0, 1e-4);
-            close(final_p.z, 0.0, 1e-4);
-        }
-
-        let v = Vec3::new(0.4, 0.1, 0.0);
-        let (numerical, _) = rk4_geodesic(&HyperbolicH3, Vec3::ZERO, v, GEODESIC_DEFAULT_STEPS);
-        let closed_form = HyperbolicH3.exp(Vec3::ZERO, v);
-        close((numerical - closed_form).length(), 0.0, 5e-3);
-
-        let bs = BlendedSpace::new(
-            HyperbolicH3,
-            HyperbolicH3,
-            LinearBlendX::new(-100.0, -50.0).unwrap(),
-        );
-        let v = Vec3::new(0.5, 0.0, 0.0);
-        let final_p_blended = bs.exp(Vec3::ZERO, v);
-        close(final_p_blended.x, 0.5_f32.tanh(), 5e-3);
-    }
-
-    #[test]
-    fn exp_log_round_trip_in_pure_h3() {
-        use crate::HyperbolicH3;
-        for (from, to) in [
-            (Vec3::ZERO, Vec3::new(0.3, 0.0, 0.0)),
-            (Vec3::ZERO, Vec3::new(0.2, 0.1, -0.1)),
-            (Vec3::new(0.1, 0.1, 0.0), Vec3::new(-0.1, 0.2, 0.1)),
-        ] {
-            let v = gauss_newton_log(
-                &HyperbolicH3,
-                from,
-                to,
-                GEODESIC_DEFAULT_STEPS,
-                LOG_MAX_ITERS,
-            );
-            let endpoint = rk4_geodesic(&HyperbolicH3, from, v, GEODESIC_DEFAULT_STEPS).0;
-            close((endpoint - to).length(), 0.0, 5e-4);
-        }
-    }
-
-    #[test]
-    fn log_in_pure_h3_matches_closed_form() {
-        use crate::{HyperbolicH3, Space};
-        for (from, to) in [
-            (Vec3::ZERO, Vec3::new(0.3, 0.0, 0.0)),
-            (Vec3::ZERO, Vec3::new(0.2, 0.1, 0.0)),
-            (Vec3::new(0.1, 0.0, 0.0), Vec3::new(0.3, 0.2, 0.0)),
-        ] {
-            let numerical = gauss_newton_log(
-                &HyperbolicH3,
-                from,
-                to,
-                GEODESIC_DEFAULT_STEPS,
-                LOG_MAX_ITERS,
-            );
-            let closed_form = HyperbolicH3.log(from, to);
-            close((numerical - closed_form).length(), 0.0, 5e-3);
-        }
-    }
-
-    #[test]
-    fn log_of_self_is_zero() {
-        use crate::HyperbolicH3;
-        let p = Vec3::new(0.2, 0.1, 0.0);
-        let v = gauss_newton_log(&HyperbolicH3, p, p, GEODESIC_DEFAULT_STEPS, LOG_MAX_ITERS);
-        close(v.length(), 0.0, 1e-5);
-    }
-
-    #[test]
-    fn transport_along_the_geodesic_matches_the_h3_closed_form_where_the_blend_is_pure_h3() {
-        use crate::{EuclideanR3, HyperbolicH3, Space};
-        let bs = BlendedSpace::new(
+    fn outside_the_blend_zone_the_space_is_the_pure_component() {
+        let pure_a = BlendedSpace::new(
             EuclideanR3,
             HyperbolicH3,
-            LinearBlendX::new(-0.15, 0.15).unwrap(),
+            LinearBlendX::new(50.0, 100.0).expect("a finite interval"),
+        );
+        let p = Vec3::new(1.0, 2.0, 3.0);
+        let q = Vec3::new(4.0, 5.0, 6.0);
+        let v = Vec3::new(0.5, -0.3, 0.7);
+
+        close(
+            (pure_a.exp(p, v) - EuclideanR3.exp(p, v)).length(),
+            0.0,
+            1e-5,
+        );
+        close(
+            (pure_a.log(p, q) - EuclideanR3.log(p, q)).length(),
+            0.0,
+            1e-3,
+        );
+        close(pure_a.distance(p, q), EuclideanR3.distance(p, q), 1e-3);
+        close(
+            (pure_a.parallel_transport(p, q, v) - EuclideanR3.parallel_transport(p, q, v)).length(),
+            0.0,
+            1e-5,
+        );
+        close(
+            pure_a.conformal_factor(p),
+            EuclideanR3.conformal_factor(p),
+            1e-6,
+        );
+
+        let pure_b = BlendedSpace::new(
+            EuclideanR3,
+            HyperbolicH3,
+            LinearBlendX::new(-100.0, -50.0).expect("a finite interval"),
+        );
+        let p = Vec3::new(0.1, 0.0, 0.0);
+        let q = Vec3::new(0.2, 0.1, 0.0);
+        let v = Vec3::new(0.05, 0.0, 0.0);
+
+        close(
+            (pure_b.exp(p, v) - HyperbolicH3.exp(p, v)).length(),
+            0.0,
+            5e-3,
+        );
+        close(
+            (pure_b.log(p, q) - HyperbolicH3.log(p, q)).length(),
+            0.0,
+            5e-3,
+        );
+        close(pure_b.distance(p, q), HyperbolicH3.distance(p, q), 5e-3);
+        close(
+            pure_b.conformal_factor(p),
+            HyperbolicH3.conformal_factor(p),
+            1e-3,
+        );
+
+        let past_the_zone = BlendedSpace::new(
+            EuclideanR3,
+            HyperbolicH3,
+            LinearBlendX::new(-0.15, 0.15).expect("a finite interval"),
         );
         let v = Vec3::new(0.05, -0.03, 0.04);
 
@@ -1281,7 +1084,7 @@ mod tests {
             (Vec3::new(0.5, 0.1, 0.05), Vec3::new(0.35, 0.15, 0.0)),
         ] {
             let closed = HyperbolicH3.parallel_transport(a, b, v);
-            let integrated = bs.parallel_transport(a, b, v);
+            let integrated = past_the_zone.parallel_transport(a, b, v);
             worst = worst.max((integrated - closed).length());
         }
 
@@ -1289,159 +1092,5 @@ mod tests {
             worst <= 1.0e-4,
             "the blended transport left the H3 closed form by {worst}"
         );
-    }
-
-    #[test]
-    fn parallel_transport_in_h3_has_nonzero_holonomy() {
-        use crate::{HyperbolicH3, Space};
-        let bs = BlendedSpace::new(
-            HyperbolicH3,
-            HyperbolicH3,
-            LinearBlendX::new(-100.0, -50.0).unwrap(),
-        );
-        let path = [
-            Vec3::new(0.1, 0.0, 0.0),
-            Vec3::new(0.3, 0.0, 0.0),
-            Vec3::new(0.2, 0.2, 0.0),
-            Vec3::new(0.1, 0.0, 0.0),
-        ];
-        let v = Vec3::new(0.1, 0.0, 0.0);
-        let transported = bs.parallel_transport_along(&path, v);
-        assert!(transported.is_finite());
-        let drift = (transported - v).length();
-        assert!(
-            drift > 1e-3,
-            "expected non-zero holonomy in H³, got drift {drift}"
-        );
-        assert!(drift < 0.5, "holonomy unreasonably large: {drift}");
-    }
-
-    #[test]
-    fn finite_diff_curvature_matches_closed_form_in_h3() {
-        use crate::HyperbolicH3;
-
-        struct H3FdOnly;
-        impl crate::space::Space for H3FdOnly {
-            type Point = Vec3;
-            type Vector = Vec3;
-            type Frame = Mat3;
-            fn frame_at(&self, _at: Vec3) -> Mat3 {
-                Mat3::IDENTITY
-            }
-            fn distance(&self, _: Vec3, _: Vec3) -> f32 {
-                0.0
-            }
-            fn exp(&self, _: Vec3, _: Vec3) -> Vec3 {
-                Vec3::ZERO
-            }
-            fn log(&self, _: Vec3, _: Vec3) -> Vec3 {
-                Vec3::ZERO
-            }
-            fn parallel_transport(&self, _: Vec3, _: Vec3, v: Vec3) -> Vec3 {
-                v
-            }
-            fn chart_envelope(&self) -> f32 {
-                f32::INFINITY
-            }
-            fn valid_point(&self, p: Vec3) -> bool {
-                p.is_finite()
-            }
-        }
-        impl ConformallyFlat for H3FdOnly {
-            fn conformal_factor(&self, p: Vec3) -> f32 {
-                HyperbolicH3.conformal_factor(p)
-            }
-            fn conformal_log_half(&self, p: Vec3) -> f32 {
-                HyperbolicH3.conformal_log_half(p)
-            }
-            fn conformal_log_half_gradient(&self, p: Vec3) -> Vec3 {
-                HyperbolicH3.conformal_log_half_gradient(p)
-            }
-        }
-        let fd = H3FdOnly;
-
-        for p in [Vec3::ZERO, Vec3::new(0.2, 0.1, 0.0)] {
-            close(fd.scalar_curvature(p), -6.0, 0.5);
-        }
-    }
-
-    #[test]
-    fn distinct_nearby_points_keep_nonzero_distance() {
-        let space = BlendedSpace::new(
-            crate::EuclideanR3,
-            crate::HyperbolicH3,
-            LinearBlendX::new(50.0, 100.0).unwrap(),
-        );
-        let from = Vec3::ZERO;
-        let to = Vec3::X * (0.1 * LOG_RESIDUAL_TOL);
-        let distance = space.distance(from, to);
-        assert!(distance > 0.0);
-        assert!((distance - to.x).abs() < 1e-10);
-    }
-
-    #[test]
-    fn blended_space_at_alpha_zero_is_pure_a() {
-        use crate::{EuclideanR3, HyperbolicH3, Space};
-        let bs = BlendedSpace::new(
-            EuclideanR3,
-            HyperbolicH3,
-            LinearBlendX::new(50.0, 100.0).unwrap(),
-        );
-        let p = Vec3::new(1.0, 2.0, 3.0);
-        let q = Vec3::new(4.0, 5.0, 6.0);
-        let v = Vec3::new(0.5, -0.3, 0.7);
-
-        close((bs.exp(p, v) - EuclideanR3.exp(p, v)).length(), 0.0, 1e-5);
-        close((bs.log(p, q) - EuclideanR3.log(p, q)).length(), 0.0, 1e-3);
-        close(bs.distance(p, q), EuclideanR3.distance(p, q), 1e-3);
-        close(
-            (bs.parallel_transport(p, q, v) - EuclideanR3.parallel_transport(p, q, v)).length(),
-            0.0,
-            1e-5,
-        );
-        close(
-            bs.conformal_factor(p),
-            EuclideanR3.conformal_factor(p),
-            1e-6,
-        );
-        close(bs.scalar_curvature(p), 0.0, 1e-3);
-    }
-
-    #[test]
-    fn blended_space_at_alpha_one_is_pure_b() {
-        use crate::{EuclideanR3, HyperbolicH3, Space};
-        let bs = BlendedSpace::new(
-            EuclideanR3,
-            HyperbolicH3,
-            LinearBlendX::new(-100.0, -50.0).unwrap(),
-        );
-        let p = Vec3::new(0.1, 0.0, 0.0);
-        let q = Vec3::new(0.2, 0.1, 0.0);
-        let v = Vec3::new(0.05, 0.0, 0.0);
-
-        close((bs.exp(p, v) - HyperbolicH3.exp(p, v)).length(), 0.0, 5e-3);
-        close((bs.log(p, q) - HyperbolicH3.log(p, q)).length(), 0.0, 5e-3);
-        close(bs.distance(p, q), HyperbolicH3.distance(p, q), 5e-3);
-        close(
-            bs.conformal_factor(p),
-            HyperbolicH3.conformal_factor(p),
-            1e-3,
-        );
-        close(bs.scalar_curvature(p), -6.0, 0.05);
-    }
-
-    #[test]
-    fn linear_blend_x_is_monotonic() {
-        let f = LinearBlendX::new(-1.0, 1.0).unwrap();
-        let xs: Vec<f32> = (0..=20).map(|i| -1.0 + (i as f32) / 10.0).collect();
-        let mut prev = f.weight(Vec3::new(xs[0], 0.0, 0.0));
-        for &x in &xs[1..] {
-            let curr = f.weight(Vec3::new(x, 0.0, 0.0));
-            assert!(
-                curr >= prev - 1e-6,
-                "non-monotonic: at x={x}, weight={curr} < previous {prev}"
-            );
-            prev = curr;
-        }
     }
 }

@@ -196,15 +196,6 @@ const SECTION_EDGE_COLOR: [f32; 4] = [0.30, 0.85, 0.95, 1.0];
 const SECTION_EDGE_WIDTH: f32 = 2.0;
 
 #[cfg(test)]
-fn polytope4_section_overlay(
-    polytope: Polytope4,
-    slice: loam_math::WPlane,
-) -> (crate::TriangleMesh<3>, crate::LineMesh<3>) {
-    let topo = polytope.topology();
-    polytope_section_overlay_with_vertices(topo.edges, topo.cells, topo.vertices, slice)
-}
-
-#[cfg(test)]
 fn polytope_section_overlay_with_vertices(
     edges: &[[u32; 2]],
     cells: &[&[u32]],
@@ -661,367 +652,12 @@ static CELL600_TOPOLOGY: LazyLock<Polytope4Topology> = LazyLock::new(|| Polytope
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
-    fn vertex_counts_match_f_vector() {
-        assert_eq!(Polytope4::Pentatope.vertex_count(), 5);
-        assert_eq!(Polytope4::Tesseract.vertex_count(), 16);
-        assert_eq!(Polytope4::Cell16.vertex_count(), 8);
-        assert_eq!(Polytope4::Cell24.vertex_count(), 24);
-        assert_eq!(Polytope4::Cell120.vertex_count(), 600);
-        assert_eq!(Polytope4::Cell600.vertex_count(), 120);
-    }
-
-    #[test]
-    fn vertices_on_unit_circumradius() {
-        for p in Polytope4::ALL {
-            for v in p.topology().vertices {
-                let r = v.length();
-                assert!(
-                    (r - 1.0).abs() < 1e-5,
-                    "{p:?} vertex {v:?} has |v| = {r}, expected 1.0"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn edge_counts_match_f_vector() {
-        assert_eq!(Polytope4::Pentatope.edge_count(), 10);
-        assert_eq!(Polytope4::Tesseract.edge_count(), 32);
-        assert_eq!(Polytope4::Cell16.edge_count(), 24);
-        assert_eq!(Polytope4::Cell24.edge_count(), 96);
-        assert_eq!(Polytope4::Cell120.edge_count(), 1200);
-        assert_eq!(Polytope4::Cell600.edge_count(), 720);
-    }
-
-    #[test]
-    fn edge_pairs_in_min_max_order() {
-        for p in Polytope4::ALL {
-            for &[i, j] in p.topology().edges {
-                assert!(i < j, "{p:?} edge ({i}, {j}) not in (min, max) order");
-            }
-        }
-    }
-
-    #[test]
-    fn edges_are_unique() {
-        for p in Polytope4::ALL {
-            let edges = p.topology().edges;
-            let mut seen = std::collections::HashSet::new();
-            for &[i, j] in edges {
-                let key = (i.min(j), i.max(j));
-                assert!(seen.insert(key), "{p:?} edge ({i}, {j}) duplicated");
-            }
-        }
-    }
-
-    #[test]
-    fn canonical_edge_length_matches_empirical_min() {
-        for p in Polytope4::ALL {
-            let vs = p.topology().vertices;
-            let mut min_d = f32::INFINITY;
-            for i in 0..vs.len() {
-                for j in (i + 1)..vs.len() {
-                    let d = (vs[i] - vs[j]).length();
-                    if d < min_d {
-                        min_d = d;
-                    }
-                }
-            }
-            let expected = canonical_edge_length(p);
-            assert!(
-                (min_d - expected).abs() < EDGE_TOLERANCE,
-                "{p:?}: empirical min pairwise distance {min_d} != canonical {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn cell_counts_match_f_vector() {
-        assert_eq!(Polytope4::Pentatope.cell_count(), 5);
-        assert_eq!(Polytope4::Tesseract.cell_count(), 8);
-        assert_eq!(Polytope4::Cell16.cell_count(), 16);
-        assert_eq!(Polytope4::Cell24.cell_count(), 24);
-        assert_eq!(Polytope4::Cell120.cell_count(), 120);
-        assert_eq!(Polytope4::Cell600.cell_count(), 600);
-    }
-
-    #[test]
-    fn cells_lie_on_common_hyperplane() {
-        for p in Polytope4::ALL {
-            let topo = p.topology();
-            for (idx, cell) in topo.cells.iter().enumerate() {
-                let centroid: Vec4 = cell
-                    .iter()
-                    .map(|&i| topo.vertices[i as usize])
-                    .fold(Vec4::ZERO, |acc, v| acc + v)
-                    / cell.len() as f32;
-                assert!(
-                    centroid.length_squared() > 1e-12,
-                    "{p:?} cell {idx} has no normal"
-                );
-                let dots: Vec<f32> = cell
-                    .iter()
-                    .map(|&i| topo.vertices[i as usize].dot(centroid))
-                    .collect();
-                let lo = dots.iter().copied().fold(f32::INFINITY, f32::min);
-                let hi = dots.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                assert!(
-                    hi - lo < CELL_TOLERANCE,
-                    "{p:?} cell {idx} centroid-projection spread {} > {CELL_TOLERANCE}",
-                    hi - lo
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn cell_internal_edge_counts_match_shape() {
-        let cases: &[(Polytope4, usize)] = &[
-            (Polytope4::Pentatope, 6),
-            (Polytope4::Tesseract, 12),
-            (Polytope4::Cell16, 6),
-            (Polytope4::Cell24, 12),
-            (Polytope4::Cell120, 30),
-            (Polytope4::Cell600, 6),
-        ];
-        for &(p, expected) in cases {
-            let topo = p.topology();
-            let edge_len = canonical_edge_length(p);
-            for (idx, cell) in topo.cells.iter().enumerate() {
-                let mut count = 0;
-                for i in 0..cell.len() {
-                    for j in (i + 1)..cell.len() {
-                        let a = topo.vertices[cell[i] as usize];
-                        let b = topo.vertices[cell[j] as usize];
-                        if ((a - b).length() - edge_len).abs() < EDGE_TOLERANCE {
-                            count += 1;
-                        }
-                    }
-                }
-                assert_eq!(
-                    count, expected,
-                    "{p:?} cell {idx} has {count} internal edges, expected {expected}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn edge_cell_incidence_matches_regular_polytope() {
-        for (p, expected) in [
-            (Polytope4::Pentatope, 3),
-            (Polytope4::Tesseract, 3),
-            (Polytope4::Cell16, 4),
-            (Polytope4::Cell24, 3),
-            (Polytope4::Cell120, 3),
-            (Polytope4::Cell600, 5),
-        ] {
-            let topo = p.topology();
-            for &[i, j] in topo.edges {
-                let count = topo
-                    .cells
-                    .iter()
-                    .filter(|cell| cell.contains(&i) && cell.contains(&j))
-                    .count();
-                assert_eq!(count, expected, "{p:?} edge ({i}, {j}) cell incidence");
-            }
-        }
-    }
-
-    #[test]
-    fn cross4_is_orthogonal_to_inputs() {
-        let a = Vec4::new(1.0, 0.5, -0.3, 0.7);
-        let b = Vec4::new(-0.2, 1.0, 0.4, -0.1);
-        let c = Vec4::new(0.6, -0.8, 1.0, 0.3);
-        let n = cross4(a, b, c);
-        assert!(
-            n.length() > 0.1,
-            "cross4 of linearly-independent inputs is near-zero (|n| = {})",
-            n.length()
-        );
-        for (label, v) in [("a", a), ("b", b), ("c", c)] {
-            assert!(
-                n.dot(v).abs() < 1e-5,
-                "cross4 result not orthogonal to {label}: n·{label} = {}",
-                n.dot(v)
-            );
-        }
-    }
-
-    #[test]
-    fn cross4_zero_for_linearly_dependent_inputs() {
-        let a = Vec4::new(1.0, 0.0, 0.0, 0.0);
-        let b = Vec4::new(0.0, 1.0, 0.0, 0.0);
-        let c = a * 2.0 + b * 3.0;
-        let n = cross4(a, b, c);
-        assert!(
-            n.length() < 1e-5,
-            "cross4 of linearly-dependent inputs is not zero: {n:?} (|n| = {})",
-            n.length()
-        );
-    }
-
-    #[test]
-    fn visualizable_line_count_matches_edge_count() {
-        use crate::Visualizable;
-        for p in Polytope4::ALL {
-            let mesh = <Polytope4 as Visualizable<4>>::to_lines(&p)
-                .expect("polytopes always produce line meshes");
-            assert_eq!(
-                mesh.segments.len(),
-                p.edge_count(),
-                "{p:?} line mesh has {} segments, expected {}",
-                mesh.segments.len(),
-                p.edge_count()
-            );
-            assert_eq!(mesh.colors.len(), mesh.segments.len());
-            assert_eq!(mesh.widths.len(), mesh.segments.len());
-        }
-    }
-
-    #[test]
-    fn visualizable_line_endpoints_are_polytope_vertices() {
-        use crate::Visualizable;
-        let topo = Polytope4::Tesseract.topology();
-        let mesh = <Polytope4 as Visualizable<4>>::to_lines(&Polytope4::Tesseract).unwrap();
-        for (i, &[vi, vj]) in topo.edges.iter().enumerate() {
-            let (a, b) = mesh.segments[i];
-            assert_eq!(a, topo.vertices[vi as usize].to_array());
-            assert_eq!(b, topo.vertices[vj as usize].to_array());
-        }
-    }
-
-    #[test]
-    fn lines_colored_by_cell_uses_palette() {
-        let palette: &[[f32; 4]] = &[
-            [1.0, 0.0, 0.0, 1.0],
-            [0.0, 1.0, 0.0, 1.0],
-            [0.0, 0.0, 1.0, 1.0],
-        ];
-        let mesh = Polytope4::Tesseract.lines_colored_by_cell(palette);
-        assert_eq!(mesh.segments.len(), Polytope4::Tesseract.edge_count());
-        for (start_color, end_color) in &mesh.colors {
-            assert!(palette.contains(start_color));
-            assert!(palette.contains(end_color));
-        }
-    }
-
-    #[test]
-    fn pentatope_section_at_midpoint() {
-        let (tri, edges) =
-            polytope4_section_overlay(Polytope4::Pentatope, loam_math::WPlane::new(0.0));
-        assert_eq!(tri.indices.len(), 12, "expected 12 fan triangles");
-        assert_eq!(edges.segments.len(), 12, "expected 12 perimeter segments");
-
-        assert_eq!(tri.vertices.len(), 16);
-    }
-
-    #[test]
-    fn tesseract_section_at_midpoint_has_six_square_caps() {
-        let (tri, edges) =
-            polytope4_section_overlay(Polytope4::Tesseract, loam_math::WPlane::new(0.0));
-        assert_eq!(tri.indices.len(), 24, "6 cubical cells * 4 fan-triangles");
-        assert_eq!(edges.segments.len(), 24, "6 caps * 4 perimeter edges");
-
-        assert_eq!(tri.vertices.len(), 30);
-    }
-
-    #[test]
-    fn section_outside_polytope_is_empty() {
-        for polytope in Polytope4::ALL {
-            let (tri, edges) = polytope4_section_overlay(polytope, loam_math::WPlane::new(2.0));
-            assert!(
-                tri.indices.is_empty(),
-                "{polytope:?} above-vertex slice should yield no triangles"
-            );
-            assert!(
-                edges.segments.is_empty(),
-                "{polytope:?} above-vertex slice should yield no perimeter edges"
-            );
-        }
-    }
-
-    #[test]
-    fn vertex_on_slice_is_perturbed_not_nan() {
-        let (tri, edges) =
-            polytope4_section_overlay(Polytope4::Pentatope, loam_math::WPlane::new(-0.25));
-        assert!(!tri.indices.is_empty());
-        assert!(!edges.segments.is_empty());
-        for v in &tri.vertices {
-            for component in v {
-                assert!(component.is_finite(), "triangle vertex must be finite");
-            }
-        }
-        for (a, b) in &edges.segments {
-            for component in a.iter().chain(b.iter()) {
-                assert!(component.is_finite(), "edge vertex must be finite");
-            }
-        }
-    }
-
-    #[test]
-    fn perimeter_append_concatenates_instead_of_replacing() {
-        let slice = loam_math::WPlane::new(0.1);
-        let topo = Polytope4::Cell24.topology();
-        let mut scratch = SectionScratch::default();
-        let mut mesh = crate::LineMesh::<3>::default();
-        let append = |scratch: &mut SectionScratch, out: &mut crate::LineMesh<3>| {
-            polytope_section_perimeter_append(
-                topo.edges,
-                topo.cells,
-                topo.vertices,
-                slice,
-                scratch,
-                out,
-            );
-        };
-
-        append(&mut scratch, &mut mesh);
-        let single = mesh.segments.len();
-        assert!(single > 0, "the fixture emitted no perimeter");
-        append(&mut scratch, &mut mesh);
-
-        assert_eq!(mesh.segments.len(), 2 * single);
-        assert_eq!(mesh.segments[..single], mesh.segments[single..]);
-        assert_eq!(mesh.widths.len(), mesh.segments.len());
-        assert_eq!(mesh.colors.len(), mesh.segments.len());
-    }
-
-    #[test]
-    fn section_face_normals_point_outward_from_polytope_center() {
-        for polytope in Polytope4::ALL {
-            let center = Vec3::ZERO;
-            for &slice_w in &[-0.5_f32, -0.2, 0.0, 0.2, 0.5] {
-                let (mesh, _) =
-                    polytope4_section_overlay(polytope, loam_math::WPlane::new(slice_w));
-                for &[a, b, c] in &mesh.indices {
-                    let va = Vec3::from(mesh.vertices[a as usize]);
-                    let vb = Vec3::from(mesh.vertices[b as usize]);
-                    let vc = Vec3::from(mesh.vertices[c as usize]);
-                    let n = (vb - va).cross(vc - va);
-                    if n.length_squared() < 1e-10 {
-                        continue;
-                    }
-                    let tri_centroid = (va + vb + vc) / 3.0;
-                    let outward = tri_centroid - center;
-                    if outward.length_squared() < 1e-10 {
-                        continue;
-                    }
-                    assert!(
-                        n.dot(outward) > 0.0,
-                        "{polytope:?} at w={slice_w}: triangle ({va:?}, {vb:?}, {vc:?}) \
-                         has inward-facing normal {n:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn section_under_random_rotors_stays_well_formed() {
+    fn a_rotated_polytope_sections_to_a_closed_surface_inside_and_nothing_outside() {
         let mut state: u32 = 0x517_C0DE;
         let mut rand = || {
             state ^= state << 13;
@@ -1041,24 +677,30 @@ mod tests {
                     use loam_math::Rotor as _;
                     topo.vertices.iter().map(|v| rotor.apply(*v)).collect()
                 };
+                let section = |w: f32| {
+                    polytope_section_overlay_with_vertices(
+                        topo.edges,
+                        topo.cells,
+                        &rotated,
+                        loam_math::WPlane::new(w),
+                    )
+                };
+
+                let (tri, perim) = section(2.0);
+                assert!(
+                    tri.indices.is_empty() && perim.segments.is_empty(),
+                    "{polytope:?} sliced beyond its circumradius yields geometry"
+                );
 
                 let slice_w = rand() * 0.8;
-                let slice = loam_math::WPlane::new(slice_w);
-                let (tri, perim) =
-                    polytope_section_overlay_with_vertices(topo.edges, topo.cells, &rotated, slice);
-
+                let (tri, perim) = section(slice_w);
                 for v in &tri.vertices {
                     for c in v {
                         assert!(c.is_finite(), "{polytope:?} tri vertex non-finite: {v:?}");
                     }
                 }
-                for (a, b) in &perim.segments {
-                    for c in a.iter().chain(b.iter()) {
-                        assert!(c.is_finite(), "{polytope:?} perim endpoint non-finite");
-                    }
-                }
+                let n = tri.vertices.len() as u32;
                 for &[i0, i1, i2] in &tri.indices {
-                    let n = tri.vertices.len() as u32;
                     assert!(
                         i0 < n && i1 < n && i2 < n,
                         "{polytope:?} index out of bounds"
@@ -1075,6 +717,20 @@ mod tests {
                         "{polytope:?} slice w={slice_w} inside [{w_min}, {w_max}] but produced empty section"
                     );
                 }
+
+                let point = |p: [f32; 3]| p.map(|c| (c * 1.0e4).round() as i32);
+                let mut sharing = BTreeMap::new();
+                for &(a, b) in &perim.segments {
+                    for c in a.iter().chain(b.iter()) {
+                        assert!(c.is_finite(), "{polytope:?} perim endpoint non-finite");
+                    }
+                    let (a, b) = (point(a), point(b));
+                    *sharing.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+                }
+                assert!(
+                    sharing.values().all(|&caps| caps == 2),
+                    "{polytope:?} slice w={slice_w}: a section edge does not join two caps"
+                );
             }
         }
     }

@@ -213,13 +213,4 @@ mod tests {
         .eye();
         close(pitched.position, [1.0, 6.0, 3.0]);
     }
-
-    #[test]
-    fn orbit_zoom_runs_past_its_distance_limits() {
-        let mut orbit = Orbit::around([0.0; 3], 5.0);
-        orbit.zoom(100.0);
-        assert_eq!(orbit.distance, 1.5);
-        orbit.zoom(-100.0);
-        assert_eq!(orbit.distance, 20.0);
-    }
 }

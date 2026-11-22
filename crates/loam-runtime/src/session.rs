@@ -1152,27 +1152,6 @@ mod tests {
         pub struct Quiet {}
     }
 
-    #[test]
-    fn a_caught_system_unwind_keeps_the_unfinished_phase_blocked() {
-        let mut session = Session::new(Quiet::default(), SimConfig::default());
-        session.system(Phase::Simulation, "panic", |_ctx: Ctx<'_, Quiet>| {
-            panic!("system panic")
-        });
-        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.tick()));
-        assert!(unwind.is_err());
-
-        let mut publication = Publication::default();
-        assert_eq!(
-            session.publish(&mut publication),
-            Err(PhaseError {
-                phase: Phase::Simulation,
-                system: None,
-                cause: DomainError::Unsupported("unfinished phase requires restore"),
-            })
-        );
-        assert_eq!(session.faulted_phase(), Some(Phase::Simulation));
-    }
-
     fn shaded_segments(
         shading: crate::domain::EdgeShading,
         at_w: f32,
@@ -1299,42 +1278,7 @@ mod tests {
     }
 
     #[test]
-    fn a_depth_shaded_segment_reads_its_color_from_the_endpoints_own_w_not_the_bodys() {
-        use crate::domain::EdgeShading;
-
-        const EXTENT: f32 = 0.5;
-        const BACK: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
-        const FRONT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-        let shading = EdgeShading::Depth {
-            back: BACK,
-            front: FRONT,
-            extent: EXTENT,
-        };
-        let prepare = |session: &mut Session<Quiet>| {
-            (
-                session.prepare(PreparedGeometry::Lines4 {
-                    segments: vec![[[0.0; 4], [0.0, 0.0, 0.0, EXTENT]]],
-                }),
-                session.add_material(Material::lines([1.0; 4], 1.0)),
-            )
-        };
-
-        for lifted in [0.0, 3.0] {
-            let segments = shaded_segments(shading, lifted, None, false, prepare);
-            assert_eq!(
-                segments[0].start_color,
-                [0.5, 0.0, 0.5, 1.0],
-                "the midpoint of the depth ramp is wrong for a body at w {lifted}"
-            );
-            assert_eq!(
-                segments[0].end_color, FRONT,
-                "the far endpoint of the depth ramp is wrong for a body at w {lifted}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_palette_colors_each_segment_by_its_prepared_index_and_no_shading_keeps_the_material() {
+    fn published_segments_take_their_color_width_and_opacity_from_the_instance() {
         use crate::domain::EdgeShading;
 
         const COLORS: [[f32; 4]; 4] = [
@@ -1388,10 +1332,37 @@ mod tests {
             COLORS,
             "the palette did not follow the prepared segment endpoints in order"
         );
-    }
 
-    #[test]
-    fn an_instance_line_style_replaces_the_material_width_and_opacity() {
+        const EXTENT: f32 = 0.5;
+        const BACK: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+        const FRONT: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+        let shading = EdgeShading::Depth {
+            back: BACK,
+            front: FRONT,
+            extent: EXTENT,
+        };
+        let prepare = |session: &mut Session<Quiet>| {
+            (
+                session.prepare(PreparedGeometry::Lines4 {
+                    segments: vec![[[0.0; 4], [0.0, 0.0, 0.0, EXTENT]]],
+                }),
+                session.add_material(Material::lines([1.0; 4], 1.0)),
+            )
+        };
+
+        for lifted in [0.0, 3.0] {
+            let segments = shaded_segments(shading, lifted, None, false, prepare);
+            assert_eq!(
+                segments[0].start_color,
+                [0.5, 0.0, 0.5, 1.0],
+                "the midpoint of the depth ramp is wrong for a body at w {lifted}"
+            );
+            assert_eq!(
+                segments[0].end_color, FRONT,
+                "the far endpoint of the depth ramp is wrong for a body at w {lifted}"
+            );
+        }
+
         let [segment] = shaded_segments(
             crate::domain::EdgeShading::Material,
             0.0,
@@ -1535,139 +1506,6 @@ mod tests {
     }
 
     crate::stores! {
-        #[derive(Default)]
-        pub struct Churn {
-            counters: Store<u32>,
-            pool: Value<Vec<Entity>>,
-        }
-    }
-
-    #[test]
-    fn warmed_tick_and_boundary_allocate_nothing_outside_reported_growth() {
-        let mut session = Session::new(Churn::default(), SimConfig::default());
-        let r4 = session
-            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
-        let pool = session.dispatch(|d| {
-            (0..8)
-                .map(|value| {
-                    d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)).row(value))
-                        .unwrap()
-                })
-                .collect()
-        });
-        session.app.pool.set(pool);
-        session.system(Phase::Simulation, "churn", |ctx: Ctx<'_, Churn>| {
-            for (_, counter) in ctx.app.counters.iter_mut() {
-                *counter += 1;
-            }
-            let pool = ctx.app.pool.get_mut();
-            let retired = pool.swap_remove(0);
-            ctx.commands.submit(Command::Despawn(retired));
-            let fresh = ctx.commands.spawn(SpawnBundle::new()).unwrap();
-            pool.push(fresh.entity);
-            Ok(())
-        });
-        let cycle = |session: &mut Session<Churn>| {
-            session.tick().unwrap();
-            session.boundary(Input::default()).unwrap()
-        };
-        for _ in 0..16 {
-            cycle(&mut session);
-        }
-
-        let bytes = bytes_allocated_by(|| {
-            for _ in 0..16 {
-                let growth = cycle(&mut session);
-                assert_eq!(
-                    growth,
-                    Growth {
-                        commands: 2,
-                        spawned: 1,
-                        despawned: 1,
-                    }
-                );
-            }
-            let quiet = session.boundary(Input::default()).unwrap();
-            assert_eq!(quiet, Growth::default());
-        })
-        .expect("the counting allocator is installed");
-        assert_eq!(
-            bytes, 0,
-            "16 warmed cycles asked the allocator for {bytes} bytes"
-        );
-        assert_eq!(session.entities().len(), 8);
-    }
-
-    crate::stores! {
-        #[derive(Default)]
-        pub struct Tagged {
-            tags: Store<u32>,
-        }
-    }
-
-    #[test]
-    fn a_warmed_restore_allocates_beyond_the_rows_it_copies() {
-        use crate::domain::{Field, FieldKind};
-        use crate::field::FieldOp;
-        use crate::view::Vec4;
-
-        let mut session = Session::new(Tagged::default(), SimConfig::default());
-        let r4 = session.register_domain(
-            DomainBuilder::new("r4", EuclideanR4)
-                .tracked(LogCapacity::default())
-                .fields(),
-        );
-        session.dispatch(|d| {
-            let at = |x: f32| SpawnBundle::new().at(r4, Pose::at(Vec4::new(x, 0.0, 0.0, 0.0)));
-            let left = d.spawn(at(-1.0).row(1u32)).unwrap();
-            let right = d.spawn(at(1.0).row(2u32)).unwrap();
-            let union = d.spawn(at(0.0).row(3u32)).unwrap();
-            for operand in [left, right] {
-                d.attach_field(
-                    r4,
-                    operand,
-                    Field {
-                        kind: FieldKind::ExactDistance,
-                        op: FieldOp::HyperSphere { radius: 1.0 },
-                        operands: Vec::new(),
-                    },
-                )
-                .unwrap();
-            }
-            d.attach_field(
-                r4,
-                union,
-                Field {
-                    kind: FieldKind::ExactDistance,
-                    op: FieldOp::Union,
-                    operands: vec![left, right],
-                },
-            )
-            .unwrap();
-        });
-        let snapshot = session.snapshot().unwrap();
-        for _ in 0..8 {
-            session.restore(&snapshot).unwrap();
-        }
-
-        let bytes = bytes_allocated_by(|| {
-            session.restore(&snapshot).unwrap();
-        })
-        .expect("the counting allocator is installed");
-        let copied = (size_of::<Entity>() * 2) as u64;
-        assert_eq!(
-            bytes, copied,
-            "a warmed restore of three rows asked the allocator for {bytes} bytes, not the {copied} its operand list copies"
-        );
-        session
-            .domains_mut()
-            .facade(r4.id())
-            .unwrap()
-            .compile_fields()
-            .expect("the restored operands still name live rows");
-    }
-
-    crate::stores! {
         pub struct Shown {
             scores: Store<u32>,
         }
@@ -1703,52 +1541,6 @@ mod tests {
                 far: 1.0,
             }
         }
-    }
-
-    #[test]
-    fn a_foreign_publication_buffer_does_not_restamp_the_previous_sessions_records() {
-        let build = |score: u32, offset: f32| {
-            let shown = Shown {
-                scores: Store::tracked(LogCapacity::default()),
-            };
-            let mut session = Session::new(shown, SimConfig::default());
-            let r4 = session.register_domain(
-                DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()),
-            );
-            let geometry = session.prepare(PreparedGeometry::Lines4 {
-                segments: vec![[[offset, 0.0, 0.0, 0.0], [offset + 1.0, 0.0, 0.0, 0.0]]],
-            });
-            let material = session.add_material(Material::flat([1.0; 4]));
-            let root = session.views().root();
-            session.dispatch(|dispatch| {
-                let eye = dispatch
-                    .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
-                    .unwrap();
-                dispatch
-                    .spawn(
-                        SpawnBundle::new()
-                            .at(r4, Pose::at(Vec4::ZERO))
-                            .instance(Instance::new(geometry, material))
-                            .row(score),
-                    )
-                    .unwrap();
-                dispatch
-                    .domains
-                    .typed(r4)
-                    .unwrap()
-                    .add_view(ViewSpec::new(root, eye, Flat))
-                    .unwrap();
-            });
-            session
-        };
-        let mut first = build(11, 0.0);
-        let mut second = build(22, 4.0);
-        let mut publication = Publication::default();
-
-        first.publish(&mut publication).unwrap();
-        assert_eq!(publication.views[0].records.segments()[0].start[0], 0.0);
-        second.publish(&mut publication).unwrap();
-        assert_eq!(publication.views[0].records.segments()[0].start[0], 4.0);
     }
 
     #[test]

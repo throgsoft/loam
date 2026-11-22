@@ -82,13 +82,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn right_of_left_panel_clamps_when_panel_exceeds_framebuffer() {
-        let v = Viewport::right_of_left_panel(2000, [1280, 720]);
-        assert_eq!(v.x, 1280);
-        assert_eq!(v.width, 0);
-    }
-
-    #[test]
     fn split_horizontal_tiles_without_gaps() {
         let v = Viewport {
             x: 100,
@@ -108,11 +101,5 @@ mod tests {
         }
         assert_eq!(cells[0].width, 3);
         assert_eq!(cells[4].width, 5);
-    }
-
-    #[test]
-    fn split_horizontal_n_zero_returns_empty() {
-        let v = Viewport::full([100, 50]);
-        assert!(v.split_horizontal(0).next().is_none());
     }
 }

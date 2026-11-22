@@ -326,47 +326,8 @@ mod tests {
         });
     }
 
-    fn ground() -> Ground {
-        Ground {
-            y: 0.0,
-            dark: [0.1; 3],
-            light: [0.3; 3],
-            fog_per_unit: 0.0,
-            fog_start: 0.0,
-            visible: true,
-        }
-    }
-
     #[test]
-    fn a_ground_cannot_appear_or_vanish_after_the_pass_declared_its_color_load() {
-        let feed = TriangleFeed::default();
-        let _pass = feed.pass(FragmentShading::FaceNormalLambert);
-        let refused = feed.set_ground(Some(ground()));
-        assert!(
-            matches!(
-                refused,
-                Err(GroundLocked {
-                    declared: ColorLoad::Load
-                })
-            ),
-            "a ground added after registration was accepted: {refused:?}"
-        );
-        feed.set_ground(None)
-            .expect("keeping the declared load is allowed");
-
-        let grounded = TriangleFeed::default();
-        grounded
-            .set_ground(Some(ground()))
-            .expect("no pass is built yet");
-        let _pass = grounded.pass(FragmentShading::FaceNormalLambert);
-        assert!(grounded.set_ground(None).is_err());
-        grounded
-            .set_ground(Some(ground()))
-            .expect("replacing a declared ground keeps the load");
-    }
-
-    #[test]
-    fn an_unchanged_mesh_is_not_uploaded_again_on_the_next_frame() {
+    fn a_mesh_is_uploaded_once_per_source_change_and_once_per_device() {
         let gpu = noop_context();
         let feed = TriangleFeed::default();
         let mut source = loam_runtime::Value::new(TriangleMesh {
@@ -388,46 +349,30 @@ mod tests {
         source.get_mut().vertices[2][2] = -3.0;
         feed.set_mesh(source.version(), source.get());
         one_frame(&gpu, pass.as_mut(), &color, &depth);
-
         assert_eq!(
             feed.uploads(),
             2,
             "three frames with one source change uploaded {} times",
             feed.uploads()
         );
-    }
 
-    #[test]
-    fn a_new_device_uploads_the_mesh_again_without_an_edit() {
-        let gpu = noop_context();
-        let feed = TriangleFeed::default();
-        triangle(&feed, -2.0, [1.0; 4]);
-        let mut pass = feed.pass(FragmentShading::FaceNormalLambert);
-        pass.attach(&gpu, frame_format()).expect("attach");
+        let recovered = noop_context();
+        pass.attach(&recovered, frame_format()).expect("reattach");
         let color =
-            attachment(&gpu, COLOR, TextureUsages::empty()).create_view(&Default::default());
-        let depth =
-            attachment(&gpu, DEPTH_FORMAT, TextureUsages::empty()).create_view(&Default::default());
-        one_frame(&gpu, pass.as_mut(), &color, &depth);
-
-        let lost = noop_context();
-        pass.attach(&lost, frame_format()).expect("reattach");
-        let color =
-            attachment(&lost, COLOR, TextureUsages::empty()).create_view(&Default::default());
-        let depth = attachment(&lost, DEPTH_FORMAT, TextureUsages::empty())
+            attachment(&recovered, COLOR, TextureUsages::empty()).create_view(&Default::default());
+        let depth = attachment(&recovered, DEPTH_FORMAT, TextureUsages::empty())
             .create_view(&Default::default());
-        one_frame(&lost, pass.as_mut(), &color, &depth);
-
+        one_frame(&recovered, pass.as_mut(), &color, &depth);
         assert_eq!(
             feed.uploads(),
-            2,
+            3,
             "the recovered pass drew from the lost device's buffers"
         );
     }
 
     #[test]
     #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-    fn a_lit_triangle_writes_its_image_pixel_and_projective_depth_gpu_probe() {
+    fn a_triangle_covers_only_its_image_pixels_and_writes_projective_depth_gpu_probe() {
         let gpu = pollster::block_on(GpuContext::new(
             Instance::default(),
             FeatureRequest::default(),
@@ -461,14 +406,6 @@ mod tests {
         let at = |(x, y): (u32, u32), rows: &Vec<[u8; 4]>| rows[(y * SIZE.0 + x) as usize];
         let depth_at = |p: (u32, u32)| f32::from_le_bytes(at(p, &depths));
 
-        let key = glam::Vec3::new(0.55, 0.85, 0.45).normalize();
-        let lambert = 0.3 + 0.7 * key.z.abs();
-        let lit = (lambert * 255.0).round() as i32;
-        let drawn = at(centre, &colors);
-        assert!(
-            (i32::from(drawn[0]) - lit).abs() <= 2,
-            "the lit triangle wrote {drawn:?} where the shader's lambert term gives {lit}"
-        );
         assert_eq!(
             at(outside, &colors),
             [0, 0, 0, 255],

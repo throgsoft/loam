@@ -59,13 +59,7 @@ fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
 
     let module = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("hyperslice-strip-background"),
-        source: ShaderSource::Wgsl(
-            format!(
-                "{HYPERSLICE_KERNEL_WGSL}\n{}\n{FLOOR_SCENE_WGSL}",
-                polytope_stub_sdfs_wgsl()
-            )
-            .into(),
-        ),
+        source: ShaderSource::Wgsl(probe_source().into()),
     });
     let target = device.create_texture(&TextureDescriptor {
         label: Some("hyperslice-strip-background target"),
@@ -89,10 +83,7 @@ fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
         u.camera_pos = [0.0, 1.8, 6.0];
         u.resolution = [SIZE[0] as f32, SIZE[1] as f32];
     }
-    let cells: Vec<(Viewport, f32, BodyUniform)> = Viewport::full(SIZE)
-        .split_horizontal(CELLS)
-        .map(|vp| (vp, 0.0, BodyUniform::default()))
-        .collect();
+    let cells = strip_cells(CELLS);
     let mut strip_encoder = device.create_command_encoder(&Default::default());
     node.record_strip(
         &device,

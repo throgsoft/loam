@@ -37,13 +37,10 @@ struct Stage {
     root: ImageSpaceId,
 }
 
-fn stage(fields: bool) -> Stage {
+fn stage() -> Stage {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let mut builder = DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default());
-    if fields {
-        builder = builder.fields();
-    }
-    let r4 = session.register_domain(builder);
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
     let stub = session.prepare(PreparedGeometry::Lines4 {
         segments: vec![[[RADIUS, 0.0, 0.0, 0.0], [-RADIUS, 0.0, 0.0, 0.0]]],
     });
@@ -71,6 +68,15 @@ fn stage(fields: bool) -> Stage {
         anchor,
         root,
     }
+}
+
+fn held_through_a_shrunk_section() -> Stage {
+    let mut stage = stage();
+    let section = stage.view(Section4 { w: 0.0 });
+    let root = stage.root;
+    stage.bridge(root, section, shrunk()).unwrap();
+    stage.session.grab([GRAB_NDC, 0.0], 0.0).unwrap();
+    stage
 }
 
 impl Stage {
@@ -112,6 +118,14 @@ impl Stage {
             .unwrap()
             .point
     }
+
+    fn targets(&self, view: ViewId) -> (ImageSpaceId, ImageSpaceId) {
+        let domain = self.session.domains().get(self.r4.id()).unwrap();
+        (
+            domain.views()[view.index()].image,
+            domain.view(view).unwrap().image,
+        )
+    }
 }
 
 fn shrunk() -> Placement {
@@ -121,16 +135,12 @@ fn shrunk() -> Placement {
     })
 }
 
-fn turn_y(quarter: bool) -> Pose<EuclideanR3> {
-    let axes: [Vec3; 3] = if quarter {
-        [
-            Vec3::new(0.0, 0.0, -1.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-        ]
-    } else {
-        [Vec3::X, Vec3::Y, Vec3::Z]
-    };
+fn quarter_turn_y() -> Pose<EuclideanR3> {
+    let axes = [
+        Vec3::new(0.0, 0.0, -1.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+    ];
     let mut frame = [[0.0; 4]; 4];
     for (slot, axis) in frame.iter_mut().zip(axes) {
         *slot = axis.extend(0.0).to_array();
@@ -155,8 +165,8 @@ fn close(got: [f32; 3], want: [f32; 3], tolerance: f32) {
 }
 
 #[test]
-fn a_nonlinear_placement_bridges_a_raster_view() {
-    let mut stage = stage(false);
+fn a_refused_bridge_changes_no_view_or_link() {
+    let mut stage = stage();
     let section = stage.view(Section4 { w: 0.0 });
     let root = stage.root;
     assert_eq!(
@@ -164,33 +174,26 @@ fn a_nonlinear_placement_bridges_a_raster_view() {
         Err(BridgeError::Nonlinear("section4"))
     );
     assert!(stage.session.bridges().is_empty());
-}
 
-#[test]
-fn a_stale_bridge_eye_changes_no_view_or_link() {
-    let mut stage = stage(false);
-    let section = stage.view(Section4 { w: 0.0 });
     let eye = stage.eye;
     stage
         .session
         .dispatch(|dispatch| dispatch.despawn(eye))
         .unwrap();
-    let root = stage.root;
-
     assert_eq!(
         stage.bridge(root, section, shrunk()),
         Err(BridgeError::Domain(DomainError::Stale(eye)))
     );
     assert!(stage.session.bridges().is_empty());
-    assert_eq!(targets(&stage, section), (stage.root, stage.root));
+    assert_eq!(stage.targets(section), (root, root));
 }
 
 #[test]
 fn two_hops_compose_to_a_different_depth_or_ndc_than_the_single_placement() {
-    let mut stage = stage(false);
+    let mut stage = stage();
     let outer = Rigid {
         pose: Iso3 {
-            rotation: turn_y(true).frame,
+            rotation: quarter_turn_y().frame,
             translation: Vec3::new(0.0, 0.0, -6.0),
         },
         scale: 2.0,
@@ -228,8 +231,8 @@ fn two_hops_compose_to_a_different_depth_or_ndc_than_the_single_placement() {
 }
 
 #[test]
-fn retargeted_view_publishes_and_picks_the_same_image() {
-    let mut stage = stage(false);
+fn a_bridged_view_publishes_into_its_image_and_a_pick_through_it_returns_the_analytic_hit() {
+    let mut stage = stage();
     let projection = stage.view(Projection4 { focal: 2.0 });
     let section = stage.view(Section4 { w: 0.0 });
     let root = stage.root;
@@ -238,10 +241,10 @@ fn retargeted_view_publishes_and_picks_the_same_image() {
         let settings = d.domains.typed(r4).unwrap().view_mut(section).unwrap();
         settings.set_mapping(Section4 { w: 0.0 });
     });
-    assert_eq!(targets(&stage, section), (root, root));
+    assert_eq!(stage.targets(section), (root, root));
 
     let image = stage.bridge(root, section, shrunk()).unwrap();
-    assert_eq!(targets(&stage, section), (image, image));
+    assert_eq!(stage.targets(section), (image, image));
 
     let mut publication = Publication::default();
     stage.session.publish(&mut publication).unwrap();
@@ -260,15 +263,7 @@ fn retargeted_view_publishes_and_picks_the_same_image() {
     );
     close(pick.image_point, ROOT_POINT, 1e-5);
     assert!((pick.depth - DEPTH).abs() <= 1e-5, "depth {}", pick.depth);
-}
-
-#[test]
-fn a_section_pick_through_a_bridge_misses_the_analytic_r4_hit() {
-    let mut stage = stage(false);
-    let section = stage.view(Section4 { w: 0.0 });
-    let root = stage.root;
-    stage.bridge(root, section, shrunk()).unwrap();
-    let hit = stage.session.pick([GRAB_NDC, 0.0]).unwrap().hit.unwrap();
+    let hit = pick.hit.unwrap();
     assert_eq!(hit.chart, ChartId(0));
     for (got, want) in hit.coordinates.iter().zip(HIT.to_array()) {
         assert!(
@@ -280,8 +275,54 @@ fn a_section_pick_through_a_bridge_misses_the_analytic_r4_hit() {
 }
 
 #[test]
+fn restore_keeps_a_bridge_made_after_the_snapshot() {
+    let mut stage = stage();
+    let section = stage.view(Section4 { w: 0.0 });
+    let snapshot = stage.session.snapshot().unwrap();
+    let root = stage.root;
+    let image = stage.bridge(root, section, shrunk()).unwrap();
+    assert_eq!(stage.session.bridges().len(), 1);
+    assert!(stage.session.views().placed(image));
+    assert_eq!(stage.targets(section), (image, image));
+
+    stage.session.restore(&snapshot).unwrap();
+    assert!(stage.session.bridges().is_empty());
+    assert!(!stage.session.views().placed(image));
+    assert_eq!(stage.targets(section), (root, root));
+}
+
+#[test]
+fn despawning_the_anchor_drops_the_bridge_and_its_image_never_resolves_again() {
+    let mut stage = stage();
+    let section = stage.view(Section4 { w: 0.0 });
+    let root = stage.root;
+    let first = stage.bridge(root, section, shrunk()).unwrap();
+    let retired = stage.anchor;
+    stage
+        .session
+        .system(Phase::Dispatch, "retire", move |ctx: Ctx<'_, Probe>| {
+            ctx.commands.submit(Command::Despawn(retired));
+            Ok(())
+        });
+    stage.session.boundary(Input::default()).unwrap();
+    assert!(stage.session.bridges().is_empty());
+    assert!(!stage.session.views().placed(first));
+    assert_eq!(stage.session.pick([GRAB_NDC, 0.0]), None);
+
+    stage.anchor = stage
+        .session
+        .dispatch(|d| d.spawn(SpawnBundle::new()).unwrap());
+    let second = stage.bridge(root, section, shrunk()).unwrap();
+    assert_eq!(second.index(), first.index());
+    assert_ne!(second, first);
+    assert!(!stage.session.views().placed(first));
+    assert!(stage.session.views().placed(second));
+    assert_eq!(stage.session.views().to_root(first), None);
+}
+
+#[test]
 fn a_drag_through_a_projection_moves_the_entity_instead_of_naming_the_view() {
-    let mut stage = stage(false);
+    let mut stage = stage();
     let projection = stage.view(Projection4 { focal: 2.0 });
     let root = stage.root;
     stage.bridge(root, projection, shrunk()).unwrap();
@@ -299,11 +340,7 @@ fn a_drag_through_a_projection_moves_the_entity_instead_of_naming_the_view() {
 
 #[test]
 fn a_turned_eye_carries_the_held_entity_and_the_carry_throws_it() {
-    let mut stage = stage(false);
-    let section = stage.view(Section4 { w: 0.0 });
-    let root = stage.root;
-    stage.bridge(root, section, shrunk()).unwrap();
-    stage.session.grab([GRAB_NDC, 0.0], 0.0).unwrap();
+    let mut stage = held_through_a_shrunk_section();
     stage.session.views_mut().root_mut().eye =
         Eye::looking_at([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
     stage.session.drag([0.0, 0.0], 0.5).unwrap();
@@ -325,11 +362,7 @@ fn a_turned_eye_carries_the_held_entity_and_the_carry_throws_it() {
 
 #[test]
 fn a_release_after_a_slow_carry_throws_at_the_recent_speed() {
-    let mut stage = stage(false);
-    let section = stage.view(Section4 { w: 0.0 });
-    let root = stage.root;
-    stage.bridge(root, section, shrunk()).unwrap();
-    stage.session.grab([GRAB_NDC, 0.0], 0.0).unwrap();
+    let mut stage = held_through_a_shrunk_section();
     let mut ndc = GRAB_NDC;
     let mut recent = [0.0; 3];
     for step in 1..=1100 {
@@ -357,11 +390,7 @@ fn a_release_after_a_slow_carry_throws_at_the_recent_speed() {
 
 #[test]
 fn a_drag_through_a_section_lands_off_the_analytic_point() {
-    let mut stage = stage(false);
-    let section = stage.view(Section4 { w: 0.0 });
-    let root = stage.root;
-    stage.bridge(root, section, shrunk()).unwrap();
-    stage.session.grab([GRAB_NDC, 0.0], 0.0).unwrap();
+    let mut stage = held_through_a_shrunk_section();
     stage.session.drag([GRAB_NDC + DRAG_NDC, 0.0], 0.5).unwrap();
     assert_eq!(stage.at(), OBJECT);
 
@@ -375,67 +404,4 @@ fn a_drag_through_a_section_lands_off_the_analytic_point() {
         "{:?} against {DRAG_SPEED}",
         release.velocity
     );
-}
-
-#[test]
-fn restore_keeps_a_bridge_made_after_the_snapshot() {
-    let mut stage = stage(false);
-    let section = stage.view(Section4 { w: 0.0 });
-    let snapshot = stage.session.snapshot().unwrap();
-    let root = stage.root;
-    let image = stage.bridge(root, section, shrunk()).unwrap();
-    assert_eq!(stage.session.bridges().len(), 1);
-    assert!(stage.session.views().placed(image));
-    assert_eq!(targets(&stage, section), (image, image));
-
-    stage.session.restore(&snapshot).unwrap();
-    assert!(stage.session.bridges().is_empty());
-    assert!(!stage.session.views().placed(image));
-    assert_eq!(targets(&stage, section), (root, root));
-}
-
-fn targets(stage: &Stage, view: ViewId) -> (ImageSpaceId, ImageSpaceId) {
-    let domain = stage.session.domains().get(stage.r4.id()).unwrap();
-    (
-        domain.views()[view.index()].image,
-        domain.view(view).unwrap().image,
-    )
-}
-
-#[test]
-fn a_bridge_survives_its_anchor_despawned_by_a_deferred_command() {
-    let mut stage = stage(false);
-    let section = stage.view(Section4 { w: 0.0 });
-    let root = stage.root;
-    let image = stage.bridge(root, section, shrunk()).unwrap();
-    let anchor = stage.anchor;
-    stage
-        .session
-        .system(Phase::Dispatch, "retire", move |ctx: Ctx<'_, Probe>| {
-            ctx.commands.submit(Command::Despawn(anchor));
-            Ok(())
-        });
-    stage.session.boundary(Input::default()).unwrap();
-    assert!(stage.session.bridges().is_empty());
-    assert!(!stage.session.views().placed(image));
-    assert_eq!(stage.session.pick([GRAB_NDC, 0.0]), None);
-}
-
-#[test]
-fn a_dropped_bridge_leaks_its_image_space_slot() {
-    let mut stage = stage(false);
-    let section = stage.view(Section4 { w: 0.0 });
-    let root = stage.root;
-    let first = stage.bridge(root, section, shrunk()).unwrap();
-    let retired = stage.anchor;
-    stage.anchor = stage.session.dispatch(|d| {
-        d.despawn(retired).unwrap();
-        d.spawn(SpawnBundle::new()).unwrap()
-    });
-    let second = stage.bridge(root, section, shrunk()).unwrap();
-    assert_eq!(second.index(), first.index());
-    assert_ne!(second, first);
-    assert!(!stage.session.views().placed(first));
-    assert!(stage.session.views().placed(second));
-    assert_eq!(stage.session.views().to_root(first), None);
 }

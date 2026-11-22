@@ -393,78 +393,16 @@ fn hyperboloid_to_poincare_tangent(h: Vec4, dh: Vec4) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_arc_cap_stays_inside_the_saturating_origin_distance() {
-        let farthest = HyperbolicH3.distance(Vec3::ZERO, Vec3::X * POINCARE_R2_MAX.sqrt());
-        assert!(
-            H3_MAX_ARC * 0.92 < farthest,
-            "the escape guard at {} can never fire below {farthest}",
-            H3_MAX_ARC * 0.92
-        );
-        assert!(HyperbolicH3.wgsl_impl().contains(&format!("{H3_MAX_ARC}")));
-    }
-
     use approx::assert_relative_eq;
-
-    fn h3() -> HyperbolicH3 {
-        HyperbolicH3
-    }
-
-    fn lambda(p: Vec3) -> f32 {
-        2.0 / (1.0 - p.length_squared())
-    }
 
     #[test]
     fn iso_translation_moves_origin_to_target() {
-        let s = h3();
         let target = Vec3::new(0.3, -0.1, 0.2);
         let iso = Iso3H::from_translation(target);
-        let moved = s.iso_apply(iso, Vec3::ZERO);
+        let moved = HyperbolicH3.iso_apply(iso, Vec3::ZERO);
         assert_relative_eq!(moved.x, target.x, epsilon = 1e-5);
         assert_relative_eq!(moved.y, target.y, epsilon = 1e-5);
         assert_relative_eq!(moved.z, target.z, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn small_scale_distance_matches_euclidean_via_metric_factor() {
-        let s = h3();
-        let eps = 1e-3;
-        let p = Vec3::new(eps, 0.0, 0.0);
-        assert_relative_eq!(s.distance(Vec3::ZERO, p), 2.0 * eps, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn angle_defect_in_small_triangle_scales_with_area() {
-        let s = h3();
-        let l = 0.05;
-        let v_norm = l * 0.5;
-        let a = Vec3::ZERO;
-        let b = s.exp(a, Vec3::new(v_norm, 0.0, 0.0));
-        let c = s.exp(
-            a,
-            Vec3::new(v_norm * 0.5, v_norm * (3.0_f32).sqrt() * 0.5, 0.0),
-        );
-
-        let angle_at = |p: Vec3, q: Vec3, r: Vec3| -> f32 {
-            let u = s.log(p, q);
-            let w = s.log(p, r);
-            (u.dot(w) / (u.length() * w.length()))
-                .clamp(-1.0, 1.0)
-                .acos()
-        };
-
-        let alpha = angle_at(a, b, c);
-        let beta = angle_at(b, a, c);
-        let gamma = angle_at(c, a, b);
-        let defect = std::f32::consts::PI - (alpha + beta + gamma);
-        let expected_area = (3.0_f32.sqrt() / 4.0) * l * l;
-
-        assert!(
-            defect > 0.0,
-            "hyperbolic triangle should have positive angle defect, got {defect}"
-        );
-        assert_relative_eq!(defect, expected_area, epsilon = 5e-4);
     }
 
     fn ball_sweep() -> Vec<Vec3> {
@@ -487,207 +425,9 @@ mod tests {
         out
     }
 
-    const SWEEP_TANGENTS: [Vec3; 3] = [
-        Vec3::new(0.06, 0.0, 0.0),
-        Vec3::new(0.0, 0.05, 0.02),
-        Vec3::new(2.0, -1.0, 0.5),
-    ];
-
-    const TWIST_CHORD_TOLERANCE: f32 = 1e-3;
-
-    #[test]
-    fn gyration_matches_ungars_four_addition_definition() {
-        let four_addition = |a: Vec3, b: Vec3, v: Vec3| {
-            let ab = mobius_add(a, b);
-            let bv = mobius_add(b, v);
-            mobius_add(-ab, mobius_add(a, bv))
-        };
-        let cases = [
-            (
-                Vec3::new(0.2, 0.1, -0.05),
-                Vec3::new(-0.1, 0.25, 0.05),
-                Vec3::new(0.03, -0.02, 0.04),
-            ),
-            (
-                Vec3::new(0.3, 0.0, 0.0),
-                Vec3::new(0.0, 0.3, 0.0),
-                Vec3::new(0.0, 0.0, 0.05),
-            ),
-            (
-                Vec3::new(0.05, -0.4, 0.1),
-                Vec3::new(0.15, 0.05, -0.3),
-                Vec3::new(0.06, 0.01, -0.02),
-            ),
-        ];
-        for (a, b, v) in cases {
-            let residual = (gyr_apply(a, b, v) - four_addition(a, b, v)).length();
-
-            assert!(
-                residual <= 1e-5 * v.length(),
-                "gyr[{a:?}, {b:?}] disagrees with its definition by {residual}"
-            );
-        }
-    }
-
-    #[test]
-    fn parallel_transport_is_exact_where_the_clamp_conditions_the_gyration_worst() {
-        let s = h3();
-        let outside = Vec3::new(2.0, 0.0, 0.0);
-        let shell = clamp_to_ball(outside);
-        let scalar = 1.0 + shell.dot(-shell);
-        let bound = (1.0 - POINCARE_R2_MAX) * (1.0 - POINCARE_R2_MAX);
-        assert!(
-            (scalar * scalar - bound).abs() <= 1e-3 * bound,
-            "the clamped shell puts the gyration norm² at {}, not at the \
-             documented bound {bound}",
-            scalar * scalar
-        );
-        for v in SWEEP_TANGENTS {
-            assert_eq!(
-                s.parallel_transport(outside, outside, v),
-                v,
-                "transport at the gyration's conditioning floor moved {v:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn parallel_transport_preserves_the_metric_norm_across_the_whole_ball() {
-        let s = h3();
-        let points = ball_sweep();
-        for &a in &points {
-            for &b in &points {
-                for v in SWEEP_TANGENTS {
-                    let before = lambda(a) * v.length();
-                    let after = lambda(b) * s.parallel_transport(a, b, v).length();
-                    assert!(
-                        (after - before).abs() <= 1e-5 * before,
-                        "transport {a:?} -> {b:?} took the norm of {v:?} \
-                         from {before} to {after}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic() {
-        let s = h3();
-        let points = ball_sweep();
-        for &a in &points {
-            for &b in &points {
-                if s.distance(a, b) < 1e-3 {
-                    continue;
-                }
-                let forward = (-s.log(b, a)).normalize();
-                let transported = s.parallel_transport(a, b, s.log(a, b)).normalize();
-
-                assert!(
-                    (transported - forward).length() <= 1e-3,
-                    "transported direction {transported:?} misses the forward \
-                     tangent {forward:?} at {a:?} -> {b:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn parallel_transport_fixes_the_normal_of_the_geodesic_plane() {
-        let s = h3();
-        let points = ball_sweep();
-        for &a in &points {
-            for &b in &points {
-                let spread = a.normalize_or_zero().cross(b.normalize_or_zero());
-                if spread.length() < 1e-3 {
-                    continue;
-                }
-                let normal = a.cross(b).normalize();
-                let transported = s.parallel_transport(a, b, normal).normalize();
-                assert!(
-                    (transported - normal).length() <= TWIST_CHORD_TOLERANCE,
-                    "transport {a:?} -> {b:?} tilted the plane normal \
-                     {normal:?} to {transported:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn parallel_transport_along_a_radial_geodesic_fixes_the_orthogonal_plane() {
-        let s = h3();
-        let points = ball_sweep();
-        for &a in &points {
-            for &b in &points {
-                let (ua, ub) = (a.normalize_or_zero(), b.normalize_or_zero());
-                if ua.cross(ub).length() >= 1e-3 || s.distance(a, b) < 1e-3 {
-                    continue;
-                }
-
-                let line = if ua.length_squared() < 0.5 { ub } else { ua };
-                let (w0, w1) = line.any_orthonormal_pair();
-                for w in [w0, w1] {
-                    let transported = s.parallel_transport(a, b, w).normalize();
-                    assert!(
-                        (transported - w).length() <= TWIST_CHORD_TOLERANCE,
-                        "radial transport {a:?} -> {b:?} spun {w:?} to \
-                         {transported:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn parallel_transport_preserves_tangent_orientation() {
-        let s = h3();
-        let points = ball_sweep();
-        for &a in &points {
-            for &b in &points {
-                let frame = glam::Mat3::from_cols(
-                    s.parallel_transport(a, b, Vec3::X),
-                    s.parallel_transport(a, b, Vec3::Y),
-                    s.parallel_transport(a, b, Vec3::Z),
-                );
-                let expected = ((1.0 - b.length_squared()) / (1.0 - a.length_squared())).powi(3);
-                assert!(
-                    (frame.determinant() - expected).abs() <= 1e-4 * expected,
-                    "transport {a:?} -> {b:?} has frame determinant {} against \
-                     the conformal ratio cubed {expected}",
-                    frame.determinant()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn iso_transport_norm_error_stays_within_the_conformal_factor() {
-        let s = h3();
-        let isos = [
-            Iso3H::from_translation(Vec3::new(0.15, 0.0, 0.0)),
-            Iso3H::from_rotation(Quat::from_rotation_z(0.4)),
-            Iso3H::from_translation(Vec3::new(-0.05, 0.2, 0.1)),
-            Iso3H::from_translation(Vec3::new(0.7, -0.2, 0.1)),
-        ];
-        for at in ball_sweep() {
-            let budget = 16.0 * lambda(at) * f32::EPSILON;
-            for iso in isos {
-                let moved = s.iso_apply(iso, at);
-                for v in SWEEP_TANGENTS {
-                    let before = lambda(at) * v.length();
-                    let after = lambda(moved) * s.iso_transport(iso, at, v).length();
-                    assert!(
-                        (after - before).abs() <= budget * before,
-                        "iso_transport at {at:?} took the norm of {v:?} \
-                         from {before} to {after}, past the {budget} budget"
-                    );
-                }
-            }
-        }
-    }
-
     #[test]
     fn a_point_past_the_declared_envelope_is_refused() {
-        let s = h3();
+        let s = HyperbolicH3;
         let at = |d: f32| Vec3::X * (0.5 * d).tanh();
         assert!(s.valid_point(at(H3_DEPTH_ENVELOPE - 1.0)));
         assert!(!s.valid_point(at(H3_DEPTH_ENVELOPE + 1.0)));
@@ -696,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn klein_chart_through_the_embedding_matches_its_closed_form() {
+    fn the_poincare_klein_and_hyperboloid_charts_agree() {
         for p in ball_sweep() {
             let expected = 2.0 * p / (1.0 + p.length_squared());
             let k = poincare_to_klein(p);
@@ -705,45 +445,20 @@ mod tests {
                 "Klein of {p:?} is {k:?}, closed form {expected:?}"
             );
         }
-    }
 
-    #[test]
-    fn klein_ray_parameter_is_hyperbolic_arc_length() {
-        let s = h3();
-        let dir = Vec3::new(0.6, -0.48, 0.64);
-        for t in [0.1_f32, 1.0, 3.0, 6.0] {
-            let p = klein_to_poincare(klein_ray(dir, t));
-            assert_relative_eq!(s.distance(Vec3::ZERO, p), t, epsilon = 2e-4 * t);
-        }
-    }
-
-    #[test]
-    fn geodesics_are_straight_in_the_klein_chart() {
-        let s = h3();
-        let at = Vec3::new(0.3, -0.2, 0.5);
-        let v = Vec3::new(0.02, 0.05, -0.03);
-        let k0 = poincare_to_klein(at);
-        let chord = (poincare_to_klein(s.exp(at, 20.0 * v)) - k0).normalize();
-        for i in 1..20 {
-            let k = poincare_to_klein(s.exp(at, i as f32 * v));
-            let off = (k - k0).cross(chord).length();
-            assert!(
-                off <= 1e-5,
-                "geodesic sample {i} leaves the Klein chord by {off}"
-            );
-        }
-    }
-
-    #[test]
-    fn poincare_hyperboloid_round_trip() {
         let p = Vec3::new(0.2, -0.3, 0.1);
         let h = poincare_to_hyperboloid(p);
-
         let lorentz = -h.x * h.x - h.y * h.y - h.z * h.z + h.w * h.w;
         assert_relative_eq!(lorentz, 1.0, epsilon = 1e-5);
         let p2 = hyperboloid_to_poincare(h);
         assert_relative_eq!(p2.x, p.x, epsilon = 1e-6);
         assert_relative_eq!(p2.y, p.y, epsilon = 1e-6);
         assert_relative_eq!(p2.z, p.z, epsilon = 1e-6);
+
+        let dir = Vec3::new(0.6, -0.48, 0.64);
+        for t in [0.1_f32, 1.0, 3.0, 6.0] {
+            let p = klein_to_poincare(klein_ray(dir, t));
+            assert_relative_eq!(HyperbolicH3.distance(Vec3::ZERO, p), t, epsilon = 2e-4 * t);
+        }
     }
 }

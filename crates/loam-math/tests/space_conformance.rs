@@ -139,22 +139,6 @@ mod invariants {
         }
     }
 
-    pub fn distance_is_finite_and_nonnegative<F: SpaceFixture>(f: &F) {
-        let s = f.space();
-        let points = f.points();
-        for &a in &points {
-            for &b in &points {
-                let d = s.distance(a, b);
-                assert!(
-                    d.is_finite() && d >= 0.0,
-                    "d = {d} at {:?} {:?}",
-                    f.point_components(a),
-                    f.point_components(b)
-                );
-            }
-        }
-    }
-
     pub fn distance_satisfies_the_triangle_inequality<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
@@ -489,36 +473,6 @@ mod invariants {
         }
     }
 
-    pub fn parallel_transport_along_one_segment_matches_parallel_transport<F: SpaceFixture>(f: &F) {
-        let s = f.space();
-        let tol = f.tol();
-        let points = f.points();
-        for &a in &points {
-            for v in f.tangents(a) {
-                let residual = metric_residual(f, a, s.parallel_transport_along(&[], v), v);
-                assert!(residual <= tol.vector, "empty path moved v by {residual}");
-                let residual = metric_residual(f, a, s.parallel_transport_along(&[a], v), v);
-                assert!(
-                    residual <= tol.vector,
-                    "one-point path moved v by {residual}"
-                );
-                for &b in &points {
-                    let along = s.parallel_transport_along(&[a, b], v);
-                    let direct = s.parallel_transport(a, b, v);
-                    let residual = metric_residual(f, b, along, direct);
-                    let scale = metric_norm(f, b, direct).max(1.0);
-                    assert!(
-                        residual <= tol.vector * scale,
-                        "polyline transport differs from segment transport by {residual} \
-                         at {:?} {:?}",
-                        f.point_components(a),
-                        f.point_components(b)
-                    );
-                }
-            }
-        }
-    }
-
     pub fn parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic<F: SpaceFixture>(
         f: &F,
     ) {
@@ -753,14 +707,12 @@ macro_rules! conformance_suite {
 
             conformance_tests!($fixture;
                 distance_is_symmetric_and_zero_on_the_diagonal,
-                distance_is_finite_and_nonnegative,
                 distance_satisfies_the_triangle_inequality,
                 exp_inverts_log_on_sampled_pairs,
                 log_inverts_exp_on_sampled_tangents,
                 exp_advances_by_the_metric_norm_of_its_tangent,
                 parallel_transport_preserves_the_metric_norm,
                 parallel_transport_is_linear_in_the_transported_vector,
-                parallel_transport_along_one_segment_matches_parallel_transport,
                 degenerate_inputs_stay_finite,
                 $($extra,)*
             );

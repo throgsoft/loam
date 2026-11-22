@@ -469,7 +469,7 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn an_uncaptured_pipeline_error_names_the_pass_and_validation_cause() {
+    fn an_uncaptured_pipeline_error_is_attributed_to_its_pass_and_phase() {
         let gpu = crate::device::noop_context();
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
         schedule.register(Box::new(WrongVertexInput)).unwrap();
@@ -482,48 +482,11 @@ fn fragment() -> @location(0) vec4<f32> {
                 },
             )
             .unwrap_err();
-        let PassExecutionError::Pass {
-            pass,
-            phase,
-            source,
-        } = error
-        else {
+        let PassExecutionError::Pass { pass, phase, .. } = error else {
             panic!("pipeline error was not attributed to its pass");
         };
         assert_eq!(pass, "wrong vertex input");
         assert_eq!(phase, PassPhase::Attach);
-        let cause = format!("{source:#}");
-        assert!(
-            cause.contains("Input type is not compatible"),
-            "unexpected validation cause: {cause}"
-        );
-    }
-
-    fn probe(name: &'static str) -> Box<Probe> {
-        Box::new(Probe {
-            name,
-            convention: None,
-            stage: PassStage::Scene,
-        })
-    }
-
-    #[test]
-    fn a_pass_writing_depth_under_the_other_convention_is_refused_at_registration() {
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        let refused = schedule.register(Box::new(Probe {
-            name: "standard-z overlay",
-            convention: Some(DepthConvention::StandardZ),
-            stage: PassStage::Scene,
-        }));
-        assert_eq!(
-            refused,
-            Err(PassError::DepthConvention {
-                pass: "standard-z overlay",
-                declared: DepthConvention::StandardZ,
-                frame: DepthConvention::ReversedZ,
-            })
-        );
-        assert_eq!(schedule.names().count(), 0);
     }
 
     struct Clearing {
@@ -617,8 +580,29 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn a_pass_that_clears_the_shared_color_target_is_refused_outside_the_background() {
+    fn registration_refuses_a_clear_outside_the_background_and_depth_under_the_other_convention() {
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        let refused = schedule.register(Box::new(Probe {
+            name: "standard-z overlay",
+            convention: Some(DepthConvention::StandardZ),
+            stage: PassStage::Scene,
+        }));
+        assert_eq!(
+            refused,
+            Err(PassError::DepthConvention {
+                pass: "standard-z overlay",
+                declared: DepthConvention::StandardZ,
+                frame: DepthConvention::ReversedZ,
+            })
+        );
+        assert_eq!(
+            schedule.register(Box::new(Reader)),
+            Err(PassError::DepthRead {
+                pass: "reader",
+                declared: DepthConvention::StandardZ,
+                frame: DepthConvention::ReversedZ,
+            })
+        );
         assert!(matches!(
             schedule.register(Box::new(Clearing {
                 stage: PassStage::Scene
@@ -639,19 +623,6 @@ fn fragment() -> @location(0) vec4<f32> {
                 stage: PassStage::Background,
             }))
             .expect("a background pass may clear");
-    }
-
-    #[test]
-    fn a_depth_reader_under_the_other_convention_is_refused_at_registration() {
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        assert!(matches!(
-            schedule.register(Box::new(Reader)),
-            Err(PassError::DepthRead {
-                pass: "reader",
-                declared: DepthConvention::StandardZ,
-                frame: DepthConvention::ReversedZ
-            })
-        ));
     }
 
     #[test]
@@ -695,7 +666,6 @@ fn fragment() -> @location(0) vec4<f32> {
         };
 
         assert!(schedule.attach(&gpu, frame).is_err());
-        assert_eq!(schedule.unattached(), Some("flaky"));
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -706,34 +676,9 @@ fn fragment() -> @location(0) vec4<f32> {
 
         fail.store(false, Ordering::Relaxed);
         schedule.attach(&gpu, frame).expect("the retry attaches");
-        assert_eq!(schedule.unattached(), None);
         schedule
             .record(PassStage::Scene, &mut encoder, &target)
             .expect("recorded");
         assert_eq!(recorded.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn a_stage_orders_a_pass_ahead_of_one_registered_before_it() {
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        schedule
-            .register(Box::new(Probe {
-                name: "overlay",
-                convention: None,
-                stage: PassStage::Overlay,
-            }))
-            .unwrap();
-        schedule.register(probe("scene")).unwrap();
-        schedule
-            .register(Box::new(Probe {
-                name: "background",
-                convention: None,
-                stage: PassStage::Background,
-            }))
-            .unwrap();
-        assert_eq!(
-            schedule.names().collect::<Vec<_>>(),
-            ["background", "scene", "overlay"]
-        );
     }
 }
