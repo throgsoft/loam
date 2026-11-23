@@ -126,16 +126,31 @@ pub fn write_headless<A: Stores, W: fmt::Write>(
         &[],
         alpha,
         |step, session, publication| {
-            if (step + 1) % stride.get() != 0 {
-                return each(step, session, None);
+            if write_stride(out, step, stride, session, publication)? {
+                each(step, session, Some(&mut *out))
+            } else {
+                each(step, session, None)
             }
-            write_records(out, step, publication)
-                .and_then(|()| write_eye(out, session))
-                .map_err(|_| HostError::Host("the record dump failed".into()))?;
-            each(step, session, Some(&mut *out))
         },
     )?;
     Ok(())
+}
+
+/// Writes `step`'s records and root eye when `step` ends a `stride`, and says whether it wrote.
+pub fn write_stride<A: Stores>(
+    out: &mut impl fmt::Write,
+    step: u32,
+    stride: NonZeroU32,
+    session: &Session<A>,
+    publication: &Publication,
+) -> Result<bool, HostError> {
+    if !(step + 1).is_multiple_of(stride.get()) {
+        return Ok(false);
+    }
+    write_records(out, step, publication)
+        .and_then(|()| write_eye(out, session))
+        .map_err(|_| HostError::Host("the record dump failed".into()))?;
+    Ok(true)
 }
 
 fn write_eye<A: Stores>(out: &mut impl fmt::Write, session: &Session<A>) -> fmt::Result {

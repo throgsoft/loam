@@ -137,6 +137,21 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         },
     );
 
+    app = app.command(
+        "active",
+        "select the active shape by its slot",
+        |args, submit, _out| {
+            let [token] = args else {
+                bail!("usage: active <slot>");
+            };
+            let slot = token
+                .parse()
+                .map_err(|error| anyhow!("active: invalid `{token}`: {error}"))?;
+            submit.app(Action::Active(slot));
+            Ok(())
+        },
+    );
+
     app = app.command("slice", "set the w cross-section", |args, submit, _out| {
         let [token] = args else {
             bail!("usage: slice <w>");

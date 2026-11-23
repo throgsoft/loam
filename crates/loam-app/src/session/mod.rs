@@ -10,6 +10,7 @@ pub mod input;
 mod commands;
 mod cursor;
 mod frame;
+mod headless;
 mod surface;
 
 #[cfg(target_arch = "wasm32")]
@@ -26,6 +27,7 @@ pub use console::{SessionConsole, Submit};
 #[cfg(feature = "egui")]
 pub use debug_layer::{DebugLayer, DEBUG_LAYER};
 pub use frame::Target;
+pub use headless::run_script;
 pub use loam_runtime::CursorPolicy;
 pub use pacing::{Pace, Pacer};
 

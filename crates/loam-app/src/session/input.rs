@@ -19,9 +19,14 @@ pub struct InputMap {
     cursor_locked: bool,
     mouse_buttons: [bool; 3],
     active_touches: Vec<u32>,
-    started: Instant,
-    clock_offset: f64,
+    clock: Clock,
     latest_time: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Clock {
+    Wall { started: Instant, offset: f64 },
+    Fixed(f64),
 }
 
 #[cfg(any(all(target_arch = "wasm32", feature = "egui"), test))]
@@ -123,8 +128,10 @@ impl Default for InputMap {
             cursor_locked: false,
             mouse_buttons: [false; 3],
             active_touches: Vec::with_capacity(8),
-            started: Instant::now(),
-            clock_offset: 0.0,
+            clock: Clock::Wall {
+                started: Instant::now(),
+                offset: 0.0,
+            },
             latest_time: 0.0,
         }
     }
@@ -261,11 +268,22 @@ impl InputMap {
     }
 
     fn now(&self) -> f64 {
-        (self.started.elapsed().as_secs_f64() + self.clock_offset).max(self.latest_time)
+        let time = match self.clock {
+            Clock::Wall { started, offset } => started.elapsed().as_secs_f64() + offset,
+            Clock::Fixed(time) => time,
+        };
+        time.max(self.latest_time)
     }
 
     fn sync_clock(&mut self, time: f64) {
-        self.clock_offset = time - self.started.elapsed().as_secs_f64();
+        if let Clock::Wall { started, offset } = &mut self.clock {
+            *offset = time - started.elapsed().as_secs_f64();
+        }
+    }
+
+    // A scripted run stamps events with step time, so its dump is the same on every run.
+    pub(crate) fn fix_clock(&mut self, seconds: f64) {
+        self.clock = Clock::Fixed(seconds);
     }
 
     fn release_pointers(&mut self) {

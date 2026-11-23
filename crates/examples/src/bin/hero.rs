@@ -5,7 +5,8 @@ use std::process::ExitCode;
 
 use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
 use loam::app::environment::Environment;
-use loam::app::session::launch_or_headless;
+use loam::app::script::{driver_from_args, ScriptDriver};
+use loam::app::session::{launch_or_headless, run_script};
 use loam::physics::body::MASK_ALL;
 use loam::physics::euclidean_r4::{polytope_body_r4, register_default_narrowphase};
 use loam::physics::{BodyDef, BodyId};
@@ -840,6 +841,30 @@ fn headless(
     Ok(())
 }
 
+fn scripted(
+    session: &mut Session<HeroStores>,
+    args: Args,
+    driver: ScriptDriver,
+) -> Result<(), HostError> {
+    let mut app = host(args, None);
+    let mut dump = String::new();
+    run_script(
+        session,
+        &mut app,
+        driver,
+        1.0,
+        |step, session, publication| {
+            if host::write_stride(&mut dump, step, RECORD_STRIDE, session, publication)? {
+                write_mesh(&mut dump, session.app.mesh.get())
+                    .map_err(|_| refused("the record dump failed"))?;
+            }
+            Ok(())
+        },
+    )?;
+    print!("{dump}");
+    Ok(())
+}
+
 // A record dump keeps every 20th step so it stays short enough to diff.
 const RECORD_STRIDE: NonZeroU32 = NonZeroU32::new(20).expect("the record stride is nonzero");
 
@@ -861,6 +886,16 @@ fn main() -> ExitCode {
             Ok((session, host(args, record)))
         },
         |args| {
+            let driver = driver_from_args(&args).map_err(|error| refused(format!("{error:#}")))?;
+            if let Some(driver) = driver {
+                if !args.has_bare_flag("records") || args.flag_value("headless").is_some() {
+                    return Err(refused(
+                        "--script runs as --headless --records with no tick count",
+                    ));
+                }
+                let (mut session, _) = build()?;
+                return scripted(&mut session, args, driver);
+            }
             let steps = args
                 .flag_value("headless")
                 .and_then(|count| count.parse::<u32>().ok())

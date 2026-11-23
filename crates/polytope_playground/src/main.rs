@@ -2,10 +2,11 @@ use std::fmt::{self, Write as _};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use loam::app::session::launch_or_headless;
+use loam::app::script::driver_from_args;
+use loam::app::session::{launch_or_headless, run_script};
 use loam::prelude::*;
 use loam::render::raymarch::BodyUniform;
-use loam::runtime::host::{run_headless, write_headless};
+use loam::runtime::host::{run_headless, write_headless, write_stride};
 
 mod catalog;
 mod color;
@@ -1105,7 +1106,7 @@ fn headless(args: Args) -> Result<(), HostError> {
     let mut booted = boot(&row)?;
     let config = HostConfig::new("polytope playground", bindings());
     if args.has_bare_flag("records") {
-        return records(&mut booted, &config, &args);
+        return records(&mut booted, config, args);
     }
     for line in report(&mut booted, &config)? {
         println!("{line}");
@@ -1117,7 +1118,7 @@ fn submit(session: &mut Session<Playground>, action: Action) {
     session.submit(Command::App(Box::new(action)));
 }
 
-fn records(booted: &mut Boot, config: &HostConfig, args: &Args) -> Result<(), HostError> {
+fn records(booted: &mut Boot, config: HostConfig, args: Args) -> Result<(), HostError> {
     let alpha = match args.flag_value("alpha") {
         None => 1.0,
         Some(raw) => raw
@@ -1147,10 +1148,29 @@ fn records(booted: &mut Boot, config: &HostConfig, args: &Args) -> Result<(), Ho
     let domain = booted.domain;
     let mut scratch = Scratch::new();
     let mut dump = String::new();
+    let driver = driver_from_args(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
+    if let Some(driver) = driver {
+        let mut app = console::install(SessionApp::with_args(config, args));
+        run_script(
+            &mut booted.session,
+            &mut app,
+            driver,
+            alpha,
+            |step, session, publication| {
+                if !write_stride(&mut dump, step, RECORD_STRIDE, session, publication)? {
+                    return Ok(());
+                }
+                write_bodies(&mut dump, session, domain, alpha, &mut scratch)
+                    .map_err(|_| HostError::Host("the record dump failed".into()))
+            },
+        )?;
+        print!("{dump}");
+        return Ok(());
+    }
     write_headless(
         &mut dump,
         &mut booted.session,
-        config,
+        &config,
         RECORD_STEPS,
         alpha,
         RECORD_STRIDE,
