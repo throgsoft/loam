@@ -402,6 +402,7 @@ fn install_systems(
         Ok(())
     });
     let mut rings = gimbal::GimbalRenderer::default();
+    let mut lines = String::new();
     session.system(Phase::Publication, "overlay", move |mut ctx| {
         let center = scene_center(ctx.app, ctx.domains, domain, ctx.alpha);
         rings.rings(
@@ -409,6 +410,9 @@ fn install_systems(
             center,
             &mut ctx.overlay.lines,
         );
+        if *ctx.app.hud.get() {
+            hud::draw(ctx.overlay, &readout_of(ctx.app), &mut lines);
+        }
         guides::draw(&mut ctx, domain);
         Ok(())
     });
@@ -689,22 +693,17 @@ pub(crate) fn bindings() -> Bindings {
 
 pub(crate) struct Frame {
     hyperslice: HyperslicePass,
-    hud: loam::text::TextPass,
 }
 
 impl Frame {
     pub(crate) fn new() -> Self {
         Self {
             hyperslice: HyperslicePass::new(scene::shader_source()),
-            hud: hud::pass(),
         }
     }
 
     fn passes(&self) -> Vec<Box<dyn FramePass>> {
-        vec![
-            Box::new(self.hyperslice.clone()),
-            Box::new(self.hud.clone()),
-        ]
+        vec![Box::new(self.hyperslice.clone())]
     }
 }
 
@@ -763,8 +762,6 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
     let config = HostConfig::new("polytope playground", bindings());
 
     let hyperslice = frame.hyperslice.clone();
-    let readout = frame.hud.clone();
-    let mut lines = String::new();
     let domain = booted.domain;
     let mut scratch = Scratch::new();
     let mut panel = ui::Panel::default();
@@ -784,16 +781,6 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
             &mut scratch,
         );
         hyperslice.publish_strip(&scratch.strip);
-        let shown = *hook.session.app.hud.get();
-        let seat = hook.ui.map_or(hud::Seat::default(), |context| {
-            hud::Seat::in_panel(context.available_rect(), context.pixels_per_point())
-        });
-        hud::publish(
-            &readout,
-            shown.then(|| readout_of(hook.session)).as_ref(),
-            seat,
-            &mut lines,
-        );
         if let Some(context) = hook.ui {
             toy::fill_depth_bands(hook.session, domain, hook.alpha, &mut scratch.depths);
             ui::draw(
@@ -863,13 +850,13 @@ fn slice_reach(mode: Mode) -> f32 {
     }
 }
 
-fn readout_of(session: &Session<Playground>) -> hud::Readout {
+fn readout_of(app: &Playground) -> hud::Readout {
     hud::Readout {
-        slice: *session.app.slice.get(),
-        rate: session.app.spin.get().rate,
-        bodies: session.app.slots.len(),
-        planes: session.app.spin.get().planes,
-        toybox: *session.app.mode.get() == Mode::Toybox,
+        slice: *app.slice.get(),
+        rate: app.spin.get().rate,
+        bodies: app.slots.len(),
+        planes: app.spin.get().planes,
+        toybox: *app.mode.get() == Mode::Toybox,
     }
 }
 

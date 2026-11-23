@@ -60,7 +60,7 @@ pub use value::{Setting, Value};
 pub use view::{
     Backdrop, DepthEnvelope, DomainRay, Eye, FieldRecord, Ground, Identity3, ImageRay, ImageSpace,
     ImageSpaceId, InstanceRecord, Klein, Overlay, Pick, Placement, PointRecord, Projection4,
-    RefusalSource, Rigid, Section4, SectionCut, SegmentRecord, Sky, TriangleRecord, ViewId,
-    ViewMapping, ViewRecords, ViewRefusal, ViewRefusals, ViewSpec, ViewStyle, ViewSummary,
+    RefusalSource, Rigid, Section4, SectionCut, SegmentRecord, Sky, TextRecord, TriangleRecord,
+    ViewId, ViewMapping, ViewRecords, ViewRefusal, ViewRefusals, ViewSpec, ViewStyle, ViewSummary,
     ViewTarget, Views, ViewsSnapshot,
 };

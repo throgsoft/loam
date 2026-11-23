@@ -20,6 +20,7 @@ use super::cursor::CursorCapture;
 #[cfg(feature = "egui")]
 use super::debug_layer::DebugLayer;
 use super::input::InputMap;
+use super::text::{ScreenText, Seat};
 
 pub struct Target<'a> {
     pub view: &'a TextureView,
@@ -54,6 +55,7 @@ struct Inner<A: Stores> {
     app: SessionApp<A>,
     posts: Posts,
     no_views_reported: bool,
+    text: ScreenText,
     shown: Shown,
     drawn: Option<Shown>,
     #[cfg(test)]
@@ -91,6 +93,7 @@ impl<A: Stores> Frame<A> {
                 app,
                 posts: Posts::default(),
                 no_views_reported: false,
+                text: ScreenText::new(),
                 shown: Shown::default(),
                 drawn: None,
                 #[cfg(test)]
@@ -228,6 +231,9 @@ impl<A: Stores> Frame<A> {
         let mut presenter = Presenter::new(format).map_err(failed)?;
         for pass in self.inner.app.passes.drain(..) {
             presenter.register_pass(pass).map_err(failed)?;
+        }
+        if let Some(text) = self.inner.text.pass() {
+            presenter.register_pass(Box::new(text)).map_err(failed)?;
         }
         #[cfg(all(not(feature = "egui"), not(target_arch = "wasm32")))]
         let _ = window;
@@ -499,6 +505,21 @@ impl<A: Stores> Inner<A> {
         let mut requested = false;
         let terminal = match prepared {
             Ok((records, eye)) => {
+                #[cfg(feature = "egui")]
+                let seat = context.as_ref().map(|context| {
+                    let free = context.available_rect().min;
+                    let scale = context.pixels_per_point();
+                    Seat {
+                        origin_px: [free.x * scale, free.y * scale],
+                        pixels_per_point: scale,
+                    }
+                });
+                #[cfg(not(feature = "egui"))]
+                let seat = None;
+                let seat = seat.unwrap_or(Seat {
+                    origin_px: [0.0; 2],
+                    pixels_per_point: self.input.scale(),
+                });
                 {
                     let root = self.session.views().root();
                     let wanted = self
@@ -553,6 +574,7 @@ impl<A: Stores> Inner<A> {
                 );
                 presenter.upload_overlay(&eye, &records.overlay);
                 presenter.upload_backdrop(&eye, records.backdrop);
+                self.text.publish(&records.overlay, seat);
                 self.shown.content = records.content();
                 self.shown.eye = eye;
                 self.records.release(records);

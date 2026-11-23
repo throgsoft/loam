@@ -1,13 +1,9 @@
 use std::fmt::Write as _;
 
-use loam::app::egui;
 use loam::math::Plane4;
-use loam::text::{TextDraw, TextPass};
+use loam::runtime::{Overlay, TextRecord};
 
 const SIZE_PT: f32 = 16.0;
-
-// loam-text has no mip chain, so bake at 4x and only ever minify.
-const BAKE_PX: f32 = 4.0 * SIZE_PT;
 
 const INSET_PT: f32 = 16.0;
 
@@ -51,74 +47,24 @@ pub(crate) fn write_readout(out: &mut String, readout: &Readout) {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Seat {
-    pub(crate) origin_px: [f32; 2],
-    pub(crate) pixels_per_point: f32,
-}
-
-impl Default for Seat {
-    fn default() -> Self {
-        Self {
-            origin_px: [INSET_PT, INSET_PT],
-            pixels_per_point: 1.0,
-        }
-    }
-}
-
-impl Seat {
-    pub(crate) fn in_panel(free: egui::Rect, pixels_per_point: f32) -> Self {
-        Self {
-            origin_px: [
-                (free.left() + INSET_PT) * pixels_per_point,
-                (free.top() + INSET_PT) * pixels_per_point,
-            ],
-            pixels_per_point,
-        }
-    }
-
-    fn size_px(&self) -> f32 {
-        SIZE_PT * self.pixels_per_point
-    }
-
+pub(crate) fn draw(overlay: &mut Overlay, readout: &Readout, lines: &mut String) {
+    write_readout(lines, readout);
+    let shadow = INSET_PT + SHADOW_OFFSET_PT;
     // Shadow first so the body paints over it.
-    fn draws(&self) -> [TextDraw; 2] {
-        let offset = SHADOW_OFFSET_PT * self.pixels_per_point;
-        [
-            TextDraw {
-                origin_px: [self.origin_px[0] + offset, self.origin_px[1] + offset],
-                size_px: self.size_px(),
-                color: SHADOW_COLOR,
-            },
-            TextDraw {
-                origin_px: self.origin_px,
-                size_px: self.size_px(),
-                color: COLOR,
-            },
-        ]
-    }
-}
-
-pub(crate) fn pass() -> TextPass {
-    TextPass::new("hud", font_bytes().unwrap_or_default(), BAKE_PX)
-}
-
-pub(crate) fn publish(pass: &TextPass, readout: Option<&Readout>, seat: Seat, lines: &mut String) {
-    match readout {
-        Some(readout) => {
-            write_readout(lines, readout);
-            pass.publish(lines, &seat.draws());
-        }
-        None => pass.publish("", &[]),
-    }
-}
-
-fn font_bytes() -> Option<Vec<u8>> {
-    let fonts = egui::FontDefinitions::default();
-    let chosen = fonts
-        .font_data
-        .iter()
-        .find(|(name, _)| name.starts_with("Hack"))
-        .or_else(|| fonts.font_data.iter().next())?;
-    Some(chosen.1.font.to_vec())
+    overlay.push_text(
+        lines,
+        TextRecord {
+            origin_pt: [shadow, shadow],
+            size_pt: SIZE_PT,
+            color: SHADOW_COLOR,
+        },
+    );
+    overlay.push_text(
+        lines,
+        TextRecord {
+            origin_pt: [INSET_PT, INSET_PT],
+            size_pt: SIZE_PT,
+            color: COLOR,
+        },
+    );
 }

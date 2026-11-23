@@ -12,6 +12,7 @@ mod cursor;
 mod frame;
 mod headless;
 mod surface;
+mod text;
 
 #[cfg(target_arch = "wasm32")]
 mod animation;

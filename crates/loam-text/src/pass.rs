@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use loam_render::device::GpuContext;
@@ -20,7 +21,7 @@ struct State {
     font: Vec<u8>,
     bake_size_px: f32,
     text: String,
-    draws: Vec<TextDraw>,
+    draws: Vec<(Range<usize>, TextDraw)>,
     renderer: Option<TextRenderer>,
     failure: Option<String>,
     device: Option<Device>,
@@ -51,13 +52,19 @@ impl TextPass {
         }
     }
 
-    /// The record queues `text` once per draw, in order, so a shadow placed first paints under the body.
-    pub fn publish(&self, text: &str, draws: &[TextDraw]) {
+    /// Draws in order, so a shadow placed before its body paints under it.
+    pub fn publish<'a>(&self, draws: impl IntoIterator<Item = (&'a str, TextDraw)>) {
         let mut state = self.shared.borrow_mut();
-        state.text.clear();
-        state.text.push_str(text);
-        state.draws.clear();
-        state.draws.extend_from_slice(draws);
+        let State {
+            text, draws: kept, ..
+        } = &mut *state;
+        text.clear();
+        kept.clear();
+        for (part, draw) in draws {
+            let start = text.len();
+            text.push_str(part);
+            kept.push((start..text.len(), draw));
+        }
     }
 
     /// False when the font never parsed, so the pass draws nothing.
@@ -85,7 +92,7 @@ impl FramePass for TextPass {
         target: &FrameTarget<'_>,
     ) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
-        if state.text.is_empty() || state.draws.is_empty() {
+        if state.draws.is_empty() {
             return Ok(());
         }
         let State {
@@ -101,8 +108,13 @@ impl FramePass for TextPass {
         else {
             return Ok(());
         };
-        for draw in draws.iter() {
-            renderer.queue(text, draw.origin_px, draw.size_px, draw.color);
+        for (range, draw) in draws.iter() {
+            renderer.queue(
+                &text[range.clone()],
+                draw.origin_px,
+                draw.size_px,
+                draw.color,
+            );
         }
         renderer.record(
             device,

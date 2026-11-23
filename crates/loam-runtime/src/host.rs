@@ -260,5 +260,12 @@ pub fn write_records(
             point.position, point.radius_px, point.color
         )?;
     }
+    for (text, record) in publication.overlay.text() {
+        writeln!(
+            out,
+            "overlay text {text:?} at {:?} size {:?} color {:?}",
+            record.origin_pt, record.size_pt, record.color
+        )?;
+    }
     Ok(())
 }

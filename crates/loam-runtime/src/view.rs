@@ -956,17 +956,42 @@ pub struct TriangleRecord {
     pub color: [f32; 4],
 }
 
-/// Lines and points in the root image space that publication systems draw each frame.
+/// Screen text in logical points, with the origin measured from the top-left of the area the host's UI leaves free.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextRecord {
+    pub origin_pt: [f32; 2],
+    pub size_pt: f32,
+    pub color: [f32; 4],
+}
+
+/// Lines and points in the root image space and screen text that publication systems draw each frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Overlay {
     pub lines: Vec<SegmentRecord>,
     pub points: Vec<PointRecord>,
+    text: String,
+    labels: Vec<(Range<usize>, TextRecord)>,
 }
 
 impl Overlay {
+    /// Later text paints over earlier text.
+    pub fn push_text(&mut self, text: &str, record: TextRecord) {
+        let start = self.text.len();
+        self.text.push_str(text);
+        self.labels.push((start..self.text.len(), record));
+    }
+
+    pub fn text(&self) -> impl Iterator<Item = (&str, &TextRecord)> {
+        self.labels
+            .iter()
+            .map(|(range, record)| (&self.text[range.clone()], record))
+    }
+
     pub(crate) fn clear(&mut self) {
         self.lines.clear();
         self.points.clear();
+        self.text.clear();
+        self.labels.clear();
     }
 }
 
