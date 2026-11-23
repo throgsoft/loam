@@ -6,6 +6,7 @@ use crate::color::ColorMode;
 use crate::display::{Surface, MAX_WIREFRAME_WIDTH_PX};
 use crate::mode::Mode;
 use crate::projection::Family;
+use crate::strip::Strip;
 use crate::{
     Action, Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GIMBAL, SHOW_GUIDES, TOYBOX_DEBUG,
 };
@@ -148,6 +149,26 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                 .parse()
                 .map_err(|error| anyhow!("active: invalid `{token}`: {error}"))?;
             submit.app(Action::Active(slot));
+            Ok(())
+        },
+    );
+
+    app = app.command(
+        "view",
+        "show every shape or only the active one: shapes | single",
+        |args, submit, _out| {
+            let single = match args {
+                ["shapes"] => false,
+                ["single"] => true,
+                _ => bail!("usage: view shapes|single"),
+            };
+            submit.app_fn("view", move |dispatch: &mut Dispatch<'_, Playground>| {
+                dispatch.app.display.get_mut().single = single;
+                let strip = *dispatch.app.strip.get();
+                if strip.on {
+                    dispatch.app.strip.set(Strip { on: false, ..strip });
+                }
+            });
             Ok(())
         },
     );

@@ -23,16 +23,18 @@
 90 key KeyE up
 100 camera orbit
 
-# Scrub the w slice, pause the spin with its key and pick another shape.
+# Scrub the w slice, pause the spin with its key, then show only the active shape and pick another.
 110 slice 0.2
 114 slice 0.4
 118 slice 0.6
 122 slice 0.3
 130 key Space down
 131 key Space up
-140 active 0
+136 view single
+140 active 2
 150 wireframe on
 160 hud on
+166 view shapes
 
 # Toybox spawns the toys. Grab the center toy and fling it right.
 170 demo toybox

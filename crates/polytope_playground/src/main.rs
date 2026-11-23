@@ -1102,6 +1102,12 @@ fn strip_line(scratch: &mut Scratch, strip: Strip) -> String {
 }
 
 fn headless(args: Args) -> Result<(), HostError> {
+    let scripted = args.has_bare_flag("script") || args.get("script").is_some();
+    if scripted && !args.has_bare_flag("records") {
+        return Err(HostError::Host(
+            "--script runs as --headless --records".into(),
+        ));
+    }
     let row = catalog::parse_row(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
     let mut booted = boot(&row)?;
     let config = HostConfig::new("polytope playground", bindings());
