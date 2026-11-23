@@ -1,10 +1,8 @@
 use glam::Vec4;
 use loam::math::{Bivector4, EuclideanR4, Rotor, Rotor4};
-use loam::physics::euclidean_r4::{
-    halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
-};
+use loam::physics::euclidean_r4::register_default_narrowphase;
 use loam::physics::manifold::PENETRATION_SLOP;
-use loam::physics::{Collider, EditError, RigidBody};
+use loam::physics::{BodyDef, Collider, EditError, RigidBody};
 use loam::runtime::{
     Dispatch, DomainError, DomainHandle, Domains, Entity, GrabConfig, Instance, Physics,
     PhysicsConfig, Pose, Rejection, Session, SpawnBundle, Step,
@@ -235,33 +233,8 @@ fn asset_of(polytope: Polytope4, cards: &[Card]) -> Option<(ShapeEntry, Instance
         .and_then(|index| Some((SHAPE_CATALOG[index], cards.get(index)?.toy()?)))
 }
 
-pub(crate) fn add_body(
-    dispatch: &mut Dispatch<'_, Playground>,
-    domain: DomainHandle<EuclideanR4>,
-    entity: Entity,
-    polytope: Polytope4,
-    pose: Pose<EuclideanR4>,
-) -> Result<(), Rejection> {
-    let vertices = polytope
-        .topology()
-        .vertices
-        .iter()
-        .map(|vertex| *vertex * BODY_SIZE)
-        .collect();
-    let body = polytope_body_r4(pose.point, Vec4::ZERO, vertices, BODY_MASS)
-        .ok_or(Rejection::Unsupported("invalid toy body"))?;
-    let domain = dispatch.domains.typed(domain)?;
-    domain.spawn_body(entity, body)?;
-    let physics = domain
-        .physics_mut()
-        .ok_or(Rejection::Unsupported("the domain has no physics"))?;
-    physics.set_mass_properties(
-        entity,
-        BODY_MASS,
-        regular_polytope4_inertia(polytope, BODY_MASS, BODY_SIZE),
-    )?;
-    physics.set_restitution(entity, BODY_RESTITUTION)?;
-    Ok(())
+pub(crate) fn body(polytope: Polytope4) -> Result<BodyDef<EuclideanR4>, EditError> {
+    BodyDef::regular_polytope(polytope, BODY_SIZE, BODY_MASS)?.restitution(BODY_RESTITUTION)
 }
 
 fn spawn_toy(
@@ -275,10 +248,11 @@ fn spawn_toy(
 ) -> Result<(), Rejection> {
     let centre = count.saturating_sub(1) as f32 * 0.5;
     let pose = pose_at(polytope, (at as f32 - centre) * SPAWN_SPACING);
-    let entity = dispatch.spawn(
+    dispatch.spawn(
         SpawnBundle::new()
             .at(domain, pose)
             .instance(instance)
+            .body(body(polytope)?)
             .row(Slot {
                 index: at,
                 entry,
@@ -289,7 +263,7 @@ fn spawn_toy(
                 rest_time: 0.0,
             }),
     )?;
-    add_body(dispatch, domain, entity, polytope, pose)
+    Ok(())
 }
 
 fn spawn_walls(
@@ -297,19 +271,13 @@ fn spawn_walls(
     domain: DomainHandle<EuclideanR4>,
 ) -> Result<(), Rejection> {
     for (normal, offset, restitution) in arena() {
-        let plane = halfspace4_body_r4(normal, offset)
-            .ok_or(Rejection::Unsupported("invalid arena plane"))?;
-        let entity = dispatch.spawn(
+        let plane = BodyDef::halfspace(normal, offset)?.restitution(restitution)?;
+        dispatch.spawn(
             SpawnBundle::new()
                 .at(domain, Pose::at(Vec4::ZERO))
+                .body(plane)
                 .row(Wall),
         )?;
-        let domain = dispatch.domains.typed(domain)?;
-        domain.spawn_body(entity, plane)?;
-        domain
-            .physics_mut()
-            .ok_or(Rejection::Unsupported("the domain has no physics"))?
-            .set_restitution(entity, restitution)?;
     }
     Ok(())
 }
@@ -393,10 +361,7 @@ pub(crate) fn settle(
     domain: DomainHandle<EuclideanR4>,
     step: Step,
 ) -> Result<(), DomainError> {
-    let r4 = domains.typed(domain)?;
-    let physics = r4
-        .physics_mut()
-        .ok_or(DomainError::Unsupported("physics on r4"))?;
+    let physics = domains.physics(domain)?;
     let decay = (-ANGULAR_DAMPING * step.dt).exp();
     for (entity, toy) in app.toys.iter_mut() {
         let Some(id) = physics.body(entity) else {

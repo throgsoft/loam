@@ -7,10 +7,8 @@ use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMod
 use loam::app::environment::Environment;
 use loam::app::session::launch_or_headless;
 use loam::physics::body::MASK_ALL;
-use loam::physics::euclidean_r4::{
-    halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
-};
-use loam::physics::BodyId;
+use loam::physics::euclidean_r4::{polytope_body_r4, register_default_narrowphase};
+use loam::physics::{BodyDef, BodyId};
 use loam::prelude::*;
 use loam::render::TriangleFeed;
 use loam::runtime::host;
@@ -360,22 +358,12 @@ fn bindings() -> Bindings {
         .key(Key::Letter('n'), RESEED)
 }
 
-fn physics_of(
-    domains: &mut Domains,
-    r4: DomainHandle<EuclideanR4>,
-) -> Result<&mut Physics<EuclideanR4>, Rejection> {
-    domains
-        .typed(r4)?
-        .physics_mut()
-        .ok_or(Rejection::Unsupported("physics on r4"))
-}
-
 fn hold(
     d: &mut Dispatch<'_, HeroStores>,
     r4: DomainHandle<EuclideanR4>,
     asleep: bool,
 ) -> Result<(), Rejection> {
-    let physics = physics_of(d.domains, r4)?;
+    let physics = d.domains.physics(r4)?;
     if !asleep {
         for held in d.app.held.get() {
             if let Some(entity) = physics.entity(held.body) {
@@ -416,37 +404,23 @@ fn spawn_drop(
     position: Vec4,
     tumble: Bivector4,
 ) -> Result<Entity, Rejection> {
-    let entity = d.spawn(SpawnBundle::new().at(r4, Pose::at(position)).row(Drop {
-        polytope,
-        color: drop_color(polytope),
-    }))?;
-    let vertices: Vec<Vec4> = polytope
-        .topology()
-        .vertices
-        .iter()
-        .map(|v| RAIN_SIZE * *v)
-        .collect();
-    let body = polytope_body_r4(
-        position,
-        Vec4::new(0.0, -RAIN_ENTRY_SPEED, 0.0, 0.0),
-        vertices,
-        RAIN_MASS,
+    let body = BodyDef::regular_polytope(polytope, RAIN_SIZE, RAIN_MASS)?
+        .restitution(RESTITUTION)?
+        .velocity(
+            Vec4::new(0.0, -RAIN_ENTRY_SPEED, 0.0, 0.0),
+            tumble,
+            &EuclideanR4,
+        )?
+        .collision_filter(GROUP_FALLING, MASK_FALLING);
+    d.spawn(
+        SpawnBundle::new()
+            .at(r4, Pose::at(position))
+            .body(body)
+            .row(Drop {
+                polytope,
+                color: drop_color(polytope),
+            }),
     )
-    .ok_or(Rejection::Unsupported("polytope rain body"))?;
-    let domain = d.domains.typed(r4)?;
-    domain.spawn_body(entity, body)?;
-    let physics = domain
-        .physics_mut()
-        .ok_or(Rejection::Unsupported("physics on r4"))?;
-    physics.set_restitution(entity, RESTITUTION)?;
-    physics.set_velocity(entity, Vec4::new(0.0, -RAIN_ENTRY_SPEED, 0.0, 0.0), tumble)?;
-    physics.set_collision_filter(entity, GROUP_FALLING, MASK_FALLING)?;
-    physics.set_mass_properties(
-        entity,
-        RAIN_MASS,
-        regular_polytope4_inertia(polytope, RAIN_MASS, RAIN_SIZE),
-    )?;
-    Ok(entity)
 }
 
 fn compose(
@@ -538,16 +512,9 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
             let entry = letter.entry;
             d.spawn(SpawnBundle::new().at(r4, Pose::at(entry)).row(letter))?;
         }
-        let floor_entity = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
-        let floor = halfspace4_body_r4(Vec4::Y, FLOOR_Y)
-            .ok_or(Rejection::Unsupported("half-space floor"))?;
-        let domain = d.domains.typed(r4)?;
-        domain.spawn_body(floor_entity, floor)?;
-        let physics = domain
-            .physics_mut()
-            .ok_or(Rejection::Unsupported("physics on r4"))?;
-        physics.set_solver_iterations(PILE_PGS_ITERS);
-        physics.set_restitution(floor_entity, RESTITUTION)?;
+        let floor = BodyDef::halfspace(Vec4::Y, FLOOR_Y)?.restitution(RESTITUTION)?;
+        d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)).body(floor))?;
+        d.domains.physics(r4)?.set_solver_iterations(PILE_PGS_ITERS);
         Ok(())
     })?;
 
@@ -598,19 +565,14 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
                 for (entity, letter) in ctx.app.letters.iter() {
                     let body =
                         polytope_body_r4(letter.mark, Vec4::ZERO, letter.hull.clone(), LETTER_MASS)
-                            .ok_or(DomainError::Unsupported("letter collider"))?;
+                            .ok_or(DomainError::Unsupported("letter collider"))?
+                            .restitution(RESTITUTION)?;
                     domain.spawn_body(entity, body)?;
-                    domain
-                        .physics_mut()
-                        .ok_or(DomainError::Unsupported("physics on r4"))?
-                        .set_restitution(entity, RESTITUTION)?;
                 }
                 ctx.app.stage.get_mut().released = true;
                 return Ok(());
             }
-            let physics = domain
-                .physics_mut()
-                .ok_or(DomainError::Unsupported("physics on r4"))?;
+            let physics = ctx.domains.physics(r4)?;
             for (entity, letter) in ctx.app.letters.iter_mut() {
                 letter.w_before = physics
                     .body(entity)
@@ -631,10 +593,7 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
                 return Ok(());
             }
             {
-                let domain = ctx.domains.typed(r4)?;
-                let physics = domain
-                    .physics_mut()
-                    .ok_or(DomainError::Unsupported("physics on r4"))?;
+                let physics = ctx.domains.physics(r4)?;
                 for (entity, letter) in ctx.app.letters.iter() {
                     let Some(id) = physics.body(entity) else {
                         continue;

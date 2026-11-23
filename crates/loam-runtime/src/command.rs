@@ -318,6 +318,8 @@ impl<A: HasStore<T>, T: Send + 'static> Attach<A> for Row<T> {
 pub struct SpawnBundle<A> {
     placement: Option<Box<dyn Place>>,
     instance: Option<Instance>,
+    #[cfg(feature = "physics")]
+    body: Option<Box<dyn crate::physics::SpawnBody>>,
     rows: Vec<Box<dyn Attach<A>>>,
     reserved: Option<Entity>,
 }
@@ -333,6 +335,8 @@ impl<A: Stores> SpawnBundle<A> {
         Self {
             placement: None,
             instance: None,
+            #[cfg(feature = "physics")]
+            body: None,
             rows: Vec::new(),
             reserved: None,
         }
@@ -350,6 +354,18 @@ impl<A: Stores> SpawnBundle<A> {
 
     pub fn instance(mut self, instance: Instance) -> Self {
         self.instance = Some(instance);
+        self
+    }
+
+    /// The body moves to the entity's pose and takes its velocity there, so the bundle needs a placement in a domain with physics.
+    #[cfg(feature = "physics")]
+    pub fn body<S>(mut self, body: loam_physics::BodyDef<S>) -> Self
+    where
+        S: crate::domain::Homogeneous + loam_physics::PhysicsSpace + Copy,
+        S::Vector: loam_physics::collision::VectorOps + Default,
+        S::Point: std::ops::Sub<Output = S::Vector>,
+    {
+        self.body = Some(Box::new(body));
         self
     }
 
@@ -498,9 +514,17 @@ impl<'a, A: Stores> Dispatch<'a, A> {
     }
 
     fn attach_bundle(&mut self, entity: Entity, bundle: SpawnBundle<A>) -> Result<(), Rejection> {
-        if let Some(placement) = &bundle.placement {
-            placement.place(self.domains, entity, bundle.instance)?;
+        let placed = match &bundle.placement {
+            Some(placement) => Some(placement.place(self.domains, entity, bundle.instance)?),
+            None => None,
+        };
+        #[cfg(feature = "physics")]
+        if let Some(body) = bundle.body {
+            let domain = placed.ok_or(Rejection::Unsupported("a body without a placement"))?;
+            body.spawn(self.domains, domain, entity)?;
         }
+        #[cfg(not(feature = "physics"))]
+        let _ = placed;
         for row in bundle.rows {
             row.attach(self.app, entity)?;
         }

@@ -46,9 +46,14 @@ impl<S: PhysicsSpace> Copy for RigidBody<S> {}
 pub struct BodyDef<S: PhysicsSpace> {
     position: S::Point,
     velocity: S::Vector,
+    angular_velocity: S::AngVel,
     collider: Collider,
     mass: f32,
     inertia: S::Inertia,
+    restitution: f32,
+    collision_group: u32,
+    collision_mask: u32,
+    asleep: bool,
 }
 
 impl<S: PhysicsSpace> BodyDef<S> {
@@ -69,9 +74,14 @@ impl<S: PhysicsSpace> BodyDef<S> {
         Some(Self {
             position,
             velocity,
+            angular_velocity: <S::AngVel as Bivector>::zero(),
             collider,
             mass,
             inertia,
+            restitution: 0.2,
+            collision_group: GROUP_DEFAULT,
+            collision_mask: MASK_ALL,
+            asleep: false,
         })
     }
 
@@ -102,6 +112,47 @@ impl<S: PhysicsSpace> BodyDef<S> {
         &self.collider
     }
 
+    pub fn restitution(mut self, restitution: f32) -> Result<Self, EditError> {
+        if !restitution.is_finite() || restitution < 0.0 {
+            return Err(EditError::InvalidRestitution);
+        }
+        self.restitution = restitution;
+        Ok(self)
+    }
+
+    pub fn velocity(
+        mut self,
+        velocity: S::Vector,
+        angular_velocity: S::AngVel,
+        space: &S,
+    ) -> Result<Self, EditError> {
+        if !space.valid_vector(velocity) || !space.valid_angular_velocity(angular_velocity) {
+            return Err(EditError::NotFinite);
+        }
+        if !self.asleep {
+            self.velocity = velocity;
+            self.angular_velocity = angular_velocity;
+        }
+        Ok(self)
+    }
+
+    pub fn collision_filter(mut self, group: u32, mask: u32) -> Self {
+        self.collision_group = group;
+        self.collision_mask = mask;
+        self
+    }
+
+    /// A dynamic body spawns asleep and at rest whatever velocity the definition is given.
+    pub fn asleep(mut self) -> Self
+    where
+        S::Vector: Default,
+    {
+        self.velocity = S::Vector::default();
+        self.angular_velocity = <S::AngVel as Bivector>::zero();
+        self.asleep = true;
+        self
+    }
+
     pub(crate) fn into_row(self, geometry: &mut GeometryStore, space: &S) -> RigidBody<S> {
         let inv_mass = if self.mass > 0.0 {
             1.0 / self.mass
@@ -109,18 +160,18 @@ impl<S: PhysicsSpace> BodyDef<S> {
             0.0
         };
         RigidBody {
-            sleeping: false,
-            collision_group: GROUP_DEFAULT,
-            collision_mask: MASK_ALL,
+            sleeping: self.asleep && self.mass > 0.0,
+            collision_group: self.collision_group,
+            collision_mask: self.collision_mask,
             position: self.position,
             velocity: self.velocity,
             orientation: space.iso_identity(),
-            angular_velocity: <S::AngVel as Bivector>::zero(),
+            angular_velocity: self.angular_velocity,
             mass: self.mass,
             inv_mass,
             inertia: self.inertia,
             collider: geometry.prepare(self.collider),
-            restitution: 0.2,
+            restitution: self.restitution,
         }
     }
 }
@@ -245,7 +296,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
     }
 }
 
-fn valid_mass(mass: f32) -> bool {
+pub(crate) fn valid_mass(mass: f32) -> bool {
     mass.is_finite() && mass >= 0.0 && (mass == 0.0 || mass.recip().is_finite())
 }
 

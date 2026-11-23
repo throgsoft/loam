@@ -2254,7 +2254,20 @@ where
             .ok_or(DomainError::Unsupported("physics"))?;
         physics.check_pose(pose)?;
         let id = physics.spawn(entity, body);
-        if let Err(error) = physics.replace_pose(id, pose, &mut self.poses) {
+        let pushed = *physics
+            .world()
+            .body(id)
+            .expect("a body that was just pushed is live");
+        let placed = physics
+            .replace_pose(id, pose, &mut self.poses)
+            .and_then(|()| {
+                if pushed.is_sleeping() {
+                    physics.sleep_body(entity)
+                } else {
+                    physics.set_velocity(entity, pushed.velocity, pushed.angular_velocity)
+                }
+            });
+        if let Err(error) = placed {
             let _ = physics.despawn(entity);
             return Err(error.into());
         }
@@ -2879,14 +2892,19 @@ impl Domains {
         if handle.runtime != self.runtime {
             return Err(DomainError::ForeignRuntime);
         }
-        let domain = self
-            .list
-            .get_mut(handle.id.index())
-            .ok_or(DomainError::UnknownDomain(handle.id))?;
-        domain
+        self.typed_at(handle.id)
+    }
+
+    pub(crate) fn typed_at<S: DomainSpace>(
+        &mut self,
+        id: DomainId,
+    ) -> Result<&mut TypedDomain<S>, DomainError> {
+        self.list
+            .get_mut(id.index())
+            .ok_or(DomainError::UnknownDomain(id))?
             .as_any_mut()
             .downcast_mut::<TypedDomain<S>>()
-            .ok_or(DomainError::SpaceMismatch(handle.id))
+            .ok_or(DomainError::SpaceMismatch(id))
     }
 
     pub fn named<S: DomainSpace>(

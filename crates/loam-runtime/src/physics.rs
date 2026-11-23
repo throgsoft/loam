@@ -9,7 +9,8 @@ use loam_physics::{
 
 use crate::command::{Outcome, Rejection};
 use crate::domain::{
-    ChartCommand, ChartPose, DomainBuilder, DomainError, Facility, Homogeneous, Pose, TypedDomain,
+    ChartCommand, ChartPose, DomainBuilder, DomainError, DomainHandle, DomainId, Domains, Facility,
+    Homogeneous, Pose, TypedDomain,
 };
 use crate::entity::{Entity, EntityKey, SceneId};
 use crate::phase::Step;
@@ -852,6 +853,47 @@ where
         self.facilities
             .iter_mut()
             .find_map(|facility| (facility.as_mut() as &mut dyn Any).downcast_mut::<Physics<S>>())
+    }
+}
+
+impl Domains {
+    pub fn physics<S>(&mut self, handle: DomainHandle<S>) -> Result<&mut Physics<S>, DomainError>
+    where
+        S: Homogeneous + PhysicsSpace + Copy,
+        S::Vector: VectorOps + Default,
+        S::Point: Sub<Output = S::Vector>,
+    {
+        self.typed(handle)?
+            .physics_mut()
+            .ok_or(DomainError::Unsupported("physics"))
+    }
+}
+
+pub(crate) trait SpawnBody: Send {
+    fn spawn(
+        self: Box<Self>,
+        domains: &mut Domains,
+        domain: DomainId,
+        entity: Entity,
+    ) -> Result<(), DomainError>;
+}
+
+impl<S> SpawnBody for BodyDef<S>
+where
+    S: Homogeneous + PhysicsSpace + Copy,
+    S::Vector: VectorOps + Default,
+    S::Point: Sub<Output = S::Vector>,
+{
+    fn spawn(
+        self: Box<Self>,
+        domains: &mut Domains,
+        domain: DomainId,
+        entity: Entity,
+    ) -> Result<(), DomainError> {
+        domains
+            .typed_at::<S>(domain)?
+            .spawn_body(entity, *self)
+            .map(|_| ())
     }
 }
 

@@ -116,11 +116,7 @@ pub(crate) fn throw_toy(
         return Ok(());
     }
     let rope = *dispatch.app.rope.get();
-    let physics = dispatch
-        .domains
-        .typed(domain)?
-        .physics_mut()
-        .ok_or(Rejection::Unsupported("the domain has no physics"))?;
+    let physics = dispatch.domains.physics(domain)?;
     toy::release(physics, entity, pointer, rope).map_err(Rejection::Edit)
 }
 
@@ -195,6 +191,7 @@ pub(crate) fn set_shape(
     } else {
         None
     };
+    let body = polytope.map(toy::body).transpose()?;
     let geometry = if is_toy {
         Some(
             card.toy_geometry
@@ -220,8 +217,8 @@ pub(crate) fn set_shape(
     row.rest = pose.point;
     dispatch.despawn(entity)?;
     let mut bundle = SpawnBundle::new().at(domain, pose).row(row);
-    if is_toy {
-        bundle = bundle.row(Toy {
+    if let Some(body) = body {
+        bundle = bundle.body(body).row(Toy {
             rest_anchor: pose.point,
             rest_time: 0.0,
         });
@@ -239,10 +236,7 @@ pub(crate) fn set_shape(
                 .line_style(display.wireframe_width_px, display.wireframe_opacity),
         );
     }
-    let spawned = dispatch.spawn(bundle)?;
-    if let Some(polytope) = polytope {
-        toy::add_body(dispatch, domain, spawned, polytope, pose)?;
-    }
+    dispatch.spawn(bundle)?;
     Ok(())
 }
 

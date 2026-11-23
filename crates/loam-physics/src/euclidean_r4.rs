@@ -5,9 +5,10 @@ use glam::Vec4;
 use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat, Rotor};
 use loam_shape::polytope::Polytope4;
 
-use crate::body::{BodyDef, RigidBody};
+use crate::body::{valid_mass, BodyDef, RigidBody};
 use crate::collider::{Collider, ColliderKind};
 use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult4, PosedHull4, Sphere4 as GjkSphere4};
+use crate::edit::EditError;
 use crate::geometry::GeometryStore;
 use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
@@ -429,13 +430,54 @@ pub fn sphere_body_r4(
 
 /// The solid occupies `dot(p, normalize(normal)) <= offset`.
 pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<EuclideanR4>> {
-    let n = normal.try_normalize()?;
-    BodyDef::fixed(
-        Vec4::ZERO,
-        Collider::HalfSpace4D { normal: n, offset },
-        1.0,
-        &EuclideanR4,
-    )
+    BodyDef::halfspace(normal, offset).ok()
+}
+
+impl BodyDef<EuclideanR4> {
+    /// The solid occupies `dot(p, normalize(normal)) <= offset`.
+    pub fn halfspace(normal: Vec4, offset: f32) -> Result<Self, EditError> {
+        normal
+            .try_normalize()
+            .and_then(|normal| {
+                Self::fixed(
+                    Vec4::ZERO,
+                    Collider::HalfSpace4D { normal, offset },
+                    1.0,
+                    &EuclideanR4,
+                )
+            })
+            .ok_or(EditError::UnsupportedCollider)
+    }
+
+    /// Sits at the origin at rest with the uniform-density inertia of the shape.
+    pub fn regular_polytope(
+        shape: Polytope4,
+        circumradius: f32,
+        mass: f32,
+    ) -> Result<Self, EditError> {
+        if !valid_mass(mass) {
+            return Err(EditError::InvalidMass);
+        }
+        let inertia = regular_polytope4_inertia(shape, mass, circumradius);
+        if !EuclideanR4.valid_inertia(inertia) {
+            return Err(EditError::InvalidInertia);
+        }
+        let vertices = shape
+            .topology()
+            .vertices
+            .iter()
+            .map(|vertex| *vertex * circumradius)
+            .collect();
+        Self::new(
+            Vec4::ZERO,
+            Vec4::ZERO,
+            Collider::ConvexPolytope4D { vertices },
+            mass,
+            inertia,
+            &EuclideanR4,
+        )
+        .ok_or(EditError::UnsupportedCollider)
+    }
 }
 
 /// Uses a bounding-ball inertia approximation.
