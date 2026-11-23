@@ -17,8 +17,8 @@ pub fn run_script<A: Stores>(
     app: &mut SessionApp<A>,
     mut driver: ScriptDriver,
     alpha: f32,
-    mut each: impl FnMut(u32, &mut Session<A>, &Publication) -> Result<(), HostError>,
-) -> Result<Publication, HostError> {
+    mut each: impl FnMut(u32, &mut Session<A>, &Publication<A::Published>) -> Result<(), HostError>,
+) -> Result<Publication<A::Published>, HostError> {
     session.capture_initial();
     let dt = f64::from(session.config().dt().unwrap_or(0.0));
     let aspect = FRAME.0 as f32 / FRAME.1 as f32;

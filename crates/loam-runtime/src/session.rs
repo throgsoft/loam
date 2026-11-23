@@ -273,18 +273,20 @@ pub struct PublishedView {
 }
 
 #[derive(Default)]
-pub struct Publication {
+pub struct Publication<V = ()> {
     pub views: Vec<PublishedView>,
     pub overlay: Overlay,
     pub backdrop: Option<Backdrop>,
     pub stamp: Stamp,
     /// The clamped alpha the records were drawn at.
     pub alpha: f32,
+    /// Written in place by the session's value system, so its buffers keep their capacity between publishes.
+    pub value: V,
     source: Option<SceneId>,
     content: u64,
 }
 
-impl Publication {
+impl<V> Publication<V> {
     /// Changes only when a publish alters what a frame draws; a restamp alone leaves it as it was.
     pub fn content(&self) -> u64 {
         self.content
@@ -303,11 +305,11 @@ impl From<PhaseError> for PublishError {
     }
 }
 
-pub struct Records {
-    idle: Option<Publication>,
+pub struct Records<V = ()> {
+    idle: Option<Publication<V>>,
 }
 
-impl Default for Records {
+impl<V: Default> Default for Records<V> {
     fn default() -> Self {
         Self {
             idle: Some(Publication::default()),
@@ -315,12 +317,15 @@ impl Default for Records {
     }
 }
 
-impl Records {
-    pub fn publish<A: Stores>(&mut self, session: &mut Session<A>) -> Result<Stamp, PublishError> {
+impl<V> Records<V> {
+    pub fn publish<A: Stores<Published = V>>(
+        &mut self,
+        session: &mut Session<A>,
+    ) -> Result<Stamp, PublishError> {
         self.publish_at(session, 1.0)
     }
 
-    pub fn publish_at<A: Stores>(
+    pub fn publish_at<A: Stores<Published = V>>(
         &mut self,
         session: &mut Session<A>,
         alpha: f32,
@@ -331,11 +336,11 @@ impl Records {
     }
 
     /// Until the buffer is released, [`Self::publish`] returns [`PublishError::Borrowed`].
-    pub fn lend(&mut self) -> Option<Publication> {
+    pub fn lend(&mut self) -> Option<Publication<V>> {
         self.idle.take()
     }
 
-    pub fn release(&mut self, publication: Publication) {
+    pub fn release(&mut self, publication: Publication<V>) {
         self.idle = Some(publication);
     }
 }
@@ -661,6 +666,14 @@ impl Manipulation {
 /// The simulation entry `Session::new` registers; `system_at` places app entries around it.
 pub const DOMAIN_STEP: &str = "domain step";
 
+type ValueSystem<A> =
+    Box<dyn FnMut(Ctx<'_, A>, &mut <A as Stores>::Published) -> Result<(), DomainError> + Send>;
+
+struct ValueEntry<A: Stores> {
+    name: &'static str,
+    system: ValueSystem<A>,
+}
+
 /// A CPU value with no GPU or window object; `Send`, and it builds for wasm32.
 pub struct Session<A: Stores> {
     pub app: A,
@@ -669,6 +682,7 @@ pub struct Session<A: Stores> {
     bridges: Relation<Bridge>,
     manipulation: Manipulation,
     phases: Phases<A>,
+    value: Option<ValueEntry<A>>,
     commands: Commands<A>,
     batch: Vec<Request<A>>,
     results: Vec<CommandResult>,
@@ -724,6 +738,7 @@ impl<A: Stores> Session<A> {
             bridges,
             manipulation: Manipulation::default(),
             phases,
+            value: None,
             commands: Commands::new(scene),
             batch: Vec::new(),
             results: Vec::new(),
@@ -853,6 +868,18 @@ impl<A: Stores> Session<A> {
     ) {
         self.phases
             .push(phase, SystemEntry::on_change(name, watch, system));
+    }
+
+    /// Runs `system` at each publish after the publication systems, writing the publication's value in place; a later call replaces it.
+    pub fn publish_value(
+        &mut self,
+        name: &'static str,
+        system: impl FnMut(Ctx<'_, A>, &mut A::Published) -> Result<(), DomainError> + Send + 'static,
+    ) {
+        self.value = Some(ValueEntry {
+            name,
+            system: Box::new(system),
+        });
     }
 
     /// `None` when no entry of that phase has the named anchor.
@@ -1085,12 +1112,16 @@ impl<A: Stores> Session<A> {
         Ok(())
     }
 
-    pub fn publish(&mut self, into: &mut Publication) -> Result<(), PhaseError> {
+    pub fn publish(&mut self, into: &mut Publication<A::Published>) -> Result<(), PhaseError> {
         self.publish_at(into, 1.0)
     }
 
     /// Draws each pose `alpha` of the way from where it stood before the last tick to where it stands now, with `alpha` clamped to [0, 1] and NaN taken as 1.
-    pub fn publish_at(&mut self, into: &mut Publication, alpha: f32) -> Result<(), PhaseError> {
+    pub fn publish_at(
+        &mut self,
+        into: &mut Publication<A::Published>,
+        alpha: f32,
+    ) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
@@ -1104,14 +1135,15 @@ impl<A: Stores> Session<A> {
         for index in 0..self.phases.entries(Phase::Publication).len() {
             self.run_entry(Phase::Publication, index, step, alpha, &Sequential)?;
         }
-        self.domains.synchronize();
-        for domain in self.domains.iter_mut() {
-            domain.present(alpha);
-        }
         let scene = self.scene();
         let reset = into.source != Some(scene);
         if reset {
             *into = Publication::default();
+        }
+        self.run_value(&mut into.value, step, alpha)?;
+        self.domains.synchronize();
+        for domain in self.domains.iter_mut() {
+            domain.present(alpha);
         }
         let sequence = self.sequence.wrapping_add(1);
         let stamp = Stamp {
@@ -1322,6 +1354,54 @@ impl<A: Stores> Session<A> {
             });
         }
         self.batch = batch;
+    }
+
+    fn run_value(
+        &mut self,
+        value: &mut A::Published,
+        step: Step,
+        alpha: f32,
+    ) -> Result<(), PhaseError> {
+        let Session {
+            app,
+            domains,
+            views,
+            value: entry,
+            commands,
+            results,
+            input,
+            assets,
+            overlay,
+            manipulation,
+            phase_error,
+            ..
+        } = self;
+        let Some(entry) = entry else {
+            return Ok(());
+        };
+        let result = (entry.system)(
+            Ctx {
+                app,
+                domains,
+                views,
+                commands,
+                results: results.as_slice(),
+                input,
+                prepared: assets.geometry(),
+                step,
+                alpha,
+                overlay,
+                executor: &Sequential,
+                manipulation,
+            },
+            value,
+        );
+        domains.synchronize();
+        result.map_err(|cause| {
+            let error = PhaseError::system(Phase::Publication, entry.name, cause);
+            *phase_error = Some(error);
+            error
+        })
     }
 
     fn run_entry(

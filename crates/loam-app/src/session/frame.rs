@@ -16,7 +16,9 @@ use loam_runtime::{Eye, Publication, PublishError, Records, Session, Stores};
 use loam_time::par::Executor;
 use loam_time::{frame_trace, FixedTimestep};
 
-use super::app::{CaptureControl, FrameHook, InputHook, Posts, Redraw, SessionApp};
+use super::app::{
+    CaptureControl, FrameFn, FrameHook, InputHook, Posts, PublishedHook, Redraw, SessionApp,
+};
 use super::cursor::CursorCapture;
 #[cfg(feature = "egui")]
 use super::debug_layer::DebugLayer;
@@ -50,7 +52,7 @@ fn redraws(policy: Redraw, drawn: Option<&Shown>, next: &Shown, forced: bool) ->
 struct Inner<A: Stores> {
     session: Session<A>,
     executor: Box<dyn Executor>,
-    records: Records,
+    records: Records<A::Published>,
     timestep: Option<FixedTimestep>,
     callbacks: Vec<CommandBuffer>,
     input: InputMap,
@@ -459,7 +461,7 @@ impl<A: Stores> Inner<A> {
         now: Instant,
         size: (u32, u32),
         #[cfg(feature = "egui")] ui: Option<&loam_egui::egui::Context>,
-    ) -> Result<(Publication, Eye), HostError> {
+    ) -> Result<(Publication<A::Published>, Eye), HostError> {
         self.advance(
             now,
             size,
@@ -562,8 +564,8 @@ impl<A: Stores> Inner<A> {
                         &mut self.app.background,
                         &mut self.posts,
                     );
-                    if let Some(hook) = hook {
-                        hook(&mut FrameHook {
+                    match hook {
+                        Some(FrameFn::Session(hook)) => hook(&mut FrameHook {
                             session: &self.session,
                             published: &records,
                             alpha: records.alpha,
@@ -577,7 +579,21 @@ impl<A: Stores> Inner<A> {
                             background,
                             posts,
                             redraw: &mut requested,
-                        });
+                        }),
+                        Some(FrameFn::Published(hook)) => hook(&mut PublishedHook {
+                            published: &records,
+                            sections: presenter.sections(),
+                            #[cfg(feature = "egui")]
+                            ui: context.as_ref(),
+                            size,
+                            sender: &sender,
+                            capture: CaptureControl::new(captures),
+                            cursor,
+                            background,
+                            posts,
+                            redraw: &mut requested,
+                        }),
+                        None => {}
                     }
                 }
                 let _presentation = frame_trace::scope("presentation");

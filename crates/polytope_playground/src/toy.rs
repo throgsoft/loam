@@ -4,8 +4,8 @@ use loam::physics::euclidean_r4::register_default_narrowphase;
 use loam::physics::manifold::PENETRATION_SLOP;
 use loam::physics::{BodyDef, Collider, EditError, RigidBody};
 use loam::runtime::{
-    Dispatch, DomainHandle, Entity, GrabConfig, Instance, PhysicsConfig, Pose, Rejection,
-    RestConfig, Session, SpawnBundle, ThrowConfig,
+    Dispatch, DomainHandle, Domains, Entity, GrabConfig, Instance, PhysicsConfig, Pose, Rejection,
+    RestConfig, SpawnBundle, ThrowConfig,
 };
 use loam::shape::polytope::Polytope4;
 
@@ -121,14 +121,15 @@ fn depth_bounds(position: Vec4, rotation: Rotor4, vertices: &[Vec4]) -> (f32, f3
 }
 
 pub(crate) fn fill_depth_bands(
-    session: &Session<Playground>,
+    app: &Playground,
+    domains: &Domains,
     domain: DomainHandle<EuclideanR4>,
     alpha: f32,
     out: &mut Vec<DepthBand>,
 ) {
     out.clear();
-    for (entity, _) in session.app.toys.iter() {
-        let Some(slot) = session.app.slots.get(entity) else {
+    for (entity, _) in app.toys.iter() {
+        let Some(slot) = app.slots.get(entity) else {
             continue;
         };
         out.push(DepthBand {
@@ -142,7 +143,7 @@ pub(crate) fn fill_depth_bands(
             asleep: false,
         });
     }
-    let Ok(r4) = session.domains().read(domain) else {
+    let Ok(r4) = domains.read(domain) else {
         out.clear();
         return;
     };

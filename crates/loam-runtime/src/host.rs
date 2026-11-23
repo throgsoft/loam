@@ -77,8 +77,8 @@ pub fn run_headless<A: Stores>(
     steps: u32,
     holds: &[(Key, Range<u32>)],
     alpha: f32,
-    mut each: impl FnMut(u32, &mut Session<A>, &Publication) -> Result<(), HostError>,
-) -> Result<Publication, HostError> {
+    mut each: impl FnMut(u32, &mut Session<A>, &Publication<A::Published>) -> Result<(), HostError>,
+) -> Result<Publication<A::Published>, HostError> {
     session.capture_initial();
     let mut publication = Publication::default();
     let mut held: Vec<ActionId> = Vec::new();
@@ -142,7 +142,7 @@ pub fn write_stride<A: Stores>(
     step: u32,
     stride: NonZeroU32,
     session: &Session<A>,
-    publication: &Publication,
+    publication: &Publication<A::Published>,
 ) -> Result<bool, HostError> {
     if !(step + 1).is_multiple_of(stride.get()) {
         return Ok(false);
@@ -167,10 +167,10 @@ fn write_eye<A: Stores>(out: &mut impl fmt::Write, session: &Session<A>) -> fmt:
 }
 
 /// Writes one line per published record with every float in `{:?}`, so equal text means equal bits.
-pub fn write_records(
+pub fn write_records<V>(
     out: &mut impl fmt::Write,
     step: u32,
-    publication: &Publication,
+    publication: &Publication<V>,
 ) -> fmt::Result {
     writeln!(
         out,

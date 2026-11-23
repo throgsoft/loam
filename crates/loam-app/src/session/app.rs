@@ -28,7 +28,7 @@ pub struct InputHook<'a, A: Stores> {
 /// Runs between publication and presentation.
 pub struct FrameHook<'a, A: Stores> {
     pub session: &'a Session<A>,
-    pub published: &'a Publication,
+    pub published: &'a Publication<A::Published>,
     /// The alpha `published` was drawn at; pass it to `drawn_pose` for anything drawn beside the instances.
     pub alpha: f32,
     pub sections: &'a [Section],
@@ -44,6 +44,46 @@ pub struct FrameHook<'a, A: Stores> {
 }
 
 impl<A: Stores> FrameHook<'_, A> {
+    pub fn capture_cursor(&mut self, enabled: bool, policy: CursorPolicy) {
+        self.cursor.capture(enabled, policy);
+    }
+
+    pub fn cursor_locked(&self) -> bool {
+        self.cursor.locked()
+    }
+
+    /// Linear light; the present clear shows wherever no Background pass paints.
+    pub fn set_background(&mut self, rgb: [f32; 3]) {
+        *self.background = background_color(rgb);
+    }
+
+    /// Sent to the page as one `loam-post` event after this frame (native hosts discard it); positions belong in normalized canvas coordinates in [0, 1].
+    pub fn post(&mut self, topic: &'static str, values: &[f32]) {
+        self.posts.push(topic, values);
+    }
+
+    /// Draws this frame under `Redraw::OnChange`.
+    pub fn request_redraw(&mut self) {
+        *self.redraw = true;
+    }
+}
+
+/// Runs between publication and presentation, reading only what the session published.
+pub struct PublishedHook<'a, A: Stores> {
+    pub published: &'a Publication<A::Published>,
+    pub sections: &'a [Section],
+    #[cfg(feature = "egui")]
+    pub ui: Option<&'a egui::Context>,
+    pub size: (u32, u32),
+    pub sender: &'a CommandSender<A>,
+    pub capture: CaptureControl<'a>,
+    pub(crate) cursor: &'a mut CursorCapture,
+    pub(crate) background: &'a mut wgpu::Color,
+    pub(crate) posts: &'a mut Posts,
+    pub(crate) redraw: &'a mut bool,
+}
+
+impl<A: Stores> PublishedHook<'_, A> {
     pub fn capture_cursor(&mut self, enabled: bool, policy: CursorPolicy) {
         self.cursor.capture(enabled, policy);
     }
@@ -159,7 +199,10 @@ impl<'a> CaptureControl<'a> {
     }
 }
 
-pub(crate) type FrameFn<A> = Box<dyn FnMut(&mut FrameHook<'_, A>)>;
+pub(crate) enum FrameFn<A: Stores> {
+    Session(Box<dyn FnMut(&mut FrameHook<'_, A>)>),
+    Published(Box<dyn FnMut(&mut PublishedHook<'_, A>)>),
+}
 pub(crate) type InputFn<A> = Box<dyn FnMut(&InputHook<'_, A>)>;
 
 pub struct SessionApp<A: Stores> {
@@ -237,8 +280,15 @@ impl<A: Stores> SessionApp<A> {
         self
     }
 
+    /// Replaces any hook that `on_published` set.
     pub fn on_frame(mut self, hook: impl FnMut(&mut FrameHook<'_, A>) + 'static) -> Self {
-        self.frame = Some(Box::new(hook));
+        self.frame = Some(FrameFn::Session(Box::new(hook)));
+        self
+    }
+
+    /// Replaces any hook that `on_frame` set.
+    pub fn on_published(mut self, hook: impl FnMut(&mut PublishedHook<'_, A>) + 'static) -> Self {
+        self.frame = Some(FrameFn::Published(Box::new(hook)));
         self
     }
 

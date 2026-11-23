@@ -16,8 +16,8 @@ pub use loam_time::FixedTimestep;
 pub use loam_app::egui;
 #[cfg(feature = "app")]
 pub use loam_app::session::{
-    launch, launch_with, orbit, CaptureControl, CommandSender, FrameHook, InputHook, SessionApp,
-    Target,
+    launch, launch_with, orbit, CaptureControl, CommandSender, FrameHook, InputHook, PublishedHook,
+    SessionApp, Target,
 };
 #[cfg(feature = "app")]
 pub use loam_app::{args::Args, LaunchMode, WasmConfig};

@@ -20,6 +20,7 @@ mod mode;
 mod projection;
 mod row;
 mod scene;
+mod shown;
 mod strip;
 mod toy;
 mod ui;
@@ -31,6 +32,7 @@ use display::{Display, Surface};
 use gimbal::Gimbal;
 use mode::{Mode, Spin};
 use projection::Family;
+use shown::Shown;
 use strip::{Cell, Strip};
 
 const SPIN: ActionId = ActionId("spin");
@@ -150,6 +152,7 @@ stores! {
         control: Value<Control>,
         catalog: Value<Catalog>,
     }
+    publishes Shown;
 }
 
 #[derive(Clone, Copy)]
@@ -414,6 +417,10 @@ fn install_systems(
             hud::draw(ctx.overlay, &readout_of(ctx.app), &mut lines);
         }
         guides::draw(&mut ctx, domain);
+        Ok(())
+    });
+    session.publish_value("shown", move |ctx, shown: &mut Shown| {
+        shown.write(ctx.app, ctx.domains, ctx.views, domain, ctx.alpha);
         Ok(())
     });
     session.toggle_on(GIMBAL, SHOW_GIMBAL.setting);
@@ -707,48 +714,10 @@ impl Frame {
     }
 }
 
+#[derive(Default)]
 struct Scratch {
     cells: Vec<Cell>,
     strip: Vec<(loam::render::Viewport, f32, BodyUniform)>,
-    subject: loam::math::Rotor4,
-    anchors: Vec<(usize, &'static str, glam::Vec3)>,
-    depths: Vec<toy::DepthBand>,
-}
-
-impl Scratch {
-    fn new() -> Self {
-        Self {
-            cells: Vec::new(),
-            strip: Vec::new(),
-            subject: loam::math::Rotor4::IDENTITY,
-            anchors: Vec::new(),
-            depths: Vec::with_capacity(5),
-        }
-    }
-}
-
-fn follow(
-    session: &Session<Playground>,
-    domain: DomainHandle<EuclideanR4>,
-    alpha: f32,
-    scratch: &mut Scratch,
-) {
-    let active = *session.app.active.get();
-    let single = session.app.display.get().single;
-    let r4 = session.domains().read(domain).ok();
-    scratch.anchors.clear();
-    scratch.subject = loam::math::Rotor4::IDENTITY;
-    for (entity, slot) in session.app.slots.iter() {
-        if single && slot.index != active {
-            continue;
-        }
-        let pose = r4.and_then(|r4| r4.drawn_pose(entity, alpha));
-        if let Some(pose) = pose.filter(|_| slot.index == active) {
-            scratch.subject = pose.frame;
-        }
-        let center = pose.map_or(glam::Vec3::ZERO, |pose| pose.point.truncate());
-        scratch.anchors.push((slot.index, slot.entry.label, center));
-    }
 }
 
 fn main() -> Result<(), HostError> {
@@ -762,39 +731,29 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
     let config = HostConfig::new("polytope playground", bindings());
 
     let hyperslice = frame.hyperslice.clone();
-    let domain = booted.domain;
-    let mut scratch = Scratch::new();
+    let mut scratch = Scratch::default();
     let mut panel = ui::Panel::default();
     let mut app = SessionApp::with_args(config, args).recover_on_fault(RESET);
     for pass in frame.passes() {
         app = app.pass(pass);
     }
-    app = console::install(app).on_frame(move |hook: &mut FrameHook<'_, Playground>| {
-        follow(hook.session, domain, hook.alpha, &mut scratch);
-        let strip = *hook.session.app.strip.get();
-        let slice = *hook.session.app.slice.get();
+    app = console::install(app).on_published(move |hook: &mut PublishedHook<'_, Playground>| {
+        let shown = &hook.published.value;
         fill_strip(
-            &strip,
-            turn_of(hook.session),
+            &shown.strip,
+            shown.turn,
+            shown.subject,
             hook.size,
-            slice,
+            shown.slice,
             &mut scratch,
         );
         hyperslice.publish_strip(&scratch.strip);
         if let Some(context) = hook.ui {
-            toy::fill_depth_bands(hook.session, domain, hook.alpha, &mut scratch.depths);
-            ui::draw(
-                context,
-                hook.session,
-                &mut panel,
-                hook.sender,
-                scratch.subject,
-                &scratch.depths,
-            );
-            if *hook.session.app.labels.get() && !strip.on {
-                ui::callouts(context, hook.session, &scratch.anchors);
+            ui::draw(context, shown, &mut panel, hook.sender);
+            if shown.labels && !shown.strip.on {
+                ui::callouts(context, &shown.callouts);
             }
-            ui::strip_labels(context, hook.session, &scratch.cells);
+            ui::strip_labels(context, shown.strip, &scratch.cells);
         }
     });
     Ok((booted.session, app))
@@ -860,16 +819,10 @@ fn readout_of(app: &Playground) -> hud::Readout {
     }
 }
 
-fn turn_of(session: &Session<Playground>) -> Bivector4 {
-    match *session.app.mode.get() {
-        Mode::Rotate => session.app.spin.get().omega(),
-        Mode::Toybox => Bivector4::ZERO,
-    }
-}
-
 fn fill_strip(
     strip: &Strip,
     omega: Bivector4,
+    subject: loam::math::Rotor4,
     frame: (u32, u32),
     slice: f32,
     scratch: &mut Scratch,
@@ -882,7 +835,7 @@ fn fill_strip(
     strip.cells([frame.0, frame.1], slice, BODY_SIZE, &mut scratch.cells);
     let entry = catalog::SHAPE_CATALOG[strip.subject()];
     for cell in &scratch.cells {
-        let rotor = ((omega * cell.t).exp() * scratch.subject).normalize();
+        let rotor = ((omega * cell.t).exp() * subject).normalize();
         scratch.strip.push((
             cell.viewport,
             cell.w,
@@ -1008,14 +961,21 @@ fn report(booted: &mut Boot, config: &HostConfig) -> Result<Vec<String>, HostErr
                 .map(|view| view.records.triangles().len())
                 .sum::<usize>()
         ),
-        strip_line(&mut Scratch::new(), *booted.session.app.strip.get()),
+        strip_line(&mut Scratch::default(), *booted.session.app.strip.get()),
     ])
 }
 
 fn strip_line(scratch: &mut Scratch, strip: Strip) -> String {
     let mut shown = strip;
     shown.on = true;
-    fill_strip(&shown, Bivector4::ZERO, HEADLESS_FRAME, 0.0, scratch);
+    fill_strip(
+        &shown,
+        Bivector4::ZERO,
+        loam::math::Rotor4::IDENTITY,
+        HEADLESS_FRAME,
+        0.0,
+        scratch,
+    );
     let (cols, rows, _) = shown.grid();
     format!("filmstrip: {} cells, {cols} by {rows}", scratch.strip.len())
 }
@@ -1182,8 +1142,8 @@ mod tests {
 
     fn published<R>(
         session: &mut Session<Playground>,
-        records: &mut Records,
-        read: impl FnOnce(&loam::runtime::Publication) -> R,
+        records: &mut Records<Shown>,
+        read: impl FnOnce(&loam::runtime::Publication<Shown>) -> R,
     ) -> R {
         records.publish(session).expect("published");
         let publication = records.lend().expect("the buffer is free");

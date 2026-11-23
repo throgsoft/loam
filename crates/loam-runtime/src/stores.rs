@@ -6,6 +6,9 @@ use crate::store::{Owner, Store};
 pub trait Stores: Send + 'static {
     type Snapshot: Send + 'static;
 
+    /// The value [`crate::Session::publish_value`] writes into each publication for the frame callback.
+    type Published: Default + Send + 'static;
+
     fn bind(&mut self, scene: SceneId, owner: Owner);
 
     fn boundary(&mut self, owner: Owner);
@@ -57,7 +60,18 @@ macro_rules! __stores_field {
     (Value, $name:ident, $field:ident, $row:ty) => {};
 }
 
-/// Declares the store struct and implements `Stores`; its snapshot type is `<A as Stores>::Snapshot`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __stores_published {
+    () => {
+        ()
+    };
+    ($published:ty) => {
+        $published
+    };
+}
+
+/// Declares the store struct and implements `Stores`; its snapshot type is `<A as Stores>::Snapshot`, and a trailing `publishes T;` names `Stores::Published`, which is `()` without it.
 #[macro_export]
 macro_rules! stores {
     (
@@ -65,6 +79,7 @@ macro_rules! stores {
         $vis:vis struct $name:ident {
             $( $field:ident : $kind:ident < $row:ty > ),* $(,)?
         }
+        $( publishes $published:ty; )?
     ) => {
         $(#[$attr])*
         $vis struct $name {
@@ -78,6 +93,7 @@ macro_rules! stores {
 
             impl $crate::Stores for $name {
                 type Snapshot = Snapshot;
+                type Published = $crate::__stores_published!($($published)?);
 
                 fn bind(&mut self, _scene: $crate::SceneId, _owner: $crate::Owner) {
                     $( $crate::StoreField::bind(&mut self.$field, _scene, _owner); )*

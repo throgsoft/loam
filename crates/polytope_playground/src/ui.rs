@@ -1,7 +1,7 @@
 use loam::app::egui;
 use loam::app::session::CommandSender;
-use loam::math::{Rotor, Rotor4};
-use loam::runtime::{Entity, Session};
+use loam::math::Rotor;
+use loam::runtime::Entity;
 use loam_egui::{
     dnd::{drag_source_collapsing, drop_target_idx, force_opaque_active, make_room_gap, pickup_t},
     media::{add_button, chevron_button, play_pause_button, rate_toggle, refresh_button},
@@ -13,6 +13,7 @@ use crate::consts::{BASE_ROTATION_RATE, W_RANGE};
 use crate::display::Surface;
 use crate::mode::Mode;
 use crate::projection::Family;
+use crate::shown::{Callout, Shown};
 use crate::strip::{Cell, Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
 use crate::toy::{DepthBand, ARENA_HALF};
 use crate::{catalog, Action, Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GUIDES};
@@ -34,28 +35,25 @@ pub(crate) struct Panel {
 
 pub(crate) fn draw(
     context: &egui::Context,
-    session: &Session<Playground>,
+    app: &Shown,
     panel: &mut Panel,
     sender: &CommandSender<Playground>,
-    rotor: Rotor4,
-    depths: &[DepthBand],
 ) {
-    let app = &session.app;
     menu_bar(context, app, panel, sender);
-    rotor_formula(context, app, rotor);
+    rotor_formula(context, app);
     render_settings(context, app, panel, sender);
     about(context, panel);
-    if *app.controls.get() {
-        match *app.mode.get() {
+    if app.controls {
+        match app.mode {
             Mode::Rotate => overlay(context, app, panel, sender),
-            Mode::Toybox => w_line(context, app, sender, depths),
+            Mode::Toybox => w_line(context, app, sender),
         }
     }
 }
 
 fn menu_bar(
     context: &egui::Context,
-    app: &Playground,
+    app: &Shown,
     panel: &mut Panel,
     sender: &CommandSender<Playground>,
 ) {
@@ -63,10 +61,7 @@ fn menu_bar(
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("Demo", |ui| {
                 for (mode, label) in [(Mode::Rotate, "Rotate"), (Mode::Toybox, "Toybox")] {
-                    if ui
-                        .selectable_label(*app.mode.get() == mode, label)
-                        .clicked()
-                    {
+                    if ui.selectable_label(app.mode == mode, label).clicked() {
                         sender.app(Action::Mode(mode));
                         ui.close_kind(egui::UiKind::Menu);
                     }
@@ -79,13 +74,13 @@ fn menu_bar(
                 }
             });
             loam_egui::sticky_menu(ui, "View", |ui| {
-                let mut controls = *app.controls.get();
-                match *app.mode.get() {
+                let mut controls = app.controls;
+                match app.mode {
                     Mode::Rotate => {
                         if ui.checkbox(&mut controls, "Controls").changed() {
                             sender.toggle(SHOW_CONTROLS.name, SHOW_CONTROLS.setting);
                         }
-                        let mut formula = *app.formula.get();
+                        let mut formula = app.formula;
                         if ui.checkbox(&mut formula, "Rotation formula").changed() {
                             sender.toggle(SHOW_FORMULA.name, SHOW_FORMULA.setting);
                         }
@@ -94,11 +89,11 @@ fn menu_bar(
                         if ui.checkbox(&mut controls, "w line").changed() {
                             sender.toggle(SHOW_CONTROLS.name, SHOW_CONTROLS.setting);
                         }
-                        let mut guides = *app.guides.get();
+                        let mut guides = app.guides;
                         if ui.checkbox(&mut guides, "Floor guides").changed() {
                             sender.toggle(SHOW_GUIDES.name, SHOW_GUIDES.setting);
                         }
-                        let mut rope = *app.rope.get();
+                        let mut rope = app.rope;
                         if ui
                             .checkbox(&mut rope, "Rope carry")
                             .on_hover_text("Held shapes swing from the point you grabbed.")
@@ -121,7 +116,7 @@ fn menu_bar(
 
 fn overlay(
     context: &egui::Context,
-    app: &Playground,
+    app: &Shown,
     panel: &mut Panel,
     sender: &CommandSender<Playground>,
 ) {
@@ -141,10 +136,10 @@ fn overlay(
     });
 }
 
-fn expanded(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground>) {
+fn expanded(ui: &mut egui::Ui, app: &Shown, sender: &CommandSender<Playground>) {
     view_tabs(ui, app, sender);
-    if app.strip.get().on {
-        filmstrip(ui, *app.strip.get(), sender);
+    if app.strip.on {
+        filmstrip(ui, app.strip, sender);
     } else {
         shapes(ui, app, sender);
     }
@@ -152,9 +147,9 @@ fn expanded(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playgrou
     active_set(ui, app, sender);
 }
 
-fn view_tabs(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground>) {
-    let display = *app.display.get();
-    let strip = *app.strip.get();
+fn view_tabs(ui: &mut egui::Ui, app: &Shown, sender: &CommandSender<Playground>) {
+    let display = app.display;
+    let strip = app.strip;
     ui.horizontal_wrapped(|ui| {
         if ui
             .selectable_label(!display.single && !strip.on, "Shapes")
@@ -181,14 +176,14 @@ fn view_tabs(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playgro
         if ui.selectable_label(strip.on, "Filmstrip").clicked() {
             sender.app(Action::Strip(Strip { on: true, ..strip }));
         }
-        let mut formula = *app.formula.get();
+        let mut formula = app.formula;
         if ui.checkbox(&mut formula, "Formula").changed() {
             sender.toggle(SHOW_FORMULA.name, SHOW_FORMULA.setting);
         }
     });
 }
 
-fn active_set(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground>) {
+fn active_set(ui: &mut egui::Ui, app: &Shown, sender: &CommandSender<Playground>) {
     const PLANES: [usize; 6] = [0, 1, 3, 2, 4, 5];
     const CELL_SPACING: f32 = 4.0;
     const CHECKBOX_W: f32 = 18.0;
@@ -196,8 +191,8 @@ fn active_set(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playgr
     const VALUE_W: f32 = 56.0;
     const ROW_GAP: f32 = 6.0;
 
-    let time = *app.time.get();
-    let spin = *app.spin.get();
+    let time = app.time;
+    let spin = app.spin;
     let total = ui.available_width();
     let cell_width = ((total - 2.0 * ROW_GAP) / 3.0).floor();
     let slider_width = (cell_width - CHECKBOX_W - LABEL_W - VALUE_W - 3.0 * CELL_SPACING).max(40.0);
@@ -222,7 +217,7 @@ fn active_set(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playgr
                             [LABEL_W, 18.0],
                             egui::Label::new(egui::RichText::new(PLANE_LABELS[index]).monospace()),
                         );
-                        let angle = app.angles.get()[index]
+                        let angle = app.angles[index]
                             + if spin.planes[index] {
                                 time * BASE_ROTATION_RATE
                             } else {
@@ -258,8 +253,8 @@ fn wrap_degrees(degrees: f32) -> f32 {
     }
 }
 
-fn shapes(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground>) {
-    let active = *app.active.get();
+fn shapes(ui: &mut egui::Ui, app: &Shown, sender: &CommandSender<Playground>) {
+    let active = app.active;
     let row_len = app.slots.len();
     let row_rect_id = ui.make_persistent_id("shape-row-rect");
     let last_row_rect: Option<egui::Rect> =
@@ -272,7 +267,11 @@ fn shapes(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground
     // Keep the preview until the reorder command commits.
     let mut dropped = ui.ctx().data_mut(|data| {
         let (entity, from, destination) = data.get_temp::<(Entity, usize, usize)>(drop_id)?;
-        if app.slots.get(entity).is_some_and(|slot| slot.index == from) {
+        if app
+            .slots
+            .iter()
+            .any(|(held, slot)| *held == entity && slot.index == from)
+        {
             Some((from, destination))
         } else {
             data.remove::<(Entity, usize, usize)>(drop_id);
@@ -286,7 +285,7 @@ fn shapes(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground
         ) {
             let _ = egui::DragAndDrop::take_payload::<usize>(ui.ctx());
             let destination = if to > from { to - 1 } else { to };
-            if let Some((entity, _)) = app
+            if let Some(&(entity, _)) = app
                 .slots
                 .iter()
                 .find(|(_, slot)| slot.index == from && to <= row_len && destination != from)
@@ -448,12 +447,7 @@ fn bottom_panel(
         .frame(frame)
 }
 
-fn w_line(
-    context: &egui::Context,
-    app: &Playground,
-    sender: &CommandSender<Playground>,
-    depths: &[DepthBand],
-) {
+fn w_line(context: &egui::Context, app: &Shown, sender: &CommandSender<Playground>) {
     const WIDTH: f32 = 360.0;
     const MARGIN: f32 = 8.0;
     const VALUE_W: f32 = 64.0;
@@ -462,7 +456,8 @@ fn w_line(
     const RAIL_GAP: f32 = 4.0;
     const HANDLE: f32 = 5.0;
 
-    let slice = *app.slice.get();
+    let depths = &app.depths;
+    let slice = app.slice;
     let window = bottom_panel(context, "polytope-playground-w-line", WIDTH, MARGIN);
     window.show(context, |ui| {
         ui.set_width(WIDTH);
@@ -574,14 +569,14 @@ fn band_name(depths: &[DepthBand], index: usize) -> String {
     }
 }
 
-fn sliders(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playground>) {
+fn sliders(ui: &mut egui::Ui, app: &Shown, sender: &CommandSender<Playground>) {
     const VALUE_WIDTH: f32 = 72.0;
     let width = ui.available_width();
     let spacing = ui.spacing().item_spacing.x;
     ui.spacing_mut().slider_width = (width - VALUE_WIDTH - spacing).max(140.0);
     let row = egui::vec2(width, CONTROL_H);
     let layout = egui::Layout::left_to_right(egui::Align::Center);
-    let mut slice = *app.slice.get();
+    let mut slice = app.slice;
     ui.allocate_ui_with_layout(row, layout, |ui| {
         let label = format!("w {:>+.3}", slice);
         let change = slider_with_edit(
@@ -597,10 +592,10 @@ fn sliders(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playgroun
             sender.app(Action::Slice(slice));
         }
     });
-    if *app.mode.get() == Mode::Toybox {
+    if app.mode == Mode::Toybox {
         return;
     }
-    let mut time = *app.time.get();
+    let mut time = app.time;
     let limit = MAX_T_EXTENT.max(time);
     ui.allocate_ui_with_layout(row, layout, |ui| {
         let label = format!("t {:>5.2}s", time);
@@ -613,22 +608,22 @@ fn sliders(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playgroun
 
 fn transport(
     ui: &mut egui::Ui,
-    app: &Playground,
+    app: &Shown,
     panel: &mut Panel,
     sender: &CommandSender<Playground>,
 ) {
-    let mut rate = app.spin.get().rate;
+    let mut rate = app.spin.rate;
     ui.horizontal(|ui| {
         let leading = ((ui.available_width() - 215.0) / 2.0).max(8.0);
         ui.add_space(leading);
         let control = egui::vec2(CONTROL_W, CONTROL_H);
         rate_toggle(ui, control, &mut rate, 0.25, true, false);
         rate_toggle(ui, control, &mut rate, 0.5, false, false);
-        if play_pause_button(ui, egui::vec2(PLAY_W, CONTROL_H), app.spin.get().running)
+        if play_pause_button(ui, egui::vec2(PLAY_W, CONTROL_H), app.spin.running)
             .on_hover_text("Play or pause rotation.")
             .clicked()
         {
-            sender.app(Action::Running(Some(!app.spin.get().running)));
+            sender.app(Action::Running(Some(!app.spin.running)));
         }
         rate_toggle(ui, control, &mut rate, 2.0, false, true);
         rate_toggle(ui, control, &mut rate, 4.0, true, true);
@@ -670,18 +665,18 @@ fn transport(
             }
         });
     });
-    if rate != app.spin.get().rate {
+    if rate != app.spin.rate {
         sender.app(Action::Rate(rate));
     }
 }
 
 fn render_settings(
     context: &egui::Context,
-    app: &Playground,
+    app: &Shown,
     panel: &mut Panel,
     sender: &CommandSender<Playground>,
 ) {
-    let before = *app.display.get();
+    let before = app.display;
     let mut display = before;
     loam_egui::floating_panel(
         context,
@@ -713,17 +708,14 @@ fn render_settings(
             ui.separator();
             ui.label(egui::RichText::new("Color").strong());
             for mode in ColorMode::ALL {
-                if ui.radio(*app.color.get() == mode, mode.name()).clicked() {
+                if ui.radio(app.color == mode, mode.name()).clicked() {
                     sender.app(Action::Color(mode));
                 }
             }
             ui.separator();
             ui.label(egui::RichText::new("Projection").strong());
             for family in Family::ALL {
-                if ui
-                    .radio(*app.projection.get() == family, family.name())
-                    .clicked()
-                {
+                if ui.radio(app.projection == family, family.name()).clicked() {
                     sender.app(Action::Projection(family));
                 }
             }
@@ -753,8 +745,8 @@ fn about(context: &egui::Context, panel: &mut Panel) {
         });
 }
 
-fn rotor_formula(context: &egui::Context, app: &Playground, rotor: Rotor4) {
-    if !*app.formula.get() || *app.mode.get() == Mode::Toybox {
+fn rotor_formula(context: &egui::Context, app: &Shown) {
+    if !app.formula || app.mode == Mode::Toybox {
         return;
     }
     let available = context.available_rect();
@@ -771,23 +763,21 @@ fn rotor_formula(context: &egui::Context, app: &Playground, rotor: Rotor4) {
         .show(context, |ui| {
             ui.monospace("R = exp(B)");
             ui.label(egui::RichText::new("B = log(R), in degrees").small().weak());
-            loam_egui::bivector_matrix(ui, &rotor.log());
+            loam_egui::bivector_matrix(ui, &app.subject.log());
         });
 }
 
 const CALLOUT_INSET_PT: f32 = 10.0;
 
-pub(crate) fn callouts(
-    context: &egui::Context,
-    session: &Session<Playground>,
-    anchors: &[(usize, &'static str, glam::Vec3)],
-) {
+pub(crate) fn callouts(context: &egui::Context, callouts: &[Callout]) {
     let screen = context.viewport_rect();
     let half = screen.size() * 0.5;
-    for (index, label, point) in anchors {
-        let Some([x, y]) = session.views().ndc(point.to_array()) else {
-            continue;
-        };
+    for &Callout {
+        index,
+        label,
+        ndc: [x, y],
+    } in callouts
+    {
         let at = egui::pos2(
             screen.center().x + x * half.x,
             screen.center().y - y * half.y - CALLOUT_INSET_PT,
@@ -805,7 +795,7 @@ pub(crate) fn callouts(
                     .inner_margin(egui::Margin::symmetric(6, 2))
                     .corner_radius(3)
                     .show(ui, |ui| {
-                        ui.monospace(*label);
+                        ui.monospace(label);
                     });
             });
     }
@@ -869,8 +859,7 @@ fn filmstrip(ui: &mut egui::Ui, strip: Strip, sender: &CommandSender<Playground>
     }
 }
 
-pub(crate) fn strip_labels(context: &egui::Context, session: &Session<Playground>, cells: &[Cell]) {
-    let strip = *session.app.strip.get();
+pub(crate) fn strip_labels(context: &egui::Context, strip: Strip, cells: &[Cell]) {
     if !strip.on {
         return;
     }
