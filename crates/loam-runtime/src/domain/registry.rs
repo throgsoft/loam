@@ -40,6 +40,10 @@ impl Domains {
         self.list.get(id.index()).map(|domain| domain.as_ref() as _)
     }
 
+    pub(crate) fn owner(&self, id: DomainId) -> Option<&dyn DomainOwner> {
+        self.list.get(id.index()).map(|domain| domain.as_ref())
+    }
+
     pub(crate) fn facade(&mut self, id: DomainId) -> Option<&mut dyn DomainOwner> {
         self.list.get_mut(id.index()).map(|domain| domain.as_mut())
     }

@@ -331,7 +331,7 @@ pub trait Domain: Send + 'static {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-pub(crate) trait DomainOwner: Domain {
+pub(crate) trait DomainOwner: Domain + Sync {
     fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError>;
 
     fn publish(

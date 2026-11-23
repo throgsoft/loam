@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use loam_shape::polytope::Polytope4Topology;
-use loam_time::par::{Executor, Sequential};
+use loam_time::par::{self, Executor, Sequential};
 
 use crate::bridge::{
     Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease, VELOCITY_SAMPLES,
@@ -330,8 +330,17 @@ impl<V> Records<V> {
         session: &mut Session<A>,
         alpha: f32,
     ) -> Result<Stamp, PublishError> {
+        self.publish_with(session, alpha, &Sequential)
+    }
+
+    pub fn publish_with<A: Stores<Published = V>>(
+        &mut self,
+        session: &mut Session<A>,
+        alpha: f32,
+        executor: &dyn Executor,
+    ) -> Result<Stamp, PublishError> {
         let buffer = self.idle.as_mut().ok_or(PublishError::Borrowed)?;
-        session.publish_at(buffer, alpha)?;
+        session.publish_with(buffer, alpha, executor)?;
         Ok(buffer.stamp)
     }
 
@@ -1122,6 +1131,16 @@ impl<A: Stores> Session<A> {
         into: &mut Publication<A::Published>,
         alpha: f32,
     ) -> Result<(), PhaseError> {
+        self.publish_with(into, alpha, &Sequential)
+    }
+
+    /// Publishes as [`Self::publish_at`] does, building the views on `executor`, and the publication is the same for any `executor`.
+    pub fn publish_with(
+        &mut self,
+        into: &mut Publication<A::Published>,
+        alpha: f32,
+        executor: &dyn Executor,
+    ) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
@@ -1133,14 +1152,14 @@ impl<A: Stores> Session<A> {
         self.unfinished = Some(Phase::Publication);
         self.overlay.clear();
         for index in 0..self.phases.entries(Phase::Publication).len() {
-            self.run_entry(Phase::Publication, index, step, alpha, &Sequential)?;
+            self.run_entry(Phase::Publication, index, step, alpha, executor)?;
         }
         let scene = self.scene();
         let reset = into.source != Some(scene);
         if reset {
             *into = Publication::default();
         }
-        self.run_value(&mut into.value, step, alpha)?;
+        self.run_value(&mut into.value, step, alpha, executor)?;
         self.domains.synchronize();
         for domain in self.domains.iter_mut() {
             domain.present(alpha);
@@ -1187,13 +1206,43 @@ impl<A: Stores> Session<A> {
                     let view = &mut into.views[count];
                     changed |= view.placement != placement;
                     view.placement = placement;
-                    domain.publish(target.view, library, &mut view.records, stamp, alpha)?;
-                    changed |= view.records.built == stamp;
                     count += 1;
                 }
             }
             changed |= into.views.len() != count;
             into.views.truncate(count);
+            let domains = &self.domains;
+            let failed = Mutex::new(None);
+            par::for_each_chunk(executor, &mut into.views, 1, |views| {
+                for view in views {
+                    let domain = domains
+                        .owner(view.domain)
+                        .expect("a published view names a domain of this session");
+                    let Err(error) =
+                        domain.publish(view.target.view, library, &mut view.records, stamp, alpha)
+                    else {
+                        continue;
+                    };
+                    let order = (
+                        view.domain,
+                        domain.views().iter().position(|&held| held == view.target),
+                    );
+                    if let Ok(mut failed) = failed.lock() {
+                        if failed.is_none_or(|(first, _)| order < first) {
+                            *failed = Some((order, error));
+                        }
+                    }
+                }
+            });
+            let failed = failed
+                .into_inner()
+                .expect("a view build does not panic while holding the error slot");
+            if let Some((_, error)) = failed {
+                return Err(error);
+            }
+            for view in &into.views {
+                changed |= view.records.built == stamp;
+            }
             changed |= into.overlay != self.overlay;
             into.overlay.clone_from(&self.overlay);
             let backdrop = self
@@ -1361,6 +1410,7 @@ impl<A: Stores> Session<A> {
         value: &mut A::Published,
         step: Step,
         alpha: f32,
+        executor: &dyn Executor,
     ) -> Result<(), PhaseError> {
         let Session {
             app,
@@ -1391,7 +1441,7 @@ impl<A: Stores> Session<A> {
                 step,
                 alpha,
                 overlay,
-                executor: &Sequential,
+                executor,
                 manipulation,
             },
             value,
