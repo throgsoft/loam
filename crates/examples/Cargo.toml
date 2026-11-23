@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Loam example bins: hero and tesseract."
+description = "Loam example bins: hero, mandelbulb and tesseract."
 publish = false
 
 [dependencies]

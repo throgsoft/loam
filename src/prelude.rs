@@ -24,7 +24,7 @@ pub use loam_app::{args::Args, LaunchMode, WasmConfig};
 #[cfg(feature = "render")]
 pub use loam_render::{
     DepthConvention, DepthMode, FragmentShading, FramePass, Ground, HyperslicePass, LinePass,
-    PointPass, RaymarchPass, Sky, SkyGroundPass, TriangleFeed, Viewport,
+    PointPass, RayMarchUniforms, RaymarchPass, Sky, SkyGroundPass, TriangleFeed, Viewport,
 };
 #[cfg(feature = "text")]
 pub use loam_text::{TextDraw, TextPass};

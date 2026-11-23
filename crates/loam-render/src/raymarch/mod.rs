@@ -122,6 +122,21 @@ impl Default for RayMarchUniforms {
     }
 }
 
+impl RayMarchUniforms {
+    /// Every field the eye does not set keeps its default.
+    pub fn from_eye(eye: &loam_runtime::Eye) -> Self {
+        Self {
+            camera_pos: eye.position,
+            camera_forward: eye.forward,
+            camera_right: eye.right,
+            camera_up: eye.up,
+            fov_y_tan: (eye.fov_y * 0.5).tan(),
+            near: eye.near,
+            ..Self::default()
+        }
+    }
+}
+
 pub struct RayMarchNode {
     pipeline: RenderPipeline,
     uniforms: RayMarchUniforms,
