@@ -4,7 +4,7 @@ use loam_egui::egui;
 use loam_render::pass::{FramePass, Section};
 use loam_runtime::host::HostConfig;
 use loam_runtime::host::HostError;
-use loam_runtime::{ActionId, CursorPolicy, Growth, Input, Publication, Session, Stores};
+use loam_runtime::{ActionId, CursorPolicy, Growth, Input, Publication, Session, Setting, Stores};
 
 use super::commands::{CommandInbox, CommandSender};
 use super::console::{SessionConsole, Submit};
@@ -279,6 +279,16 @@ impl<A: Stores> SessionApp<A> {
         handler: impl FnMut(&[&str], &mut Submit<A>, &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
     ) -> Self {
         self.console.register(name, help, handler);
+        self
+    }
+
+    pub fn toggle_command(
+        mut self,
+        name: &'static str,
+        help: &'static str,
+        setting: Setting<A>,
+    ) -> Self {
+        self.console.toggle_command(name, help, setting);
         self
     }
 

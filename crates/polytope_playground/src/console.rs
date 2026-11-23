@@ -7,7 +7,9 @@ use crate::color::ColorMode;
 use crate::display::{Surface, MAX_WIREFRAME_WIDTH_PX};
 use crate::mode::Mode;
 use crate::projection::Family;
-use crate::{Action, Playground};
+use crate::{
+    Action, Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GIMBAL, SHOW_GUIDES, TOYBOX_DEBUG,
+};
 
 const MAX_SEEK_SECONDS: f32 = 1.0e6;
 
@@ -83,13 +85,10 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         },
     );
 
-    app = app.command(
+    app = app.toggle_command(
         "hud",
         "toggle the state readout; optional on | off",
-        |args, submit, _out| {
-            submit.app(Action::Hud(toggle(args, "usage: hud [on|off]")?));
-            Ok(())
-        },
+        |app| app.hud.get_mut(),
     );
 
     app = app.command(
@@ -136,40 +135,28 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         Ok(())
     });
 
-    app = app.command(
-        "controls",
+    app = app.toggle_command(
+        SHOW_CONTROLS.name,
         "toggle the controls panel; optional on | off",
-        |args, submit, _out| {
-            submit.app(Action::Controls(toggle(args, "usage: controls [on|off]")?));
-            Ok(())
-        },
+        SHOW_CONTROLS.setting,
     );
 
-    app = app.command(
-        "formula",
+    app = app.toggle_command(
+        SHOW_FORMULA.name,
         "toggle the rotation formula; optional on | off",
-        |args, submit, _out| {
-            submit.app(Action::Formula(toggle(args, "usage: formula [on|off]")?));
-            Ok(())
-        },
+        SHOW_FORMULA.setting,
     );
 
-    app = app.command(
+    app = app.toggle_command(
         "labels",
         "toggle the shape labels; optional on | off",
-        |args, submit, _out| {
-            submit.app(Action::Labels(toggle(args, "usage: labels [on|off]")?));
-            Ok(())
-        },
+        |app| app.labels.get_mut(),
     );
 
-    app = app.command(
-        "guides",
+    app = app.toggle_command(
+        SHOW_GUIDES.name,
         "toggle the toybox floor guides; optional on | off",
-        |args, submit, _out| {
-            submit.app(Action::Guides(toggle(args, "usage: guides [on|off]")?));
-            Ok(())
-        },
+        SHOW_GUIDES.setting,
     );
 
     app = app.command(
@@ -177,36 +164,33 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         "toybox debug drawing: debug [on|off]",
         |args, submit, _out| match args {
             ["debug", rest @ ..] => {
-                submit.app(Action::ToyboxDebug(toggle(
-                    rest,
-                    "usage: toybox debug [on|off]",
-                )?));
+                match toggle(rest, "usage: toybox debug [on|off]")? {
+                    None => submit.toggle(TOYBOX_DEBUG.name, TOYBOX_DEBUG.setting),
+                    Some(on) => submit.set(TOYBOX_DEBUG.name, TOYBOX_DEBUG.setting, on),
+                }
                 Ok(())
             }
             _ => bail!("usage: toybox debug [on|off]"),
         },
     );
 
+    // A bare `handles` reports under `gimbal`, the name the G key's toggle uses.
     app = app.command(
         "handles",
         "toggle the 4D rotation handles; optional on | off",
         |args, submit, _out| {
-            submit.app(Action::Gimbal(toggle(args, "usage: handles [on|off]")?));
+            match toggle(args, "usage: handles [on|off]")? {
+                None => submit.toggle(SHOW_GIMBAL.name, SHOW_GIMBAL.setting),
+                Some(on) => submit.set("handles", SHOW_GIMBAL.setting, on),
+            }
             Ok(())
         },
     );
 
-    app = app.command(
+    app = app.toggle_command(
         "floor",
         "toggle the ground plane; optional on | off",
-        |args, submit, _out| {
-            let setting = toggle(args, "usage: floor [on|off]")?;
-            submit.app_fn("floor", move |dispatch: &mut Dispatch<'_, Playground>| {
-                let shown = &mut dispatch.app.environment.get_mut().floor_visible;
-                *shown = setting.unwrap_or(!*shown);
-            });
-            Ok(())
-        },
+        |app| &mut app.environment.get_mut().floor_visible,
     );
 
     app = app.command(

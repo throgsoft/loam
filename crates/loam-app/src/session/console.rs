@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use loam_console::{cmd, CommandLine, Console, ConsoleWriter, HistoryLine};
-use loam_runtime::{AppCommand, Dispatch, Stores};
+use loam_runtime::{AppCommand, Dispatch, Setting, Stores};
 
 use super::commands::{CommandSender, Reported};
 
@@ -51,6 +51,14 @@ impl<A: Stores> Submit<A> {
         apply: impl FnMut(&mut Dispatch<'_, A>) + Send + 'static,
     ) {
         self.commands.app_fn(name, apply);
+    }
+
+    pub fn toggle(&mut self, name: &'static str, setting: Setting<A>) {
+        self.commands.toggle(name, setting);
+    }
+
+    pub fn set(&mut self, name: &'static str, setting: Setting<A>, on: bool) {
+        self.commands.set(name, setting, on);
     }
 
     pub fn reset(&mut self) {
@@ -180,6 +188,22 @@ impl<A: Stores> SessionConsole<A> {
             .register(cmd(name, help, move |args, submit: &mut Submit<A>, out| {
                 handler(args, submit, out)
             }));
+    }
+
+    /// Registers a verb that flips `setting` when bare and sets it on `on` or `off`, each as a command named `name`.
+    pub fn toggle_command(&mut self, name: &'static str, help: &'static str, setting: Setting<A>) {
+        self.console.register(
+            cmd(name, help, move |args, submit: &mut Submit<A>, _out| {
+                match args {
+                    [] => submit.toggle(name, setting),
+                    ["on"] => submit.set(name, setting, true),
+                    ["off"] => submit.set(name, setting, false),
+                    _ => anyhow::bail!("usage: {name} [on|off]"),
+                }
+                Ok(())
+            })
+            .with_args(&[&["on", "off"]]),
+        );
     }
 
     pub fn has(&self, name: &str) -> bool {

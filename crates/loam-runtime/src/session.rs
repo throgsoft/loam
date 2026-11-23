@@ -19,6 +19,7 @@ use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, SystemEntry, Tic
 use crate::relation::{LinkId, Relation, RelationSnapshot};
 use crate::store::{Owner, SchemaId, StoreField};
 use crate::stores::Stores;
+use crate::value::Setting;
 use crate::view::{ImageRay, Pick, Rigid, Vec3, ViewRecords, ViewTarget, Views, ViewsSnapshot};
 
 const RELEASE_STALE_SECONDS: f64 = 0.12;
@@ -862,9 +863,14 @@ impl<A: Stores> Session<A> {
         });
     }
 
-    /// Adds a dispatch system after those already registered that submits [`Command::Reset`] at each boundary where `action` is pressed. This system and the one [`Self::on_action`] adds take the action's name, so a system and an action should not share a name.
+    /// Adds a dispatch system after those already registered that submits [`Command::Reset`] at each boundary where `action` is pressed. The systems that [`Self::on_action`], [`Self::reset_on`] and [`Self::toggle_on`] add take the action's name, so a system and an action should not share a name.
     pub fn reset_on(&mut self, action: ActionId) {
         self.submit_on(action, || Command::Reset);
+    }
+
+    /// Adds a dispatch system after those already registered that flips `setting` as a command named after `action` at each boundary where it is pressed.
+    pub fn toggle_on(&mut self, action: ActionId, setting: Setting<A>) {
+        self.submit_on(action, move || Command::toggle(action.0, setting));
     }
 
     fn submit_on(&mut self, action: ActionId, command: impl Fn() -> Command<A> + Send + 'static) {

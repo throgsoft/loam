@@ -784,10 +784,11 @@ fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
                         return Ok(());
                     }
                 };
-                submit.app_fn("floor", move |d: &mut Dispatch<'_, HeroStores>| {
-                    let visible = d.app.environment.get().floor_visible;
-                    d.app.environment.get_mut().floor_visible = next.unwrap_or(!visible);
-                });
+                let floor: Setting<HeroStores> = |app| &mut app.environment.get_mut().floor_visible;
+                match next {
+                    None => submit.toggle("floor", floor),
+                    Some(on) => submit.set("floor", floor, on),
+                }
                 out.line("floor: applied at the next boundary");
                 Ok(())
             },

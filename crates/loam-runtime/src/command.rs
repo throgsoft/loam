@@ -12,6 +12,7 @@ use crate::session::{
 };
 use crate::store::{Owner, StoreError};
 use crate::stores::{HasRelation, HasStore, Stores};
+use crate::value::Setting;
 use crate::view::{ViewId, ViewMapping, ViewSpec, Views};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -118,6 +119,21 @@ impl<A: 'static> Command<A> {
             Self::App(command) => command.name(),
             Self::Reset => "reset",
         }
+    }
+
+    pub fn toggle(name: &'static str, setting: Setting<A>) -> Self {
+        Self::try_app_fn(name, move |dispatch| {
+            let on = setting(dispatch.app);
+            *on = !*on;
+            Ok(Outcome::Done)
+        })
+    }
+
+    pub fn set(name: &'static str, setting: Setting<A>, on: bool) -> Self {
+        Self::try_app_fn(name, move |dispatch| {
+            *setting(dispatch.app) = on;
+            Ok(Outcome::Done)
+        })
     }
 }
 

@@ -3,6 +3,9 @@ use std::ops::Deref;
 use crate::entity::SceneId;
 use crate::store::{Owner, StoreField, Version};
 
+/// The accessor must reach the bool through [`Value::get_mut`] so the change bumps the version readers watch.
+pub type Setting<A> = fn(&mut A) -> &mut bool;
+
 pub struct Value<T> {
     value: T,
     version: Version,

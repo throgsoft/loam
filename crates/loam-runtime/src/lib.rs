@@ -56,7 +56,7 @@ pub use store::{
     DEFAULT_LOG_CAPACITY,
 };
 pub use stores::{HasRelation, HasStore, Stores};
-pub use value::Value;
+pub use value::{Setting, Value};
 pub use view::{
     DepthEnvelope, DomainRay, Eye, Identity3, ImageRay, ImageSpace, ImageSpaceId, InstanceRecord,
     Klein, Pick, Placement, PointRecord, Projection4, RefusalSource, Rigid, Section4, SectionCut,

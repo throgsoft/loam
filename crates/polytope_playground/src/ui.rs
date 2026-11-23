@@ -15,7 +15,7 @@ use crate::mode::Mode;
 use crate::projection::Family;
 use crate::strip::{Cell, Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
 use crate::toy::{DepthBand, ARENA_HALF};
-use crate::{catalog, Action, Playground};
+use crate::{catalog, Action, Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GUIDES};
 
 const PLANE_LABELS: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
 const OVERLAY_PAD: f32 = 16.0;
@@ -83,20 +83,20 @@ fn menu_bar(
                 match *app.mode.get() {
                     Mode::Rotate => {
                         if ui.checkbox(&mut controls, "Controls").changed() {
-                            sender.app(Action::Controls(None));
+                            sender.toggle(SHOW_CONTROLS.name, SHOW_CONTROLS.setting);
                         }
                         let mut formula = *app.formula.get();
                         if ui.checkbox(&mut formula, "Rotation formula").changed() {
-                            sender.app(Action::Formula(None));
+                            sender.toggle(SHOW_FORMULA.name, SHOW_FORMULA.setting);
                         }
                     }
                     Mode::Toybox => {
                         if ui.checkbox(&mut controls, "w line").changed() {
-                            sender.app(Action::Controls(None));
+                            sender.toggle(SHOW_CONTROLS.name, SHOW_CONTROLS.setting);
                         }
                         let mut guides = *app.guides.get();
                         if ui.checkbox(&mut guides, "Floor guides").changed() {
-                            sender.app(Action::Guides(None));
+                            sender.toggle(SHOW_GUIDES.name, SHOW_GUIDES.setting);
                         }
                         let mut rope = *app.rope.get();
                         if ui
@@ -104,7 +104,7 @@ fn menu_bar(
                             .on_hover_text("Held shapes swing from the point you grabbed.")
                             .changed()
                         {
-                            sender.app(Action::Rope(None));
+                            sender.toggle("rope carry", |app| app.rope.get_mut());
                         }
                     }
                 }
@@ -183,7 +183,7 @@ fn view_tabs(ui: &mut egui::Ui, app: &Playground, sender: &CommandSender<Playgro
         }
         let mut formula = *app.formula.get();
         if ui.checkbox(&mut formula, "Formula").changed() {
-            sender.app(Action::Formula(None));
+            sender.toggle(SHOW_FORMULA.name, SHOW_FORMULA.setting);
         }
     });
 }

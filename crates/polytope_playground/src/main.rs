@@ -155,29 +155,48 @@ stores! {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct Toggle {
+    pub(crate) name: &'static str,
+    pub(crate) setting: Setting<Playground>,
+}
+
+pub(crate) const SHOW_CONTROLS: Toggle = Toggle {
+    name: "controls",
+    setting: |app| app.controls.get_mut(),
+};
+pub(crate) const SHOW_FORMULA: Toggle = Toggle {
+    name: "formula",
+    setting: |app| app.formula.get_mut(),
+};
+pub(crate) const SHOW_GUIDES: Toggle = Toggle {
+    name: "guides",
+    setting: |app| app.guides.get_mut(),
+};
+pub(crate) const SHOW_GIMBAL: Toggle = Toggle {
+    name: "gimbal",
+    setting: |app| app.gimbal.get_mut(),
+};
+pub(crate) const TOYBOX_DEBUG: Toggle = Toggle {
+    name: "toybox debug",
+    setting: |app| app.toybox_debug.get_mut(),
+};
+
+#[derive(Clone, Copy)]
 pub(crate) enum Action {
     Mode(Mode),
     Active(usize),
     Slice(f32),
     ExactSlice(f32),
     Plane(usize),
-    Gimbal(Option<bool>),
     Running(Option<bool>),
     Projection(Family),
     NextProjection,
     Color(ColorMode),
     NextColor,
-    Hud(Option<bool>),
     Shape(usize, usize),
     AddShape(usize),
     RemoveShape(usize),
     ReorderShape { from: usize, to: usize },
-    Controls(Option<bool>),
-    Formula(Option<bool>),
-    Labels(Option<bool>),
-    Guides(Option<bool>),
-    ToyboxDebug(Option<bool>),
-    Rope(Option<bool>),
     Strip(Strip),
     Rate(f32),
     Display(Display),
@@ -364,12 +383,6 @@ fn install_systems(
         if ctx.input.pressed(RESET) {
             ctx.commands.app(Action::Reset);
         }
-        if ctx.input.pressed(GIMBAL) {
-            ctx.commands.app(Action::Gimbal(None));
-        }
-        if ctx.input.pressed(CONTROLS) {
-            ctx.commands.app(Action::Controls(None));
-        }
         if ctx.input.pressed(STRIP) {
             ctx.commands.app(Action::Strip(Strip {
                 on: !strip.on,
@@ -378,6 +391,8 @@ fn install_systems(
         }
         Ok(())
     });
+    session.toggle_on(GIMBAL, SHOW_GIMBAL.setting);
+    session.toggle_on(CONTROLS, SHOW_CONTROLS.setting);
     for (index, action) in PLANE.into_iter().enumerate() {
         session.on_action(action, move |d| Action::Plane(index).apply(d).map(drop));
     }
@@ -507,26 +522,17 @@ impl AppCommand<Playground> for Action {
             Self::Active(_) => "active",
             Self::Slice(_) | Self::ExactSlice(_) => "slice",
             Self::Plane(_) => "plane",
-            Self::Gimbal(None) => "gimbal",
-            Self::Gimbal(Some(_)) => "handles",
             Self::Running(_) => "spin",
             Self::Projection(family) => family.name(),
             Self::NextProjection => "wireframe perspective",
             Self::Color(mode) => mode.name(),
             Self::NextColor => "wireframe color",
-            Self::Hud(_) => "hud",
             Self::Shape(_, card) => catalog::SHAPE_CATALOG
                 .get(*card)
                 .map_or("shape", |entry| entry.label),
             Self::AddShape(_) => "add shape",
             Self::RemoveShape(_) => "remove shape",
             Self::ReorderShape { .. } => "reorder shape",
-            Self::Controls(_) => "controls",
-            Self::Formula(_) => "formula",
-            Self::Labels(_) => "labels",
-            Self::Guides(_) => "guides",
-            Self::ToyboxDebug(_) => "toybox debug",
-            Self::Rope(_) => "rope carry",
             Self::Strip(_) => "strip",
             Self::Rate(_) => "rate",
             Self::Display(_) => "display",
@@ -570,10 +576,6 @@ impl AppCommand<Playground> for Action {
                 dispatch.app.slice.set(w);
             }
             Action::Plane(plane) => mode::toggle_plane(dispatch, plane)?,
-            Action::Gimbal(setting) => {
-                let shown = *dispatch.app.gimbal;
-                dispatch.app.gimbal.set(setting.unwrap_or(!shown));
-            }
             Action::Running(setting) => {
                 if *dispatch.app.mode == Mode::Toybox {
                     return Err(Rejection::Unsupported("rotation belongs to Rotate"));
@@ -611,10 +613,6 @@ impl AppCommand<Playground> for Action {
                     .color
                     .set(ColorMode::ALL[(at + 1) % ColorMode::ALL.len()]);
             }
-            Action::Hud(setting) => {
-                let shown = *dispatch.app.hud;
-                dispatch.app.hud.set(setting.unwrap_or(!shown));
-            }
             Action::Strip(strip) => mode::set_strip(dispatch.app, strip)?,
             Action::Rate(rate) => {
                 if !rate.is_finite() {
@@ -624,30 +622,6 @@ impl AppCommand<Playground> for Action {
             }
             Action::Display(display) => display::set(dispatch.app, display)?,
             Action::Reset => mode::reset(dispatch, domain, &cards)?,
-            Action::Controls(setting) => {
-                let visible = *dispatch.app.controls;
-                dispatch.app.controls.set(setting.unwrap_or(!visible));
-            }
-            Action::Formula(setting) => {
-                let visible = *dispatch.app.formula;
-                dispatch.app.formula.set(setting.unwrap_or(!visible));
-            }
-            Action::Labels(setting) => {
-                let visible = *dispatch.app.labels;
-                dispatch.app.labels.set(setting.unwrap_or(!visible));
-            }
-            Action::Guides(setting) => {
-                let visible = *dispatch.app.guides;
-                dispatch.app.guides.set(setting.unwrap_or(!visible));
-            }
-            Action::Rope(setting) => {
-                let rope = *dispatch.app.rope;
-                dispatch.app.rope.set(setting.unwrap_or(!rope));
-            }
-            Action::ToyboxDebug(setting) => {
-                let visible = *dispatch.app.toybox_debug;
-                dispatch.app.toybox_debug.set(setting.unwrap_or(!visible));
-            }
             Action::Time(time) => {
                 display::seek(dispatch.app, dispatch.domains, domain, time)
                     .map_err(Rejection::Domain)?;
