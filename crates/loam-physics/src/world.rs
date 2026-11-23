@@ -49,8 +49,11 @@ pub const DEFAULT_SOLVER_TOLERANCE: f32 = 1e-3;
 
 const WAKE_APPROACH_SPEED: f32 = 0.01;
 
-/// Measured, not derived; the sweep is in docs/PERF.md.
-pub const ISLANDS_PER_SOLVE_WORKER: usize = 256;
+/// Measured with scoped threads on settled three-high stacks, where 128 box islands already gain.
+pub const ISLANDS_PER_SOLVE_WORKER: usize = 64;
+
+/// Measured with scoped threads; box pairs gain from 2560 pairs, sphere pairs break even.
+pub const PAIRS_PER_NARROWPHASE_WORKER: usize = 1024;
 
 const STALE_CONSTRAINT_KEY: &str = "constraint buffer outlived its manifold";
 const STALE_MANIFOLD_BODY: &str = "manifold key names a body that is gone";
@@ -179,6 +182,7 @@ pub struct World<S: PhysicsSpace> {
     manifold_order: Vec<PairKey>,
     manifold_pool: Vec<Manifold<S>>,
     pending_contacts: Vec<(PairKey, Contact<S>)>,
+    pair_contacts: Vec<(PairKey, Option<Contact<S>>)>,
     pgs_iters: usize,
     time: f32,
     dirty: DirtyBodies,
@@ -232,6 +236,7 @@ impl<S: PhysicsSpace> World<S> {
             manifold_order: Vec::new(),
             manifold_pool: Vec::new(),
             pending_contacts: Vec::new(),
+            pair_contacts: Vec::new(),
             pgs_iters: DEFAULT_PGS_ITERS,
             time: 0.0,
             dirty: DirtyBodies::default(),
@@ -780,7 +785,7 @@ impl<S: PhysicsSpace> World<S> {
         self.wake_approaching_contacts();
         self.apply_forces(dt);
         self.integrate(dt);
-        self.update_manifolds();
+        self.update_manifolds(executor);
         self.collect_constraints();
         self.prepare_solve();
         self.warm_start();
@@ -818,7 +823,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn update_manifolds(&mut self)
+    fn update_manifolds(&mut self, executor: &dyn Executor)
     where
         S::Vector: VectorOps,
     {
@@ -836,15 +841,18 @@ impl<S: PhysicsSpace> World<S> {
         touched.clear();
         let mut pending = std::mem::take(&mut self.pending_contacts);
         pending.clear();
+        let mut tested = std::mem::take(&mut self.pair_contacts);
+        tested.clear();
+        tested.extend(pairs.iter().map(|&key| (key, None)));
+        self.test_pairs(&mut tested, executor);
 
-        for &key in &pairs {
+        for &(key, found) in &tested {
             let (i, j) = self.dense_pair(key);
             let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
-            // Refresh anchors before the narrowphase merges contacts.
             if let Some(manifold) = self.manifolds.get_mut(&key) {
                 manifold.refresh(&self.space, a, b);
             }
-            let Some(contact) = self.narrowphase.test(a, b, &self.geometry, &self.space) else {
+            let Some(contact) = found else {
                 continue;
             };
             if !self.manifolds.contains_key(&key)
@@ -857,6 +865,7 @@ impl<S: PhysicsSpace> World<S> {
             }
             pending.push((key, contact));
         }
+        self.pair_contacts = tested;
 
         self.field_manifolds(&mut pending);
 
@@ -888,6 +897,33 @@ impl<S: PhysicsSpace> World<S> {
         self.touched_pairs = touched;
         self.pending_contacts = pending;
         self.pair_order = pairs;
+    }
+
+    // Each pair writes only its own slot, so the merge that follows sees pair order for any thread count.
+    fn test_pairs(&self, slots: &mut [(PairKey, Option<Contact<S>>)], executor: &dyn Executor)
+    where
+        S::Vector: VectorOps,
+    {
+        let test = |chunk: &mut [(PairKey, Option<Contact<S>>)]| {
+            for (key, contact) in chunk {
+                let a = self
+                    .bodies
+                    .get(key.0)
+                    .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}"));
+                let b = self
+                    .bodies
+                    .get(key.1)
+                    .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}"));
+                *contact = self.narrowphase.test(a, b, &self.geometry, &self.space);
+            }
+        };
+        let workers = slots.len() / PAIRS_PER_NARROWPHASE_WORKER;
+        if workers < 2 {
+            test(slots);
+        } else {
+            let chunk = slots.len().div_ceil(workers);
+            par::for_each_chunk(executor, slots, chunk, test);
+        }
     }
 
     fn ensure_manifold(&mut self, key: PairKey, restitution: f32)
