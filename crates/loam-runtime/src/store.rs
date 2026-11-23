@@ -462,6 +462,7 @@ pub struct Store<T> {
     keys: Vec<EntityKey>,
     sparse: Vec<Option<SparseEntry>>,
     tracking: Option<Tracking>,
+    revision: Version,
 }
 
 impl<T> Default for Store<T> {
@@ -486,6 +487,7 @@ impl<T> Store<T> {
             keys: Vec::new(),
             sparse: Vec::new(),
             tracking,
+            revision: Version::default(),
         }
     }
 
@@ -547,6 +549,7 @@ impl<T> Store<T> {
 
     pub fn get_mut(&mut self, entity: Entity) -> Option<&mut T> {
         let dense = self.dense_index(entity)?;
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.touch(dense, self.keys[dense]);
         }
@@ -560,6 +563,7 @@ impl<T> Store<T> {
         if i == j {
             return None;
         }
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.touch(i, self.keys[i]);
             tracking.touch(j, self.keys[j]);
@@ -577,6 +581,7 @@ impl<T> Store<T> {
     }
 
     pub(crate) fn rows_mut_untracked(&mut self) -> &mut [T] {
+        self.revision = self.revision.bump();
         &mut self.dense
     }
 
@@ -589,6 +594,7 @@ impl<T> Store<T> {
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (Entity, &mut T)> {
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.touch_all(&self.keys);
         }
@@ -637,6 +643,7 @@ impl<T> Store<T> {
         });
         self.dense.push(row);
         self.keys.push(key);
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.push_row();
             tracking.touch(dense, key);
@@ -652,6 +659,7 @@ impl<T> Store<T> {
         self.sparse[key.slot() as usize] = None;
         let row = self.dense.swap_remove(dense);
         self.keys.swap_remove(dense);
+        self.revision = self.revision.bump();
         if let Some(&moved) = self.keys.get(dense) {
             if let Some(entry) = &mut self.sparse[moved.slot() as usize] {
                 entry.dense = dense as u32;
@@ -679,6 +687,7 @@ impl<T> Store<T> {
             }
             previous = Some(cut);
         }
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.touch_all(&self.keys);
         }
@@ -693,6 +702,11 @@ impl<T> Store<T> {
         if let Some(tracking) = &mut self.tracking {
             tracking.boundary += 1;
         }
+    }
+
+    /// Changes whenever a row is written, added or removed and whenever the store is restored.
+    pub fn revision(&self) -> Version {
+        self.revision
     }
 
     /// `None` for an untracked store or an entity it does not hold.
@@ -799,6 +813,7 @@ impl<T: Clone + Send + 'static> StoreField for Store<T> {
                 dense: dense as u32,
             });
         }
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.reset(self.dense.len());
         }

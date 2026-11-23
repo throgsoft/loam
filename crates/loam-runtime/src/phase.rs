@@ -3,7 +3,7 @@ use std::fmt;
 use crate::bridge::{Drag, DragError, DragRelease};
 use crate::command::{CommandResult, Commands};
 use crate::domain::{ChartPoint, DomainError, Domains};
-use crate::entity::Entity;
+use crate::entity::{Entity, SceneId};
 use crate::input::{Input, PointerButton};
 use crate::session::{Manipulation, PreparedGeometry, Scene};
 use crate::stores::Stores;
@@ -92,6 +92,22 @@ pub struct Ctx<'a, A> {
     pub(crate) manipulation: &'a mut Manipulation,
 }
 
+impl<A> Ctx<'_, A> {
+    fn reborrow(&mut self) -> Ctx<'_, A> {
+        Ctx {
+            app: self.app,
+            domains: self.domains,
+            views: self.views,
+            commands: self.commands,
+            results: self.results,
+            input: self.input,
+            prepared: self.prepared,
+            step: self.step,
+            manipulation: self.manipulation,
+        }
+    }
+}
+
 impl<A: Stores> Ctx<'_, A> {
     pub fn pick(&self, ndc: [f32; 2]) -> Option<Pick> {
         self.domains.pick(self.views, self.prepared, ndc)
@@ -165,6 +181,30 @@ impl<A: 'static> SystemEntry<A> {
             name,
             run: Box::new(system),
         }
+    }
+}
+
+impl<A: Stores> SystemEntry<A> {
+    pub(crate) fn on_change<K: PartialEq + Send + 'static>(
+        name: &'static str,
+        watch: impl Fn(&A) -> K + Send + 'static,
+        mut system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+    ) -> Self {
+        // A restore advances the scene's epoch, so keying on the scene runs the system again after one.
+        let mut seen: Option<(SceneId, K)> = None;
+        Self::new(name, move |mut ctx: Ctx<'_, A>| {
+            let scene = ctx.commands.entities().scene();
+            let key = watch(ctx.app);
+            if seen
+                .as_ref()
+                .is_some_and(|(held_scene, held)| *held_scene == scene && *held == key)
+            {
+                return Ok(());
+            }
+            system(ctx.reborrow())?;
+            seen = Some((scene, watch(ctx.app)));
+            Ok(())
+        })
     }
 }
 

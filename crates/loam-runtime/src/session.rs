@@ -836,6 +836,18 @@ impl<A: Stores> Session<A> {
         self.phases.push(phase, SystemEntry::new(name, system));
     }
 
+    /// Runs `system` at its first chance, after each restore, and whenever `watch` returns a key unlike the one it returned right after the system's last `Ok` run. An error leaves the key unstored, so the system runs again at its next chance.
+    pub fn system_on_change<K: PartialEq + Send + 'static>(
+        &mut self,
+        phase: Phase,
+        name: &'static str,
+        watch: impl Fn(&A) -> K + Send + 'static,
+        system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+    ) {
+        self.phases
+            .push(phase, SystemEntry::on_change(name, watch, system));
+    }
+
     /// `None` when no entry of that phase has the named anchor.
     pub fn system_at(
         &mut self,

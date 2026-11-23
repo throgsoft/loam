@@ -397,99 +397,96 @@ fn install_systems(
         session.on_action(action, move |d| Action::Plane(index).apply(d).map(drop));
     }
 
-    let mut applied = None;
-    session.system(Phase::Publication, "slice view", move |ctx| {
-        let w = *ctx.app.slice.get();
-        let revision = ctx.app.slice.version();
-        if Some(revision) == applied {
-            return Ok(());
-        }
-        let r4 = ctx.domains.typed(domain)?;
-        let spec = r4
-            .view_mut(layers.section)
-            .ok_or(DomainError::Unsupported("section view"))?;
-        spec.set_mapping(Section4 { w });
-        applied = Some(revision);
-        Ok(())
-    });
+    session.system_on_change(
+        Phase::Publication,
+        "slice view",
+        |app: &Playground| app.slice.version(),
+        move |ctx| {
+            let w = *ctx.app.slice.get();
+            let r4 = ctx.domains.typed(domain)?;
+            let spec = r4
+                .view_mut(layers.section)
+                .ok_or(DomainError::Unsupported("section view"))?;
+            spec.set_mapping(Section4 { w });
+            Ok(())
+        },
+    );
 
-    let mut styled = None;
-    let mut styled_slots = loam::runtime::Cursor::default();
-    session.system(Phase::Publication, "shading", move |ctx| {
-        let app = &mut *ctx.app;
-        let revision = (
-            app.color.version(),
-            app.strip.version(),
-            app.display.version(),
-            app.active.version(),
-        );
-        let slots_changed = app.slots.changed_since(&mut styled_slots);
-        if !slots_changed && styled == Some(revision) {
-            return Ok(());
-        }
-        let mode = *app.color.get();
-        let strip = app.strip.get().on;
-        let display = *app.display.get();
-        let active = *app.active.get();
-        let subject = if display.single {
-            app.slots
-                .iter()
-                .find(|(_, slot)| slot.index == active)
-                .map(|(entity, _)| entity)
-        } else {
-            None
-        };
-        let r4 = ctx.domains.typed(domain)?;
-        r4.set_view_subject(layers.section, subject)?;
-        r4.set_view_subject(layers.projection, subject)?;
-        let spec = r4
-            .view_mut(layers.section)
-            .ok_or(DomainError::Unsupported("section view"))?;
-        spec.enabled = !strip;
-        spec.edges = false;
-        spec.section_edges = display.wireframe && display.section_perimeter;
-        spec.section_faces = display.surface == Surface::Raster;
-        let spec = r4
-            .view_mut(layers.projection)
-            .ok_or(DomainError::Unsupported("projection view"))?;
-        spec.enabled = display.wireframe && !strip;
-        spec.section_edges = false;
-        spec.section_faces = false;
-        for (entity, slot) in app.slots.iter() {
-            let Some(card) = card_of(&slot.entry).map(|index| cards[index]) else {
-                continue;
+    session.system_on_change(
+        Phase::Publication,
+        "shading",
+        |app: &Playground| {
+            (
+                app.color.version(),
+                app.strip.version(),
+                app.display.version(),
+                app.active.version(),
+                app.slots.revision(),
+            )
+        },
+        move |ctx| {
+            let app = &*ctx.app;
+            let mode = *app.color.get();
+            let strip = app.strip.get().on;
+            let display = *app.display.get();
+            let active = *app.active.get();
+            let subject = if display.single {
+                app.slots
+                    .iter()
+                    .find(|(_, slot)| slot.index == active)
+                    .map(|(entity, _)| entity)
+            } else {
+                None
             };
-            let Some(shades) = card.shades else {
-                continue;
-            };
-            if let Some(instance) = r4.instance_mut(entity) {
-                instance.shading = shades.of(mode);
-                instance.section = (!strip).then_some(card.cut);
-                instance.line_width_px = Some(display.wireframe_width_px);
-                instance.line_opacity = Some(display.wireframe_opacity);
+            let r4 = ctx.domains.typed(domain)?;
+            r4.set_view_subject(layers.section, subject)?;
+            r4.set_view_subject(layers.projection, subject)?;
+            let spec = r4
+                .view_mut(layers.section)
+                .ok_or(DomainError::Unsupported("section view"))?;
+            spec.enabled = !strip;
+            spec.edges = false;
+            spec.section_edges = display.wireframe && display.section_perimeter;
+            spec.section_faces = display.surface == Surface::Raster;
+            let spec = r4
+                .view_mut(layers.projection)
+                .ok_or(DomainError::Unsupported("projection view"))?;
+            spec.enabled = display.wireframe && !strip;
+            spec.section_edges = false;
+            spec.section_faces = false;
+            for (entity, slot) in app.slots.iter() {
+                let Some(card) = card_of(&slot.entry).map(|index| cards[index]) else {
+                    continue;
+                };
+                let Some(shades) = card.shades else {
+                    continue;
+                };
+                if let Some(instance) = r4.instance_mut(entity) {
+                    instance.shading = shades.of(mode);
+                    instance.section = (!strip).then_some(card.cut);
+                    instance.line_width_px = Some(display.wireframe_width_px);
+                    instance.line_opacity = Some(display.wireframe_opacity);
+                }
             }
-        }
-        styled = Some(revision);
-        app.slots.catch_up(&mut styled_slots);
-        Ok(())
-    });
+            Ok(())
+        },
+    );
 
-    let mut shown = None;
-    session.system(Phase::Publication, "projection view", move |ctx| {
-        let family = *ctx.app.projection.get();
-        let slice = *ctx.app.slice.get();
-        let revision = (ctx.app.projection.version(), ctx.app.slice.version());
-        if shown == Some(revision) {
-            return Ok(());
-        }
-        let r4 = ctx.domains.typed(domain)?;
-        let spec = r4
-            .view_mut(layers.projection)
-            .ok_or(DomainError::Unsupported("projection view"))?;
-        spec.set_mapping(family.mapping(slice));
-        shown = Some(revision);
-        Ok(())
-    });
+    session.system_on_change(
+        Phase::Publication,
+        "projection view",
+        |app: &Playground| (app.projection.version(), app.slice.version()),
+        move |ctx| {
+            let family = *ctx.app.projection.get();
+            let slice = *ctx.app.slice.get();
+            let r4 = ctx.domains.typed(domain)?;
+            let spec = r4
+                .view_mut(layers.projection)
+                .ok_or(DomainError::Unsupported("projection view"))?;
+            spec.set_mapping(family.mapping(slice));
+            Ok(())
+        },
+    );
 
     session.system(Phase::Simulation, "slice scrub", |ctx| {
         if camera::is_free(ctx.views) {

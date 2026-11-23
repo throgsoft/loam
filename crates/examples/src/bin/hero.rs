@@ -693,25 +693,23 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
 
     let mut local = Vec::new();
     let mut scratch = SectionScratch::default();
-    let mut composed = None;
-    session.system(Phase::Publication, "compose", move |ctx| {
-        let tick = ctx.app.stage.tick;
-        let key = (tick, ctx.app.mesh.version());
-        if composed == Some(key) {
-            return Ok(());
-        }
-        compose(
-            ctx.app,
-            ctx.domains,
-            r4,
-            &mut morph,
-            &mut local,
-            &mut scratch,
-            half_depth,
-        );
-        composed = Some((tick, ctx.app.mesh.version()));
-        Ok(())
-    });
+    session.system_on_change(
+        Phase::Publication,
+        "compose",
+        |app: &HeroStores| (app.stage.tick, app.mesh.version()),
+        move |ctx| {
+            compose(
+                ctx.app,
+                ctx.domains,
+                r4,
+                &mut morph,
+                &mut local,
+                &mut scratch,
+                half_depth,
+            );
+            Ok(())
+        },
+    );
 
     // Taken here so a reset straight after build has a state to return to.
     session.set_initial()?;
