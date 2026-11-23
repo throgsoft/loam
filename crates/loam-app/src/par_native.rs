@@ -30,9 +30,3 @@ impl Executor for ScopedThreads {
         });
     }
 }
-
-pub fn install() {
-    if loam_time::par::install(Box::new(ScopedThreads::default())).is_err() {
-        tracing::debug!("a parallel executor was already installed");
-    }
-}

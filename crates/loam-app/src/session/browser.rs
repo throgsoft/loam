@@ -12,6 +12,7 @@ use loam_egui::egui;
 use loam_render::device::{FeatureRequest, RenderDevice};
 use loam_runtime::host::HostError;
 use loam_runtime::{Session, Stores};
+use loam_time::par::Sequential;
 use web_time::Instant;
 
 use super::animation::{self, Lifecycle, Next};
@@ -372,7 +373,8 @@ async fn start<A: Stores>(
         .await
         .context("SurfaceHost::new")?;
 
-    let mut frame = Frame::new(session, app).map_err(|error| anyhow!("{error:?}"))?;
+    let mut frame =
+        Frame::new(session, app, Box::new(Sequential)).map_err(|error| anyhow!("{error:?}"))?;
     frame
         .attach(&rd.context, rd.target_format(), size, dpr)
         .map_err(|error| anyhow!("{error:?}"))?;

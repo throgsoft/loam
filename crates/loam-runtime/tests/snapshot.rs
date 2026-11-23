@@ -10,6 +10,7 @@ use loam_runtime::{
     Reservation, RestoreError, SchemaId, Section4, Session, SimConfig, SpawnBundle, Step, Store,
     Tick, ViewMapping, ViewSpec, ViewTarget, DOMAIN_STEP,
 };
+use loam_time::par::Executor;
 
 type Vec4 = <EuclideanR4 as Space>::Point;
 
@@ -67,6 +68,7 @@ impl Facility<EuclideanR4> for Drift {
         &mut self,
         poses: &mut Store<Pose<EuclideanR4>>,
         step: Step,
+        _executor: &dyn Executor,
         _owner: Owner,
     ) -> Result<(), DomainError> {
         self.steps += 1;
@@ -310,6 +312,7 @@ impl Facility<EuclideanR4> for RejectStep {
         &mut self,
         _poses: &mut Store<Pose<EuclideanR4>>,
         _step: Step,
+        _executor: &dyn Executor,
         _owner: Owner,
     ) -> Result<(), DomainError> {
         Err(DomainError::ChartBoundary)

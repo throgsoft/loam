@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, Mul};
 
 use loam_math::Bivector;
-use loam_time::par;
+use loam_time::par::{self, Executor, Sequential};
 use loam_time::StateHash;
 
 use crate::body::{BodyArena, BodyDef, BodyId, RigidBody};
@@ -763,6 +763,15 @@ impl<S: PhysicsSpace> World<S> {
         S::Vector: VectorOps,
         S::Point: Copy + std::ops::Sub<Output = S::Vector>,
     {
+        self.step_with(dt, &Sequential)
+    }
+
+    /// `dt` is in seconds, and the result is the same for any `executor`.
+    pub fn step_with(&mut self, dt: f32, executor: &dyn Executor) -> Result<(), EditError>
+    where
+        S::Vector: VectorOps,
+        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
+    {
         if !dt.is_finite() || dt < 0.0 {
             return Err(EditError::InvalidTimeStep);
         }
@@ -779,7 +788,7 @@ impl<S: PhysicsSpace> World<S> {
         self.collect_constraints();
         self.prepare_solve();
         self.warm_start();
-        self.solve(dt);
+        self.solve(dt, executor);
 
         self.time = next_time;
         Ok(())
@@ -1087,7 +1096,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn solve(&mut self, dt: f32)
+    fn solve(&mut self, dt: f32, executor: &dyn Executor)
     where
         S::Vector: VectorOps,
     {
@@ -1109,7 +1118,7 @@ impl<S: PhysicsSpace> World<S> {
             }
         } else {
             let chunk = islands.len().div_ceil(workers);
-            par::for_each_chunk(islands, chunk, |chunk| {
+            par::for_each_chunk(executor, islands, chunk, |chunk| {
                 for island in chunk {
                     solve_island(space, iterations, dt, island);
                 }

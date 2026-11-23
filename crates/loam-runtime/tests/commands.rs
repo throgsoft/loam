@@ -7,6 +7,7 @@ use loam_runtime::{
     Phase, Pose, PreparedGeometry, Rejection, RequestId, Reservation, RestoreError, SchemaId,
     Session, SimConfig, SpawnBundle, Step, Store, StoreError, DOMAIN_STEP,
 };
+use loam_time::par::Executor;
 
 type Vec4 = <EuclideanR4 as Space>::Point;
 
@@ -74,6 +75,7 @@ impl Facility<EuclideanR4> for Drift {
         &mut self,
         poses: &mut Store<Pose<EuclideanR4>>,
         step: Step,
+        _executor: &dyn Executor,
         _owner: Owner,
     ) -> Result<(), DomainError> {
         for (_, pose) in poses.iter_mut() {

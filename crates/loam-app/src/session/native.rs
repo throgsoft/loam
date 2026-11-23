@@ -17,6 +17,7 @@ use super::input::{winit_alt, winit_key};
 use super::pacing::Pace;
 use super::surface::{Attempt, SurfaceHost};
 use crate::args::Args;
+use crate::par_native::ScopedThreads;
 use crate::WasmConfig;
 
 pub fn launch<A: Stores>(
@@ -30,7 +31,6 @@ pub fn launch_with<A: Stores>(
     factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
 ) -> Result<(), HostError> {
     install_tracing();
-    crate::par_native::install();
     run(Args::current(), factory)
 }
 
@@ -39,7 +39,6 @@ pub fn launch_or_headless<A: Stores>(
     headless: impl FnOnce(Args) -> Result<(), HostError>,
 ) -> Result<(), HostError> {
     install_tracing();
-    crate::par_native::install();
     let args = Args::current();
     if args.has_bare_flag("headless") || args.get("headless").is_some() {
         return headless(args);
@@ -94,7 +93,7 @@ struct Host<A: Stores> {
 impl<A: Stores> Host<A> {
     fn new(session: Session<A>, app: SessionApp<A>) -> Result<Self, HostError> {
         Ok(Self {
-            frame: Frame::new(session, app)?,
+            frame: Frame::new(session, app, Box::new(ScopedThreads::default()))?,
             window: None,
             surface: None,
             device: None,

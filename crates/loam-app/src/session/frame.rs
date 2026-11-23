@@ -13,6 +13,7 @@ use loam_render::present::Presenter;
 use loam_runtime::host::HostConfig;
 use loam_runtime::host::HostError;
 use loam_runtime::{Eye, Publication, PublishError, Records, Session, Stores};
+use loam_time::par::Executor;
 use loam_time::{frame_trace, FixedTimestep};
 
 use super::app::{CaptureControl, FrameHook, InputHook, Posts, Redraw, SessionApp};
@@ -47,6 +48,7 @@ fn redraws(policy: Redraw, drawn: Option<&Shown>, next: &Shown, forced: bool) ->
 
 struct Inner<A: Stores> {
     session: Session<A>,
+    executor: Box<dyn Executor>,
     records: Records,
     timestep: Option<FixedTimestep>,
     callbacks: Vec<CommandBuffer>,
@@ -73,7 +75,11 @@ pub(crate) struct Frame<A: Stores> {
 }
 
 impl<A: Stores> Frame<A> {
-    pub(crate) fn new(session: Session<A>, app: SessionApp<A>) -> Result<Self, HostError> {
+    pub(crate) fn new(
+        session: Session<A>,
+        app: SessionApp<A>,
+        executor: Box<dyn Executor>,
+    ) -> Result<Self, HostError> {
         let sim = session.config();
         sim.check().map_err(failed)?;
         let timestep = sim
@@ -85,6 +91,7 @@ impl<A: Stores> Frame<A> {
             layer: None,
             inner: Inner {
                 session,
+                executor,
                 records: Records::default(),
                 timestep,
                 callbacks: Vec::new(),
@@ -385,6 +392,7 @@ impl<A: Stores> Inner<A> {
         }
         let Inner {
             session,
+            executor,
             input,
             timestep,
             app,
@@ -425,7 +433,7 @@ impl<A: Stores> Inner<A> {
                 }
                 let _simulation = frame_trace::scope("simulation");
                 for _ in timestep.advance(now) {
-                    session.tick()?;
+                    session.tick_with(executor.as_ref())?;
                 }
             }
             session.views_mut().root_mut().eye.aspect = aspect;
@@ -774,6 +782,8 @@ mod tests {
         TextureDescriptor, TextureDimension, TextureUsages, TextureViewDescriptor,
     };
 
+    use loam_time::par::Sequential;
+
     use super::*;
     use crate::args::Args;
     use crate::session::CursorPolicy;
@@ -848,8 +858,12 @@ mod tests {
     }
 
     fn bare(app: SessionApp<Bare>) -> Frame<Bare> {
-        Frame::new(Session::new(Bare::default(), SimConfig::default()), app)
-            .expect("the frame accepted the simulation config")
+        Frame::new(
+            Session::new(Bare::default(), SimConfig::default()),
+            app,
+            Box::new(Sequential),
+        )
+        .expect("the frame accepted the simulation config")
     }
 
     fn host<A: Stores>(name: &'static str) -> SessionApp<A> {
@@ -929,7 +943,8 @@ mod tests {
             recorded: recorded.clone(),
             rebuilt: Arc::new(AtomicU32::new(0)),
         }));
-        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
+        let mut frame = Frame::new(session, app, Box::new(Sequential))
+            .expect("the frame accepted the simulation config");
         frame
             .attach(gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
@@ -1117,7 +1132,8 @@ mod tests {
                 Ok(())
             },
         );
-        let mut frame = Frame::new(session, host("alpha")).expect("the frame accepted the config");
+        let mut frame = Frame::new(session, host("alpha"), Box::new(Sequential))
+            .expect("the frame accepted the config");
         frame
             .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
@@ -1149,7 +1165,8 @@ mod tests {
                 Ok(())
             },
         );
-        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
+        let mut frame = Frame::new(session, app, Box::new(Sequential))
+            .expect("the frame accepted the simulation config");
         frame
             .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
@@ -1226,7 +1243,8 @@ mod tests {
         );
         session.set_initial().expect("initial state");
         let epoch = session.scene().epoch();
-        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
+        let mut frame = Frame::new(session, app, Box::new(Sequential))
+            .expect("the frame accepted the simulation config");
         frame
             .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");
@@ -1317,7 +1335,8 @@ mod tests {
                 Ok(())
             },
         );
-        let mut frame = Frame::new(session, app).expect("the frame accepted the simulation config");
+        let mut frame = Frame::new(session, app, Box::new(Sequential))
+            .expect("the frame accepted the simulation config");
         frame
             .attach(&gpu, FORMAT, None, SIZE, 1.0)
             .expect("attached");

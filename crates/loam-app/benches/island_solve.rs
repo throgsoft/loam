@@ -2,9 +2,11 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use glam::Vec3;
+use loam_app::par_native::ScopedThreads;
 use loam_math::EuclideanR3;
 use loam_physics::euclidean_r3::{halfspace_body_r3, register_default_narrowphase, sphere_body_r3};
 use loam_physics::World;
+use loam_time::par::{Executor, Sequential};
 
 const COLUMN_COUNTS: [usize; 5] = [64, 256, 512, 1024, 2048];
 const SOLVER_ITERS: [usize; 2] = [8, 64];
@@ -54,11 +56,13 @@ fn median_nanos(mut body: impl FnMut()) -> f64 {
 
 fn main() {
     let parallel = std::env::var("LOAM_PAR").is_ok_and(|value| value == "1");
-    if parallel {
-        loam_app::par_native::install();
-    }
+    let executor: Box<dyn Executor> = if parallel {
+        Box::new(ScopedThreads::default())
+    } else {
+        Box::new(Sequential)
+    };
     let mode = if parallel { "par" } else { "seq" };
-    let threads = loam_time::par::executor().parallelism();
+    let threads = executor.parallelism();
     println!("mode threads islands bodies iters step_ns");
     for count in COLUMN_COUNTS {
         let mut world = columns(count);
@@ -67,10 +71,10 @@ fn main() {
         for iters in SOLVER_ITERS {
             world.set_solver_iterations(iters);
             for _ in 0..8 {
-                world.step(DT).expect("step");
+                world.step_with(DT, executor.as_ref()).expect("step");
             }
             let step_ns = median_nanos(|| {
-                world.step(DT).expect("step");
+                world.step_with(DT, executor.as_ref()).expect("step");
                 black_box(&world.time());
             });
             println!("{mode} {threads} {islands} {bodies} {iters} {step_ns:.0}");

@@ -1,10 +1,12 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use glam::Vec3;
+use loam_app::par_native::ScopedThreads;
 use loam_math::EuclideanR3;
 use loam_physics::euclidean_r3::{halfspace_body_r3, register_default_narrowphase, sphere_body_r3};
 use loam_physics::world::ISLANDS_PER_SOLVE_WORKER;
 use loam_physics::{RigidBody, World};
+use loam_time::par::{Executor, Sequential};
 
 const RADIUS: f32 = 0.5;
 const COLUMNS: usize = 2 * ISLANDS_PER_SOLVE_WORKER + 8;
@@ -54,10 +56,10 @@ fn sample(body: &RigidBody<EuclideanR3>, words: &mut Vec<u32>) {
     }
 }
 
-fn run() -> u64 {
+fn run(executor: &dyn Executor) -> u64 {
     let mut world = columns();
     for _ in 0..STEPS {
-        world.step(DT).expect("step");
+        world.step_with(DT, executor).expect("step");
     }
     let islands = world.islands().len();
     assert!(
@@ -69,11 +71,11 @@ fn run() -> u64 {
 
 #[test]
 fn islands_solved_through_the_shim_land_bit_for_bit_on_the_serial_result() {
-    let serial = run();
-    loam_app::par_native::install();
+    let serial = run(&Sequential);
+    let threads = ScopedThreads::default();
     assert!(
-        loam_time::par::executor().parallelism() > 1,
+        threads.parallelism() > 1,
         "one core, so this run cannot tell the two paths apart"
     );
-    assert_eq!(serial, run());
+    assert_eq!(serial, run(&threads));
 }

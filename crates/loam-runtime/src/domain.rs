@@ -22,6 +22,7 @@ use loam_shape::polytope::{
     polytope_section_faces_append, polytope_section_perimeter_append, Polytope4,
 };
 use loam_shape::FieldShape;
+use loam_time::par::Executor;
 
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
@@ -1626,6 +1627,7 @@ pub trait Facility<S: DomainSpace>: Any + Send + 'static {
         &mut self,
         poses: &mut Store<Pose<S>>,
         step: Step,
+        executor: &dyn Executor,
         owner: Owner,
     ) -> Result<(), DomainError>;
 
@@ -1810,7 +1812,7 @@ pub(crate) trait DomainOwner: Domain {
         alpha: f32,
     ) -> Result<(), DomainError>;
 
-    fn step(&mut self, step: Step) -> Result<(), DomainError>;
+    fn step(&mut self, step: Step, executor: &dyn Executor) -> Result<(), DomainError>;
 
     fn synchronize(&mut self);
 
@@ -2679,9 +2681,9 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         Ok(())
     }
 
-    fn step(&mut self, step: Step) -> Result<(), DomainError> {
+    fn step(&mut self, step: Step, executor: &dyn Executor) -> Result<(), DomainError> {
         for facility in &mut self.facilities {
-            facility.step(&mut self.poses, step, Owner::new())?;
+            facility.step(&mut self.poses, step, executor, Owner::new())?;
         }
         Ok(())
     }

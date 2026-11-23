@@ -6,6 +6,7 @@ use loam_physics::collision::VectorOps;
 use loam_physics::{
     BodyDef, BodyId, Collider, EditError, Narrowphase, PhysicsSpace, RigidBody, World, WorldState,
 };
+use loam_time::par::Executor;
 
 use crate::command::{Outcome, Rejection};
 use crate::domain::{
@@ -911,6 +912,7 @@ where
         &mut self,
         poses: &mut Store<Pose<S>>,
         step: Step,
+        executor: &dyn Executor,
         _owner: Owner,
     ) -> Result<(), DomainError> {
         if !step.dt.is_finite() || step.dt < 0.0 {
@@ -920,7 +922,7 @@ where
         let substeps = self.step_count(step.dt);
         let dt = step.dt / substeps as f32;
         for _ in 0..substeps {
-            self.world.step(dt)?;
+            self.world.step_with(dt, executor)?;
         }
         self.sync_poses(poses, true);
         self.released = None;
@@ -1144,6 +1146,7 @@ where
 mod tests {
     use loam_math::{EuclideanR4, Rotor4};
     use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
+    use loam_time::par::Sequential;
 
     use super::*;
     use crate::command::{Command, SpawnBundle};
@@ -1256,7 +1259,7 @@ mod tests {
             physics.grab(id, Vec4::X * 0.4).expect("grab");
             let mut lowest = f32::INFINITY;
             for tick in 0..120 {
-                domain.step(step_at(tick)).expect("step");
+                domain.step(step_at(tick), &Sequential).expect("step");
                 let physics = domain.physics().expect("physics");
                 lowest = lowest.min(physics.world.body(id).expect("body").position.y);
             }
@@ -1317,7 +1320,7 @@ mod tests {
         physics.move_to(held_body, Vec4::X * 2.0).expect("move");
 
         for tick in 0..4 {
-            domain.step(step_at(tick)).expect("step");
+            domain.step(step_at(tick), &Sequential).expect("step");
         }
 
         let physics = domain.physics().expect("physics");

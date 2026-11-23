@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use loam_shape::polytope::Polytope4Topology;
+use loam_time::par::{Executor, Sequential};
 
 use crate::bridge::{
     Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease, VELOCITY_SAMPLES,
@@ -702,7 +703,7 @@ impl<A: Stores> Session<A> {
             Phase::Simulation,
             SystemEntry::new(DOMAIN_STEP, |ctx: Ctx<'_, A>| {
                 for domain in ctx.domains.iter_mut() {
-                    domain.step(ctx.step)?;
+                    domain.step(ctx.step, ctx.executor)?;
                 }
                 Ok(())
             }),
@@ -1020,7 +1021,7 @@ impl<A: Stores> Session<A> {
         };
         let mut dispatched = Ok(());
         for index in 0..self.phases.entries(Phase::Dispatch).len() {
-            if let Err(error) = self.run_entry(Phase::Dispatch, index, step, 1.0) {
+            if let Err(error) = self.run_entry(Phase::Dispatch, index, step, 1.0, &Sequential) {
                 dispatched = Err(error);
                 break;
             }
@@ -1049,6 +1050,11 @@ impl<A: Stores> Session<A> {
     }
 
     pub fn tick(&mut self) -> Result<(), PhaseError> {
+        self.tick_with(&Sequential)
+    }
+
+    /// The result is the same for any `executor`.
+    pub fn tick_with(&mut self, executor: &dyn Executor) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
@@ -1065,7 +1071,7 @@ impl<A: Stores> Session<A> {
         }
         let mut stepped = Ok(());
         for index in 0..self.phases.entries(Phase::Simulation).len() {
-            stepped = self.run_entry(Phase::Simulation, index, step, 1.0);
+            stepped = self.run_entry(Phase::Simulation, index, step, 1.0, executor);
             if stepped.is_err() {
                 break;
             }
@@ -1096,7 +1102,7 @@ impl<A: Stores> Session<A> {
         self.unfinished = Some(Phase::Publication);
         self.overlay.clear();
         for index in 0..self.phases.entries(Phase::Publication).len() {
-            self.run_entry(Phase::Publication, index, step, alpha)?;
+            self.run_entry(Phase::Publication, index, step, alpha, &Sequential)?;
         }
         self.domains.synchronize();
         for domain in self.domains.iter_mut() {
@@ -1324,6 +1330,7 @@ impl<A: Stores> Session<A> {
         index: usize,
         step: Step,
         alpha: f32,
+        executor: &dyn Executor,
     ) -> Result<(), PhaseError> {
         let Session {
             app,
@@ -1354,6 +1361,7 @@ impl<A: Stores> Session<A> {
             step,
             alpha,
             overlay,
+            executor,
             manipulation,
         });
         domains.synchronize();

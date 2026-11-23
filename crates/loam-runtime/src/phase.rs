@@ -1,5 +1,7 @@
 use std::fmt;
 
+use loam_time::par::Executor;
+
 use crate::bridge::{Drag, DragError, DragRelease};
 use crate::command::{CommandResult, Commands};
 use crate::domain::{ChartPoint, DomainError, Domains};
@@ -93,6 +95,7 @@ pub struct Ctx<'a, A> {
     pub alpha: f32,
     /// Cleared before the publication phase, so only a publication system's lines and points reach the screen.
     pub overlay: &'a mut Overlay,
+    pub(crate) executor: &'a dyn Executor,
     pub(crate) manipulation: &'a mut Manipulation,
 }
 
@@ -109,6 +112,7 @@ impl<A> Ctx<'_, A> {
             step: self.step,
             alpha: self.alpha,
             overlay: self.overlay,
+            executor: self.executor,
             manipulation: self.manipulation,
         }
     }
