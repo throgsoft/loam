@@ -127,6 +127,13 @@ impl ImageSpace {
             ..eye
         };
     }
+
+    /// Switches a `Rig::Pair` to its free camera or its orbit, starting the free camera from this eye, and leaves any other rig alone.
+    pub fn set_flying(&mut self, flying: bool) {
+        if let Rig::Pair(pair) = &mut self.rig {
+            pair.set_flying(flying, self.eye);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

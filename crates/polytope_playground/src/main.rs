@@ -7,7 +7,6 @@ use loam::prelude::*;
 use loam::render::raymarch::BodyUniform;
 use loam::runtime::host::{run_headless, write_headless};
 
-mod camera;
 mod catalog;
 mod color;
 mod console;
@@ -148,7 +147,6 @@ stores! {
         guides: Value<bool>,
         toybox_debug: Value<bool>,
         rope: Value<bool>,
-        parked: Value<Rig>,
         control: Value<Control>,
         catalog: Value<Catalog>,
     }
@@ -220,7 +218,6 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
     let mut session = Session::new(
         Playground {
             slots: Store::tracked(LogCapacity::default()),
-            parked: Value::new(Rig::Free(FreeCamera::default())),
             ..Playground::default()
         },
         SimConfig::default(),
@@ -257,7 +254,10 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
     })?;
     session.views_mut().root_mut().eye =
         Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
-    session.set_rig(Rig::Orbit(home([0.0; 3])));
+    session.set_rig(Rig::Pair(CameraPair::new(
+        home([0.0; 3]),
+        FreeCamera::default(),
+    )));
     session.app.controls.set(true);
     session.app.guides.set(true);
 
@@ -330,12 +330,17 @@ fn install_systems(
                 let center = scene_center(ctx.app, ctx.domains, domain);
                 let focus = (ctx.app.display.single, *ctx.app.active, *ctx.app.mode);
                 let strip = *ctx.app.strip;
-                let orbit = camera::orbit_mut(ctx.views, ctx.app.parked.get_mut());
                 let control = ctx.app.control.get_mut();
                 for pointer in &ctx.input.pointers {
                     control.latest = Some(*pointer);
                 }
                 control.center = center;
+                let orbit = ctx
+                    .views
+                    .root_mut()
+                    .rig
+                    .orbit_mut()
+                    .expect("the playground's rig is a pair");
                 focus_camera(
                     orbit,
                     &mut control.camera_focus,
@@ -489,7 +494,7 @@ fn install_systems(
     );
 
     session.system(Phase::Simulation, "slice scrub", |ctx| {
-        if camera::is_free(ctx.views) {
+        if ctx.views.root_mut().rig.flying() {
             return Ok(());
         }
         // E and Q move the free camera, so the slice takes them only while the orbit holds the eye.

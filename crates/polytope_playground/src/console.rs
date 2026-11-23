@@ -2,7 +2,6 @@ use anyhow::{anyhow, bail, Result};
 use loam::app::environment::Environment;
 use loam::prelude::*;
 
-use crate::camera;
 use crate::color::ColorMode;
 use crate::display::{Surface, MAX_WIREFRAME_WIDTH_PX};
 use crate::mode::Mode;
@@ -26,6 +25,21 @@ fn toggle(args: &[&str], usage: &str) -> Result<Option<bool>> {
         ["off"] => Ok(Some(false)),
         _ => bail!("{usage}"),
     }
+}
+
+fn free_camera(views: &Views) -> &FreeCamera {
+    views
+        .get(views.root())
+        .and_then(|root| root.rig.free())
+        .expect("the playground's rig is a pair")
+}
+
+fn free_camera_mut(views: &mut Views) -> &mut FreeCamera {
+    views
+        .root_mut()
+        .rig
+        .free_mut()
+        .expect("the playground's rig is a pair")
 }
 
 fn color(token: &str) -> Option<ColorMode> {
@@ -370,17 +384,17 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         |args, submit, _out| {
             match args {
                 [] => submit.app_fn("camera", |dispatch: &mut Dispatch<'_, Playground>| {
-                    let free = !camera::is_free(dispatch.views);
-                    camera::fly(dispatch.views, dispatch.app.parked.get_mut(), free);
+                    let root = dispatch.views.root_mut();
+                    root.set_flying(!root.rig.flying());
                 }),
                 ["orbit"] | ["freecam"] => {
                     let free = args[0] == "freecam";
                     submit.app_fn("camera", move |dispatch: &mut Dispatch<'_, Playground>| {
-                        camera::fly(dispatch.views, dispatch.app.parked.get_mut(), free);
+                        dispatch.views.root_mut().set_flying(free);
                     });
                 }
                 ["speed"] => submit.inspect("camera speed", |dispatch, out| {
-                    let speed = camera::free(dispatch.views, &dispatch.app.parked).speed;
+                    let speed = free_camera(dispatch.views).speed;
                     out.line(format!("camera speed: {speed:.2} u/sec"));
                 }),
                 ["speed", token] => {
@@ -391,13 +405,12 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                     submit.app_fn(
                         "camera speed",
                         move |dispatch: &mut Dispatch<'_, Playground>| {
-                            camera::free_mut(dispatch.views, dispatch.app.parked.get_mut()).speed =
-                                speed;
+                            free_camera_mut(dispatch.views).speed = speed;
                         },
                     );
                 }
                 ["cursor"] => submit.inspect("camera cursor", |dispatch, out| {
-                    let policy = match camera::free(dispatch.views, &dispatch.app.parked).cursor {
+                    let policy = match free_camera(dispatch.views).cursor {
                         CursorPolicy::Hold => "hold",
                         CursorPolicy::Toggle => "toggle",
                     };
@@ -412,8 +425,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                     submit.app_fn(
                         "camera cursor",
                         move |dispatch: &mut Dispatch<'_, Playground>| {
-                            camera::free_mut(dispatch.views, dispatch.app.parked.get_mut())
-                                .cursor = policy;
+                            free_camera_mut(dispatch.views).cursor = policy;
                         },
                     );
                 }

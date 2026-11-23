@@ -26,14 +26,57 @@ pub enum Rig {
     Orbit(Orbit),
     /// Moves only when the program binds keys to the `MOVE_*` actions and only while the cursor is captured.
     Free(FreeCamera),
+    Pair(CameraPair),
 }
 
 impl Rig {
     /// `None` while the rig leaves the cursor free.
     pub fn cursor(&self) -> Option<CursorPolicy> {
+        self.live_free().map(|free| free.cursor)
+    }
+
+    /// True while a free camera holds the eye.
+    pub fn flying(&self) -> bool {
+        self.live_free().is_some()
+    }
+
+    /// The orbit whether or not it holds the eye.
+    pub fn orbit_mut(&mut self) -> Option<&mut Orbit> {
         match self {
-            Rig::Free(free) => Some(free.cursor),
+            Rig::Orbit(orbit) | Rig::Pair(CameraPair { orbit, .. }) => Some(orbit),
+            Rig::Manual | Rig::Free(_) => None,
+        }
+    }
+
+    /// The free camera whether or not it holds the eye.
+    pub fn free(&self) -> Option<&FreeCamera> {
+        match self {
+            Rig::Free(free) | Rig::Pair(CameraPair { free, .. }) => Some(free),
             Rig::Manual | Rig::Orbit(_) => None,
+        }
+    }
+
+    /// The free camera whether or not it holds the eye.
+    pub fn free_mut(&mut self) -> Option<&mut FreeCamera> {
+        match self {
+            Rig::Free(free) | Rig::Pair(CameraPair { free, .. }) => Some(free),
+            Rig::Manual | Rig::Orbit(_) => None,
+        }
+    }
+
+    fn live_free(&self) -> Option<&FreeCamera> {
+        match self {
+            Rig::Free(free) => Some(free),
+            Rig::Pair(pair) if pair.flying => Some(&pair.free),
+            Rig::Manual | Rig::Orbit(_) | Rig::Pair(_) => None,
+        }
+    }
+
+    fn live_free_mut(&mut self) -> Option<&mut FreeCamera> {
+        match self {
+            Rig::Free(free) => Some(free),
+            Rig::Pair(pair) if pair.flying => Some(&mut pair.free),
+            Rig::Manual | Rig::Orbit(_) | Rig::Pair(_) => None,
         }
     }
 
@@ -42,26 +85,24 @@ impl Rig {
             Rig::Manual => None,
             Rig::Orbit(orbit) => Some(orbit.eye()),
             Rig::Free(free) => Some(free.eye),
+            Rig::Pair(pair) if pair.flying => Some(pair.free.eye),
+            Rig::Pair(pair) => Some(pair.orbit.eye()),
         }
     }
 
     fn steer(&mut self, input: &Input) -> Option<Eye> {
-        match self {
-            Rig::Manual => {}
-            Rig::Orbit(orbit) => orbit.apply(input),
-            Rig::Free(free) => {
-                if input.cursor_locked {
-                    free.look(input.look);
-                }
+        if let Some(free) = self.live_free_mut() {
+            if input.cursor_locked {
+                free.look(input.look);
             }
+        } else if let Some(orbit) = self.orbit_mut() {
+            orbit.apply(input);
         }
         self.eye()
     }
 
     fn travel(&mut self, input: &Input, dt: f32) -> Option<Eye> {
-        let Rig::Free(free) = self else {
-            return None;
-        };
+        let free = self.live_free_mut()?;
         if !input.cursor_locked {
             return None;
         }
@@ -86,6 +127,35 @@ pub(crate) fn travel(views: &mut Views, input: &Input, dt: f32) {
     let root = views.root_mut();
     if let Some(eye) = root.rig.travel(input, dt) {
         root.look(eye);
+    }
+}
+
+/// An orbit and a free camera on one image, of which one holds the eye at a time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraPair {
+    orbit: Orbit,
+    free: FreeCamera,
+    flying: bool,
+}
+
+impl CameraPair {
+    /// Starts with the orbit holding the eye.
+    pub fn new(orbit: Orbit, free: FreeCamera) -> Self {
+        Self {
+            orbit,
+            free,
+            flying: false,
+        }
+    }
+
+    pub(crate) fn set_flying(&mut self, flying: bool, eye: Eye) {
+        if self.flying == flying {
+            return;
+        }
+        self.flying = flying;
+        if flying {
+            self.free.eye = eye;
+        }
     }
 }
 
