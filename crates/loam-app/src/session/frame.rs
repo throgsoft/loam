@@ -582,7 +582,12 @@ impl<A: Stores> Inner<A> {
                 );
                 presenter.upload_overlay(&eye, &records.overlay);
                 presenter.upload_backdrop(&eye, records.backdrop);
-                self.text.publish(&records.overlay, seat);
+                if self.text.publish(&records.overlay, seat) {
+                    let note =
+                        "the session published text, but this build has no font, so none is drawn";
+                    tracing::warn!("{note}");
+                    self.app.console.note(note.to_string());
+                }
                 self.shown.content = records.content();
                 self.shown.eye = eye;
                 self.records.release(records);
