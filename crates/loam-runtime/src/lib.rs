@@ -58,8 +58,8 @@ pub use store::{
 pub use stores::{HasRelation, HasStore, Stores};
 pub use value::{Setting, Value};
 pub use view::{
-    DepthEnvelope, DomainRay, Eye, Identity3, ImageRay, ImageSpace, ImageSpaceId, InstanceRecord,
-    Klein, Pick, Placement, PointRecord, Projection4, RefusalSource, Rigid, Section4, SectionCut,
-    SegmentRecord, TriangleRecord, ViewId, ViewMapping, ViewRecords, ViewRefusal, ViewRefusals,
-    ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
+    DepthEnvelope, DomainRay, Eye, FieldRecord, Identity3, ImageRay, ImageSpace, ImageSpaceId,
+    InstanceRecord, Klein, Pick, Placement, PointRecord, Projection4, RefusalSource, Rigid,
+    Section4, SectionCut, SegmentRecord, TriangleRecord, ViewId, ViewMapping, ViewRecords,
+    ViewRefusal, ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
 };

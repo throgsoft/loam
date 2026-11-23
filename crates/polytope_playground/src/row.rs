@@ -24,22 +24,21 @@ pub(crate) fn add_shape(
         .iter()
         .find_map(|(entity, _)| r4.poses().get(entity).map(|pose| pose.frame))
         .unwrap_or(fallback);
-    let mut bundle = SpawnBundle::new()
-        .at(domain, Pose { point: rest, frame })
-        .row(Slot { index, entry, rest });
-    if let Some(geometry) = card.geometry {
-        let display = *dispatch.app.display.get();
-        let shading = card.shades.map_or(EdgeShading::Material, |shades| {
-            shades.of(*dispatch.app.color.get())
-        });
-        bundle = bundle.instance(
-            Instance::new(geometry, card.material)
-                .sectioned(card.cut)
-                .shaded(shading)
-                .line_style(display.wireframe_width_px, display.wireframe_opacity),
-        );
-    }
-    dispatch.spawn(bundle)?;
+    let display = *dispatch.app.display.get();
+    let shading = card.shades.map_or(EdgeShading::Material, |shades| {
+        shades.of(*dispatch.app.color.get())
+    });
+    dispatch.spawn(
+        SpawnBundle::new()
+            .at(domain, Pose { point: rest, frame })
+            .row(Slot { index, entry, rest })
+            .instance(
+                Instance::new(card.geometry, card.material)
+                    .sectioned(card.cut)
+                    .shaded(shading)
+                    .line_style(display.wireframe_width_px, display.wireframe_opacity),
+            ),
+    )?;
     reflow(dispatch, domain)?;
     dispatch.app.active.set(index);
     Ok(())

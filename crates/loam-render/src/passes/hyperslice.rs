@@ -1,15 +1,16 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use loam_runtime::{Eye, FieldRecord, PublishedView, Rigid};
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
 use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
-use crate::raymarch::{BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms};
+use crate::raymarch::{shape_id, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms};
+use crate::sky_ground::Sky;
 use crate::{DepthConvention, DepthMode, Viewport};
 
 struct State {
-    enabled: bool,
     source: String,
     uniforms: Hyperslice4DUniforms,
     bodies: Vec<BodyUniform>,
@@ -19,6 +20,7 @@ struct State {
     queue: Option<Queue>,
 }
 
+/// Draws the field records of the first published view that has any, cut at that view's field cut.
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,
@@ -30,7 +32,6 @@ impl HyperslicePass {
         Self {
             load: ColorLoad::Load,
             shared: Rc::new(RefCell::new(State {
-                enabled: true,
                 source,
                 uniforms: Hyperslice4DUniforms::default(),
                 bodies: Vec::new(),
@@ -42,11 +43,12 @@ impl HyperslicePass {
         }
     }
 
-    pub fn publish(&self, uniforms: Hyperslice4DUniforms, bodies: &[BodyUniform]) {
-        let mut state = self.shared.borrow_mut();
-        state.uniforms = uniforms;
-        state.bodies.clear();
-        state.bodies.extend_from_slice(bodies);
+    /// `params` reaches the shader as `u.params`.
+    pub fn set_environment(&self, sky: Sky, params: [f32; 4]) {
+        let uniforms = &mut self.shared.borrow_mut().uniforms;
+        uniforms.sky_below = sky.below;
+        uniforms.sky_above = sky.above;
+        uniforms.params = params;
     }
 
     /// One draw per cell within the frame, each with its own w and body; an empty strip returns the pass to its full-frame draw.
@@ -60,13 +62,20 @@ impl HyperslicePass {
         self.shared.borrow().bodies.len()
     }
 
-    pub fn set_enabled(&self, enabled: bool) {
-        self.shared.borrow_mut().enabled = enabled;
-    }
-
     pub fn strip_cells(&self) -> usize {
         self.shared.borrow().cells.len()
     }
+}
+
+fn body_of(field: &FieldRecord) -> BodyUniform {
+    let [r, g, b, _] = field.color;
+    BodyUniform::polytope_with_rotor(
+        field.position,
+        shape_id(field.shape),
+        field.size,
+        field.frame,
+        [r, g, b],
+    )
 }
 
 impl FramePass for HyperslicePass {
@@ -90,15 +99,35 @@ impl FramePass for HyperslicePass {
         Some(DepthConvention::ReversedZ)
     }
 
+    fn read_publication(&mut self, eye: &Eye, views: &[PublishedView]) {
+        let mut state = self.shared.borrow_mut();
+        let State {
+            uniforms, bodies, ..
+        } = &mut *state;
+        let drawn = views.iter().find_map(|view| {
+            let cut = view.records.field_cut()?;
+            (!view.records.fields().is_empty()).then_some((view, cut))
+        });
+        let to_image = drawn.map_or(Rigid::IDENTITY, |(view, _)| view.placement.inverse());
+        uniforms.camera_pos = to_image.apply(eye.position);
+        uniforms.camera_forward = to_image.direction(eye.forward);
+        uniforms.camera_right = to_image.direction(eye.right);
+        uniforms.camera_up = to_image.direction(eye.up);
+        uniforms.fov_y_tan = (eye.fov_y * 0.5).tan();
+        uniforms.near = eye.near * to_image.scale;
+        bodies.clear();
+        if let Some((view, cut)) = drawn {
+            uniforms.w_slice = cut;
+            bodies.extend(view.records.fields().iter().map(body_of));
+        }
+    }
+
     fn record(
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
     ) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
-        if !state.enabled {
-            return Ok(());
-        }
         let State {
             uniforms,
             bodies,
@@ -120,7 +149,8 @@ impl FramePass for HyperslicePass {
             node.record_strip(device, queue, encoder, target.color, cells, self.load)?;
             return Ok(());
         }
-        let Some(depth) = target.depth else {
+        // Without bodies the kernel would still draw the shader's own scene, such as a floor.
+        let (Some(depth), false) = (target.depth, bodies.is_empty()) else {
             return Ok(());
         };
         node.set_bodies(bodies);

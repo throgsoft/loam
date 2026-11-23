@@ -179,10 +179,8 @@ pub(crate) fn set_shape(
     };
     let body = polytope.map(toy::body).transpose()?;
     let geometry = if is_toy {
-        Some(
-            card.toy_geometry
-                .ok_or(Rejection::Unsupported("the toy has no prepared geometry"))?,
-        )
+        card.toy_geometry
+            .ok_or(Rejection::Unsupported("the toy has no prepared geometry"))?
     } else {
         card.geometry
     };
@@ -206,19 +204,17 @@ pub(crate) fn set_shape(
     if let Some(body) = body {
         bundle = bundle.body(body).row(Toy);
     }
-    if let Some(geometry) = geometry {
-        let display = *dispatch.app.display.get();
-        let mode = *dispatch.app.color.get();
-        let shading = card
-            .shades
-            .map_or(EdgeShading::Material, |shades| shades.of(mode));
-        bundle = bundle.instance(
-            Instance::new(geometry, card.material)
-                .shaded(shading)
-                .sectioned(card.cut)
-                .line_style(display.wireframe_width_px, display.wireframe_opacity),
-        );
-    }
+    let display = *dispatch.app.display.get();
+    let mode = *dispatch.app.color.get();
+    let shading = card
+        .shades
+        .map_or(EdgeShading::Material, |shades| shades.of(mode));
+    bundle = bundle.instance(
+        Instance::new(geometry, card.material)
+            .shaded(shading)
+            .sectioned(card.cut)
+            .line_style(display.wireframe_width_px, display.wireframe_opacity),
+    );
     dispatch.spawn(bundle)?;
     Ok(())
 }

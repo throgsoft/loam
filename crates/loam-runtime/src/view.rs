@@ -2,9 +2,11 @@ use bytemuck::{Pod, Zeroable};
 use loam_math::hyperbolic::{
     klein_to_poincare, poincare_to_klein, H3_DEPTH_ENVELOPE, H3_EYE_CHART_REACH,
 };
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Rotor, Space};
+use loam_math::{
+    EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Rotor, Rotor4, Space,
+};
 use loam_shape::polytope::SectionScratch;
-use loam_shape::{LineMesh, TriangleMesh};
+use loam_shape::{FieldShape, LineMesh, TriangleMesh};
 use std::fmt;
 use std::ops::{Deref, DerefMut, Range};
 use std::sync::Arc;
@@ -481,6 +483,11 @@ pub trait ViewMapping<S: DomainSpace>: Send + Sync + 'static {
         None
     }
 
+    /// The last eye-frame coordinate a field kernel cuts this image at, or `None` for a map that draws no fields.
+    fn field_cut(&self) -> Option<f32> {
+        None
+    }
+
     /// True when `lift` recovers a domain ray from any image ray; a map without one refuses grabs and field bridges by name.
     fn ray_lift(&self) -> bool {
         true
@@ -502,6 +509,8 @@ pub struct ViewStyle<S: DomainSpace> {
     pub edges: bool,
     pub section_edges: bool,
     pub section_faces: bool,
+    /// Draws each body that has a field shape as a field, except one whose section this view already fills.
+    pub fields: bool,
     pub(crate) mapping: Arc<dyn ViewMapping<S>>,
 }
 
@@ -523,6 +532,7 @@ impl<S: DomainSpace> Clone for ViewStyle<S> {
             edges: self.edges,
             section_edges: self.section_edges,
             section_faces: self.section_faces,
+            fields: self.fields,
             mapping: Arc::clone(&self.mapping),
         }
     }
@@ -557,6 +567,7 @@ impl<S: DomainSpace> ViewSpec<S> {
                 edges: true,
                 section_edges: true,
                 section_faces: true,
+                fields: false,
                 mapping: Arc::new(mapping),
             },
         }
@@ -693,6 +704,10 @@ impl ViewMapping<EuclideanR4> for Section4 {
             offset: self.w - eye_relative4(eye, pose.point)?.w,
             scale: 1.0,
         })
+    }
+
+    fn field_cut(&self) -> Option<f32> {
+        Some(self.w)
     }
 
     fn lift(&self, eye: &Pose<EuclideanR4>, ray: &ImageRay) -> Option<DomainRay<EuclideanR4>> {
@@ -909,6 +924,18 @@ pub struct TriangleRecord {
     pub color: [f32; 4],
 }
 
+/// A solid in its view's eye frame, which a field kernel cuts at [`ViewRecords::field_cut`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FieldRecord {
+    pub entity: Entity,
+    pub shape: FieldShape,
+    pub size: f32,
+    pub material: MaterialId,
+    pub color: [f32; 4],
+    pub position: [f32; 4],
+    pub frame: Rotor4,
+}
+
 #[derive(Default)]
 pub(crate) struct SectionScratchpad {
     pub(crate) rotated: Vec<Vec4>,
@@ -959,6 +986,7 @@ pub(crate) struct EntityOutput {
     pub(crate) section_segments: Range<usize>,
     pub(crate) line_segments: Range<usize>,
     pub(crate) triangles: Range<usize>,
+    pub(crate) fields: Range<usize>,
     pub(crate) instance: bool,
 }
 
@@ -1001,11 +1029,14 @@ pub struct ViewRecords {
     pub instances: RecordBuffer<InstanceRecord>,
     pub(crate) segments: Vec<SegmentRecord>,
     pub(crate) triangles: Vec<TriangleRecord>,
+    pub(crate) fields: Vec<FieldRecord>,
+    pub(crate) field_cut: Option<f32>,
     pub(crate) refusals: ViewRefusals,
     pub(crate) scratch: SectionScratchpad,
     pub(crate) output: ViewOutputCache,
     pub(crate) patch_segments: Vec<SegmentRecord>,
     pub(crate) patch_triangles: Vec<TriangleRecord>,
+    pub(crate) patch_fields: Vec<FieldRecord>,
     pub(crate) changed: Vec<Entity>,
     pub(crate) poses: Cursor,
     pub(crate) attachments: Cursor,
@@ -1023,6 +1054,15 @@ impl ViewRecords {
 
     pub fn triangles(&self) -> &[TriangleRecord] {
         &self.triangles
+    }
+
+    pub fn fields(&self) -> &[FieldRecord] {
+        &self.fields
+    }
+
+    /// `None` when the view draws no fields.
+    pub fn field_cut(&self) -> Option<f32> {
+        self.field_cut
     }
 
     pub fn refusals(&self) -> ViewRefusals {

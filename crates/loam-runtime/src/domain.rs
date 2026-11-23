@@ -21,6 +21,7 @@ use loam_math::{
 use loam_shape::polytope::{
     polytope_section_faces_append, polytope_section_perimeter_append, Polytope4,
 };
+use loam_shape::FieldShape;
 
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
@@ -35,9 +36,9 @@ use crate::store::{
     Change, LogCapacity, Owner, Store, StoreError, StoreField, StoreSnapshot, Version,
 };
 use crate::view::{
-    self, DomainRay, EntityOutput, ImageRay, ImageSpaceId, InstanceRecord, Pick, RefusalSource,
-    Rigid, SegmentRecord, TriangleRecord, Vec3, Vec4, ViewId, ViewMapping, ViewRecords,
-    ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views,
+    self, DomainRay, EntityOutput, FieldRecord, ImageRay, ImageSpaceId, InstanceRecord, Pick,
+    RefusalSource, Rigid, SegmentRecord, TriangleRecord, Vec3, Vec4, ViewId, ViewMapping,
+    ViewRecords, ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -355,6 +356,11 @@ pub trait DomainSpace:
 
     fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError>;
 
+    /// The flat 4D pose a field kernel draws `relative` at, or `None` for a space without one.
+    fn field_pose(&self, _relative: &Self::Relative) -> Option<Pose<EuclideanR4>> {
+        None
+    }
+
     fn walk(
         &self,
         pose: &Pose<Self>,
@@ -575,6 +581,13 @@ fn lorentz(a: Vec4, b: Vec4) -> f32 {
 
 impl DomainSpace for EuclideanR4 {
     homogeneous_capabilities!();
+
+    fn field_pose(&self, relative: &Iso4Flat) -> Option<Pose<EuclideanR4>> {
+        Some(Pose {
+            point: relative.translation,
+            frame: relative.rotation,
+        })
+    }
 
     fn origin(&self) -> Self::Point {
         Vec4::ZERO
@@ -1304,6 +1317,7 @@ fn push_segments<S: DomainSpace>(
                 );
             }
         }
+        PreparedGeometry::Field { .. } => {}
     }
 }
 
@@ -1319,6 +1333,7 @@ fn same_style<S: DomainSpace>(a: &ViewStyle<S>, b: &ViewStyle<S>) -> bool {
         edges,
         section_edges,
         section_faces,
+        fields,
         mapping,
     } = a;
     let ViewStyle {
@@ -1326,12 +1341,14 @@ fn same_style<S: DomainSpace>(a: &ViewStyle<S>, b: &ViewStyle<S>) -> bool {
         edges: other_edges,
         section_edges: other_section_edges,
         section_faces: other_section_faces,
+        fields: other_fields,
         mapping: other_mapping,
     } = b;
     enabled == other_enabled
         && edges == other_edges
         && section_edges == other_section_edges
         && section_faces == other_section_faces
+        && fields == other_fields
         && std::sync::Arc::ptr_eq(mapping, other_mapping)
 }
 
@@ -1526,6 +1543,48 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
             pose: space.chart_pose(pose),
             image_point,
         })
+    }
+
+    fn push_field(
+        &self,
+        pose: &Pose<S>,
+        library: &Library<'_>,
+        instance: &Instance,
+        entity: Entity,
+        fields: &mut Vec<FieldRecord>,
+    ) {
+        let style = &self.spec.style;
+        if !style.fields || style.mapping.field_cut().is_none() {
+            return;
+        }
+        let (shape, size) = match library.geometry.get(instance.geometry.index()) {
+            Some(PreparedGeometry::Polytope4 { polytope, scale }) => {
+                if style.section_faces && instance.section.is_some() {
+                    return;
+                }
+                (FieldShape::Polytope(*polytope), *scale)
+            }
+            Some(PreparedGeometry::Field { shape, size }) => (*shape, *size),
+            _ => return,
+        };
+        let Some(pose) = self
+            .space
+            .relative(self.eye, pose)
+            .ok()
+            .and_then(|relative| self.space.field_pose(&relative))
+        else {
+            return;
+        };
+        let (color, _) = library.line_style(instance.material);
+        fields.push(FieldRecord {
+            entity,
+            shape,
+            size,
+            material: instance.material,
+            color,
+            position: pose.point.to_array(),
+            frame: pose.frame,
+        });
     }
 }
 
@@ -2065,6 +2124,8 @@ impl<S: DomainSpace> TypedDomain<S> {
             instances,
             segments,
             triangles,
+            fields,
+            field_cut,
             refusals,
             scratch,
             output,
@@ -2073,6 +2134,8 @@ impl<S: DomainSpace> TypedDomain<S> {
         } = into;
         segments.clear();
         triangles.clear();
+        fields.clear();
+        *field_cut = None;
         *refusals = ViewRefusals::default();
         output.clear();
         let eye = match self.drawn(spec.eye, alpha) {
@@ -2083,6 +2146,9 @@ impl<S: DomainSpace> TypedDomain<S> {
                 return;
             }
         };
+        if spec.style.fields {
+            *field_cut = spec.style.mapping.field_cut();
+        }
         let projection = ViewProjection {
             space: &self.space,
             spec,
@@ -2108,6 +2174,7 @@ impl<S: DomainSpace> TypedDomain<S> {
                 section_segments: section_start..segments.len(),
                 line_segments: 0..0,
                 triangles: triangle_start..triangles.len(),
+                fields: 0..0,
                 instance: false,
             });
         }
@@ -2118,18 +2185,22 @@ impl<S: DomainSpace> TypedDomain<S> {
             .zip(output.iter_mut())
             .filter_map(|((entity, instance), cached)| {
                 let line_start = segments.len();
+                let field_start = fields.len();
                 let mut record_refusals = ViewRefusals::default();
                 let record = self.drawn(entity, alpha).and_then(|pose| {
-                    projection.project_instance(
+                    let record = projection.project_instance(
                         &pose,
                         &library,
                         instance,
                         entity,
                         segments,
                         &mut record_refusals,
-                    )
+                    )?;
+                    projection.push_field(&pose, &library, instance, entity, fields);
+                    Some(record)
                 });
                 cached.line_segments = line_start..segments.len();
+                cached.fields = field_start..fields.len();
                 cached.instance = record.is_some();
                 if record_refusals.count != 0 {
                     refusals.count = refusals.count.saturating_add(record_refusals.count);
@@ -2164,10 +2235,12 @@ impl<S: DomainSpace> TypedDomain<S> {
             instances,
             segments,
             triangles,
+            fields,
             scratch,
             output,
             patch_segments,
             patch_triangles,
+            patch_fields,
             changed,
             built,
             ..
@@ -2211,6 +2284,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             triangles[cached.triangles.clone()].copy_from_slice(patch_triangles);
 
             patch_segments.clear();
+            patch_fields.clear();
             let mut record_refusals = ViewRefusals::default();
             let record = projection.project_instance(
                 &pose,
@@ -2220,13 +2294,18 @@ impl<S: DomainSpace> TypedDomain<S> {
                 patch_segments,
                 &mut record_refusals,
             );
+            if record.is_some() {
+                projection.push_field(&pose, &library, instance, entity, patch_fields);
+            }
             if patch_segments.len() != cached.line_segments.end - cached.line_segments.start
+                || patch_fields.len() != cached.fields.end - cached.fields.start
                 || record.is_some() != cached.instance
                 || record_refusals.count != 0
             {
                 return false;
             }
             segments[cached.line_segments.clone()].copy_from_slice(patch_segments);
+            fields[cached.fields.clone()].copy_from_slice(patch_fields);
             if let Some(record) = record {
                 if !instances.update(entity, record) {
                     return false;

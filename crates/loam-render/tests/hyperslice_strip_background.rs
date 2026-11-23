@@ -1,8 +1,7 @@
 use loam_render::device::{FeatureRequest, GpuContext};
 use loam_render::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget};
 use loam_render::raymarch::{
-    polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
-    HYPERSLICE_KERNEL_WGSL,
+    polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
 };
 use loam_render::sky_ground::SKY_HORIZON;
 use loam_render::view::DEPTH_FORMAT;
@@ -224,7 +223,6 @@ fn a_published_strip_records_a_pipeline_its_attachments_accept_gpu_probe() {
         },
     )
     .expect("the hyperslice pass attaches");
-    pass.publish(Hyperslice4DUniforms::default(), &[]);
     pass.publish_strip(&strip_cells(CELLS));
 
     gpu.device.push_error_scope(ErrorFilter::Validation);

@@ -1,11 +1,10 @@
-use std::fmt::{self, Write as _};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use loam::app::script::driver_from_args;
 use loam::app::session::{launch_or_headless, run_script};
 use loam::prelude::*;
-use loam::render::raymarch::BodyUniform;
+use loam::render::raymarch::{shape_id, BodyUniform};
 use loam::runtime::host::{run_headless, write_headless, write_stride};
 
 mod catalog;
@@ -96,7 +95,7 @@ pub(crate) struct Control {
 
 #[derive(Clone, Copy)]
 pub(crate) struct Card {
-    geometry: Option<PreparedId>,
+    geometry: PreparedId,
     toy_geometry: Option<PreparedId>,
     material: MaterialId,
     cut: MaterialId,
@@ -108,8 +107,8 @@ impl Card {
         Instance::new(geometry, self.material).sectioned(self.cut)
     }
 
-    pub(crate) fn body(&self) -> Option<Instance> {
-        self.geometry.map(|geometry| self.dressed(geometry))
+    pub(crate) fn body(&self) -> Instance {
+        self.dressed(self.geometry)
     }
 
     pub(crate) fn toy(&self) -> Option<Instance> {
@@ -238,8 +237,8 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
                 entry: *entry,
                 rest,
             });
-            if let Some(instance) = card_of(entry).and_then(|card| cards[card].body()) {
-                bundle = bundle.instance(instance);
+            if let Some(card) = card_of(entry) {
+                bundle = bundle.instance(cards[card].body());
             }
             d.spawn(bundle)?;
         }
@@ -289,11 +288,15 @@ fn prepare_catalog(dispatch: &mut Dispatch<'_, Playground>, cut: MaterialId) -> 
             let material = dispatch.add_material(Material::lines([r, g, b, 1.0], EDGE_WIDTH_PX));
             let polytope = entry.shape.polytope4();
             Card {
-                geometry: polytope.map(|polytope| {
-                    dispatch.prepare(PreparedGeometry::Polytope4 {
+                geometry: dispatch.prepare(match polytope {
+                    Some(polytope) => PreparedGeometry::Polytope4 {
                         polytope,
                         scale: BODY_SIZE,
-                    })
+                    },
+                    None => PreparedGeometry::Field {
+                        shape: entry.shape,
+                        size: BODY_SIZE,
+                    },
                 }),
                 toy_geometry: polytope.map(|polytope| {
                     dispatch.prepare(PreparedGeometry::Polytope4 {
@@ -454,6 +457,7 @@ fn install_systems(
             spec.edges = false;
             spec.section_edges = display.wireframe && display.section_perimeter;
             spec.section_faces = display.surface == Surface::Raster;
+            spec.fields = display.surface != Surface::Off;
             let spec = r4
                 .view_mut(layers.projection)
                 .ok_or(DomainError::Unsupported("projection view"))?;
@@ -706,8 +710,6 @@ impl Frame {
 
 struct Scratch {
     center: glam::Vec3,
-    slots: Vec<(Entity, ShapeEntry, f32)>,
-    bodies: Vec<BodyUniform>,
     cells: Vec<Cell>,
     strip: Vec<(loam::render::Viewport, f32, BodyUniform)>,
     subject: loam::math::Rotor4,
@@ -719,8 +721,6 @@ impl Scratch {
     fn new() -> Self {
         Self {
             center: glam::Vec3::ZERO,
-            slots: Vec::new(),
-            bodies: Vec::new(),
             cells: Vec::new(),
             strip: Vec::new(),
             subject: loam::math::Rotor4::IDENTITY,
@@ -730,64 +730,31 @@ impl Scratch {
     }
 }
 
-fn collect(
+fn follow(
     session: &Session<Playground>,
     domain: DomainHandle<EuclideanR4>,
     alpha: f32,
     scratch: &mut Scratch,
 ) {
     let active = *session.app.active.get();
-    let display = *session.app.display.get();
-    scratch.slots.clear();
-    scratch.slots.extend(
-        session
-            .app
-            .slots
-            .iter()
-            .filter(|(_, slot)| !display.single || slot.index == active)
-            .map(|(entity, slot)| {
-                let size = if session.app.toys.get(entity).is_some() {
-                    toy::BODY_SIZE
-                } else {
-                    BODY_SIZE
-                };
-                (entity, slot.entry, size)
-            }),
-    );
+    let single = session.app.display.get().single;
+    let r4 = session.domains().read(domain).ok();
     scratch.anchors.clear();
-    scratch.anchors.extend(
-        session
-            .app
-            .slots
-            .iter()
-            .filter(|(_, slot)| !display.single || slot.index == active)
-            .map(|(_, slot)| (slot.index, slot.entry.label, glam::Vec3::ZERO)),
-    );
-    scratch.bodies.clear();
     scratch.subject = loam::math::Rotor4::IDENTITY;
     let mut sum = glam::Vec3::ZERO;
-    let Ok(r4) = session.domains().read(domain) else {
-        return;
-    };
-    for (at, (entity, entry, size)) in scratch.slots.iter().enumerate() {
-        let Some(pose) = r4.drawn_pose(*entity, alpha) else {
+    for (entity, slot) in session.app.slots.iter() {
+        if single && slot.index != active {
             continue;
-        };
-        if scratch.anchors.get(at).is_some_and(|held| held.0 == active) {
+        }
+        let pose = r4.and_then(|r4| r4.drawn_pose(entity, alpha));
+        if let Some(pose) = pose.filter(|_| slot.index == active) {
             scratch.subject = pose.frame;
         }
-        let center = pose.point.truncate();
+        let center = pose.map_or(glam::Vec3::ZERO, |pose| pose.point.truncate());
         sum += center;
-        if let Some(anchor) = scratch.anchors.get_mut(at) {
-            anchor.2 = center;
-        }
-        if display.surface == Surface::Sdf
-            || (display.surface == Surface::Raster && entry.shape.polytope4().is_none())
-        {
-            scratch.bodies.push(scene::body_of(entry, &pose, *size));
-        }
+        scratch.anchors.push((slot.index, slot.entry.label, center));
     }
-    scratch.center = sum / scratch.slots.len().max(1) as f32;
+    scratch.center = sum / scratch.anchors.len().max(1) as f32;
 }
 
 fn main() -> Result<(), HostError> {
@@ -817,7 +784,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
         app = app.pass(pass);
     }
     app = console::install(app).on_frame(move |hook: &mut FrameHook<'_, Playground>| {
-        collect(hook.session, domain, hook.alpha, &mut scratch);
+        follow(hook.session, domain, hook.alpha, &mut scratch);
         let eye = hook
             .session
             .views()
@@ -833,11 +800,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
             environment.sky,
             environment.ground(consts::FLOOR_Y, floor),
         );
-        hyperslice.set_enabled(strip.on || !scratch.bodies.is_empty());
-        hyperslice.publish(
-            scene::uniforms(&eye, environment.sky, slice, floor),
-            &scratch.bodies,
-        );
+        hyperslice.set_environment(environment.sky, scene::params(floor));
         fill_strip(
             &strip,
             turn_of(hook.session),
@@ -970,7 +933,7 @@ fn fill_strip(
             cell.w,
             BodyUniform::polytope_with_rotor(
                 [0.0, BODY_Y, 0.0, 0.0],
-                entry.shape.shape_id(),
+                shape_id(entry.shape),
                 BODY_SIZE,
                 rotor,
                 entry.body_color,
@@ -1152,7 +1115,6 @@ fn records(booted: &mut Boot, config: HostConfig, args: Args) -> Result<(), Host
     submit(&mut booted.session, Action::Running(Some(true)));
     let section = booted.section;
     let domain = booted.domain;
-    let mut scratch = Scratch::new();
     let mut dump = String::new();
     let driver = driver_from_args(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
     if let Some(driver) = driver {
@@ -1163,11 +1125,7 @@ fn records(booted: &mut Boot, config: HostConfig, args: Args) -> Result<(), Host
             driver,
             alpha,
             |step, session, publication| {
-                if !write_stride(&mut dump, step, RECORD_STRIDE, session, publication)? {
-                    return Ok(());
-                }
-                write_bodies(&mut dump, session, domain, alpha, &mut scratch)
-                    .map_err(|_| HostError::Host("the record dump failed".into()))
+                write_stride(&mut dump, step, RECORD_STRIDE, session, publication).map(drop)
             },
         )?;
         print!("{dump}");
@@ -1180,7 +1138,7 @@ fn records(booted: &mut Boot, config: HostConfig, args: Args) -> Result<(), Host
         RECORD_STEPS,
         alpha,
         RECORD_STRIDE,
-        |step, session, out| {
+        |step, session, _| {
             match step + 1 {
                 RECORD_WIREFRAME_ON => wireframe(session, true),
                 RECORD_TOYBOX => submit(session, Action::Mode(Mode::Toybox)),
@@ -1188,11 +1146,7 @@ fn records(booted: &mut Boot, config: HostConfig, args: Args) -> Result<(), Host
                 RECORD_WIREFRAME_OFF => wireframe(session, false),
                 _ => {}
             }
-            let Some(out) = out else {
-                return Ok(());
-            };
-            write_bodies(out, session, domain, alpha, &mut scratch)
-                .map_err(|_| HostError::Host("the record dump failed".into()))
+            Ok(())
         },
     )?;
     print!("{dump}");
@@ -1239,40 +1193,17 @@ fn throw(
     Ok(())
 }
 
-fn write_bodies(
-    out: &mut String,
-    session: &Session<Playground>,
-    domain: DomainHandle<EuclideanR4>,
-    alpha: f32,
-    scratch: &mut Scratch,
-) -> fmt::Result {
-    collect(session, domain, alpha, scratch);
-    for body in &scratch.bodies {
-        writeln!(
-            out,
-            "body position {:?} kind {:?} shape {:?} size {:?} color {:?} rotor {:?}",
-            body.position,
-            body.kind,
-            body.radius_or_shape,
-            body.polytope_size,
-            body.color,
-            body.rotor
-        )?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use loam::math::Rotor;
-    use loam::render::raymarch::RaymarchShape;
     use loam::runtime::{Command, Records};
     use loam::shape::polytope::Polytope4;
+    use loam::shape::FieldShape;
 
     use super::*;
 
     const CELL24: ShapeEntry = ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell24),
+        shape: FieldShape::Polytope(Polytope4::Cell24),
         body_color: [0.95, 0.45, 0.85],
         label: "24-cell",
         long_name: "icositetrachoron",

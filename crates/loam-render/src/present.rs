@@ -201,6 +201,7 @@ impl Presenter {
         views: &[PublishedView],
     ) {
         let _scope = loam_time::frame_trace::scope("present-upload");
+        self.schedule.read_publication(eye, views);
         let mut line_views = self.views.borrow_mut();
         while line_views.len() < views.len() {
             line_views.push(ViewLines::new(device, self.format));

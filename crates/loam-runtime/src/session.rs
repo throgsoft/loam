@@ -131,6 +131,11 @@ pub enum PreparedGeometry {
         polytope: loam_shape::polytope::Polytope4,
         scale: f32,
     },
+    /// A solid that only a view drawing fields shows, with no edges or section.
+    Field {
+        shape: loam_shape::FieldShape,
+        size: f32,
+    },
 }
 
 impl PreparedGeometry {
@@ -163,14 +168,9 @@ impl PreparedGeometry {
                 farthest(segments.iter().flatten().map(|point| point.as_slice()))
             }
             Self::Polytope4 { polytope, scale } => {
-                polytope
-                    .topology()
-                    .vertices
-                    .iter()
-                    .map(|vertex| vertex.length())
-                    .fold(0.0, f32::max)
-                    * scale
+                loam_shape::FieldShape::Polytope(*polytope).radius() * scale
             }
+            Self::Field { shape, size } => shape.radius() * size,
         }
     }
 }

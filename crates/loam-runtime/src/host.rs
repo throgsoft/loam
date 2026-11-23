@@ -220,6 +220,23 @@ pub fn write_records(
                 triangle.vertices, triangle.color
             )?;
         }
+        let fields = view.records.fields();
+        if let Some(cut) = view.records.field_cut().filter(|_| !fields.is_empty()) {
+            writeln!(out, "fields cut {cut:?}")?;
+        }
+        for field in fields {
+            writeln!(
+                out,
+                "field {} shape {:?} size {:?} material {} color {:?} position {:?} frame {:?}",
+                field.entity,
+                field.shape,
+                field.size,
+                field.material.index(),
+                field.color,
+                field.position,
+                <[f32; 8]>::from(field.frame)
+            )?;
+        }
         let refusals = view.records.refusals();
         for refusal in [refusals.first, refusals.last].into_iter().flatten() {
             writeln!(

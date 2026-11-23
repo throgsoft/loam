@@ -1,6 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use loam_runtime::{Eye, PublishedView};
 use web_time::Instant;
 use wgpu::{
     Color, CommandEncoder, LoadOp, Operations, RenderPass, RenderPassColorAttachment,
@@ -121,6 +122,9 @@ pub trait FramePass {
     ) -> anyhow::Result<()>;
 
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()>;
+
+    /// Runs once per presented frame before it records, with the root image's eye.
+    fn read_publication(&mut self, _eye: &Eye, _views: &[PublishedView]) {}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -273,6 +277,12 @@ impl PassSchedule {
         }
         self.unattached = None;
         Ok(())
+    }
+
+    pub fn read_publication(&mut self, eye: &Eye, views: &[PublishedView]) {
+        for pass in self.passes.iter_mut() {
+            pass.read_publication(eye, views);
+        }
     }
 
     pub fn begin_frame(&mut self) {

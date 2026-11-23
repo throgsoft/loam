@@ -25,51 +25,22 @@ pub fn polytope4_from_shape_id(shape: u32) -> Option<loam_shape::polytope::Polyt
     })
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum RaymarchShape {
-    Polytope(loam_shape::polytope::Polytope4),
-    ThreeSphere,
-    Duocylinder,
-    CliffordTorus,
-    Spherinder,
-}
-
-impl RaymarchShape {
-    pub fn shape_id(&self) -> u32 {
-        use loam_shape::polytope::Polytope4;
-        match self {
-            RaymarchShape::Polytope(p) => match p {
-                Polytope4::Pentatope => SHAPE_PENTATOPE,
-                Polytope4::Tesseract => SHAPE_TESSERACT,
-                Polytope4::Cell16 => SHAPE_16CELL,
-                Polytope4::Cell24 => SHAPE_24CELL,
-                Polytope4::Cell120 => SHAPE_120CELL,
-                Polytope4::Cell600 => SHAPE_600CELL,
-            },
-            RaymarchShape::ThreeSphere => SHAPE_3SPHERE,
-            RaymarchShape::Duocylinder => SHAPE_DUOCYLINDER,
-            RaymarchShape::CliffordTorus => SHAPE_CLIFFORD_TORUS,
-            RaymarchShape::Spherinder => SHAPE_SPHERINDER,
-        }
-    }
-
-    pub fn polytope4(&self) -> Option<loam_shape::polytope::Polytope4> {
-        match self {
-            RaymarchShape::Polytope(p) => Some(*p),
-            _ => None,
-        }
-    }
-}
-
-impl From<loam_shape::polytope::Polytope4> for RaymarchShape {
-    fn from(p: loam_shape::polytope::Polytope4) -> Self {
-        RaymarchShape::Polytope(p)
-    }
-}
-
-impl From<RaymarchShape> for u32 {
-    fn from(s: RaymarchShape) -> u32 {
-        s.shape_id()
+pub fn shape_id(shape: loam_shape::FieldShape) -> u32 {
+    use loam_shape::polytope::Polytope4;
+    use loam_shape::FieldShape;
+    match shape {
+        FieldShape::Polytope(p) => match p {
+            Polytope4::Pentatope => SHAPE_PENTATOPE,
+            Polytope4::Tesseract => SHAPE_TESSERACT,
+            Polytope4::Cell16 => SHAPE_16CELL,
+            Polytope4::Cell24 => SHAPE_24CELL,
+            Polytope4::Cell120 => SHAPE_120CELL,
+            Polytope4::Cell600 => SHAPE_600CELL,
+        },
+        FieldShape::ThreeSphere => SHAPE_3SPHERE,
+        FieldShape::Duocylinder => SHAPE_DUOCYLINDER,
+        FieldShape::CliffordTorus => SHAPE_CLIFFORD_TORUS,
+        FieldShape::Spherinder => SHAPE_SPHERINDER,
     }
 }
 

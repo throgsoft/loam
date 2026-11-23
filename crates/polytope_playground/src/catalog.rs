@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use loam::app::args::Args;
-use loam::render::raymarch::RaymarchShape;
 use loam::shape::polytope::Polytope4;
+use loam::shape::FieldShape;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Category {
@@ -22,7 +22,7 @@ impl Category {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct ShapeEntry {
-    pub(crate) shape: RaymarchShape,
+    pub(crate) shape: FieldShape,
     pub(crate) body_color: [f32; 3],
     pub(crate) label: &'static str,
     pub(crate) long_name: &'static str,
@@ -37,28 +37,28 @@ impl ShapeEntry {
 
 pub(crate) const DEFAULT_ROW: &[ShapeEntry] = &[
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell24),
+        shape: FieldShape::Polytope(Polytope4::Cell24),
         body_color: [0.95, 0.45, 0.85],
         label: "24-cell",
         long_name: "icositetrachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Pentatope),
+        shape: FieldShape::Polytope(Polytope4::Pentatope),
         body_color: [0.95, 0.55, 0.30],
         label: "5-cell",
         long_name: "pentachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell16),
+        shape: FieldShape::Polytope(Polytope4::Cell16),
         body_color: [0.55, 0.95, 0.40],
         label: "16-cell",
         long_name: "hexadecachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Tesseract),
+        shape: FieldShape::Polytope(Polytope4::Tesseract),
         body_color: [0.30, 0.55, 0.95],
         label: "8-cell",
         long_name: "tesseract",
@@ -69,70 +69,70 @@ pub(crate) const DEFAULT_ROW: &[ShapeEntry] = &[
 // `body_color` channels pass straight to the WGSL kernel.
 pub(crate) const SHAPE_CATALOG: &[ShapeEntry] = &[
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Pentatope),
+        shape: FieldShape::Polytope(Polytope4::Pentatope),
         body_color: [0.95, 0.55, 0.30],
         label: "5-cell",
         long_name: "pentachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Tesseract),
+        shape: FieldShape::Polytope(Polytope4::Tesseract),
         body_color: [0.30, 0.55, 0.95],
         label: "8-cell",
         long_name: "tesseract",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell16),
+        shape: FieldShape::Polytope(Polytope4::Cell16),
         body_color: [0.55, 0.95, 0.40],
         label: "16-cell",
         long_name: "hexadecachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell24),
+        shape: FieldShape::Polytope(Polytope4::Cell24),
         body_color: [0.95, 0.45, 0.85],
         label: "24-cell",
         long_name: "icositetrachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell120),
+        shape: FieldShape::Polytope(Polytope4::Cell120),
         body_color: [0.40, 0.85, 0.85],
         label: "120-cell",
         long_name: "hecatonicosachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell600),
+        shape: FieldShape::Polytope(Polytope4::Cell600),
         body_color: [0.95, 0.85, 0.40],
         label: "600-cell",
         long_name: "hexacosichoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::ThreeSphere,
+        shape: FieldShape::ThreeSphere,
         body_color: [0.85, 0.40, 0.40],
         label: "3-sphere",
         long_name: "hypersphere (4-ball)",
         category: Category::SmoothSolid,
     },
     ShapeEntry {
-        shape: RaymarchShape::Duocylinder,
+        shape: FieldShape::Duocylinder,
         body_color: [0.60, 0.45, 0.90],
         label: "duocyl",
         long_name: "duocylinder (D² × D²)",
         category: Category::SmoothSolid,
     },
     ShapeEntry {
-        shape: RaymarchShape::CliffordTorus,
+        shape: FieldShape::CliffordTorus,
         body_color: [0.70, 0.85, 0.35],
         label: "clifford",
         long_name: "Clifford torus tube",
         category: Category::SmoothSolid,
     },
     ShapeEntry {
-        shape: RaymarchShape::Spherinder,
+        shape: FieldShape::Spherinder,
         body_color: [0.85, 0.55, 0.75],
         label: "spherinder",
         long_name: "spherinder (B³ × interval)",
