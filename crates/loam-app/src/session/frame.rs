@@ -21,6 +21,7 @@ use super::cursor::CursorCapture;
 #[cfg(feature = "egui")]
 use super::debug_layer::DebugLayer;
 use super::input::InputMap;
+#[cfg(feature = "text")]
 use super::text::{ScreenText, Seat};
 
 pub struct Target<'a> {
@@ -57,6 +58,8 @@ struct Inner<A: Stores> {
     app: SessionApp<A>,
     posts: Posts,
     no_views_reported: bool,
+    dropped_text_reported: bool,
+    #[cfg(feature = "text")]
     text: ScreenText,
     shown: Shown,
     drawn: Option<Shown>,
@@ -80,6 +83,11 @@ impl<A: Stores> Frame<A> {
         app: SessionApp<A>,
         executor: Box<dyn Executor>,
     ) -> Result<Self, HostError> {
+        #[cfg(feature = "text")]
+        let (font, app) = {
+            let mut app = app;
+            (app.font.take(), app)
+        };
         let sim = session.config();
         sim.check().map_err(failed)?;
         let timestep = sim
@@ -100,7 +108,9 @@ impl<A: Stores> Frame<A> {
                 app,
                 posts: Posts::default(),
                 no_views_reported: false,
-                text: ScreenText::new(),
+                dropped_text_reported: false,
+                #[cfg(feature = "text")]
+                text: ScreenText::new(font),
                 shown: Shown::default(),
                 drawn: None,
                 #[cfg(test)]
@@ -239,6 +249,7 @@ impl<A: Stores> Frame<A> {
         for pass in self.inner.app.passes.drain(..) {
             presenter.register_pass(pass).map_err(failed)?;
         }
+        #[cfg(feature = "text")]
         if let Some(text) = self.inner.text.pass() {
             presenter.register_pass(Box::new(text)).map_err(failed)?;
         }
@@ -513,7 +524,7 @@ impl<A: Stores> Inner<A> {
         let mut requested = false;
         let terminal = match prepared {
             Ok((records, eye)) => {
-                #[cfg(feature = "egui")]
+                #[cfg(all(feature = "text", feature = "egui"))]
                 let seat = context.as_ref().map(|context| {
                     let free = context.available_rect().min;
                     let scale = context.pixels_per_point();
@@ -522,8 +533,9 @@ impl<A: Stores> Inner<A> {
                         pixels_per_point: scale,
                     }
                 });
-                #[cfg(not(feature = "egui"))]
+                #[cfg(all(feature = "text", not(feature = "egui")))]
                 let seat = None;
+                #[cfg(feature = "text")]
                 let seat = seat.unwrap_or(Seat {
                     origin_px: [0.0; 2],
                     pixels_per_point: self.input.scale(),
@@ -582,9 +594,13 @@ impl<A: Stores> Inner<A> {
                 );
                 presenter.upload_overlay(&eye, &records.overlay);
                 presenter.upload_backdrop(&eye, records.backdrop);
-                if self.text.publish(&records.overlay, seat) {
-                    let note =
-                        "the session published text, but this build has no font, so none is drawn";
+                #[cfg(feature = "text")]
+                let dropped = self.text.publish(&records.overlay, seat);
+                #[cfg(not(feature = "text"))]
+                let dropped = records.overlay.text().next().is_some();
+                if dropped && !self.dropped_text_reported {
+                    self.dropped_text_reported = true;
+                    let note = "the session published text, but this build has no font or no text feature, so none is drawn";
                     tracing::warn!("{note}");
                     self.app.console.note(note.to_string());
                 }

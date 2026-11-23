@@ -12,6 +12,7 @@ mod cursor;
 mod frame;
 mod headless;
 mod surface;
+#[cfg(feature = "text")]
 mod text;
 
 #[cfg(target_arch = "wasm32")]

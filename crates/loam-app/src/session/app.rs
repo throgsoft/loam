@@ -178,6 +178,8 @@ pub struct SessionApp<A: Stores> {
     pub(crate) redraw: Redraw,
     #[cfg(feature = "egui")]
     pub(crate) debug_layer: bool,
+    #[cfg(feature = "text")]
+    pub(crate) font: Option<Vec<u8>>,
     pub(crate) script: Option<ScriptDriver>,
 }
 
@@ -205,6 +207,8 @@ impl<A: Stores> SessionApp<A> {
             redraw: Redraw::default(),
             #[cfg(feature = "egui")]
             debug_layer: true,
+            #[cfg(feature = "text")]
+            font: None,
             script: None,
         };
         host.apply_args();
@@ -305,6 +309,13 @@ impl<A: Stores> SessionApp<A> {
     /// Linear light; the present clear shows wherever no Background pass paints.
     pub fn background(mut self, rgb: [f32; 3]) -> Self {
         self.background = background_color(rgb);
+        self
+    }
+
+    /// TrueType or OpenType bytes for screen text; with none given an egui build uses egui's bundled font.
+    #[cfg(feature = "text")]
+    pub fn font(mut self, bytes: Vec<u8>) -> Self {
+        self.font = Some(bytes);
         self
     }
 

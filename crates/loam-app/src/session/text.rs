@@ -6,7 +6,6 @@ const BAKE_PX: f32 = 64.0;
 
 pub(crate) struct ScreenText {
     pass: Option<TextPass>,
-    fontless_reported: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -16,10 +15,11 @@ pub(crate) struct Seat {
 }
 
 impl ScreenText {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(font: Option<Vec<u8>>) -> Self {
+        #[cfg(feature = "egui")]
+        let font = font.or_else(bundled_font);
         Self {
-            pass: font().map(|font| TextPass::new("text", font, BAKE_PX)),
-            fontless_reported: false,
+            pass: font.map(|font| TextPass::new("text", font, BAKE_PX)),
         }
     }
 
@@ -27,12 +27,10 @@ impl ScreenText {
         self.pass.clone()
     }
 
-    /// Returns true the first time published text is dropped for want of a font.
-    pub(crate) fn publish(&mut self, overlay: &Overlay, seat: Seat) -> bool {
+    /// Returns true when published text is dropped for want of a font.
+    pub(crate) fn publish(&self, overlay: &Overlay, seat: Seat) -> bool {
         let Some(pass) = self.pass.as_ref() else {
-            let first = !self.fontless_reported && overlay.text().next().is_some();
-            self.fontless_reported |= first;
-            return first;
+            return overlay.text().next().is_some();
         };
         let scale = seat.pixels_per_point;
         pass.publish(overlay.text().map(|(text, record)| {
@@ -53,7 +51,7 @@ impl ScreenText {
 }
 
 #[cfg(feature = "egui")]
-fn font() -> Option<Vec<u8>> {
+fn bundled_font() -> Option<Vec<u8>> {
     let fonts = loam_egui::egui::FontDefinitions::default();
     let chosen = fonts
         .font_data
@@ -61,9 +59,4 @@ fn font() -> Option<Vec<u8>> {
         .find(|(name, _)| name.starts_with("Hack"))
         .or_else(|| fonts.font_data.iter().next())?;
     Some(chosen.1.font.to_vec())
-}
-
-#[cfg(not(feature = "egui"))]
-fn font() -> Option<Vec<u8>> {
-    None
 }

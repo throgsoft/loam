@@ -87,7 +87,7 @@ capture = ["app", "loam-app/capture"]
 egui = ["app", "loam-app/egui"]
 physics = ["dep:loam-physics", "loam-runtime/physics"]
 render = ["dep:loam-render"]
-text = ["dep:loam-text", "render"]
+text = ["dep:loam-text", "render", "loam-app?/text"]
 
 [lints]
 workspace = true
