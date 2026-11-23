@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use glam::Vec2;
 use loam_runtime::{
-    DomainId, Eye, Overlay, PublishedView, Rigid, SegmentRecord, Stamp, ViewTarget,
+    Backdrop, DomainId, Eye, Overlay, PublishedView, Rigid, SegmentRecord, Stamp, ViewTarget,
 };
 use wgpu::{Color, CommandEncoder, Device, Queue, RenderPass, TextureFormat, TextureView};
 
@@ -13,7 +13,7 @@ use crate::pass::{
     FrameFormat, FramePass, FrameTarget, PassError, PassExecutionError, PassSchedule, PassStage,
     Section,
 };
-use crate::passes::{LinePass, PointPass};
+use crate::passes::{LinePass, PointPass, SkyGroundPass};
 use crate::triangle_pass::TriangleFeed;
 use crate::view::DEPTH_FORMAT;
 use crate::{DepthConvention, DepthMode, FragmentShading, LineRasterNode};
@@ -146,6 +146,7 @@ pub struct Presenter {
     filled: Vec<(DomainId, ViewTarget)>,
     overlay_lines: LinePass,
     overlay_points: PointPass,
+    backdrop: SkyGroundPass,
     schedule: PassSchedule,
 }
 
@@ -154,6 +155,8 @@ impl Presenter {
         let fills = TriangleFeed::default();
         let views = Rc::new(RefCell::new(Vec::new()));
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        let backdrop = SkyGroundPass::showing(None);
+        schedule.register(Box::new(backdrop.clone()))?;
         schedule.register(fills.pass(FragmentShading::FaceNormalLambert))?;
         schedule.register(Box::new(PublishedLines {
             views: views.clone(),
@@ -171,6 +174,7 @@ impl Presenter {
             filled: Vec::new(),
             overlay_lines,
             overlay_points,
+            backdrop,
             schedule,
         })
     }
@@ -261,6 +265,11 @@ impl Presenter {
     pub fn upload_overlay(&mut self, eye: &Eye, overlay: &Overlay) {
         self.overlay_lines.publish(eye, &overlay.lines);
         self.overlay_points.publish(eye, &overlay.points);
+    }
+
+    pub fn upload_backdrop(&mut self, eye: &Eye, backdrop: Option<Backdrop>) {
+        self.backdrop.show(eye, backdrop);
+        self.schedule.read_backdrop(backdrop.as_ref());
     }
 
     pub fn record_scene(

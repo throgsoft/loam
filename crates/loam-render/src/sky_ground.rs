@@ -2,51 +2,33 @@ use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use wgpu::*;
 
+pub use loam_runtime::{Ground, Sky};
+
 /// Shared with [`crate::raymarch::HYPERSLICE_KERNEL_WGSL`].
 pub const SKY_GROUND_WGSL: &str = include_str!("sky_ground.wgsl");
-
-/// Linear light; `below` is the color at ray y = -1, `above` at ray y = +1, mixed linearly in y.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Sky {
-    pub below: [f32; 3],
-    pub above: [f32; 3],
-}
 
 pub const DEFAULT_SKY: Sky = Sky {
     below: [0.04, 0.05, 0.10],
     above: [0.10, 0.13, 0.22],
 };
 
-impl Sky {
-    /// The color at ray y = 0 with alpha 1.
-    pub const fn horizon(self) -> Color {
-        Color {
-            r: 0.5 * (self.below[0] as f64 + self.above[0] as f64),
-            g: 0.5 * (self.below[1] as f64 + self.above[1] as f64),
-            b: 0.5 * (self.below[2] as f64 + self.above[2] as f64),
-            a: 1.0,
-        }
+/// The color at ray y = 0 with alpha 1.
+pub const fn horizon(sky: Sky) -> Color {
+    Color {
+        r: 0.5 * (sky.below[0] as f64 + sky.above[0] as f64),
+        g: 0.5 * (sky.below[1] as f64 + sky.above[1] as f64),
+        b: 0.5 * (sky.below[2] as f64 + sky.above[2] as f64),
+        a: 1.0,
     }
 }
 
-pub const SKY_HORIZON: Color = DEFAULT_SKY.horizon();
+pub const SKY_HORIZON: Color = horizon(DEFAULT_SKY);
 
 pub const GROUND_DARK_GREY: [f32; 3] = [0.18, 0.20, 0.24];
 pub const GROUND_LIGHT_GREY: [f32; 3] = [0.30, 0.32, 0.36];
 
 /// Half the sky is mixed in at `ln 2 / density` world units.
 pub const DEFAULT_FOG_PER_UNIT: f32 = 0.0015;
-
-#[derive(Copy, Clone, Debug)]
-pub struct Ground {
-    pub y: f32,
-    pub dark: [f32; 3],
-    pub light: [f32; 3],
-    pub fog_per_unit: f32,
-    /// Distance from the eye before any fog mixes in.
-    pub fog_start: f32,
-    pub visible: bool,
-}
 
 /// Bind group 0, binding 0; matches the node's WGSL `Uniforms`.
 #[repr(C)]
@@ -298,7 +280,7 @@ impl SkyGroundNode {
 
     /// Also sets the color clear to the uniforms' horizon.
     pub fn set_uniforms(&mut self, queue: &Queue, uniforms: &SkyGroundUniforms) {
-        self.clear = uniforms.sky().horizon();
+        self.clear = horizon(uniforms.sky());
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(uniforms));
     }
 

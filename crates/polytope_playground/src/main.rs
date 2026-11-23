@@ -1,6 +1,7 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use loam::app::environment::Environment;
 use loam::app::script::driver_from_args;
 use loam::app::session::{launch_or_headless, run_script};
 use loam::prelude::*;
@@ -137,7 +138,6 @@ stores! {
         hud: Value<bool>,
         color: Value<ColorMode>,
         strip: Value<Strip>,
-        environment: Value<loam::app::environment::Environment>,
         display: Value<Display>,
         time: Value<f32>,
         angles: Value<[f32; 6]>,
@@ -252,8 +252,9 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
             projection,
         })
     })?;
-    session.views_mut().root_mut().eye =
-        Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
+    let root = session.views_mut().root_mut();
+    root.eye = Eye::looking_at([0.0, 3.0, 9.0], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
+    root.backdrop = Some(Environment::default().backdrop(consts::FLOOR_Y));
     session.set_rig(Rig::Pair(CameraPair::new(
         home([0.0; 3]),
         FreeCamera::default(),
@@ -687,7 +688,6 @@ pub(crate) fn bindings() -> Bindings {
 }
 
 pub(crate) struct Frame {
-    sky: SkyGroundPass,
     hyperslice: HyperslicePass,
     hud: loam::text::TextPass,
 }
@@ -695,7 +695,6 @@ pub(crate) struct Frame {
 impl Frame {
     pub(crate) fn new() -> Self {
         Self {
-            sky: SkyGroundPass::new(scene::ground(true)),
             hyperslice: HyperslicePass::new(scene::shader_source()),
             hud: hud::pass(),
         }
@@ -703,7 +702,6 @@ impl Frame {
 
     fn passes(&self) -> Vec<Box<dyn FramePass>> {
         vec![
-            Box::new(self.sky.clone()),
             Box::new(self.hyperslice.clone()),
             Box::new(self.hud.clone()),
         ]
@@ -764,7 +762,6 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
     let frame = Frame::new();
     let config = HostConfig::new("polytope playground", bindings());
 
-    let sky = frame.sky.clone();
     let hyperslice = frame.hyperslice.clone();
     let readout = frame.hud.clone();
     let mut lines = String::new();
@@ -777,22 +774,8 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
     }
     app = console::install(app).on_frame(move |hook: &mut FrameHook<'_, Playground>| {
         follow(hook.session, domain, hook.alpha, &mut scratch);
-        let eye = hook
-            .session
-            .views()
-            .get(hook.session.views().root())
-            .map_or(Eye::default(), |root| root.eye);
         let strip = *hook.session.app.strip.get();
-
         let slice = *hook.session.app.slice.get();
-        let environment = *hook.session.app.environment.get();
-        let floor = environment.floor_visible;
-        sky.publish(
-            &eye,
-            environment.sky,
-            environment.ground(consts::FLOOR_Y, floor),
-        );
-        hyperslice.set_environment(environment.sky, scene::params(floor));
         fill_strip(
             &strip,
             turn_of(hook.session),

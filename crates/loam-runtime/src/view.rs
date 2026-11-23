@@ -116,9 +116,37 @@ impl Default for Eye {
     }
 }
 
+/// Linear light; `below` is the color at ray y = -1, `above` at ray y = +1, mixed linearly in y.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Sky {
+    pub below: [f32; 3],
+    pub above: [f32; 3],
+}
+
+/// A checkered plane at height `y` whose color mixes into the sky with distance.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Ground {
+    pub y: f32,
+    pub dark: [f32; 3],
+    pub light: [f32; 3],
+    /// Half the sky is mixed in at `ln 2 / fog_per_unit` world units.
+    pub fog_per_unit: f32,
+    /// Distance from the eye before any fog mixes in.
+    pub fog_start: f32,
+    pub visible: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Backdrop {
+    pub sky: Sky,
+    pub ground: Ground,
+}
+
 pub struct ImageSpace {
     pub eye: Eye,
     pub rig: Rig,
+    /// Drawn behind every view of the root image; `None` leaves the host's background color.
+    pub backdrop: Option<Backdrop>,
 }
 
 impl ImageSpace {
@@ -233,6 +261,7 @@ struct Placed {
 pub struct ViewsSnapshot {
     root_eye: Eye,
     root_rig: Rig,
+    root_backdrop: Option<Backdrop>,
     placed: Vec<Placed>,
 }
 
@@ -247,6 +276,7 @@ impl Views {
             root: ImageSpace {
                 eye: Eye::default(),
                 rig: Rig::Manual,
+                backdrop: None,
             },
             placed: Vec::new(),
         }
@@ -379,6 +409,7 @@ impl Views {
         ViewsSnapshot {
             root_eye: self.root.eye,
             root_rig: self.root.rig,
+            root_backdrop: self.root.backdrop,
             placed: self.placed.clone(),
         }
     }
@@ -386,6 +417,7 @@ impl Views {
     pub(crate) fn restore(&mut self, from: &ViewsSnapshot) {
         self.root.eye = from.root_eye;
         self.root.rig = from.root_rig;
+        self.root.backdrop = from.root_backdrop;
         // A snapshot taken before the first boundary holds an eye the rig has not yet written.
         if let Some(eye) = self.root.rig.eye() {
             self.root.look(eye);

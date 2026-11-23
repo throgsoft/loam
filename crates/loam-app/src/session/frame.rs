@@ -552,6 +552,7 @@ impl<A: Stores> Inner<A> {
                     &records.views,
                 );
                 presenter.upload_overlay(&eye, &records.overlay);
+                presenter.upload_backdrop(&eye, records.backdrop);
                 self.shown.content = records.content();
                 self.shown.eye = eye;
                 self.records.release(records);

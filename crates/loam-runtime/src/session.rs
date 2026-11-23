@@ -21,7 +21,7 @@ use crate::store::{Owner, SchemaId, StoreField};
 use crate::stores::Stores;
 use crate::value::Setting;
 use crate::view::{
-    ImageRay, Overlay, Pick, Rigid, Vec3, ViewRecords, ViewTarget, Views, ViewsSnapshot,
+    Backdrop, ImageRay, Overlay, Pick, Rigid, Vec3, ViewRecords, ViewTarget, Views, ViewsSnapshot,
 };
 
 const RELEASE_STALE_SECONDS: f64 = 0.12;
@@ -275,6 +275,7 @@ pub struct PublishedView {
 pub struct Publication {
     pub views: Vec<PublishedView>,
     pub overlay: Overlay,
+    pub backdrop: Option<Backdrop>,
     pub stamp: Stamp,
     /// The clamped alpha the records were drawn at.
     pub alpha: f32,
@@ -1157,6 +1158,12 @@ impl<A: Stores> Session<A> {
             into.views.truncate(count);
             changed |= into.overlay != self.overlay;
             into.overlay.clone_from(&self.overlay);
+            let backdrop = self
+                .views
+                .get(self.views.root())
+                .and_then(|root| root.backdrop);
+            changed |= into.backdrop != backdrop;
+            into.backdrop = backdrop;
             into.stamp = stamp;
             if changed {
                 into.content = sequence;

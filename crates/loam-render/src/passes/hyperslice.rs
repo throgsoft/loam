@@ -1,13 +1,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use loam_runtime::{Eye, FieldRecord, PublishedView, Rigid};
+use loam_runtime::{Backdrop, Eye, FieldRecord, PublishedView, Rigid};
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
 use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::raymarch::{shape_id, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms};
-use crate::sky_ground::Sky;
+use crate::sky_ground::DEFAULT_SKY;
 use crate::{DepthConvention, DepthMode, Viewport};
 
 struct State {
@@ -20,7 +20,7 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// Draws the field records of the first published view that has any, cut at that view's field cut.
+/// Draws the field records of the first published view that has any, cut at that view's field cut; `u.params.x` is 1 while the backdrop's ground is visible.
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,
@@ -41,14 +41,6 @@ impl HyperslicePass {
                 queue: None,
             })),
         }
-    }
-
-    /// `params` reaches the shader as `u.params`.
-    pub fn set_environment(&self, sky: Sky, params: [f32; 4]) {
-        let uniforms = &mut self.shared.borrow_mut().uniforms;
-        uniforms.sky_below = sky.below;
-        uniforms.sky_above = sky.above;
-        uniforms.params = params;
     }
 
     /// One draw per cell within the frame, each with its own w and body; an empty strip returns the pass to its full-frame draw.
@@ -120,6 +112,15 @@ impl FramePass for HyperslicePass {
             uniforms.w_slice = cut;
             bodies.extend(view.records.fields().iter().map(body_of));
         }
+    }
+
+    fn read_backdrop(&mut self, backdrop: Option<&Backdrop>) {
+        let uniforms = &mut self.shared.borrow_mut().uniforms;
+        let sky = backdrop.map_or(DEFAULT_SKY, |backdrop| backdrop.sky);
+        let floor = backdrop.is_some_and(|backdrop| backdrop.ground.visible);
+        uniforms.sky_below = sky.below;
+        uniforms.sky_above = sky.above;
+        uniforms.params = [if floor { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0];
     }
 
     fn record(

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use loam_runtime::{Eye, PublishedView};
+use loam_runtime::{Backdrop, Eye, PublishedView};
 use web_time::Instant;
 use wgpu::{
     Color, CommandEncoder, LoadOp, Operations, RenderPass, RenderPassColorAttachment,
@@ -125,6 +125,9 @@ pub trait FramePass {
 
     /// Runs once per presented frame before it records, with the root image's eye.
     fn read_publication(&mut self, _eye: &Eye, _views: &[PublishedView]) {}
+
+    /// Runs once per presented frame with the root image's backdrop.
+    fn read_backdrop(&mut self, _backdrop: Option<&Backdrop>) {}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -282,6 +285,12 @@ impl PassSchedule {
     pub fn read_publication(&mut self, eye: &Eye, views: &[PublishedView]) {
         for pass in self.passes.iter_mut() {
             pass.read_publication(eye, views);
+        }
+    }
+
+    pub fn read_backdrop(&mut self, backdrop: Option<&Backdrop>) {
+        for pass in self.passes.iter_mut() {
+            pass.read_backdrop(backdrop);
         }
     }
 

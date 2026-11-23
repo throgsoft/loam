@@ -3,6 +3,7 @@ use loam::app::environment::Environment;
 use loam::prelude::*;
 
 use crate::color::ColorMode;
+use crate::consts::FLOOR_Y;
 use crate::display::{Surface, MAX_WIREFRAME_WIDTH_PX};
 use crate::mode::Mode;
 use crate::projection::Family;
@@ -17,6 +18,13 @@ fn number(token: &str, name: &str) -> Result<f32> {
     token
         .parse()
         .map_err(|error| anyhow!("{name}: invalid `{token}`: {error}"))
+}
+
+fn environment_of(views: &Views) -> Environment {
+    views
+        .get(views.root())
+        .and_then(|root| root.backdrop)
+        .map_or_else(Environment::default, |backdrop| Environment::of(&backdrop))
 }
 
 fn toggle(args: &[&str], usage: &str) -> Result<Option<bool>> {
@@ -237,10 +245,19 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         },
     );
 
-    app = app.toggle_command(
+    app = app.command(
         "floor",
         "toggle the ground plane; optional on | off",
-        |app| &mut app.environment.get_mut().floor_visible,
+        |args, submit, _out| {
+            let shown = toggle(args, "usage: floor [on|off]")?;
+            submit.app_fn("floor", move |dispatch: &mut Dispatch<'_, Playground>| {
+                if let Some(backdrop) = dispatch.views.root_mut().backdrop.as_mut() {
+                    let ground = &mut backdrop.ground;
+                    ground.visible = shown.unwrap_or(!ground.visible);
+                }
+            });
+            Ok(())
+        },
     );
 
     app = app.command(
@@ -256,7 +273,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
             };
             if let Some(field) = field {
                 submit.inspect("ground", move |dispatch, out| {
-                    out.line(dispatch.app.environment.get().report(field));
+                    out.line(environment_of(&*dispatch.views).report(field));
                 });
                 return Ok(());
             }
@@ -267,9 +284,9 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                 .collect::<Vec<_>>();
             submit.app_fn("ground", move |dispatch: &mut Dispatch<'_, Playground>| {
                 let args = owned.iter().map(String::as_str).collect::<Vec<_>>();
-                let mut environment = *dispatch.app.environment.get();
+                let mut environment = environment_of(&*dispatch.views);
                 if environment.apply(&args).is_ok() {
-                    dispatch.app.environment.set(environment);
+                    dispatch.views.root_mut().backdrop = Some(environment.backdrop(FLOOR_Y));
                 }
             });
             Ok(())

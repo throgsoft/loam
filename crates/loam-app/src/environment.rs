@@ -4,6 +4,7 @@ use loam_render::sky_ground::{
     DEFAULT_FOG_PER_UNIT, DEFAULT_SKY, GROUND_DARK_GREY, GROUND_LIGHT_GREY,
 };
 use loam_render::{Ground, Sky};
+use loam_runtime::Backdrop;
 
 // Above this the checker blends into the sky inside one body length.
 const MAX_FOG_PER_UNIT: f32 = 1.0;
@@ -40,6 +41,25 @@ impl Environment {
             fog_per_unit: self.fog_per_unit,
             fog_start: self.fog_start,
             visible,
+        }
+    }
+
+    pub fn backdrop(&self, y: f32) -> Backdrop {
+        Backdrop {
+            sky: self.sky,
+            ground: self.ground(y, self.floor_visible),
+        }
+    }
+
+    pub fn of(backdrop: &Backdrop) -> Self {
+        let ground = backdrop.ground;
+        Self {
+            sky: backdrop.sky,
+            dark: ground.dark,
+            light: ground.light,
+            fog_per_unit: ground.fog_per_unit,
+            fog_start: ground.fog_start,
+            floor_visible: ground.visible,
         }
     }
 

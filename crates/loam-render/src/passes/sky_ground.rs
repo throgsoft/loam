@@ -1,22 +1,22 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use loam_runtime::Eye;
+use loam_runtime::{Backdrop, Eye};
 use wgpu::{Color, CommandEncoder, Queue, RenderPass};
 
 use crate::device::GpuContext;
 use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
-use crate::sky_ground::{Ground, Sky, SkyGroundNode, SkyGroundUniforms, DEFAULT_SKY};
+use crate::sky_ground::{horizon, Ground, Sky, SkyGroundNode, SkyGroundUniforms, DEFAULT_SKY};
 use crate::{DepthConvention, Viewport};
 
 struct State {
     eye: Eye,
-    sky: Sky,
-    ground: Ground,
+    backdrop: Option<Backdrop>,
     node: Option<SkyGroundNode>,
     queue: Option<Queue>,
 }
 
+/// Without a backdrop it neither clears nor draws, so the frame keeps the host's background.
 #[derive(Clone)]
 pub struct SkyGroundPass {
     shared: Rc<RefCell<State>>,
@@ -24,11 +24,17 @@ pub struct SkyGroundPass {
 
 impl SkyGroundPass {
     pub fn new(ground: Ground) -> Self {
+        Self::showing(Some(Backdrop {
+            sky: DEFAULT_SKY,
+            ground,
+        }))
+    }
+
+    pub(crate) fn showing(backdrop: Option<Backdrop>) -> Self {
         Self {
             shared: Rc::new(RefCell::new(State {
                 eye: Eye::default(),
-                sky: DEFAULT_SKY,
-                ground,
+                backdrop,
                 node: None,
                 queue: None,
             })),
@@ -36,10 +42,13 @@ impl SkyGroundPass {
     }
 
     pub fn publish(&self, eye: &Eye, sky: Sky, ground: Ground) {
+        self.show(eye, Some(Backdrop { sky, ground }));
+    }
+
+    pub(crate) fn show(&self, eye: &Eye, backdrop: Option<Backdrop>) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;
-        state.sky = sky;
-        state.ground = ground;
+        state.backdrop = backdrop;
     }
 }
 
@@ -53,7 +62,11 @@ impl FramePass for SkyGroundPass {
     }
 
     fn color_load(&self) -> ColorLoad {
-        ColorLoad::Clear
+        if self.shared.borrow().backdrop.is_some() {
+            ColorLoad::Clear
+        } else {
+            ColorLoad::Load
+        }
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
@@ -65,7 +78,7 @@ impl FramePass for SkyGroundPass {
     }
 
     fn clear_color(&self) -> Color {
-        self.shared.borrow().sky.horizon()
+        horizon(self.shared.borrow().backdrop.map_or(DEFAULT_SKY, |b| b.sky))
     }
 
     fn prepare(
@@ -74,7 +87,9 @@ impl FramePass for SkyGroundPass {
         target: &FrameTarget<'_>,
     ) -> anyhow::Result<()> {
         let state = &mut *self.shared.borrow_mut();
-        let (Some(node), Some(queue)) = (state.node.as_mut(), state.queue.as_ref()) else {
+        let (Some(node), Some(queue), Some(backdrop)) =
+            (state.node.as_mut(), state.queue.as_ref(), state.backdrop)
+        else {
             return Ok(());
         };
         node.set_uniforms(
@@ -82,15 +97,16 @@ impl FramePass for SkyGroundPass {
             &SkyGroundUniforms::new(
                 crate::view::root_view_projection(&state.eye),
                 Viewport::full([target.size.0, target.size.1]),
-                state.sky,
-                state.ground,
+                backdrop.sky,
+                backdrop.ground,
             ),
         );
         Ok(())
     }
 
     fn draw(&mut self, pass: &mut RenderPass<'_>, target: &FrameTarget<'_>) -> anyhow::Result<()> {
-        if let Some(node) = self.shared.borrow().node.as_ref() {
+        let state = self.shared.borrow();
+        if let (Some(node), Some(_)) = (state.node.as_ref(), state.backdrop) {
             node.draw(pass, Some(&Viewport::full([target.size.0, target.size.1])));
         }
         Ok(())
@@ -105,7 +121,8 @@ impl FramePass for SkyGroundPass {
             return Ok(());
         };
         self.prepare(encoder, target)?;
-        if let Some(node) = self.shared.borrow().node.as_ref() {
+        let state = self.shared.borrow();
+        if let (Some(node), Some(_)) = (state.node.as_ref(), state.backdrop) {
             node.record(
                 encoder,
                 target.color,
