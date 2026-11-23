@@ -2374,7 +2374,6 @@ impl<S> TypedDomain<S>
 where
     S: Homogeneous + loam_physics::PhysicsSpace + Copy,
     S::Vector: loam_physics::collision::VectorOps + Default,
-    S::Point: std::ops::Sub<Output = S::Vector>,
 {
     pub fn spawn_body(
         &mut self,

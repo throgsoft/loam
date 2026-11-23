@@ -1,5 +1,4 @@
 use std::any::Any;
-use std::ops::Sub;
 
 use loam_math::Bivector;
 use loam_physics::collision::VectorOps;
@@ -351,7 +350,6 @@ impl<S> Physics<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
-    S::Point: Sub<Output = S::Vector>,
 {
     pub fn world(&self) -> &World<S> {
         &self.world
@@ -832,7 +830,6 @@ where
     S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
     S::AngVel: PartialEq,
-    S::Point: Sub<Output = S::Vector>,
 {
     fn settle(&mut self, dt: f32) -> Result<(), DomainError> {
         if self.angular_damping.is_none() && self.rest.is_none() {
@@ -898,7 +895,6 @@ where
     S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
     S::AngVel: PartialEq,
-    S::Point: Sub<Output = S::Vector>,
 {
     fn name(&self) -> &'static str {
         "physics"
@@ -1056,7 +1052,6 @@ where
     S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
     S::AngVel: PartialEq,
-    S::Point: Sub<Output = S::Vector>,
 {
     pub fn physics(self, config: PhysicsConfig<S>) -> Result<Self, EditError> {
         config.validate(&self.space)?;
@@ -1086,7 +1081,6 @@ impl<S> TypedDomain<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
-    S::Point: Sub<Output = S::Vector>,
 {
     pub fn physics(&self) -> Option<&Physics<S>> {
         self.facilities
@@ -1106,7 +1100,6 @@ impl Domains {
     where
         S: Homogeneous + PhysicsSpace + Copy,
         S::Vector: VectorOps + Default,
-        S::Point: Sub<Output = S::Vector>,
     {
         self.typed(handle)?
             .physics_mut()
@@ -1127,7 +1120,6 @@ impl<S> SpawnBody for BodyDef<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
     S::Vector: VectorOps + Default,
-    S::Point: Sub<Output = S::Vector>,
 {
     fn spawn(
         self: Box<Self>,

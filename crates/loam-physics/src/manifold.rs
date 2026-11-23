@@ -106,10 +106,7 @@ where
         self.points.clear();
     }
 
-    pub(crate) fn is_valid(&self, space: &S, body_a: &RigidBody<S>, body_b: &RigidBody<S>) -> bool
-    where
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
-    {
+    pub(crate) fn is_valid(&self, space: &S, body_a: &RigidBody<S>, body_b: &RigidBody<S>) -> bool {
         if !self.restitution.is_finite()
             || self.restitution < 0.0
             || self.points.is_empty()
@@ -196,16 +193,14 @@ where
         a: &RigidBody<S>,
         b: &RigidBody<S>,
         contact: Contact<S>,
-    ) where
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
-    {
+    ) {
         let new_point = contact.point;
         let half_gap = contact.normal * (0.5 * contact.penetration);
         let anchor_a = local_anchor(space, a, space.exp(new_point, half_gap));
         let anchor_b = local_anchor(space, b, space.exp(new_point, -half_gap));
 
         for cp in &mut self.points {
-            let delta = new_point - cp.world_point;
+            let delta = space.log(cp.world_point, new_point);
             if VectorOps::length_squared(delta) < MERGE_RADIUS_SQ {
                 cp.world_point = new_point;
                 cp.anchor_a = anchor_a;

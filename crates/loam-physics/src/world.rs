@@ -616,7 +616,6 @@ impl<S: PhysicsSpace> World<S> {
     where
         S::Vector: VectorOps,
         S::AngVel: PartialEq,
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
     {
         if self
             .gravity
@@ -712,7 +711,6 @@ impl<S: PhysicsSpace> World<S> {
     where
         S::Vector: VectorOps,
         S::AngVel: PartialEq,
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
     {
         self.check_restore(state)?;
         self.bodies = state.bodies.clone();
@@ -761,7 +759,6 @@ impl<S: PhysicsSpace> World<S> {
     pub fn step(&mut self, dt: f32) -> Result<(), EditError>
     where
         S::Vector: VectorOps,
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
     {
         self.step_with(dt, &Sequential)
     }
@@ -770,7 +767,6 @@ impl<S: PhysicsSpace> World<S> {
     pub fn step_with(&mut self, dt: f32, executor: &dyn Executor) -> Result<(), EditError>
     where
         S::Vector: VectorOps,
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
     {
         if !dt.is_finite() || dt < 0.0 {
             return Err(EditError::InvalidTimeStep);
@@ -825,7 +821,6 @@ impl<S: PhysicsSpace> World<S> {
     fn update_manifolds(&mut self)
     where
         S::Vector: VectorOps,
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
     {
         let mut pairs = std::mem::take(&mut self.pair_order);
         Self::fill_broadphase(
@@ -964,7 +959,6 @@ impl<S: PhysicsSpace> World<S> {
     fn field_manifolds(&mut self, pending: &mut Vec<(PairKey, Contact<S>)>)
     where
         S::Vector: VectorOps,
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
     {
         for index in 0..self.field_bindings.len() {
             let (body, field) = self.field_bindings[index];
@@ -1731,7 +1725,6 @@ mod tests {
         ) where
             S: PhysicsSpace<Inertia = f32>,
             S::Vector: VectorOps,
-            S::Point: Copy + std::ops::Sub<Output = S::Vector>,
         {
             let energy_before = kinetic_energy(
                 &world.bodies[faller],
@@ -1813,7 +1806,6 @@ mod tests {
         ) where
             S: PhysicsSpace,
             S::Vector: VectorOps,
-            S::Point: Copy + std::ops::Sub<Output = S::Vector>,
         {
             for _ in 0..SLIDE_STEPS {
                 world.step(SLIDE_DT).unwrap();

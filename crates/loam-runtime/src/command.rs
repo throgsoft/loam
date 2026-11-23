@@ -379,7 +379,6 @@ impl<A: Stores> SpawnBundle<A> {
     where
         S: crate::domain::Homogeneous + loam_physics::PhysicsSpace + Copy,
         S::Vector: loam_physics::collision::VectorOps + Default,
-        S::Point: std::ops::Sub<Output = S::Vector>,
     {
         self.body = Some(Box::new(body));
         self

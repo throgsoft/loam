@@ -1,5 +1,3 @@
-use std::ops::Sub;
-
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -55,7 +53,7 @@ pub enum PersistError {
 impl<S> World<S>
 where
     S: PhysicsSpace,
-    S::Point: Serialize + DeserializeOwned + Copy + Sub<Output = S::Vector>,
+    S::Point: Serialize + DeserializeOwned,
     S::Vector: Serialize + DeserializeOwned + VectorOps,
     S::Iso: Serialize + DeserializeOwned,
     S::AngVel: Serialize + DeserializeOwned + PartialEq,
