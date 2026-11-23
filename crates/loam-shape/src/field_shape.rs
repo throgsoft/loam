@@ -32,9 +32,3 @@ impl FieldShape {
         }
     }
 }
-
-impl From<Polytope4> for FieldShape {
-    fn from(polytope: Polytope4) -> Self {
-        FieldShape::Polytope(polytope)
-    }
-}
