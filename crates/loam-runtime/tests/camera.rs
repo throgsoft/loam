@@ -1,7 +1,7 @@
 use loam_math::{EuclideanR3, Space};
 use loam_runtime::{
-    ActionEvent, ActionId, Eye, FreeCamera, Input, Orbit, Pointer, PointerButton, PointerPhase,
-    Rig, Session, SimConfig, MOVE_FORWARD, MOVE_RIGHT, MOVE_UP,
+    ActionEvent, ActionId, CameraPair, CursorPolicy, Eye, FreeCamera, Input, Orbit, Pointer,
+    PointerButton, PointerPhase, Rig, Session, SimConfig, MOVE_FORWARD, MOVE_RIGHT, MOVE_UP,
 };
 
 type Vec3 = <EuclideanR3 as Space>::Vector;
@@ -25,6 +25,28 @@ fn hosted(config: SimConfig, rig: Rig) -> Session<Bare> {
 fn eye(session: &Session<Bare>) -> Eye {
     let views = session.views();
     views.get(views.root()).expect("the root image exists").eye
+}
+
+fn rig(session: &Session<Bare>) -> Rig {
+    let views = session.views();
+    views.get(views.root()).expect("the root image exists").rig
+}
+
+fn fly(session: &mut Session<Bare>, flying: bool) {
+    session.views_mut().root_mut().set_flying(flying);
+}
+
+fn walk_forward(session: &mut Session<Bare>, ticks: u32) {
+    for _ in 0..ticks {
+        session
+            .boundary(Input {
+                held: vec![MOVE_FORWARD],
+                cursor_locked: true,
+                ..Input::default()
+            })
+            .unwrap();
+        session.tick().unwrap();
+    }
 }
 
 fn moved(button: PointerButton, delta: [f32; 2]) -> Pointer {
@@ -304,4 +326,203 @@ fn a_reset_action_shows_the_orbit_rigs_starting_eye_on_the_boundary_that_resets(
         shown,
         "the eye jumped on the frame after the reset"
     );
+}
+
+#[test]
+fn a_camera_pair_seeds_the_free_camera_only_at_takeover_and_keeps_the_parked_orbit_off_the_eye() {
+    const PERCH: [f32; 3] = [7.0, 8.0, 9.0];
+    const RETARGET: [f32; 3] = [-2.0, 0.5, 1.0];
+    let authored = FreeCamera {
+        eye: Eye {
+            position: [50.0, 50.0, 50.0],
+            ..Eye::default()
+        },
+        speed: 3.0,
+        cursor: CursorPolicy::Hold,
+    };
+    let mut session = hosted(
+        SimConfig::new(50, 4).unwrap(),
+        Rig::Pair(CameraPair::new(Orbit::around(TARGET, DISTANCE), authored)),
+    );
+    let orbit_input = || Input {
+        pointers: vec![moved(PointerButton::Secondary, [40.0, 30.0])],
+        scroll: [0.0, 1.0],
+        ..Input::default()
+    };
+
+    session.boundary(orbit_input()).unwrap();
+    let orbiting = eye(&session);
+    let seat = from_target(&orbiting);
+    assert!(
+        (seat - Vec3::Z * DISTANCE).length() > 0.1,
+        "the drag and zoom left the orbit at its start, so the checks below prove nothing"
+    );
+    assert!(
+        !rig(&session).flying() && rig(&session).cursor().is_none(),
+        "a pair on its orbit reported its parked free camera"
+    );
+
+    fly(&mut session, false);
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(
+        eye(&session),
+        orbiting,
+        "asking for the orbit that was already live moved the eye"
+    );
+
+    fly(&mut session, true);
+    assert!(rig(&session).flying());
+    assert_eq!(rig(&session).cursor(), Some(CursorPolicy::Hold));
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(
+        eye(&session),
+        orbiting,
+        "the free camera took over from somewhere other than the eye on screen"
+    );
+
+    walk_forward(&mut session, 25);
+    let flown = eye(&session);
+    assert!(
+        (Vec3::from(flown.position) - Vec3::from(orbiting.position)).length() > 0.5,
+        "the live free camera did not walk"
+    );
+    session.boundary(orbit_input()).unwrap();
+    assert_eq!(
+        eye(&session),
+        flown,
+        "a drag and a wheel line meant for the orbit moved the free camera"
+    );
+
+    let root = session.views_mut().root_mut();
+    root.rig
+        .free_mut()
+        .expect("a pair holds a free camera")
+        .eye
+        .position = PERCH;
+    root.set_flying(true);
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(
+        eye(&session).position,
+        PERCH,
+        "asking for the free camera that was already live started it again from the eye on screen"
+    );
+
+    session
+        .views_mut()
+        .root_mut()
+        .rig
+        .orbit_mut()
+        .expect("a pair holds an orbit")
+        .target = RETARGET;
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(
+        eye(&session).position,
+        PERCH,
+        "retargeting the parked orbit moved the eye"
+    );
+
+    fly(&mut session, false);
+    assert!(
+        !rig(&session).flying() && rig(&session).cursor().is_none(),
+        "a pair back on its orbit still reported its free camera"
+    );
+    session.boundary(Input::default()).unwrap();
+    let returned = eye(&session);
+    let offset = Vec3::from(returned.position) - Vec3::from(RETARGET);
+    assert!(
+        (offset - seat).length() < 1e-4,
+        "the orbit came back {offset:?} from its new target, not the {seat:?} it was parked at"
+    );
+    assert!(
+        (Vec3::from(returned.forward) + offset.normalize()).length() < 1e-4,
+        "the returned orbit looks along {:?}, away from its new target",
+        returned.forward
+    );
+    assert_eq!(returned.aspect, ASPECT);
+}
+
+#[test]
+fn a_restore_and_a_reset_bring_back_both_cameras_of_a_pair_and_the_one_that_was_live() {
+    let pair = Rig::Pair(CameraPair::new(
+        Orbit::around(TARGET, DISTANCE),
+        FreeCamera::default(),
+    ));
+    let mut session = hosted(SimConfig::new(50, 4).unwrap(), pair);
+    // A windowed launch captures the initial state before the first boundary seats the eye.
+    session.capture_initial();
+    session.boundary(Input::default()).unwrap();
+    let start = eye(&session);
+
+    fly(&mut session, true);
+    walk_forward(&mut session, 25);
+    let flown = eye(&session);
+    let flying = rig(&session);
+    let snapshot = session.snapshot().unwrap();
+
+    fly(&mut session, false);
+    session
+        .boundary(Input {
+            pointers: vec![moved(PointerButton::Secondary, [40.0, 30.0])],
+            ..Input::default()
+        })
+        .unwrap();
+    assert_ne!(rig(&session), flying);
+    assert_ne!(eye(&session), flown);
+
+    session.restore(&snapshot).unwrap();
+    assert_eq!(
+        rig(&session),
+        flying,
+        "the restore lost a camera of the pair or which one was live"
+    );
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(
+        eye(&session),
+        flown,
+        "the boundary after the restore drew from the orbit, not the free camera that was live"
+    );
+
+    session.reset().unwrap();
+    assert_eq!(
+        rig(&session),
+        pair,
+        "the reset kept the flight or the free camera's walked seat"
+    );
+    session.boundary(Input::default()).unwrap();
+    assert_eq!(
+        eye(&session),
+        start,
+        "the boundary after the reset did not draw from the orbit's starting seat"
+    );
+}
+
+#[test]
+fn asking_a_rig_that_is_not_a_pair_to_fly_or_to_stop_changes_neither_the_rig_nor_the_eye() {
+    let free = FreeCamera {
+        eye: Eye::looking_at([2.0, 3.0, 4.0], [0.0; 3], [0.0, 1.0, 0.0]),
+        ..FreeCamera::default()
+    };
+    for single in [
+        Rig::Manual,
+        Rig::Orbit(Orbit::around(TARGET, DISTANCE)),
+        Rig::Free(free),
+    ] {
+        let mut session = hosted(SimConfig::default(), single);
+        session.boundary(Input::default()).unwrap();
+        let seated = eye(&session);
+        for flying in [true, false] {
+            fly(&mut session, flying);
+            assert_eq!(
+                rig(&session),
+                single,
+                "set_flying({flying}) changed the rig"
+            );
+            session.boundary(Input::default()).unwrap();
+            assert_eq!(
+                eye(&session),
+                seated,
+                "set_flying({flying}) moved the eye of {single:?}"
+            );
+        }
+    }
 }
