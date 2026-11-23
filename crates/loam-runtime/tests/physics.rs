@@ -1,13 +1,17 @@
 #![cfg(feature = "physics")]
 
 use loam_math::{Bivector4, EuclideanR4, Rotor4, Space};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
+use loam_physics::world::ISLANDS_PER_SOLVE_WORKER;
 use loam_physics::BodyDef;
 use loam_runtime::{
     Change, ChartCommand, Command, Ctx, Cursor, DomainBuilder, DomainError, DomainHandle,
     DomainSpace, Entity, GrabConfig, Input, LogCapacity, Phase, PhysicsConfig, Pose, Rejection,
     RestConfig, Session, SimConfig, SpawnBundle, Store,
 };
+use loam_time::par::{ChunkSource, Executor};
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -406,5 +410,46 @@ fn a_restore_keeps_the_rest_time_a_body_had_at_the_snapshot() {
     assert!(
         asleep(&session, r4, restored),
         "the restore restarted a rest window that had 20 ticks behind it"
+    );
+}
+
+struct Counting {
+    drains: AtomicUsize,
+}
+
+impl Executor for Counting {
+    fn parallelism(&self) -> usize {
+        2
+    }
+
+    fn for_each_chunk(&self, _workers: usize, chunks: &(dyn ChunkSource + Sync)) {
+        self.drains.fetch_add(1, Ordering::Relaxed);
+        while chunks.run_next() {}
+    }
+}
+
+#[test]
+fn a_tick_hands_its_executor_to_a_world_with_enough_islands_to_share() {
+    let (mut session, r4) = session();
+    for pair in 0..2 * ISLANDS_PER_SOLVE_WORKER {
+        let x = pair as f32 * 4.0;
+        ball(&mut session, r4, Vec4::X * x);
+        ball(&mut session, r4, Vec4::X * (x + 1.5 * RADIUS));
+    }
+    let executor = Counting {
+        drains: AtomicUsize::new(0),
+    };
+
+    session.tick_with(&executor).unwrap();
+
+    let physics = session.domains().read(r4).unwrap().physics().unwrap();
+    let islands = physics.world().islands().len();
+    assert!(
+        islands >= 2 * ISLANDS_PER_SOLVE_WORKER,
+        "the fixture made {islands} islands, too few for a second solve worker"
+    );
+    assert!(
+        executor.drains.load(Ordering::Relaxed) > 0,
+        "the world solved its islands without the executor the tick was given"
     );
 }

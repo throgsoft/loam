@@ -74,3 +74,41 @@ fn a_script_without_records_is_refused() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("--records"));
 }
+
+// The overlay lines of each publication, and the string of each overlay text label.
+fn overlays(output: &Output) -> Vec<(usize, Vec<String>)> {
+    assert!(output.status.success(), "{}", stderr(output));
+    let mut dumps: Vec<(usize, Vec<String>)> = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.starts_with("publication ") {
+            dumps.push((0, Vec::new()));
+        } else if line.starts_with("overlay line ") {
+            dumps.last_mut().expect("a line follows a publication").0 += 1;
+        } else if let Some(rest) = line.strip_prefix("overlay text ") {
+            let (text, _) = rest.rsplit_once(" at ").expect("a place follows the text");
+            dumps
+                .last_mut()
+                .expect("a label follows a publication")
+                .1
+                .push(text.to_owned());
+        }
+    }
+    dumps
+}
+
+#[test]
+fn the_toybox_guides_and_the_readout_reach_the_publication_and_leave_it_when_turned_off() {
+    let output = records(
+        "overlay",
+        "2 demo toybox\n2 hud on\n25 demo rotate\n25 handles off\n25 hud off\n45 view shapes\n",
+    );
+    let dumps = overlays(&output);
+    let (lines, labels) = &dumps[0];
+    assert_eq!(*lines, 4, "the arena rectangle has four sides");
+    let [shadow, body] = &labels[..] else {
+        panic!("the readout is a shadow and a body: {labels:?}");
+    };
+    assert_eq!(shadow, body);
+    let last = dumps.last().expect("the run dumps a publication");
+    assert_eq!(*last, (0, Vec::new()), "rotate mode with handles off");
+}

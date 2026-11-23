@@ -3,12 +3,12 @@ use std::any::Any;
 use loam_math::{EuclideanR4, Space};
 use loam_runtime::host::run_headless;
 use loam_runtime::{
-    ActionEvent, ActionId, AppCommand, Bindings, Command, Ctx, DepthEnvelope, Dispatch,
-    DomainBuilder, DomainError, DomainHandle, DomainRay, Entity, Eye, Facility, Growth, HostConfig,
-    ImageRay, Input, Instance, Key, LogCapacity, Material, Outcome, Owner, Phase, PhaseError, Pose,
-    PreparedGeometry, PreparedId, Projection4, Publication, PublishError, Records, Rejection,
-    Reservation, RestoreError, SchemaId, Section4, Session, SimConfig, SpawnBundle, Step, Store,
-    Tick, ViewMapping, ViewSpec, ViewTarget, DOMAIN_STEP,
+    ActionEvent, ActionId, AppCommand, Backdrop, Bindings, Command, Ctx, DepthEnvelope, Dispatch,
+    DomainBuilder, DomainError, DomainHandle, DomainRay, Entity, Eye, Facility, Ground, Growth,
+    HostConfig, ImageRay, Input, Instance, Key, LogCapacity, Material, Outcome, Owner, Phase,
+    PhaseError, Pose, PreparedGeometry, PreparedId, Projection4, Publication, PublishError,
+    Records, Rejection, Reservation, RestoreError, SchemaId, Section4, Session, SimConfig, Sky,
+    SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec, ViewTarget, DOMAIN_STEP,
 };
 use loam_time::par::Executor;
 
@@ -778,4 +778,56 @@ fn a_view_added_through_dispatch_publishes_into_the_root_image_from_the_given_ey
         panic!("the eye or nothing was drawn");
     };
     assert_eq!((row.entity, row.image_point), (drawn, [4.0, 6.0, 9.0]));
+}
+
+#[test]
+fn the_root_backdrop_is_published_asks_for_a_redraw_only_when_it_changes_and_is_restored() {
+    let (mut session, _) = session();
+    let dusk = Backdrop {
+        sky: Sky {
+            below: [0.3, 0.1, 0.1],
+            above: [0.1, 0.1, 0.4],
+        },
+        ground: Ground {
+            y: -1.0,
+            dark: [0.1; 3],
+            light: [0.6; 3],
+            fog_per_unit: 0.01,
+            fog_start: 2.0,
+            visible: true,
+        },
+    };
+    session.views_mut().root_mut().backdrop = Some(dusk);
+    let saved = session.snapshot().unwrap();
+    let mut publication = Publication::default();
+
+    session.publish(&mut publication).unwrap();
+    assert_eq!(publication.backdrop, Some(dusk));
+    let drawn = publication.content();
+    session.publish(&mut publication).unwrap();
+    assert_eq!(
+        publication.content(),
+        drawn,
+        "an unchanged backdrop asked for a redraw"
+    );
+
+    let hidden = Backdrop {
+        ground: Ground {
+            visible: false,
+            ..dusk.ground
+        },
+        ..dusk
+    };
+    session.views_mut().root_mut().backdrop = Some(hidden);
+    session.publish(&mut publication).unwrap();
+    assert_eq!(publication.backdrop, Some(hidden));
+    assert_ne!(
+        publication.content(),
+        drawn,
+        "the hidden floor did not ask for a redraw"
+    );
+
+    session.restore(&saved).unwrap();
+    session.publish(&mut publication).unwrap();
+    assert_eq!(publication.backdrop, Some(dusk));
 }

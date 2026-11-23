@@ -1,10 +1,13 @@
 use glam::{Vec2, Vec3, Vec4};
 use loam_math::{EuclideanR4, HyperbolicH3, Iso3};
+use loam_render::device::{FeatureRequest, GpuContext};
+use loam_render::pass::FramePass;
 use loam_render::present::Presenter;
+use loam_render::SkyGroundPass;
 use loam_runtime::{
-    BridgeSpec, DomainBuilder, Entity, Instance, Klein, LogCapacity, Material, Placement, Pose,
-    PreparedGeometry, Projection4, Publication, Rigid, Section4, Session, SimConfig, SpawnBundle,
-    ViewSpec,
+    Backdrop, BridgeSpec, DomainBuilder, Entity, Eye, Ground, Instance, Klein, LogCapacity,
+    Material, Phase, Placement, PointRecord, Pose, PreparedGeometry, Projection4, Publication,
+    Rigid, Section4, SegmentRecord, Session, SimConfig, Sky, SpawnBundle, ViewSpec,
 };
 use wgpu::*;
 
@@ -110,32 +113,23 @@ fn twospace() -> (Session<Landmarks>, [Entity; 2]) {
     (session, landmarks)
 }
 
-async fn request_device() -> (Device, Queue) {
-    let instance = wgpu::Instance::default();
-    let adapter = instance
-        .request_adapter(&RequestAdapterOptions {
-            power_preference: PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await
-        .expect("request_adapter");
-    adapter
-        .request_device(&DeviceDescriptor {
-            label: Some("present"),
-            required_features: Features::empty(),
-            required_limits: Limits::default(),
-            memory_hints: MemoryHints::default(),
-            trace: Trace::Off,
-            experimental_features: Default::default(),
-        })
-        .await
-        .expect("request_device")
+fn render(publication: &Publication) -> Vec<u8> {
+    render_with(publication, Vec::new())
 }
 
-fn render(publication: &Publication) -> Vec<u8> {
-    let (device, queue) = pollster::block_on(request_device());
+fn render_with(publication: &Publication, passes: Vec<Box<dyn FramePass>>) -> Vec<u8> {
+    let gpu = pollster::block_on(GpuContext::new(
+        wgpu::Instance::default(),
+        FeatureRequest::default(),
+        None,
+    ))
+    .expect("gpu context");
+    let (device, queue) = (&gpu.device, &gpu.queue);
     let mut presenter = Presenter::new(COLOR_FORMAT).expect("presenter");
+    for pass in passes {
+        presenter.register_pass(pass).expect("registered the pass");
+    }
+    presenter.attach(&gpu).expect("attached the passes");
     let color = device.create_texture(&TextureDescriptor {
         label: Some("present color"),
         size: Extent3d {
@@ -152,17 +146,19 @@ fn render(publication: &Publication) -> Vec<u8> {
     });
     let view = color.create_view(&TextureViewDescriptor::default());
     presenter.upload(
-        &device,
-        &queue,
+        device,
+        queue,
         &loam_runtime::Eye::default(),
         Vec2::splat(SIZE as f32),
         &publication.views,
     );
+    presenter.upload_overlay(&Eye::default(), &publication.overlay);
+    presenter.upload_backdrop(&Eye::default(), publication.backdrop);
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
         label: Some("present"),
     });
     presenter
-        .record_scene(&device, &mut encoder, &view, (SIZE, SIZE), BACKGROUND)
+        .record_scene(device, &mut encoder, &view, (SIZE, SIZE), BACKGROUND)
         .expect("recorded the scene");
     presenter
         .record_overlays(&mut encoder, &view, (SIZE, SIZE))
@@ -310,5 +306,93 @@ fn a_bridged_view_rasterizes_where_its_placement_did_not_put_it_gpu_probe() {
     assert!(
         drawn[0] <= BACKGROUND_MAX,
         "the unplaced center at {unplaced:?} shows {drawn:?}, so the placement was dropped"
+    );
+}
+
+const OVERLAY_LINE_AT: [f32; 3] = [0.0, 0.5, -4.0];
+const OVERLAY_POINT_AT: [f32; 3] = [0.0, -0.5, -4.0];
+const SKY_PIXEL: (u32, u32) = (64, 8);
+const RED_SKY: Sky = Sky {
+    below: [0.9, 0.1, 0.1],
+    above: [0.9, 0.1, 0.1],
+};
+const HIDDEN_GROUND: Ground = Ground {
+    y: -1.0,
+    dark: [0.0; 3],
+    light: [0.0; 3],
+    fog_per_unit: 0.0,
+    fog_start: 0.0,
+    visible: false,
+};
+
+#[test]
+#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+fn an_overlay_line_and_point_from_a_publication_system_are_drawn_where_they_stand_gpu_probe() {
+    let mut session = Session::new(Landmarks::default(), SimConfig::default());
+    session.system(Phase::Publication, "marks", |ctx| {
+        let [x, y, z] = OVERLAY_LINE_AT;
+        ctx.overlay.lines.push(SegmentRecord {
+            start: [x - 0.5, y, z],
+            end: [x + 0.5, y, z],
+            start_color: [1.0; 4],
+            end_color: [1.0; 4],
+            width_px: 3.0,
+            ..SegmentRecord::default()
+        });
+        ctx.overlay.points.push(PointRecord {
+            position: OVERLAY_POINT_AT,
+            radius_px: 6.0,
+            color: [1.0; 4],
+        });
+        Ok(())
+    });
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+
+    let pixels = render(&publication);
+    for (name, at) in [("line", OVERLAY_LINE_AT), ("point", OVERLAY_POINT_AT)] {
+        let at = pixel(session.views().ndc(at).expect("in front of the eye"));
+        let drawn = texel(&pixels, at);
+        assert!(
+            drawn[0] >= INK_MIN,
+            "the overlay {name} at {at:?} shows {drawn:?}"
+        );
+    }
+    let empty = texel(&pixels, EMPTY);
+    assert!(
+        empty[0] <= BACKGROUND_MAX,
+        "the pixel at {EMPTY:?} shows {empty:?}, not the background"
+    );
+}
+
+#[test]
+#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+fn the_root_backdrop_paints_its_sky_over_the_background_gpu_probe() {
+    let mut session = Session::new(Landmarks::default(), SimConfig::default());
+    session.views_mut().root_mut().backdrop = Some(Backdrop {
+        sky: RED_SKY,
+        ground: HIDDEN_GROUND,
+    });
+    let mut publication = Publication::default();
+    session.publish(&mut publication).unwrap();
+
+    let sky = texel(&render(&publication), SKY_PIXEL);
+    assert!(
+        sky[0] >= INK_MIN,
+        "the pixel at {SKY_PIXEL:?} shows {sky:?}, not the sky"
+    );
+}
+
+#[test]
+#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+fn a_registered_sky_pass_paints_over_the_background_when_no_backdrop_is_published_gpu_probe() {
+    let own = SkyGroundPass::new(HIDDEN_GROUND);
+    own.publish(&Eye::default(), RED_SKY, HIDDEN_GROUND);
+
+    let pixels = render_with(&Publication::default(), vec![Box::new(own)]);
+    let sky = texel(&pixels, SKY_PIXEL);
+    assert!(
+        sky[0] >= INK_MIN,
+        "the pixel at {SKY_PIXEL:?} shows {sky:?}, so the background clear won over the sky"
     );
 }
