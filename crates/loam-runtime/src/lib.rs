@@ -43,7 +43,7 @@ pub use input::{
 };
 pub use phase::{Ctx, Order, Phase, PhaseError, Step, SystemEntry, Tick};
 #[cfg(feature = "physics")]
-pub use physics::{GrabConfig, GrabHold, Physics, PhysicsConfig};
+pub use physics::{GrabConfig, GrabHold, Physics, PhysicsConfig, RestConfig, ThrowConfig};
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
     Growth, Library, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId, Publication,

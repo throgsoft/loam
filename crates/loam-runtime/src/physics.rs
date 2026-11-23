@@ -16,6 +16,7 @@ use crate::entity::{Entity, EntityKey, SceneId};
 use crate::phase::Step;
 use crate::session::RestoreError;
 use crate::store::{Owner, SchemaId, Store};
+use crate::view::{Vec3, ViewMapping};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GrabHold {
@@ -26,6 +27,49 @@ pub enum GrabHold {
     Anchor,
 }
 
+/// Under [`GrabHold::Anchor`] a thrown body keeps its own motion and only `max_spin` applies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThrowConfig {
+    pub gain: f32,
+    /// Distance units per second.
+    pub max_speed: f32,
+    /// Radians per second gained per unit of pointer speed across the unit grab lever.
+    pub spin_gain: f32,
+    /// Radians per second.
+    pub max_spin: f32,
+}
+
+impl ThrowConfig {
+    fn is_valid(&self) -> bool {
+        let non_negative = |value: f32| value.is_finite() && value >= 0.0;
+        non_negative(self.gain)
+            && self.max_speed.is_finite()
+            && self.max_speed > 0.0
+            && non_negative(self.spin_gain)
+            && !self.max_spin.is_nan()
+            && self.max_spin >= 0.0
+    }
+}
+
+/// A body falls asleep once it has moved less than `travel` and stayed under both speeds for `window` seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RestConfig {
+    pub travel: f32,
+    pub window: f32,
+    /// Distance units per second.
+    pub speed: f32,
+    /// Radians per second.
+    pub angular_speed: f32,
+}
+
+impl RestConfig {
+    fn is_valid(&self) -> bool {
+        [self.travel, self.window, self.speed, self.angular_speed]
+            .into_iter()
+            .all(|value| value >= 0.0)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct GrabConfig<S: PhysicsSpace> {
     stiffness: f32,
@@ -34,6 +78,7 @@ pub struct GrabConfig<S: PhysicsSpace> {
     hold: GrabHold,
     anchor_point: fn(S::Point, S::Point) -> S::Point,
     constrain_target: fn(S::Point, S::Point) -> S::Point,
+    throw: Option<ThrowConfig>,
 }
 
 impl<S: PhysicsSpace> GrabConfig<S> {
@@ -45,7 +90,13 @@ impl<S: PhysicsSpace> GrabConfig<S> {
             hold: GrabHold::Center,
             anchor_point: |_, point| point,
             constrain_target: |_, point| point,
+            throw: None,
         }
+    }
+
+    pub fn throw(mut self, throw: ThrowConfig) -> Self {
+        self.throw = Some(throw);
+        self
     }
 
     pub fn hold(mut self, hold: GrabHold) -> Self {
@@ -75,6 +126,8 @@ pub struct PhysicsConfig<S: PhysicsSpace> {
     grab: Option<GrabConfig<S>>,
     max_step_travel: Option<f32>,
     motion_speed: fn(&RigidBody<S>) -> f32,
+    angular_damping: Option<f32>,
+    rest: Option<RestConfig>,
 }
 
 fn linear_speed<S>(body: &RigidBody<S>) -> f32
@@ -99,6 +152,8 @@ where
             grab: None,
             max_step_travel: None,
             motion_speed: linear_speed::<S>,
+            angular_damping: None,
+            rest: None,
         }
     }
 
@@ -132,6 +187,17 @@ where
         self
     }
 
+    /// Scales each dynamic body's angular velocity by `exp(-rate * dt)` after every step.
+    pub fn angular_damping(mut self, rate: f32) -> Self {
+        self.angular_damping = Some(rate);
+        self
+    }
+
+    pub fn rest(mut self, rest: RestConfig) -> Self {
+        self.rest = Some(rest);
+        self
+    }
+
     fn validate(&self, space: &S) -> Result<(), EditError> {
         if self
             .gravity
@@ -146,9 +212,17 @@ where
                 || grab.max_carry_speed < 0.0
                 || grab.max_acceleration.is_nan()
                 || grab.max_acceleration < 0.0
+                || grab.throw.as_ref().is_some_and(|throw| !throw.is_valid())
             {
                 return Err(EditError::InvalidGrabConfig);
             }
+        }
+        if self
+            .angular_damping
+            .is_some_and(|rate| !rate.is_finite() || rate < 0.0)
+            || self.rest.is_some_and(|rest| !rest.is_valid())
+        {
+            return Err(EditError::InvalidRestConfig);
         }
         if self
             .max_step_travel
@@ -188,11 +262,25 @@ impl<S: PhysicsSpace> Clone for Released<S> {
 
 impl<S: PhysicsSpace> Copy for Released<S> {}
 
+struct Rest<S: PhysicsSpace> {
+    anchor: S::Point,
+    time: f32,
+}
+
+impl<S: PhysicsSpace> Clone for Rest<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: PhysicsSpace> Copy for Rest<S> {}
+
 pub struct Physics<S: PhysicsSpace> {
     scene: SceneId,
     world: World<S>,
     to_body: Vec<Option<(u32, BodyId)>>,
     to_entity: Vec<Option<(u32, EntityKey)>>,
+    rests: Vec<Option<(u32, Rest<S>)>>,
     held: Option<Held<S>>,
     released: Option<Released<S>>,
     min_substeps: u32,
@@ -200,11 +288,14 @@ pub struct Physics<S: PhysicsSpace> {
     grab: Option<GrabConfig<S>>,
     max_step_travel: Option<f32>,
     motion_speed: fn(&RigidBody<S>) -> f32,
+    angular_damping: Option<f32>,
+    rest: Option<RestConfig>,
 }
 
 struct PhysicsSnapshot<S: PhysicsSpace> {
     world: WorldState<S>,
     to_entity: Vec<Option<(u32, EntityKey)>>,
+    rests: Vec<Option<(u32, Rest<S>)>>,
 }
 
 fn body_at(to_body: &[Option<(u32, BodyId)>], key: EntityKey) -> Option<BodyId> {
@@ -387,7 +478,10 @@ where
 
     /// The grab point of the body released last, moved with the body since.
     pub fn released_anchor(&self, entity: Entity) -> Option<S::Point> {
-        let body = self.body(entity)?;
+        self.released_point(self.body(entity)?)
+    }
+
+    fn released_point(&self, body: BodyId) -> Option<S::Point> {
         let released = self.released.filter(|released| released.body == body)?;
         let row = self.world.body(body)?;
         let lever =
@@ -415,6 +509,19 @@ where
         id
     }
 
+    pub(crate) fn restart_rest(&mut self, id: BodyId) {
+        let rest = self.world.body(id).map(|body| {
+            (
+                id.generation(),
+                Rest {
+                    anchor: body.position,
+                    time: 0.0,
+                },
+            )
+        });
+        put(&mut self.rests, id.slot() as usize, rest);
+    }
+
     pub fn despawn(&mut self, entity: Entity) -> Option<BodyId> {
         let id = self.body(entity)?;
         if self.held.is_some_and(|held| held.body == id) {
@@ -426,6 +533,7 @@ where
         let _ = self.world.despawn_body(id);
         put(&mut self.to_body, entity.key().slot() as usize, None);
         put(&mut self.to_entity, id.slot() as usize, None);
+        put(&mut self.rests, id.slot() as usize, None);
         Some(id)
     }
 
@@ -578,6 +686,58 @@ where
         Ok(Outcome::Done)
     }
 
+    fn throw_body(
+        &mut self,
+        id: BodyId,
+        flick: S::Vector,
+        mapping: &dyn ViewMapping<S>,
+        eye: &Pose<S>,
+    ) -> Result<Outcome, Rejection> {
+        let Some(grab) = self.grab else {
+            return Ok(Outcome::Done);
+        };
+        let Some(throw) = grab.throw else {
+            return Ok(Outcome::Done);
+        };
+        let space = *self.world.space();
+        let body = *self
+            .world
+            .body(id)
+            .ok_or(Rejection::Edit(EditError::StaleHandle))?;
+        let mut linear = body.velocity;
+        let mut angular = body.angular_velocity;
+        if grab.hold == GrabHold::Center {
+            let unsupported = || Rejection::Domain(DomainError::Unsupported(mapping.name()));
+            let at = mapping
+                .image_point(eye, body.position)
+                .ok_or_else(unsupported)?;
+            let shown = mapping
+                .image_tangent(eye, body.position, body.velocity)
+                .and_then(|image| mapping.lift_tangent(eye, at, image))
+                .ok_or_else(unsupported)?;
+            let thrown = flick * throw.gain;
+            let capped = thrown * (throw.max_speed / thrown.length().max(throw.max_speed));
+            linear = capped + (body.velocity - shown);
+            let lever = self.released_point(id).and_then(|handle| {
+                let offset = space.log(body.position, handle);
+                let unit = Vec3::from(mapping.image_tangent(eye, body.position, offset)?)
+                    .try_normalize()?;
+                mapping.lift_tangent(eye, at, unit.to_array())
+            });
+            if let Some(lever) = lever {
+                angular = angular + space.wedge(lever, flick) * throw.spin_gain;
+            }
+        }
+        let spin = angular.magnitude();
+        if spin > throw.max_spin {
+            angular = angular * (throw.max_spin / spin);
+        }
+        self.world
+            .set_velocity(id, linear, angular)
+            .map_err(Rejection::Edit)?;
+        Ok(Outcome::Done)
+    }
+
     fn drive_held(&mut self, dt: f32) -> Result<(), DomainError> {
         let Some(held) = self.held else {
             return Ok(());
@@ -666,6 +826,72 @@ where
     }
 }
 
+impl<S> Physics<S>
+where
+    S: Homogeneous + PhysicsSpace + Copy,
+    S::Vector: VectorOps + Default,
+    S::AngVel: PartialEq,
+    S::Point: Sub<Output = S::Vector>,
+{
+    fn settle(&mut self, dt: f32) -> Result<(), DomainError> {
+        if self.angular_damping.is_none() && self.rest.is_none() {
+            return Ok(());
+        }
+        let decay = self.angular_damping.map(|rate| (-rate * dt).exp());
+        let space = *self.world.space();
+        for dense in 0..self.world.bodies().len() {
+            let id = self.world.bodies().id_at(dense);
+            let Some(mut body) = self.world.body(id).copied() else {
+                continue;
+            };
+            if body.is_static() {
+                continue;
+            }
+            if let Some(decay) = decay {
+                let angular = body.angular_velocity * decay;
+                if angular != body.angular_velocity {
+                    self.world.set_velocity(id, body.velocity, angular)?;
+                    body.angular_velocity = angular;
+                }
+            }
+            let Some(rest) = self.rest else {
+                continue;
+            };
+            let held = self.held.is_some_and(|held| held.body == id);
+            let slot = id.slot() as usize;
+            if !matches!(self.rests.get(slot), Some(Some((generation, _))) if *generation == id.generation())
+            {
+                self.restart_rest(id);
+            }
+            let Some(Some((_, state))) = self.rests.get_mut(slot) else {
+                continue;
+            };
+            if held {
+                state.anchor = body.position;
+                state.time = 0.0;
+                continue;
+            }
+            if !body.is_sleeping() && state.time >= rest.window {
+                state.anchor = body.position;
+                state.time = 0.0;
+            }
+            let travelled = space.log(state.anchor, body.position).length();
+            let moving = body.velocity.length() > rest.speed
+                || body.angular_velocity.magnitude() > rest.angular_speed;
+            if travelled > rest.travel || moving {
+                state.anchor = body.position;
+                state.time = 0.0;
+            } else {
+                state.time += dt;
+                if state.time >= rest.window {
+                    self.world.sleep_body(id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<S> Facility<S> for Physics<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
@@ -698,7 +924,7 @@ where
         }
         self.sync_poses(poses, true);
         self.released = None;
-        Ok(())
+        self.settle(step.dt)
     }
 
     fn synchronize(&mut self, poses: &mut Store<Pose<S>>, _owner: Owner) {
@@ -737,6 +963,7 @@ where
         Box::new(PhysicsSnapshot::<S> {
             world: self.world.snapshot(),
             to_entity: self.to_entity.clone(),
+            rests: self.rests.clone(),
         })
     }
 
@@ -758,6 +985,8 @@ where
             .map_err(RestoreError::Edit)?;
         self.to_entity.clear();
         self.to_entity.extend_from_slice(&from.to_entity);
+        self.rests.clear();
+        self.rests.extend_from_slice(&from.rests);
         self.held = None;
         self.released = None;
         for slot in &mut self.to_body {
@@ -807,6 +1036,17 @@ where
             _ => None,
         }
     }
+
+    fn throw(
+        &mut self,
+        entity: Entity,
+        velocity: S::Vector,
+        mapping: &dyn ViewMapping<S>,
+        eye: &Pose<S>,
+    ) -> Option<Result<Outcome, Rejection>> {
+        let id = self.body(entity)?;
+        Some(self.throw_body(id, velocity, mapping, eye))
+    }
 }
 
 impl<S> DomainBuilder<S>
@@ -826,6 +1066,7 @@ where
             world,
             to_body: Vec::new(),
             to_entity: Vec::new(),
+            rests: Vec::new(),
             held: None,
             released: None,
             min_substeps: config.min_substeps,
@@ -833,6 +1074,8 @@ where
             grab: config.grab,
             max_step_travel: config.max_step_travel,
             motion_speed: config.motion_speed,
+            angular_damping: config.angular_damping,
+            rest: config.rest,
         }))
     }
 }

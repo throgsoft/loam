@@ -13,8 +13,8 @@ use crate::domain::{
     presented_alpha, ChartCommand, ChartPoint, DomainBuilder, DomainError, DomainHandle, DomainId,
     DomainSnapshot, DomainSpace, Domains,
 };
-use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
-use crate::input::{ActionId, Input};
+use crate::entity::{Entities, EntitiesSnapshot, Entity, Epoch, RuntimeId, SceneId};
+use crate::input::{ActionId, Input, PointerButton, PointerPhase};
 use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, SystemEntry, Tick};
 use crate::relation::{LinkId, Relation, RelationSnapshot};
 use crate::store::{Owner, SchemaId, StoreField};
@@ -374,9 +374,16 @@ impl std::fmt::Display for RestoreError {
     }
 }
 
+pub(crate) struct Scene<'a> {
+    pub(crate) domains: &'a Domains,
+    pub(crate) views: &'a Views,
+    pub(crate) prepared: &'a [PreparedGeometry],
+}
+
 #[derive(Default)]
 pub(crate) struct Manipulation {
     drag: Option<Drag>,
+    pointer: Option<[f32; 2]>,
 }
 
 impl Manipulation {
@@ -396,6 +403,17 @@ impl Manipulation {
         let pick = domains
             .pick_lifted(views, prepared, ndc)
             .ok_or(DragError::NoPick)?;
+        self.grab_pick(domains, views, commands, pick, time)
+    }
+
+    pub(crate) fn grab_pick<A: Stores>(
+        &mut self,
+        domains: &Domains,
+        views: &Views,
+        commands: &mut Commands<A>,
+        pick: Pick,
+        time: f64,
+    ) -> Result<Pick, DragError> {
         let domain = domains
             .get(pick.domain)
             .ok_or(DomainError::UnknownDomain(pick.domain))?;
@@ -498,27 +516,52 @@ impl Manipulation {
         Ok(point)
     }
 
-    fn finish<A: Stores>(
-        commands: &mut Commands<A>,
-        drag: Drag,
-        velocity: [f32; 3],
-    ) -> DragRelease {
+    fn finish<A: Stores>(commands: &mut Commands<A>, drag: Drag) {
         commands.submit(Command::Chart(
             drag.domain,
             ChartCommand::Release {
                 entity: drag.entity,
             },
         ));
+    }
+
+    fn throw<A: Stores>(
+        domains: &Domains,
+        commands: &mut Commands<A>,
+        drag: Drag,
+        velocity: [f32; 3],
+    ) -> DragRelease {
+        Self::finish(commands, drag);
+        let lifted = domains.get(drag.domain).and_then(|domain| {
+            domain
+                .lift_tangent(drag.view, drag.moved(drag.at), velocity)
+                .ok()
+        });
+        if let Some(lifted) = lifted {
+            commands.submit(Command::Chart(
+                drag.domain,
+                ChartCommand::Throw {
+                    entity: drag.entity,
+                    view: drag.view,
+                    velocity: lifted,
+                },
+            ));
+        }
         drag.released(velocity)
     }
 
-    pub(crate) fn release<A: Stores>(&mut self, commands: &mut Commands<A>) -> Option<DragRelease> {
+    pub(crate) fn release<A: Stores>(
+        &mut self,
+        domains: &Domains,
+        commands: &mut Commands<A>,
+    ) -> Option<DragRelease> {
         let drag = self.drag.take()?;
-        Some(Self::finish(commands, drag, drag.velocity()))
+        Some(Self::throw(domains, commands, drag, drag.velocity()))
     }
 
     pub(crate) fn release_at<A: Stores>(
         &mut self,
+        domains: &Domains,
         commands: &mut Commands<A>,
         time: f64,
     ) -> Option<DragRelease> {
@@ -529,16 +572,83 @@ impl Manipulation {
         } else {
             [0.0; 3]
         };
-        Some(Self::finish(commands, drag, velocity))
+        Some(Self::throw(domains, commands, drag, velocity))
     }
 
     pub(crate) fn cancel<A: Stores>(&mut self, commands: &mut Commands<A>) -> Option<DragRelease> {
         let drag = self.drag.take()?;
-        Some(Self::finish(commands, drag, [0.0; 3]))
+        Self::finish(commands, drag);
+        Some(drag.released([0.0; 3]))
+    }
+
+    pub(crate) fn carry<A: Stores>(
+        &mut self,
+        scene: Scene<'_>,
+        commands: &mut Commands<A>,
+        input: &Input,
+        button: PointerButton,
+        mut allow: impl FnMut(Entity) -> bool,
+    ) -> Option<DragRelease> {
+        let Scene {
+            domains,
+            views,
+            prepared,
+        } = scene;
+        if self.drag.is_some_and(|drag| !allow(drag.entity)) {
+            self.cancel(commands);
+        }
+        if let Some(pointer) = input.pointers.last() {
+            self.pointer = Some(pointer.ndc);
+        }
+        let mut steered = false;
+        let mut released = None;
+        for pointer in input
+            .pointers
+            .iter()
+            .filter(|pointer| pointer.button == Some(button))
+        {
+            match pointer.phase {
+                PointerPhase::Began => {
+                    steered = true;
+                    let pick = domains
+                        .pick_lifted(views, prepared, pointer.ndc)
+                        .filter(|pick| allow(pick.entity));
+                    if let Some(pick) = pick {
+                        let _ = self.grab_pick(domains, views, commands, pick, pointer.time);
+                    }
+                }
+                PointerPhase::Moved if self.drag.is_some() => {
+                    steered = true;
+                    if self
+                        .drag(domains, views, commands, pointer.ndc, pointer.time)
+                        .is_err()
+                    {
+                        self.cancel(commands);
+                    }
+                }
+                PointerPhase::Ended if self.drag.is_some() => {
+                    released = self.release_at(domains, commands, pointer.time);
+                }
+                PointerPhase::Cancelled => {
+                    self.cancel(commands);
+                }
+                _ => {}
+            }
+        }
+        if let Some(ndc) = self.pointer.filter(|_| !steered && self.drag.is_some()) {
+            if self
+                .drag(domains, views, commands, ndc, input.time)
+                .is_err()
+            {
+                self.cancel(commands);
+            }
+        }
+        released
     }
 
     pub(crate) fn clear(&mut self) {
         self.drag = None;
+        self.pointer = None;
     }
 }
 
@@ -859,11 +969,12 @@ impl<A: Stores> Session<A> {
     }
 
     pub fn release(&mut self) -> Option<DragRelease> {
-        self.manipulation.release(&mut self.commands)
+        self.manipulation.release(&self.domains, &mut self.commands)
     }
 
     pub fn release_at(&mut self, time: f64) -> Option<DragRelease> {
-        self.manipulation.release_at(&mut self.commands, time)
+        self.manipulation
+            .release_at(&self.domains, &mut self.commands, time)
     }
 
     pub fn cancel_drag(&mut self) -> Option<DragRelease> {

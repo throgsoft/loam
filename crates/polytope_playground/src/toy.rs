@@ -1,11 +1,11 @@
 use glam::Vec4;
-use loam::math::{Bivector4, EuclideanR4, Rotor, Rotor4};
+use loam::math::{EuclideanR4, Rotor, Rotor4};
 use loam::physics::euclidean_r4::register_default_narrowphase;
 use loam::physics::manifold::PENETRATION_SLOP;
 use loam::physics::{BodyDef, Collider, EditError, RigidBody};
 use loam::runtime::{
-    Dispatch, DomainError, DomainHandle, Domains, Entity, GrabConfig, Instance, Physics,
-    PhysicsConfig, Pose, Rejection, Session, SpawnBundle, Step,
+    Dispatch, DomainHandle, Entity, GrabConfig, Instance, PhysicsConfig, Pose, Rejection,
+    RestConfig, Session, SpawnBundle, ThrowConfig,
 };
 use loam::shape::polytope::Polytope4;
 
@@ -58,7 +58,13 @@ pub(crate) fn physics_config() -> PhysicsConfig<EuclideanR4> {
         .grab(
             GrabConfig::new(GRAB_STIFFNESS, MAX_CARRY_SPEED, MAX_GRAB_ACCELERATION)
                 .anchor_point(grab_anchor)
-                .constrain_target(clamp_target_to_arena),
+                .constrain_target(clamp_target_to_arena)
+                .throw(ThrowConfig {
+                    gain: RELEASE_GAIN,
+                    max_speed: MAX_RELEASE_SPEED,
+                    spin_gain: RELEASE_SPIN_GAIN / BODY_SIZE,
+                    max_spin: MAX_ANGULAR_SPEED,
+                }),
         )
         .adaptive_substeps(
             BASE_SUBSTEPS,
@@ -66,6 +72,13 @@ pub(crate) fn physics_config() -> PhysicsConfig<EuclideanR4> {
             STEP_TRAVEL_BUDGET,
             motion_speed,
         )
+        .angular_damping(ANGULAR_DAMPING)
+        .rest(RestConfig {
+            travel: REST_TRAVEL,
+            window: REST_WINDOW,
+            speed: REST_SPEED,
+            angular_speed: REST_ANGULAR_SPEED,
+        })
 }
 
 fn grab_anchor(body: Vec4, picked: Vec4) -> Vec4 {
@@ -82,38 +95,6 @@ fn clamp_target_to_arena(current: Vec4, target: Vec4) -> Vec4 {
         target.z.clamp(-reach, reach),
         current.w,
     )
-}
-
-pub(crate) fn release(
-    physics: &mut Physics<EuclideanR4>,
-    entity: Entity,
-    pointer: [f32; 3],
-    rope: bool,
-) -> Result<(), EditError> {
-    let body = *physics
-        .world()
-        .body(physics.body(entity).ok_or(EditError::StaleHandle)?)
-        .ok_or(EditError::StaleHandle)?;
-    let mut linear = body.velocity;
-    let mut angular = body.angular_velocity;
-    if !rope {
-        let flick = Vec4::new(pointer[0], pointer[1], pointer[2], 0.0);
-        let throw = flick * RELEASE_GAIN;
-        linear = throw * (MAX_RELEASE_SPEED / throw.length().max(MAX_RELEASE_SPEED))
-            + Vec4::W * body.velocity.w;
-        let lever = physics
-            .released_anchor(entity)
-            .and_then(|handle| (handle - body.position).truncate().try_normalize());
-        if let Some(lever) = lever {
-            angular = angular
-                + Bivector4::wedge(lever.extend(0.0), flick) * (RELEASE_SPIN_GAIN / BODY_SIZE);
-        }
-    }
-    let speed = angular.magnitude();
-    if speed > MAX_ANGULAR_SPEED {
-        angular = angular * (MAX_ANGULAR_SPEED / speed);
-    }
-    physics.set_velocity(entity, linear, angular)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -258,10 +239,7 @@ fn spawn_toy(
                 entry,
                 rest: pose.point,
             })
-            .row(Toy {
-                rest_anchor: pose.point,
-                rest_time: 0.0,
-            }),
+            .row(Toy),
     )?;
     Ok(())
 }
@@ -353,50 +331,4 @@ pub(crate) fn reset(
 ) -> Result<(), Rejection> {
     clear(dispatch, domain)?;
     populate(dispatch, domain, cards)
-}
-
-pub(crate) fn settle(
-    app: &mut Playground,
-    domains: &mut Domains,
-    domain: DomainHandle<EuclideanR4>,
-    step: Step,
-) -> Result<(), DomainError> {
-    let physics = domains.physics(domain)?;
-    let decay = (-ANGULAR_DAMPING * step.dt).exp();
-    for (entity, toy) in app.toys.iter_mut() {
-        let Some(id) = physics.body(entity) else {
-            continue;
-        };
-        let held = physics.is_held(entity);
-        let Some(mut body) = physics.world().body(id).copied() else {
-            continue;
-        };
-        let angular = body.angular_velocity * decay;
-        if angular != body.angular_velocity {
-            physics.set_velocity(entity, body.velocity, angular)?;
-            body.angular_velocity = angular;
-        }
-        if held {
-            toy.rest_anchor = body.position;
-            toy.rest_time = 0.0;
-            continue;
-        }
-        if !body.is_sleeping() && toy.rest_time >= REST_WINDOW {
-            toy.rest_anchor = body.position;
-            toy.rest_time = 0.0;
-        }
-        let travelled = (body.position - toy.rest_anchor).length();
-        let moving = body.velocity.length() > REST_SPEED
-            || body.angular_velocity.magnitude() > REST_ANGULAR_SPEED;
-        if travelled > REST_TRAVEL || moving {
-            toy.rest_anchor = body.position;
-            toy.rest_time = 0.0;
-        } else {
-            toy.rest_time += step.dt;
-            if toy.rest_time >= REST_WINDOW {
-                physics.sleep_body(entity)?;
-            }
-        }
-    }
-    Ok(())
 }

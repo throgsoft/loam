@@ -2,6 +2,7 @@ use std::any::Any;
 use std::fmt;
 use std::marker::PhantomData;
 use std::ops::Mul;
+use std::sync::Arc;
 
 pub use loam_shape::field::FieldKind;
 
@@ -141,6 +142,12 @@ pub enum ChartCommand {
     Release {
         entity: Entity,
     },
+    /// Sets the part of the body's velocity that `view` shows from `velocity` under the grab's throw configuration.
+    Throw {
+        entity: Entity,
+        view: ViewId,
+        velocity: ChartTangent,
+    },
 }
 
 impl ChartCommand {
@@ -151,7 +158,8 @@ impl ChartCommand {
             | Self::Walk { entity, .. }
             | Self::Move { entity, .. }
             | Self::Grab { entity, .. }
-            | Self::Release { entity } => entity,
+            | Self::Release { entity }
+            | Self::Throw { entity, .. } => entity,
         }
     }
 }
@@ -312,6 +320,8 @@ pub trait DomainSpace:
     fn pose_from_chart(&self, pose: &ChartPose) -> Result<Pose<Self>, DomainError>;
 
     fn tangent_from_chart(&self, tangent: &ChartTangent) -> Result<Self::Vector, DomainError>;
+
+    fn chart_tangent(&self, tangent: Self::Vector) -> ChartTangent;
 
     fn chart_reach(&self, at: Self::Point, radius: f32) -> f32;
 
@@ -622,6 +632,13 @@ impl DomainSpace for EuclideanR4 {
         Ok(Vec4::from_array(tangent.vector))
     }
 
+    fn chart_tangent(&self, tangent: Self::Vector) -> ChartTangent {
+        ChartTangent {
+            chart: ChartId(0),
+            vector: tangent.to_array(),
+        }
+    }
+
     fn chart_reach(&self, _at: Self::Point, radius: f32) -> f32 {
         radius
     }
@@ -737,6 +754,13 @@ impl DomainSpace for HyperbolicH3 {
         Ok(Vec3::from_slice(&tangent.vector[..3]))
     }
 
+    fn chart_tangent(&self, tangent: Self::Vector) -> ChartTangent {
+        ChartTangent {
+            chart: ChartId(0),
+            vector: tangent.extend(0.0).to_array(),
+        }
+    }
+
     fn chart_reach(&self, _at: Self::Point, radius: f32) -> f32 {
         2.0 * radius
             .min(loam_math::hyperbolic::POINCARE_R2_MAX.sqrt())
@@ -844,6 +868,13 @@ impl DomainSpace for EuclideanR3 {
         single_chart(tangent.chart)?;
         finite(tangent.vector)?;
         Ok(Vec3::from_slice(&tangent.vector[..3]))
+    }
+
+    fn chart_tangent(&self, tangent: Self::Vector) -> ChartTangent {
+        ChartTangent {
+            chart: ChartId(0),
+            vector: tangent.extend(0.0).to_array(),
+        }
     }
 
     fn chart_reach(&self, _at: Self::Point, radius: f32) -> f32 {
@@ -963,6 +994,13 @@ where
         single_chart(tangent.chart)?;
         finite(tangent.vector)?;
         Ok(Vec3::from_slice(&tangent.vector[..3]))
+    }
+
+    fn chart_tangent(&self, tangent: Self::Vector) -> ChartTangent {
+        ChartTangent {
+            chart: ChartId(0),
+            vector: tangent.extend(0.0).to_array(),
+        }
     }
 
     fn chart_reach(&self, at: Self::Point, radius: f32) -> f32 {
@@ -1572,6 +1610,17 @@ pub trait Facility<S: DomainSpace>: Any + Send + 'static {
     ) -> Option<Result<Outcome, Rejection>> {
         None
     }
+
+    /// `Some` claims a [`ChartCommand::Throw`] made through the view that `mapping` draws from `eye`.
+    fn throw(
+        &mut self,
+        _entity: Entity,
+        _velocity: S::Vector,
+        _mapping: &dyn ViewMapping<S>,
+        _eye: &Pose<S>,
+    ) -> Option<Result<Outcome, Rejection>> {
+        None
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1673,6 +1722,13 @@ pub trait Domain: Send + 'static {
     fn image_of(&self, view: ViewId, entity: Entity) -> Option<[f32; 3]>;
 
     fn lift_origin(&self, view: ViewId, ray: &ImageRay) -> Result<ChartPoint, DomainError>;
+
+    fn lift_tangent(
+        &self,
+        view: ViewId,
+        at: [f32; 3],
+        tangent: [f32; 3],
+    ) -> Result<ChartTangent, DomainError>;
 
     fn compile_fields(&mut self) -> Result<FieldCost, DomainError>;
 
@@ -2271,6 +2327,7 @@ where
             let _ = physics.despawn(entity);
             return Err(error.into());
         }
+        physics.restart_rest(id);
         Ok(id)
     }
 }
@@ -2412,6 +2469,27 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
             .ok_or(DomainError::Unsupported(spec.style.mapping.name()))?;
         self.space.check(lifted.origin)?;
         Ok(self.space.chart_point(lifted.origin))
+    }
+
+    fn lift_tangent(
+        &self,
+        view: ViewId,
+        at: [f32; 3],
+        tangent: [f32; 3],
+    ) -> Result<ChartTangent, DomainError> {
+        let spec = self
+            .views
+            .get(view.index())
+            .ok_or(DomainError::UnknownView(view))?;
+        let eye = self
+            .drawn(spec.eye, self.presented)
+            .ok_or(DomainError::Stale(spec.eye))?;
+        let lifted = spec
+            .style
+            .mapping
+            .lift_tangent(&eye, at, tangent)
+            .ok_or(DomainError::Unsupported(spec.style.mapping.name()))?;
+        Ok(self.space.chart_tangent(lifted))
     }
 
     fn compile_fields(&mut self) -> Result<FieldCost, DomainError> {
@@ -2745,6 +2823,28 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
             }
             ChartCommand::Move { entity, point } => {
                 self.move_to(*entity, *point)?;
+                Ok(Outcome::Done)
+            }
+            ChartCommand::Throw {
+                entity,
+                view,
+                velocity,
+            } => {
+                let velocity = self.space.tangent_from_chart(velocity)?;
+                let spec = self
+                    .views
+                    .get(view.index())
+                    .ok_or(DomainError::UnknownView(*view))?;
+                let mapping = Arc::clone(&spec.style.mapping);
+                let eye = self
+                    .drawn(spec.eye, self.presented)
+                    .ok_or(DomainError::Stale(spec.eye))?;
+                for facility in &mut self.facilities {
+                    if let Some(outcome) = facility.throw(*entity, velocity, mapping.as_ref(), &eye)
+                    {
+                        return outcome;
+                    }
+                }
                 Ok(Outcome::Done)
             }
             ChartCommand::Grab { .. } | ChartCommand::Release { .. } => Ok(Outcome::Done),

@@ -77,10 +77,7 @@ pub(crate) struct Slot {
 pub(crate) struct Wall;
 
 #[derive(Clone, Copy)]
-pub(crate) struct Toy {
-    pub(crate) rest_anchor: Vec4,
-    pub(crate) rest_time: f32,
-}
+pub(crate) struct Toy;
 
 #[derive(Clone, Copy)]
 pub(crate) struct HiddenSlot {
@@ -187,12 +184,12 @@ pub(crate) enum Action {
     Reset,
     Time(f32),
     PlaneAngle(usize, f32),
-    Throw(Entity, [f32; 3]),
 }
 
 pub(crate) struct Boot {
     pub(crate) session: Session<Playground>,
     pub(crate) domain: DomainHandle<EuclideanR4>,
+    pub(crate) section: ViewId,
 }
 
 fn rest_of(index: usize, len: usize) -> Vec4 {
@@ -247,7 +244,11 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
 
     let cards = session.app.catalog.cards.clone();
     install_systems(&mut session, domain, layers, cards);
-    Ok(Boot { session, domain })
+    Ok(Boot {
+        session,
+        domain,
+        section: layers.section,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -328,6 +329,18 @@ fn install_systems(
             },
         )
         .expect("Session::new registers the camera rig");
+    // Runs before the pointer, so a release throws with the hold the rope setting names in the same boundary.
+    session.system(Phase::Dispatch, "grab hold", move |ctx| {
+        let hold = if *ctx.app.rope.get() {
+            GrabHold::Anchor
+        } else {
+            GrabHold::Center
+        };
+        if let Some(physics) = ctx.domains.typed(domain)?.physics_mut() {
+            physics.set_grab_hold(hold);
+        }
+        Ok(())
+    });
     session.system(Phase::Dispatch, "pointer", move |mut ctx| {
         control_primary(&mut ctx, domain);
         Ok(())
@@ -368,18 +381,6 @@ fn install_systems(
     for (index, action) in PLANE.into_iter().enumerate() {
         session.on_action(action, move |d| Action::Plane(index).apply(d).map(drop));
     }
-
-    session.system(Phase::Dispatch, "grab hold", move |ctx| {
-        let hold = if *ctx.app.rope.get() {
-            GrabHold::Anchor
-        } else {
-            GrabHold::Center
-        };
-        if let Some(physics) = ctx.domains.typed(domain)?.physics_mut() {
-            physics.set_grab_hold(hold);
-        }
-        Ok(())
-    });
 
     let mut applied = None;
     session.system(Phase::Publication, "slice view", move |ctx| {
@@ -497,9 +498,6 @@ fn install_systems(
         display::seek(ctx.app, ctx.domains, domain, time)?;
         Ok(())
     });
-    session.system(Phase::Simulation, "toy settle", move |ctx| {
-        toy::settle(ctx.app, ctx.domains, domain, ctx.step)
-    });
 }
 
 impl AppCommand<Playground> for Action {
@@ -535,7 +533,6 @@ impl AppCommand<Playground> for Action {
             Self::Reset => "reset",
             Self::Time(_) => "time",
             Self::PlaneAngle(_, _) => "plane angle",
-            Self::Throw(_, _) => "throw toy",
         }
     }
 
@@ -671,9 +668,6 @@ impl AppCommand<Playground> for Action {
                 row::add_shape(dispatch, domain, *entry, cards[card])?;
             }
             Action::RemoveShape(slot) => row::remove_shape(dispatch, domain, slot)?,
-            Action::Throw(entity, pointer) => {
-                mode::throw_toy(dispatch, domain, entity, pointer)?;
-            }
         }
         Ok(Outcome::Done)
     }
@@ -1034,11 +1028,10 @@ fn scene_center(
 }
 
 fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR4>) {
-    if ctx.dragging().is_some_and(|drag| {
-        *ctx.app.mode.get() != Mode::Toybox || !ctx.app.toys.contains(drag.entity)
-    }) {
-        ctx.cancel_drag();
-    }
+    // Toybox mode keeps the filmstrip off and the gimbal hidden, so the press checks only the mode and the toy.
+    ctx.carry(PointerButton::Primary, |app, entity| {
+        *app.mode.get() == Mode::Toybox && app.toys.contains(entity)
+    });
     let (latest, center, mut gimbal) = {
         let control = ctx.app.control.get();
         (control.latest, control.center, control.gimbal)
@@ -1052,22 +1045,14 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
     } else {
         gimbal.release();
     }
-    let mut aimed = false;
-    for index in 0..ctx.input.pointers.len() {
-        let pointer = ctx.input.pointers[index];
+    for pointer in &ctx.input.pointers {
         if pointer.button != Some(PointerButton::Primary) {
             continue;
         }
         match pointer.phase {
-            PointerPhase::Began => {
-                let ring = gimbal.enabled
-                    && ctx
-                        .views
-                        .ray(root, pointer.ndc)
-                        .is_some_and(|ray| gimbal.press(&ray, center));
-                if !ring && *ctx.app.mode.get() == Mode::Toybox && !ctx.app.strip.get().on {
-                    let _ = ctx.grab(pointer.ndc, pointer.time);
-                    aimed = true;
+            PointerPhase::Began if gimbal.enabled => {
+                if let Some(ray) = ctx.views.ray(root, pointer.ndc) {
+                    gimbal.press(&ray, center);
                 }
             }
             PointerPhase::Moved if gimbal.held() => {
@@ -1079,30 +1064,8 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
                     let _ = mode::turn_row(ctx.app, ctx.domains, domain, rotor);
                 }
             }
-            PointerPhase::Moved if ctx.dragging().is_some() => {
-                aimed = true;
-                if ctx.drag(pointer.ndc, pointer.time).is_err() {
-                    ctx.cancel_drag();
-                }
-            }
-            PointerPhase::Ended if gimbal.held() => gimbal.release(),
-            PointerPhase::Ended if ctx.dragging().is_some() => {
-                if let Some(release) = ctx.release_at(pointer.time) {
-                    ctx.commands
-                        .app(Action::Throw(release.entity, release.velocity));
-                }
-            }
-            PointerPhase::Cancelled => {
-                gimbal.release();
-                ctx.cancel_drag();
-            }
+            PointerPhase::Ended | PointerPhase::Cancelled => gimbal.release(),
             _ => {}
-        }
-    }
-    if let Some(pointer) = latest.filter(|_| !aimed && ctx.dragging().is_some()) {
-        let time = ctx.input.time;
-        if ctx.drag(pointer.ndc, time).is_err() {
-            ctx.cancel_drag();
         }
     }
     ctx.app.control.get_mut().gimbal = gimbal;
@@ -1204,6 +1167,7 @@ fn records(booted: &mut Boot, config: &HostConfig, args: &Args) -> Result<(), Ho
         submit(&mut booted.session, Action::Display(display));
     }
     submit(&mut booted.session, Action::Running(Some(true)));
+    let section = booted.section;
     let domain = booted.domain;
     let mut scratch = Scratch::new();
     let mut dump = String::new();
@@ -1218,7 +1182,7 @@ fn records(booted: &mut Boot, config: &HostConfig, args: &Args) -> Result<(), Ho
             match step + 1 {
                 RECORD_WIREFRAME_ON => wireframe(session, true),
                 RECORD_TOYBOX => submit(session, Action::Mode(Mode::Toybox)),
-                RECORD_THROW_STEP => throw(session)?,
+                RECORD_THROW_STEP => throw(session, domain, section)?,
                 RECORD_WIREFRAME_OFF => wireframe(session, false),
                 _ => {}
             }
@@ -1239,7 +1203,11 @@ fn wireframe(session: &mut Session<Playground>, on: bool) {
     submit(session, Action::Display(display));
 }
 
-fn throw(session: &mut Session<Playground>) -> Result<(), HostError> {
+fn throw(
+    session: &mut Session<Playground>,
+    domain: DomainHandle<EuclideanR4>,
+    section: ViewId,
+) -> Result<(), HostError> {
     let thrown = session
         .app
         .slots
@@ -1249,7 +1217,23 @@ fn throw(session: &mut Session<Playground>) -> Result<(), HostError> {
         })
         .map(|(entity, _)| entity)
         .ok_or_else(|| HostError::Host("the thrown toy is missing".into()))?;
-    submit(session, Action::Throw(thrown, RECORD_THROW));
+    let r4 = session
+        .domains()
+        .get(domain.id())
+        .ok_or(DomainError::UnknownDomain(domain.id()))?;
+    let at = r4
+        .image_of(section, thrown)
+        .ok_or_else(|| HostError::Host("the thrown toy is out of view".into()))?;
+    let velocity = r4.lift_tangent(section, at, RECORD_THROW)?;
+    // A pointer release submits this command, so the scenario throws through the engine's own path.
+    session.submit(Command::Chart(
+        domain.id(),
+        ChartCommand::Throw {
+            entity: thrown,
+            view: section,
+            velocity,
+        },
+    ));
     Ok(())
 }
 
@@ -1442,7 +1426,6 @@ mod tests {
         );
 
         let release = booted.session.release_at(1.05).expect("the drag was live");
-        send(&mut booted, Action::Throw(release.entity, release.velocity));
         booted
             .session
             .boundary(Input::default())

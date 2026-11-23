@@ -1,6 +1,6 @@
 use loam::math::{Bivector4, EuclideanR4, Plane4, Rotor4};
 use loam::runtime::{
-    Dispatch, DomainHandle, Domains, EdgeShading, Entity, Instance, Pose, Rejection, SpawnBundle,
+    Dispatch, DomainHandle, Domains, EdgeShading, Instance, Pose, Rejection, SpawnBundle,
 };
 
 use crate::catalog::ShapeEntry;
@@ -106,20 +106,6 @@ pub(crate) fn reset(
     Ok(())
 }
 
-pub(crate) fn throw_toy(
-    dispatch: &mut Dispatch<'_, Playground>,
-    domain: DomainHandle<EuclideanR4>,
-    entity: Entity,
-    pointer: [f32; 3],
-) -> Result<(), Rejection> {
-    if !dispatch.app.toys.contains(entity) {
-        return Ok(());
-    }
-    let rope = *dispatch.app.rope.get();
-    let physics = dispatch.domains.physics(domain)?;
-    toy::release(physics, entity, pointer, rope).map_err(Rejection::Edit)
-}
-
 pub(crate) fn toggle_plane(
     dispatch: &mut Dispatch<'_, Playground>,
     plane: usize,
@@ -218,10 +204,7 @@ pub(crate) fn set_shape(
     dispatch.despawn(entity)?;
     let mut bundle = SpawnBundle::new().at(domain, pose).row(row);
     if let Some(body) = body {
-        bundle = bundle.body(body).row(Toy {
-            rest_anchor: pose.point,
-            rest_time: 0.0,
-        });
+        bundle = bundle.body(body).row(Toy);
     }
     if let Some(geometry) = geometry {
         let display = *dispatch.app.display.get();

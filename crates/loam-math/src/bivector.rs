@@ -12,6 +12,8 @@ pub trait Bivector: Copy + Add<Output = Self> + Mul<f32, Output = Self> {
     fn zero() -> Self;
 
     fn exp(self) -> Self::Rotor;
+
+    fn magnitude(self) -> f32;
 }
 
 /// Rotor operations require unit elements of Spin(N); public fields do not enforce this.
@@ -52,6 +54,10 @@ impl Bivector for Bivector2 {
 
     fn zero() -> Self {
         Self(0.0)
+    }
+
+    fn magnitude(self) -> f32 {
+        self.0.abs()
     }
 
     fn exp(self) -> Rotor2 {
@@ -166,6 +172,10 @@ impl Bivector for Bivector3 {
 
     fn zero() -> Self {
         Self::ZERO
+    }
+
+    fn magnitude(self) -> f32 {
+        Bivector3::magnitude(self)
     }
 
     fn exp(self) -> Rotor3 {
@@ -468,6 +478,10 @@ impl Bivector for Bivector4 {
 
     fn zero() -> Self {
         Self::ZERO
+    }
+
+    fn magnitude(self) -> f32 {
+        Bivector4::magnitude(self)
     }
 
     fn exp(self) -> Rotor4 {

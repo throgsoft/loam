@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use loam_math::hyperbolic::{
     klein_to_poincare, poincare_to_klein, H3_DEPTH_ENVELOPE, H3_EYE_CHART_REACH,
 };
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Space};
+use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Iso3, IsometryGroup, Rotor, Space};
 use loam_shape::polytope::SectionScratch;
 use loam_shape::{LineMesh, TriangleMesh};
 use std::fmt;
@@ -455,6 +455,21 @@ pub trait ViewMapping<S: DomainSpace>: Send + Sync + 'static {
 
     fn lift(&self, eye: &Pose<S>, ray: &ImageRay) -> Option<DomainRay<S>>;
 
+    /// The domain tangent that the image vector `tangent` at the image point `at` shows, or `None` for a map without a tangent lift.
+    fn lift_tangent(&self, _eye: &Pose<S>, _at: [f32; 3], _tangent: [f32; 3]) -> Option<S::Vector> {
+        None
+    }
+
+    /// The image vector that shows the domain tangent `tangent` at `at`, or `None` for a map without a tangent lift.
+    fn image_tangent(
+        &self,
+        _eye: &Pose<S>,
+        _at: S::Point,
+        _tangent: S::Vector,
+    ) -> Option<[f32; 3]> {
+        None
+    }
+
     fn section(&self, _eye: &Pose<S>, _pose: &Pose<S>) -> Option<SectionCut> {
         None
     }
@@ -682,6 +697,22 @@ impl ViewMapping<EuclideanR4> for Section4 {
         })
     }
 
+    fn lift_tangent(
+        &self,
+        eye: &Pose<EuclideanR4>,
+        at: [f32; 3],
+        tangent: [f32; 3],
+    ) -> Option<Vec4> {
+        let origin = Vec3::from(at).extend(self.w);
+        EuclideanR4
+            .carry(eye, origin, Vec3::from(tangent).extend(0.0))
+            .ok()
+    }
+
+    fn image_tangent(&self, eye: &Pose<EuclideanR4>, _at: Vec4, tangent: Vec4) -> Option<[f32; 3]> {
+        Some(eye.frame.inverse().apply(tangent).truncate().to_array())
+    }
+
     fn depth_envelope(&self) -> DepthEnvelope {
         UNBOUNDED
     }
@@ -790,6 +821,21 @@ impl ViewMapping<EuclideanR3> for Identity3 {
             origin: EuclideanR3.place(&EuclideanR3.prepare(eye), origin).ok()?,
             direction: EuclideanR3.carry(eye, origin, direction).ok()?,
         })
+    }
+
+    fn lift_tangent(
+        &self,
+        eye: &Pose<EuclideanR3>,
+        at: [f32; 3],
+        tangent: [f32; 3],
+    ) -> Option<Vec3> {
+        EuclideanR3
+            .carry(eye, Vec3::from(at), Vec3::from(tangent))
+            .ok()
+    }
+
+    fn image_tangent(&self, eye: &Pose<EuclideanR3>, _at: Vec3, tangent: Vec3) -> Option<[f32; 3]> {
+        Some((eye.frame.inverse() * tangent).to_array())
     }
 
     fn depth_envelope(&self) -> DepthEnvelope {

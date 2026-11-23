@@ -3,8 +3,9 @@ use std::fmt;
 use crate::bridge::{Drag, DragError, DragRelease};
 use crate::command::{CommandResult, Commands};
 use crate::domain::{ChartPoint, DomainError, Domains};
-use crate::input::Input;
-use crate::session::{Manipulation, PreparedGeometry};
+use crate::entity::Entity;
+use crate::input::{Input, PointerButton};
+use crate::session::{Manipulation, PreparedGeometry, Scene};
 use crate::stores::Stores;
 use crate::view::{Pick, Views};
 
@@ -117,15 +118,34 @@ impl<A: Stores> Ctx<'_, A> {
     }
 
     pub fn release(&mut self) -> Option<DragRelease> {
-        self.manipulation.release(self.commands)
+        self.manipulation.release(self.domains, self.commands)
     }
 
     pub fn release_at(&mut self, time: f64) -> Option<DragRelease> {
-        self.manipulation.release_at(self.commands, time)
+        self.manipulation
+            .release_at(self.domains, self.commands, time)
     }
 
     pub fn cancel_drag(&mut self) -> Option<DragRelease> {
         self.manipulation.cancel(self.commands)
+    }
+
+    /// Carries entities that `allow` accepts with `button` and returns this boundary's last release.
+    pub fn carry(
+        &mut self,
+        button: PointerButton,
+        mut allow: impl FnMut(&A, Entity) -> bool,
+    ) -> Option<DragRelease> {
+        let app = &*self.app;
+        let scene = Scene {
+            domains: self.domains,
+            views: self.views,
+            prepared: self.prepared,
+        };
+        self.manipulation
+            .carry(scene, self.commands, self.input, button, |entity| {
+                allow(app, entity)
+            })
     }
 }
 
