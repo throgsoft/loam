@@ -551,6 +551,7 @@ impl<A: Stores> Inner<A> {
                     Vec2::new(size.0 as f32, size.1 as f32),
                     &records.views,
                 );
+                presenter.upload_overlay(&eye, &records.overlay);
                 self.shown.content = records.content();
                 self.shown.eye = eye;
                 self.records.release(records);

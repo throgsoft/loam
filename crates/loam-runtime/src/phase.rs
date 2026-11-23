@@ -7,7 +7,7 @@ use crate::entity::{Entity, SceneId};
 use crate::input::{Input, PointerButton};
 use crate::session::{Manipulation, PreparedGeometry, Scene};
 use crate::stores::Stores;
-use crate::view::{Pick, Views};
+use crate::view::{Overlay, Pick, Views};
 
 /// Fixed order; dispatch runs while paused and is the only phase where capacity grows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -89,6 +89,10 @@ pub struct Ctx<'a, A> {
     pub input: &'a Input,
     pub prepared: &'a [PreparedGeometry],
     pub step: Step,
+    /// The publication's clamped alpha in the publication phase and 1 in the others.
+    pub alpha: f32,
+    /// Cleared before the publication phase, so only a publication system's lines and points reach the screen.
+    pub overlay: &'a mut Overlay,
     pub(crate) manipulation: &'a mut Manipulation,
 }
 
@@ -103,6 +107,8 @@ impl<A> Ctx<'_, A> {
             input: self.input,
             prepared: self.prepared,
             step: self.step,
+            alpha: self.alpha,
+            overlay: self.overlay,
             manipulation: self.manipulation,
         }
     }

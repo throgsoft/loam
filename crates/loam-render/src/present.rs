@@ -2,7 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::Vec2;
-use loam_runtime::{DomainId, Eye, PublishedView, Rigid, SegmentRecord, Stamp, ViewTarget};
+use loam_runtime::{
+    DomainId, Eye, Overlay, PublishedView, Rigid, SegmentRecord, Stamp, ViewTarget,
+};
 use wgpu::{Color, CommandEncoder, Device, Queue, RenderPass, TextureFormat, TextureView};
 
 use crate::depth::DepthBuffer;
@@ -11,6 +13,7 @@ use crate::pass::{
     FrameFormat, FramePass, FrameTarget, PassError, PassExecutionError, PassSchedule, PassStage,
     Section,
 };
+use crate::passes::{LinePass, PointPass};
 use crate::triangle_pass::TriangleFeed;
 use crate::view::DEPTH_FORMAT;
 use crate::{DepthConvention, DepthMode, FragmentShading, LineRasterNode};
@@ -141,6 +144,8 @@ pub struct Presenter {
     views: Rc<RefCell<Vec<ViewLines>>>,
     fills: TriangleFeed,
     filled: Vec<(DomainId, ViewTarget)>,
+    overlay_lines: LinePass,
+    overlay_points: PointPass,
     schedule: PassSchedule,
 }
 
@@ -153,6 +158,10 @@ impl Presenter {
         schedule.register(Box::new(PublishedLines {
             views: views.clone(),
         }))?;
+        let overlay_lines = LinePass::new("overlay-lines");
+        let overlay_points = PointPass::new("overlay-points");
+        schedule.register(Box::new(overlay_lines.clone()))?;
+        schedule.register(Box::new(overlay_points.clone()))?;
         Ok(Self {
             format,
             uploads: 0,
@@ -160,6 +169,8 @@ impl Presenter {
             views,
             fills,
             filled: Vec::new(),
+            overlay_lines,
+            overlay_points,
             schedule,
         })
     }
@@ -245,6 +256,11 @@ impl Presenter {
                 }
             });
         }
+    }
+
+    pub fn upload_overlay(&mut self, eye: &Eye, overlay: &Overlay) {
+        self.overlay_lines.publish(eye, &overlay.lines);
+        self.overlay_points.publish(eye, &overlay.points);
     }
 
     pub fn record_scene(

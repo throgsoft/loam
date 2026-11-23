@@ -20,7 +20,9 @@ use crate::relation::{LinkId, Relation, RelationSnapshot};
 use crate::store::{Owner, SchemaId, StoreField};
 use crate::stores::Stores;
 use crate::value::Setting;
-use crate::view::{ImageRay, Pick, Rigid, Vec3, ViewRecords, ViewTarget, Views, ViewsSnapshot};
+use crate::view::{
+    ImageRay, Overlay, Pick, Rigid, Vec3, ViewRecords, ViewTarget, Views, ViewsSnapshot,
+};
 
 const RELEASE_STALE_SECONDS: f64 = 0.12;
 
@@ -272,6 +274,7 @@ pub struct PublishedView {
 #[derive(Default)]
 pub struct Publication {
     pub views: Vec<PublishedView>,
+    pub overlay: Overlay,
     pub stamp: Stamp,
     /// The clamped alpha the records were drawn at.
     pub alpha: f32,
@@ -669,6 +672,7 @@ pub struct Session<A: Stores> {
     results: Vec<CommandResult>,
     input: Input,
     assets: Assets,
+    overlay: Overlay,
     config: SimConfig,
     tick: Tick,
     sequence: u64,
@@ -723,6 +727,7 @@ impl<A: Stores> Session<A> {
             results: Vec::new(),
             input: Input::default(),
             assets: Assets::default(),
+            overlay: Overlay::default(),
             config,
             tick: Tick::default(),
             sequence: 0,
@@ -1014,7 +1019,7 @@ impl<A: Stores> Session<A> {
         };
         let mut dispatched = Ok(());
         for index in 0..self.phases.entries(Phase::Dispatch).len() {
-            if let Err(error) = self.run_entry(Phase::Dispatch, index, step) {
+            if let Err(error) = self.run_entry(Phase::Dispatch, index, step, 1.0) {
                 dispatched = Err(error);
                 break;
             }
@@ -1059,7 +1064,7 @@ impl<A: Stores> Session<A> {
         }
         let mut stepped = Ok(());
         for index in 0..self.phases.entries(Phase::Simulation).len() {
-            stepped = self.run_entry(Phase::Simulation, index, step);
+            stepped = self.run_entry(Phase::Simulation, index, step, 1.0);
             if stepped.is_err() {
                 break;
             }
@@ -1088,7 +1093,10 @@ impl<A: Stores> Session<A> {
             dt: self.config.dt().unwrap_or(0.0),
         };
         self.unfinished = Some(Phase::Publication);
-        self.run_phase(Phase::Publication, step)?;
+        self.overlay.clear();
+        for index in 0..self.phases.entries(Phase::Publication).len() {
+            self.run_entry(Phase::Publication, index, step, alpha)?;
+        }
         self.domains.synchronize();
         for domain in self.domains.iter_mut() {
             domain.present(alpha);
@@ -1147,6 +1155,8 @@ impl<A: Stores> Session<A> {
             }
             changed |= into.views.len() != count;
             into.views.truncate(count);
+            changed |= into.overlay != self.overlay;
+            into.overlay.clone_from(&self.overlay);
             into.stamp = stamp;
             if changed {
                 into.content = sequence;
@@ -1163,13 +1173,6 @@ impl<A: Stores> Session<A> {
         into.source = Some(scene);
         self.sequence = sequence;
         self.unfinished = None;
-        Ok(())
-    }
-
-    fn run_phase(&mut self, phase: Phase, step: Step) -> Result<(), PhaseError> {
-        for index in 0..self.phases.entries(phase).len() {
-            self.run_entry(phase, index, step)?;
-        }
         Ok(())
     }
 
@@ -1308,7 +1311,13 @@ impl<A: Stores> Session<A> {
         self.batch = batch;
     }
 
-    fn run_entry(&mut self, phase: Phase, index: usize, step: Step) -> Result<(), PhaseError> {
+    fn run_entry(
+        &mut self,
+        phase: Phase,
+        index: usize,
+        step: Step,
+        alpha: f32,
+    ) -> Result<(), PhaseError> {
         let Session {
             app,
             domains,
@@ -1318,6 +1327,7 @@ impl<A: Stores> Session<A> {
             results,
             input,
             assets,
+            overlay,
             manipulation,
             phase_error,
             ..
@@ -1335,6 +1345,8 @@ impl<A: Stores> Session<A> {
             input,
             prepared: assets.geometry(),
             step,
+            alpha,
+            overlay,
             manipulation,
         });
         domains.synchronize();

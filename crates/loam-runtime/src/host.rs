@@ -246,5 +246,19 @@ pub fn write_records(
             )?;
         }
     }
+    for line in &publication.overlay.lines {
+        writeln!(
+            out,
+            "overlay line {:?} {:?} colors {:?} {:?} width {:?}",
+            line.start, line.end, line.start_color, line.end_color, line.width_px
+        )?;
+    }
+    for point in &publication.overlay.points {
+        writeln!(
+            out,
+            "overlay point {:?} radius {:?} color {:?}",
+            point.position, point.radius_px, point.color
+        )?;
+    }
     Ok(())
 }

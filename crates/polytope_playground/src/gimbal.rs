@@ -24,7 +24,6 @@ pub(crate) struct Gimbal {
 #[derive(Default)]
 pub(crate) struct GimbalRenderer {
     mesh: LineMesh<3>,
-    segments: Vec<SegmentRecord>,
 }
 
 pub(crate) fn widget(center: Vec3) -> Hypergimbal {
@@ -81,10 +80,9 @@ impl Gimbal {
 }
 
 impl GimbalRenderer {
-    pub(crate) fn rings(&mut self, gimbal: &Gimbal, center: Vec3) -> &[SegmentRecord] {
-        self.segments.clear();
+    pub(crate) fn rings(&mut self, gimbal: &Gimbal, center: Vec3, out: &mut Vec<SegmentRecord>) {
         if !gimbal.enabled {
-            return &self.segments;
+            return;
         }
         let mut style = RingStyle::default();
         if let Some(HandleId::Rotate(plane)) = gimbal.hover {
@@ -101,7 +99,7 @@ impl GimbalRenderer {
             .iter()
             .zip(mesh.colors.iter().zip(mesh.widths.iter()))
         {
-            self.segments.push(SegmentRecord {
+            out.push(SegmentRecord {
                 start: *start,
                 _pad0: 0.0,
                 end: *end,
@@ -112,6 +110,5 @@ impl GimbalRenderer {
                 _pad2: [0.0; 3],
             });
         }
-        &self.segments
     }
 }

@@ -924,6 +924,20 @@ pub struct TriangleRecord {
     pub color: [f32; 4],
 }
 
+/// Lines and points in the root image space that publication systems draw each frame.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Overlay {
+    pub lines: Vec<SegmentRecord>,
+    pub points: Vec<PointRecord>,
+}
+
+impl Overlay {
+    pub(crate) fn clear(&mut self) {
+        self.lines.clear();
+        self.points.clear();
+    }
+}
+
 /// A solid in its view's eye frame, which a field kernel cuts at [`ViewRecords::field_cut`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FieldRecord {

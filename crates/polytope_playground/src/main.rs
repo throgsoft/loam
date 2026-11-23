@@ -331,7 +331,7 @@ fn install_systems(
             Order::Before(CAMERA_RIG),
             "camera focus",
             move |ctx| {
-                let center = scene_center(ctx.app, ctx.domains, domain);
+                let center = scene_center(ctx.app, ctx.domains, domain, ctx.alpha);
                 let focus = (ctx.app.display.single, *ctx.app.active, *ctx.app.mode);
                 let strip = *ctx.app.strip;
                 let control = ctx.app.control.get_mut();
@@ -398,6 +398,17 @@ fn install_systems(
                 ..strip
             }));
         }
+        Ok(())
+    });
+    let mut rings = gimbal::GimbalRenderer::default();
+    session.system(Phase::Publication, "overlay", move |mut ctx| {
+        let center = scene_center(ctx.app, ctx.domains, domain, ctx.alpha);
+        rings.rings(
+            &ctx.app.control.get().gimbal,
+            center,
+            &mut ctx.overlay.lines,
+        );
+        guides::draw(&mut ctx, domain);
         Ok(())
     });
     session.toggle_on(GIMBAL, SHOW_GIMBAL.setting);
@@ -678,9 +689,6 @@ pub(crate) fn bindings() -> Bindings {
 pub(crate) struct Frame {
     sky: SkyGroundPass,
     hyperslice: HyperslicePass,
-    rings: LinePass,
-    guides: LinePass,
-    grab_point: PointPass,
     hud: loam::text::TextPass,
 }
 
@@ -689,9 +697,6 @@ impl Frame {
         Self {
             sky: SkyGroundPass::new(scene::ground(true)),
             hyperslice: HyperslicePass::new(scene::shader_source()),
-            rings: LinePass::new("gimbal"),
-            guides: LinePass::new("toybox-guides"),
-            grab_point: PointPass::new("grab-point"),
             hud: hud::pass(),
         }
     }
@@ -700,16 +705,12 @@ impl Frame {
         vec![
             Box::new(self.sky.clone()),
             Box::new(self.hyperslice.clone()),
-            Box::new(self.rings.clone()),
-            Box::new(self.guides.clone()),
-            Box::new(self.grab_point.clone()),
             Box::new(self.hud.clone()),
         ]
     }
 }
 
 struct Scratch {
-    center: glam::Vec3,
     cells: Vec<Cell>,
     strip: Vec<(loam::render::Viewport, f32, BodyUniform)>,
     subject: loam::math::Rotor4,
@@ -720,7 +721,6 @@ struct Scratch {
 impl Scratch {
     fn new() -> Self {
         Self {
-            center: glam::Vec3::ZERO,
             cells: Vec::new(),
             strip: Vec::new(),
             subject: loam::math::Rotor4::IDENTITY,
@@ -741,7 +741,6 @@ fn follow(
     let r4 = session.domains().read(domain).ok();
     scratch.anchors.clear();
     scratch.subject = loam::math::Rotor4::IDENTITY;
-    let mut sum = glam::Vec3::ZERO;
     for (entity, slot) in session.app.slots.iter() {
         if single && slot.index != active {
             continue;
@@ -751,10 +750,8 @@ fn follow(
             scratch.subject = pose.frame;
         }
         let center = pose.map_or(glam::Vec3::ZERO, |pose| pose.point.truncate());
-        sum += center;
         scratch.anchors.push((slot.index, slot.entry.label, center));
     }
-    scratch.center = sum / scratch.anchors.len().max(1) as f32;
 }
 
 fn main() -> Result<(), HostError> {
@@ -769,13 +766,8 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
 
     let sky = frame.sky.clone();
     let hyperslice = frame.hyperslice.clone();
-    let rings = frame.rings.clone();
-    let guide_pass = frame.guides.clone();
-    let grab_point = frame.grab_point.clone();
-    let mut guides = guides::Guides::default();
     let readout = frame.hud.clone();
     let mut lines = String::new();
-    let mut gimbal_renderer = gimbal::GimbalRenderer::default();
     let domain = booted.domain;
     let mut scratch = Scratch::new();
     let mut panel = ui::Panel::default();
@@ -809,13 +801,6 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
             &mut scratch,
         );
         hyperslice.publish_strip(&scratch.strip);
-        rings.publish(
-            &eye,
-            gimbal_renderer.rings(&hook.session.app.control.get().gimbal, scratch.center),
-        );
-        guides.update(hook.session, domain, hook.alpha);
-        guide_pass.publish(&eye, &guides.lines);
-        grab_point.publish(&eye, &guides.points);
         let shown = *hook.session.app.hud.get();
         let seat = hook.ui.map_or(hud::Seat::default(), |context| {
             hud::Seat::in_panel(context.available_rect(), context.pixels_per_point())
@@ -946,6 +931,7 @@ fn scene_center(
     app: &Playground,
     domains: &Domains,
     domain: DomainHandle<EuclideanR4>,
+    alpha: f32,
 ) -> glam::Vec3 {
     let active = *app.active;
     let single = app.display.single;
@@ -958,7 +944,7 @@ fn scene_center(
         if single && slot.index != active {
             continue;
         }
-        let Some(pose) = r4.poses().get(entity) else {
+        let Some(pose) = r4.drawn_pose(entity, alpha) else {
             continue;
         };
         sum += pose.point.truncate();
