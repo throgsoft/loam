@@ -10,7 +10,7 @@ use loam_time::par::Executor;
 use crate::command::{Outcome, Rejection};
 use crate::domain::{
     ChartCommand, ChartPose, DomainBuilder, DomainError, DomainHandle, DomainId, Domains, Facility,
-    Homogeneous, Pose, TypedDomain,
+    Homogeneous, Pose,
 };
 use crate::entity::{Entity, EntityKey, SceneId};
 use crate::phase::Step;
@@ -1074,24 +1074,6 @@ where
             angular_damping: config.angular_damping,
             rest: config.rest,
         }))
-    }
-}
-
-impl<S> TypedDomain<S>
-where
-    S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
-{
-    pub fn physics(&self) -> Option<&Physics<S>> {
-        self.facilities
-            .iter()
-            .find_map(|facility| (facility.as_ref() as &dyn Any).downcast_ref::<Physics<S>>())
-    }
-
-    pub fn physics_mut(&mut self) -> Option<&mut Physics<S>> {
-        self.facilities
-            .iter_mut()
-            .find_map(|facility| (facility.as_mut() as &mut dyn Any).downcast_mut::<Physics<S>>())
     }
 }
 
