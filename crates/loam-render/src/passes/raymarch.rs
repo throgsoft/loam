@@ -33,10 +33,6 @@ impl RaymarchPass {
         }
     }
 
-    pub fn publish(&self, uniforms: RayMarchUniforms) {
-        self.shared.borrow_mut().uniforms = uniforms;
-    }
-
     pub fn set_params(&self, params: [f32; 4]) {
         self.shared.borrow_mut().uniforms.params = params;
     }

@@ -25,6 +25,7 @@ stores! {
     pub struct MandelbulbStores {
         turn: Value<Turn>,
     }
+    publishes f32;
 }
 
 fn build(
@@ -51,6 +52,10 @@ fn build(
         }
         Ok(())
     });
+    session.publish_value("turn", |ctx, angle| {
+        *angle = ctx.app.turn.drawn(ctx.alpha);
+        Ok(())
+    });
 
     let pass = RaymarchPass::new(include_str!("../../shaders/mandelbulb.wgsl").to_owned());
     let bindings = Bindings::new()
@@ -59,15 +64,8 @@ fn build(
     let app = SessionApp::with_args(HostConfig::new("mandelbulb", bindings), args)
         .recover_on_fault(RESET)
         .pass(Box::new(pass.clone()))
-        .on_frame(move |hook: &mut FrameHook<'_, MandelbulbStores>| {
-            let views = hook.session.views();
-            if let Some(image) = views.get(views.root()) {
-                let angle = hook.session.app.turn.drawn(hook.alpha);
-                pass.publish(RayMarchUniforms {
-                    params: [angle, 0.0, 0.0, 0.0],
-                    ..RayMarchUniforms::from_eye(&image.eye)
-                });
-            }
+        .on_published(move |hook: &mut PublishedHook<'_, MandelbulbStores>| {
+            pass.set_params([hook.published.value, 0.0, 0.0, 0.0]);
         });
     Ok((session, app))
 }
