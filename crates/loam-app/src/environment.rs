@@ -89,6 +89,7 @@ impl Environment {
             "reset" => {
                 *self = Self {
                     sky: self.sky,
+                    floor_visible: self.floor_visible,
                     ..Self::default()
                 };
                 Ok(format!("ground: reset ({})", self.report(None)))
