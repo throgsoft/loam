@@ -1,5 +1,5 @@
 use glam::Vec3;
-use loam_render::view::{self, DEPTH_CLEAR, DEPTH_FORMAT};
+use loam_render::depth::{self, DEPTH_CLEAR, DEPTH_FORMAT};
 use loam_render::{DepthConvention, SkyGroundNode, SkyGroundUniforms, Viewport};
 use loam_runtime::Ground;
 use wgpu::*;
@@ -89,7 +89,7 @@ fn reversed_z_depths() -> Vec<f32> {
     node.set_uniforms(
         &queue,
         &SkyGroundUniforms::new(
-            view::root_projection(FOV_Y, 1.0, NEAR),
+            depth::root_projection(FOV_Y, 1.0, NEAR),
             Viewport::full([SIZE, SIZE]),
             loam_render::sky_ground::DEFAULT_SKY,
             Ground {

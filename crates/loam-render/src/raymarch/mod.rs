@@ -50,7 +50,7 @@ pub struct RayMarchUniforms {
     pub tick: f32,
     /// Four scalar knobs; semantics are up to the user shader.
     pub params: [f32; 4],
-    /// Near distance of the root projection; see [`crate::view`].
+    /// Near distance of the root projection; see [`crate::depth`].
     pub near: f32,
     pub _pad3: [f32; 3],
 }
@@ -105,7 +105,7 @@ impl RayMarchNode {
         Self::with_depth(device, surface_format, shader, crate::DepthMode::Off)
     }
 
-    /// The user's `fs_main` writes [`crate::view`]'s projective depth as `frag_depth`.
+    /// The user's `fs_main` writes [`crate::depth`]'s projective depth as `frag_depth`.
     pub fn with_depth(
         device: &Device,
         surface_format: TextureFormat,
@@ -174,7 +174,7 @@ impl RayMarchNode {
             depth_stencil: depth.format().map(|format| DepthStencilState {
                 format,
                 depth_write_enabled: depth.writes(),
-                depth_compare: crate::view::DEPTH_COMPARE,
+                depth_compare: crate::depth::DEPTH_COMPARE,
                 stencil: StencilState::default(),
                 bias: DepthBiasState::default(),
             }),
@@ -206,7 +206,7 @@ impl RayMarchNode {
 }
 
 impl RayMarchNode {
-    /// Clears both attachments; depth clears to [`crate::view::DEPTH_CLEAR`].
+    /// Clears both attachments; depth clears to [`crate::depth::DEPTH_CLEAR`].
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -226,7 +226,7 @@ impl RayMarchNode {
         let depth_stencil_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
             view: dv,
             depth_ops: Some(Operations {
-                load: LoadOp::Clear(crate::view::DEPTH_CLEAR),
+                load: LoadOp::Clear(crate::depth::DEPTH_CLEAR),
                 store: StoreOp::Store,
             }),
             stencil_ops: None,

@@ -20,9 +20,9 @@ mod tests {
     };
 
     use super::*;
+    use crate::depth::DEPTH_FORMAT;
     use crate::device::{FeatureRequest, GpuContext};
     use crate::pass::{FrameFormat, FramePass, FrameTarget, PassSchedule};
-    use crate::view::DEPTH_FORMAT;
     use crate::DepthConvention;
 
     const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;

@@ -116,7 +116,7 @@ impl FramePass for LinePass {
         };
         node.set_camera(
             queue,
-            crate::view::root_view_projection(eye),
+            crate::depth::root_view_projection(eye),
             Vec2::new(target.size.0 as f32, target.size.1 as f32),
         );
         if !*uploaded {

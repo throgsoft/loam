@@ -110,7 +110,7 @@ impl FramePass for SkyGroundPass {
         built.node.set_uniforms(
             &built.queue,
             &SkyGroundUniforms::new(
-                crate::view::root_view_projection(&state.eye),
+                crate::depth::root_view_projection(&state.eye),
                 Viewport::full([target.size.0, target.size.1]),
                 backdrop.sky,
                 backdrop.ground,

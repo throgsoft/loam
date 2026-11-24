@@ -9,9 +9,9 @@ use wgpu::{
     RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureFormat, TextureView,
 };
 
+use crate::depth::DEPTH_CLEAR;
 use crate::device::{GpuContext, LossSignal, UncapturedGpuError};
 use crate::gpu_timer::SectionTimer;
-use crate::view::DEPTH_CLEAR;
 use crate::DepthConvention;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

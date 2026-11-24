@@ -3,7 +3,6 @@ pub mod depth;
 pub mod device;
 pub mod gpu_timer;
 pub mod hypergimbal;
-pub mod lattice;
 pub mod line_raster;
 pub mod material;
 pub mod pass;
@@ -15,10 +14,9 @@ pub mod shader;
 pub mod sky_ground;
 pub mod triangle_pass;
 pub mod triangle_raster;
-pub mod view;
+pub mod viewport;
 
 pub use depth::DepthBuffer;
-pub use lattice::Viewport;
 pub use line_raster::{LineRasterNode, LineRasterUniforms};
 pub use material::{MaterialPipeline, MaterialSpec};
 pub use pass::{
@@ -34,8 +32,9 @@ pub use triangle_pass::TriangleFeed;
 pub use triangle_raster::{
     FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
 };
+pub use viewport::Viewport;
 
-/// `ReversedZ` follows the [`view`] depth contract; `StandardZ` serves a standard perspective matrix.
+/// `ReversedZ` follows the [`depth`] contract; `StandardZ` serves a standard perspective matrix.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DepthConvention {
     StandardZ,
@@ -46,7 +45,7 @@ impl DepthConvention {
     pub fn compare(self, standard_z: wgpu::CompareFunction) -> wgpu::CompareFunction {
         match self {
             Self::StandardZ => standard_z,
-            Self::ReversedZ => view::DEPTH_COMPARE,
+            Self::ReversedZ => depth::DEPTH_COMPARE,
         }
     }
 }

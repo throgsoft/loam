@@ -7,9 +7,9 @@ use loam_runtime::{Eye, Version};
 use loam_shape::TriangleMesh;
 use wgpu::{CommandEncoder, Device, Queue, RenderPass};
 
+use crate::depth::root_view_projection;
 use crate::device::GpuContext;
 use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
-use crate::view::root_view_projection;
 use crate::{DepthConvention, DepthMode, FragmentShading, TriangleRasterNode};
 
 #[derive(Default)]
@@ -185,8 +185,8 @@ mod tests {
     };
 
     use super::*;
+    use crate::depth::{projective_depth, DEPTH_CLEAR, DEPTH_FORMAT};
     use crate::device::FeatureRequest;
-    use crate::view::{projective_depth, DEPTH_CLEAR, DEPTH_FORMAT};
 
     const SIZE: (u32, u32) = (64, 64);
     const COLOR: TextureFormat = TextureFormat::Rgba8Unorm;

@@ -6,6 +6,7 @@ use loam_runtime::{DomainId, SegmentRecord, Stamp, ViewTarget};
 use wgpu::{Color, CommandEncoder, Device, Queue, RenderPass, TextureFormat, TextureView};
 
 use crate::depth::DepthBuffer;
+use crate::depth::DEPTH_FORMAT;
 use crate::device::GpuContext;
 use crate::pass::{
     FrameFormat, FramePass, FrameTarget, PassError, PassExecutionError, PassSchedule, PassStage,
@@ -13,7 +14,6 @@ use crate::pass::{
 };
 use crate::passes::{LinePass, PointPass, SkyGroundPass};
 use crate::triangle_pass::TriangleFeed;
-use crate::view::DEPTH_FORMAT;
 use crate::{DepthConvention, DepthMode, FragmentShading, LineRasterNode};
 
 struct ViewLines {
@@ -207,7 +207,7 @@ impl Presenter {
         line_views.truncate(views.len());
         let mut rebuilt = false;
         for (slot, view) in line_views.iter_mut().zip(views) {
-            let camera = crate::view::root_view_projection(eye);
+            let camera = crate::depth::root_view_projection(eye);
             slot.set_camera(queue, camera, frame.viewport_px);
             let published = (view.domain, view.target, view.records.built());
             if slot.uploaded == Some(published) {
@@ -694,7 +694,7 @@ mod tests {
             .expect("registered");
         presenter.attach(&gpu).expect("attached");
         let eye = Eye::default();
-        let camera = crate::view::root_view_projection(&eye);
+        let camera = crate::depth::root_view_projection(&eye);
         presenter.fills.set_view(&eye);
         presenter.fills.edit(|mesh| {
             mesh.vertices

@@ -270,7 +270,7 @@ impl SkyGroundNode {
             clear: SKY_HORIZON,
             depth_clear: match convention {
                 crate::DepthConvention::StandardZ => 1.0,
-                crate::DepthConvention::ReversedZ => crate::view::DEPTH_CLEAR,
+                crate::DepthConvention::ReversedZ => crate::depth::DEPTH_CLEAR,
             },
         }
     }

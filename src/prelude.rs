@@ -37,11 +37,11 @@ pub use loam_physics::manifold::PENETRATION_SLOP;
 pub use loam_physics::{BodyDef, EditError, RigidBody};
 
 #[cfg(feature = "render")]
+pub use loam_render::depth::root_view_projection;
+#[cfg(feature = "render")]
 pub use loam_render::hypergimbal::{Hypergimbal, RingDrag, RingStyle};
 #[cfg(feature = "render")]
 pub use loam_render::raymarch::{shape_id, BodyUniform};
-#[cfg(feature = "render")]
-pub use loam_render::view::root_view_projection;
 #[cfg(feature = "render")]
 pub use loam_render::{
     FragmentShading, FramePass, HyperslicePass, RaymarchPass, Section, SkyGroundPass, TriangleFeed,

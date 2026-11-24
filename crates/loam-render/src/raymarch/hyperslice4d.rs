@@ -971,7 +971,7 @@ fn hyperslice_pipeline(
         depth_stencil: depth.format().map(|format| DepthStencilState {
             format,
             depth_write_enabled: depth.writes(),
-            depth_compare: crate::view::DEPTH_COMPARE,
+            depth_compare: crate::depth::DEPTH_COMPARE,
             stencil: StencilState::default(),
             bias: DepthBiasState::default(),
         }),
@@ -1276,7 +1276,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
         let gap = along * along - center.length_squared() + DEPTH_PROBE_RADIUS * DEPTH_PROBE_RADIUS;
         assert!(gap > 0.0, "the probe ray misses the body");
         let t = along - gap.sqrt();
-        crate::view::projective_depth(rd * t, DEPTH_PROBE_NEAR)
+        crate::depth::projective_depth(rd * t, DEPTH_PROBE_NEAR)
     }
 
     #[test]
@@ -1302,7 +1302,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             })
         };
         let color = attachment(TextureFormat::Rgba8Unorm, "hyperslice4d depth probe color");
-        let depth = attachment(crate::view::DEPTH_FORMAT, "hyperslice4d depth probe depth");
+        let depth = attachment(crate::depth::DEPTH_FORMAT, "hyperslice4d depth probe depth");
         let color_view = color.create_view(&TextureViewDescriptor::default());
         let depth_view = depth.create_view(&TextureViewDescriptor::default());
 
@@ -1311,7 +1311,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
             TextureFormat::Rgba8Unorm,
             &module,
             crate::DepthMode::ReadWrite {
-                format: crate::view::DEPTH_FORMAT,
+                format: crate::depth::DEPTH_FORMAT,
             },
         );
         node.set_uniforms(
@@ -1350,7 +1350,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
                 depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                     view: &depth_view,
                     depth_ops: Some(Operations {
-                        load: LoadOp::Clear(crate::view::DEPTH_CLEAR),
+                        load: LoadOp::Clear(crate::depth::DEPTH_CLEAR),
                         store: StoreOp::Store,
                     }),
                     stencil_ops: None,
