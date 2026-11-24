@@ -1545,6 +1545,234 @@ mod tests {
         );
     }
 
+    loam_runtime::stores! {
+        #[derive(Default)]
+        pub struct Marked {
+            mark: Value<u32>,
+        }
+        publishes u32;
+    }
+
+    fn marked() -> Session<Marked> {
+        let mut session = Session::new(Marked::default(), SimConfig::default());
+        session.publish_value("mark", |ctx, value: &mut u32| {
+            *value = *ctx.app.mark.get();
+            Ok(())
+        });
+        session
+    }
+
+    fn threaded<A: Stores>(session: Session<A>, app: SessionApp<A>, gpu: &GpuContext) -> Frame<A> {
+        let mut frame = Frame::threaded(session, app, Box::new(Sequential))
+            .expect("the frame accepted the simulation config");
+        frame
+            .attach(gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        frame
+    }
+
+    fn values(seen: &Mutex<Vec<u32>>) -> Vec<u32> {
+        seen.lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    #[test]
+    fn a_threaded_frame_hands_the_hook_every_publication_in_order_and_a_session_borrowing_hook_stays_local(
+    ) {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let mut session = Session::new(Valued::default(), SimConfig::default());
+        let mut publishes = 0_u32;
+        session.publish_value("publishes", move |_, value: &mut u32| {
+            publishes += 1;
+            *value = publishes;
+            Ok(())
+        });
+        let seen: Arc<Mutex<Vec<u32>>> = Arc::default();
+        let read = seen.clone();
+        let app = host::<Valued>("threaded").on_published(move |hook| {
+            read.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(hook.published.value);
+        });
+        let mut frame = threaded(session, app, &gpu);
+        assert!(
+            frame.inner.simulator.session().is_none(),
+            "an app with only a published hook kept its session on the drawing thread"
+        );
+
+        for _ in 0..4 {
+            run_one(&mut frame, &gpu, &texture);
+        }
+        drop(frame);
+
+        assert_eq!(
+            values(&seen),
+            [1, 2, 3, 4],
+            "the hook skipped or repeated a publication"
+        );
+
+        for (hook, app) in [
+            ("on_frame", host::<Valued>("frame").on_frame(|_| {})),
+            ("on_input", host::<Valued>("input").on_input(|_| {})),
+        ] {
+            let session = Session::new(Valued::default(), SimConfig::default());
+            let frame = Frame::threaded(session, app, Box::new(Sequential))
+                .expect("the frame accepted the simulation config");
+            assert!(
+                frame.inner.simulator.session().is_some(),
+                "an {hook} hook borrows the session, which left the drawing thread"
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_a_threaded_hook_sends_reaches_the_publication_two_frames_later_and_stays() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let seen: Arc<Mutex<Vec<u32>>> = Arc::default();
+        let read = seen.clone();
+        let mut sent = false;
+        let app = host::<Marked>("command").on_published(move |hook| {
+            if !sent {
+                sent = true;
+                hook.sender
+                    .app_fn("mark", |dispatch| dispatch.app.mark.set(5));
+            }
+            read.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(hook.published.value);
+        });
+        let mut frame = threaded(marked(), app, &gpu);
+
+        for _ in 0..4 {
+            run_one(&mut frame, &gpu, &texture);
+        }
+
+        let seen = values(&seen);
+        assert_eq!(seen[0], 0);
+        assert_eq!(
+            seen[2..],
+            [5, 5],
+            "the command sent in the first frame was late or lost"
+        );
+    }
+
+    #[test]
+    fn a_threaded_publication_fault_suspends_the_cursor_once_and_the_reset_key_brings_publications_back(
+    ) {
+        const RESET: ActionId = ActionId("reset");
+
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let seen: Arc<Mutex<Vec<u32>>> = Arc::default();
+        let read = seen.clone();
+        let app = quiet(SessionApp::<Marked>::with_args(
+            HostConfig::new(
+                "threaded fault",
+                Bindings::new().key(Key::Letter('r'), RESET),
+            ),
+            Args::default(),
+        ))
+        .recover_on_fault(RESET)
+        .on_published(move |hook| {
+            read.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(hook.published.value);
+        });
+        let mut session = marked();
+        let mut publishes = 0_u32;
+        session.system(
+            Phase::Publication,
+            "trip",
+            move |_ctx: loam_runtime::Ctx<'_, Marked>| {
+                publishes += 1;
+                if publishes == 3 {
+                    return Err(loam_runtime::DomainError::ChartBoundary);
+                }
+                Ok(())
+            },
+        );
+        session.set_initial().expect("initial state");
+        // A reset restores the initial 0, so the published mark tells the reset scene apart.
+        session.app.mark.set(7);
+        let mut frame = threaded(session, app, &gpu);
+
+        run_one(&mut frame, &gpu, &texture);
+        run_one(&mut frame, &gpu, &texture);
+        assert_eq!(frame.take_cursor_request(), None);
+        run_one(&mut frame, &gpu, &texture);
+        assert_eq!(
+            frame.take_cursor_request(),
+            Some(false),
+            "the fault did not release the cursor"
+        );
+        run_one(&mut frame, &gpu, &texture);
+        assert_eq!(
+            frame.take_cursor_request(),
+            None,
+            "a later frame of the same fault was reported as a new one"
+        );
+        assert_eq!(
+            values(&seen),
+            [7, 7],
+            "the hook ran on a frame with no publication"
+        );
+
+        frame.action(Key::Letter('r'), true, false);
+        for _ in 0..3 {
+            run_one(&mut frame, &gpu, &texture);
+        }
+        assert_eq!(
+            values(&seen).last(),
+            Some(&0),
+            "the reset key did not bring back publications of the reset scene"
+        );
+    }
+
+    #[test]
+    fn a_threaded_hook_and_the_presenter_get_one_eye_with_the_aspect_of_the_frame_drawn() {
+        const TALL: (u32, u32) = (48, 64);
+
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let seen: Arc<Mutex<Option<Eye>>> = Arc::default();
+        let read = seen.clone();
+        let app = host::<Valued>("eye").on_published(move |hook| {
+            *read.lock().unwrap_or_else(|error| error.into_inner()) = Some(hook.eye);
+        });
+        let session = Session::new(Valued::default(), SimConfig::default());
+        let mut frame = threaded(session, app, &gpu);
+        run_one(&mut frame, &gpu, &texture);
+
+        frame.resize(TALL.0, TALL.1, 1.0);
+        let view = texture.create_view(&TextureViewDescriptor::default());
+        let target = Target {
+            view: &view,
+            texture: &texture,
+            format: FORMAT,
+            size: TALL,
+        };
+        frame
+            .step(&gpu, &target, Instant::now(), |_| {})
+            .expect("the frame stepped");
+
+        let hooked = seen
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .expect("the hook ran");
+        assert!(
+            frame.inner.presented == Some(hooked),
+            "the hook read a different eye from the one the presenter uploaded"
+        );
+        assert!(
+            (hooked.aspect - TALL.0 as f32 / TALL.1 as f32).abs() <= 1e-6,
+            "the frame drawn after a resize kept the old aspect {}",
+            hooked.aspect
+        );
+    }
+
     #[cfg(not(feature = "egui"))]
     fn notes_after_three_frames(labelled: bool, app: SessionApp<Bare>) -> usize {
         let gpu = noop_gpu();

@@ -955,4 +955,50 @@ mod tests {
             (before.vertices, before.indices, before.colors)
         );
     }
+
+    fn publish(session: &mut Session<HeroStores>, into: &mut Publication<Shown>) {
+        session.publish(into).expect("publication");
+        let mesh = session.app.mesh.get();
+        assert!(
+            into.value.mesh.vertices == mesh.vertices
+                && into.value.mesh.indices == mesh.indices
+                && into.value.mesh.colors == mesh.colors,
+            "the published mesh is not the session's mesh"
+        );
+    }
+
+    #[test]
+    fn the_published_mesh_follows_the_sessions_mesh_through_ticks_and_a_reset() {
+        let (mut session, _) = build().expect("hero builds");
+        let mut publication = Publication::default();
+        publish(&mut session, &mut publication);
+        let first = publication.value.mesh.vertices.clone();
+
+        for _ in 0..TICK_HZ {
+            session.tick().expect("tick");
+        }
+        publish(&mut session, &mut publication);
+        assert!(
+            publication.value.mesh.vertices != first,
+            "a second of the scene left the mesh as it was, so the copy was never exercised"
+        );
+
+        session.reset().expect("reset");
+        publish(&mut session, &mut publication);
+    }
+
+    #[test]
+    fn a_reset_restores_the_sky_and_ground_the_scene_was_built_with() {
+        let (mut session, _) = build().expect("hero builds");
+        let built = session.views_mut().root_mut().backdrop;
+        assert!(built.is_some(), "hero was built with no backdrop");
+
+        session.views_mut().root_mut().backdrop = None;
+        session.reset().expect("reset");
+
+        assert!(
+            session.views_mut().root_mut().backdrop == built,
+            "the reset lost the backdrop"
+        );
+    }
 }
