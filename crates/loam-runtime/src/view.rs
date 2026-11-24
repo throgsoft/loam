@@ -16,7 +16,11 @@ use crate::camera::Rig;
 use crate::domain::{ChartPoint, ChartPose, DomainError, DomainId, DomainSpace, Pose};
 use crate::entity::Entity;
 use crate::publication::Stamp;
-use crate::store::{Cursor, RecordBuffer};
+use crate::store::RecordBuffer;
+
+mod cache;
+
+pub(crate) use cache::{EntityOutput, Motion, PatchScratch, Planned, RecordCache, ViewState};
 
 pub(crate) type Vec3 = <EuclideanR3 as Space>::Point;
 pub(crate) type Vec4 = <EuclideanR4 as Space>::Point;
@@ -1050,63 +1054,6 @@ impl ViewRefusals {
     }
 }
 
-const NO_OUTPUT: u32 = u32::MAX;
-
-#[derive(Clone)]
-pub(crate) struct EntityOutput {
-    pub(crate) entity: Entity,
-    pub(crate) section_segments: Range<usize>,
-    pub(crate) line_segments: Range<usize>,
-    pub(crate) triangles: Range<usize>,
-    pub(crate) fields: Range<usize>,
-    pub(crate) instance: bool,
-}
-
-#[derive(Default)]
-pub(crate) struct ViewOutputCache {
-    entries: Vec<EntityOutput>,
-    positions: Vec<u32>,
-}
-
-impl ViewOutputCache {
-    pub(crate) fn clear(&mut self) {
-        self.entries.clear();
-        self.positions.fill(NO_OUTPUT);
-    }
-
-    pub(crate) fn push(&mut self, output: EntityOutput) {
-        let slot = output.entity.key().slot() as usize;
-        if slot >= self.positions.len() {
-            self.positions.resize(slot + 1, NO_OUTPUT);
-        }
-        self.positions[slot] = self.entries.len() as u32;
-        self.entries.push(output);
-    }
-
-    pub(crate) fn get(&self, entity: Entity) -> Option<&EntityOutput> {
-        let position = *self.positions.get(entity.key().slot() as usize)?;
-        if position == NO_OUTPUT || self.entries[position as usize].entity != entity {
-            return None;
-        }
-        Some(&self.entries[position as usize])
-    }
-
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut EntityOutput> {
-        self.entries.iter_mut()
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-pub(crate) enum PendingBuild {
-    #[default]
-    Current,
-    Patch {
-        poses: Cursor,
-        attachments: Cursor,
-    },
-    Rebuild,
-}
-
 #[derive(Default)]
 pub struct ViewRecords {
     pub instances: RecordBuffer<InstanceRecord>,
@@ -1116,19 +1063,7 @@ pub struct ViewRecords {
     pub(crate) field_cut: Option<f32>,
     pub(crate) refusals: ViewRefusals,
     pub(crate) scratch: SectionScratchpad,
-    pub(crate) output: ViewOutputCache,
-    pub(crate) patch_segments: Vec<SegmentRecord>,
-    pub(crate) patch_triangles: Vec<TriangleRecord>,
-    pub(crate) patch_fields: Vec<FieldRecord>,
-    pub(crate) changed: Vec<Entity>,
-    pub(crate) poses: Cursor,
-    pub(crate) attachments: Cursor,
-    pub(crate) pending: PendingBuild,
-    pub(crate) revision: u32,
-    pub(crate) built: Stamp,
-    pub(crate) alpha: f32,
-    pub(crate) merged: Vec<Entity>,
-    pub(crate) generation: u64,
+    pub(crate) cache: RecordCache,
 }
 
 impl ViewRecords {
@@ -1155,7 +1090,7 @@ impl ViewRecords {
 
     /// The publication that last rebuilt these records; a skipped rebuild keeps it.
     pub fn built(&self) -> Stamp {
-        self.built
+        self.cache.built()
     }
 }
 

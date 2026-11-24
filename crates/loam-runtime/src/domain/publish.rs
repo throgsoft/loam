@@ -7,10 +7,9 @@ use super::{blend, DomainError, DomainSpace, EdgeShading, Instance, Pose, TypedD
 use crate::assets::{Library, PreparedGeometry};
 use crate::entity::Entity;
 use crate::publication::Stamp;
-use crate::store::Change;
 use crate::view::{
-    self, EntityOutput, FieldRecord, InstanceRecord, PendingBuild, RefusalSource, SegmentRecord,
-    TriangleRecord, Vec4, ViewId, ViewMapping, ViewRecords, ViewRefusals,
+    self, EntityOutput, FieldRecord, InstanceRecord, Motion, PatchScratch, Planned, RefusalSource,
+    SegmentRecord, TriangleRecord, Vec4, ViewId, ViewMapping, ViewRecords, ViewRefusals, ViewState,
 };
 
 fn lerp_color(back: [f32; 4], front: [f32; 4], t: f32) -> [f32; 4] {
@@ -391,64 +390,28 @@ impl<S: DomainSpace> TypedDomain<S> {
             .views
             .revision(view)
             .ok_or(DomainError::UnknownView(view))?;
-        let mut pose_cursor = into.poses;
-        let pose_changes = self.poses.changes(&mut pose_cursor);
-        let pose_resync = pose_changes.is_resync();
-        into.changed.clear();
-        let mut pose_removed = false;
-        for change in pose_changes {
-            match change {
-                Change::Row(entity, _) => into.changed.push(entity),
-                Change::Removed(_) => pose_removed = true,
-            }
-        }
-        if blend::interpolates(&self.poses) {
-            let logged = !into.changed.is_empty();
-            let generation = self.blend.generation();
-            let ticked = into.generation != generation;
-            if ticked {
-                into.changed.extend_from_slice(&into.merged);
-                into.merged.clear();
-                into.merged.extend_from_slice(self.blend.moving());
-                into.generation = generation;
-            }
-            if ticked || alpha != into.alpha {
-                into.changed.extend_from_slice(self.blend.moving());
-                if logged || ticked {
-                    into.changed.sort_unstable();
-                    into.changed.dedup();
+        let motion = blend::interpolates(&self.poses).then(|| Motion {
+            generation: self.blend.generation(),
+            moving: self.blend.moving(),
+        });
+        let state = ViewState {
+            revision,
+            eye: spec.eye,
+            patchable: spec.style.enabled && into.refusals.count == 0,
+        };
+        Ok(
+            match into
+                .cache
+                .plan(&self.poses, &self.instances, motion, alpha, state)
+            {
+                Planned::Current => {
+                    into.instances.restamp(stamp);
+                    0
                 }
-            }
-        }
-        into.alpha = alpha;
-        let mut attachment_cursor = into.attachments;
-        let mut attachment_changes = self.instances.changes(&mut attachment_cursor);
-        let attachment_resync = attachment_changes.is_resync();
-        let attached = attachment_changes.next().is_some();
-        if !pose_resync
-            && !pose_removed
-            && !attachment_resync
-            && !attached
-            && into.revision == revision
-            && !into.changed.contains(&spec.eye)
-        {
-            if into.changed.is_empty() {
-                into.instances.restamp(stamp);
-                into.poses = pose_cursor;
-                into.attachments = attachment_cursor;
-                into.pending = PendingBuild::Current;
-                return Ok(0);
-            }
-            if spec.style.enabled && into.refusals.count == 0 {
-                into.pending = PendingBuild::Patch {
-                    poses: pose_cursor,
-                    attachments: attachment_cursor,
-                };
-                return Ok(into.changed.len());
-            }
-        }
-        into.pending = PendingBuild::Rebuild;
-        Ok(self.instances.len())
+                Planned::Patch(changed) => changed,
+                Planned::Rebuild => self.instances.len(),
+            },
+        )
     }
 
     pub(super) fn build_view(
@@ -463,24 +426,22 @@ impl<S: DomainSpace> TypedDomain<S> {
             .views
             .get(view)
             .expect("a prepared view is still registered");
-        match into.pending {
-            PendingBuild::Current => return,
-            PendingBuild::Patch { poses, attachments } => {
+        match into.cache.pending() {
+            Planned::Current => return,
+            Planned::Patch(_) => {
                 if self.patch_view(spec, library, into, stamp, alpha) {
-                    into.poses = poses;
-                    into.attachments = attachments;
                     return;
                 }
             }
-            PendingBuild::Rebuild => {}
+            Planned::Rebuild => {}
         }
-        self.poses.catch_up(&mut into.poses);
-        self.instances.catch_up(&mut into.attachments);
-        into.revision = self
+        let revision = self
             .views
             .revision(view)
             .expect("a prepared view is still registered");
         self.rebuild_view(spec, library, into, stamp, alpha);
+        into.cache
+            .commit_rebuild(&self.poses, &self.instances, revision, stamp);
     }
 
     fn rebuild_view(
@@ -499,8 +460,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             field_cut,
             refusals,
             scratch,
-            output,
-            built,
+            cache,
             ..
         } = into;
         segments.clear();
@@ -508,12 +468,11 @@ impl<S: DomainSpace> TypedDomain<S> {
         fields.clear();
         *field_cut = None;
         *refusals = ViewRefusals::default();
-        output.clear();
+        let output = cache.reset();
         let eye = match self.drawn(spec.eye, alpha) {
             Some(eye) if spec.style.enabled => eye,
             _ => {
                 instances.replace(std::iter::empty(), stamp);
-                *built = stamp;
                 return;
             }
         };
@@ -583,7 +542,6 @@ impl<S: DomainSpace> TypedDomain<S> {
                 record.map(|record| (entity, record))
             });
         instances.replace(records, stamp);
-        *built = stamp;
     }
 
     fn patch_view(
@@ -608,16 +566,18 @@ impl<S: DomainSpace> TypedDomain<S> {
             triangles,
             fields,
             scratch,
-            output,
-            patch_segments,
-            patch_triangles,
-            patch_fields,
-            changed,
-            built,
+            cache,
             ..
         } = into;
+        let PatchScratch {
+            changed,
+            output,
+            segments: patch_segments,
+            triangles: patch_triangles,
+            fields: patch_fields,
+        } = cache.patch();
         let mut patched = false;
-        for &entity in changed.iter() {
+        for &entity in changed {
             if spec.subject.is_some_and(|subject| subject != entity) {
                 continue;
             }
@@ -627,7 +587,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             let Some(pose) = self.drawn(entity, alpha) else {
                 return false;
             };
-            let Some(cached) = output.get(entity).cloned() else {
+            let Some(cached) = output.get(entity) else {
                 return false;
             };
             patch_segments.clear();
@@ -685,9 +645,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             patched = true;
         }
         instances.restamp(stamp);
-        if patched {
-            *built = stamp;
-        }
+        cache.commit_patch(stamp, patched);
         true
     }
 }

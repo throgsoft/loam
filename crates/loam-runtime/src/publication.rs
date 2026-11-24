@@ -148,7 +148,7 @@ impl<V> Publication<V> {
             par::for_each_chunk(executor, &mut self.views, 1, build);
         }
         for view in &self.views {
-            changed |= view.records.built == stamp;
+            changed |= view.records.built() == stamp;
         }
         changed |= self.overlay != *overlay;
         self.overlay.clone_from(overlay);
