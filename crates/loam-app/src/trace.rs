@@ -4,11 +4,6 @@ use loam_time::frame_trace;
 use std::sync::Mutex;
 use std::time::Duration;
 
-#[cfg(feature = "egui")]
-mod overlay;
-#[cfg(feature = "egui")]
-pub use overlay::{PerfOverlay, MAX_WINDOW};
-
 fn fmt_dur(d: std::time::Duration) -> String {
     let ns = d.as_nanos();
     if ns < 1_000 {

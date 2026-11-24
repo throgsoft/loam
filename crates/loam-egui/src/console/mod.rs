@@ -4,8 +4,8 @@ mod key;
 mod panel;
 
 pub use loam_console::{
-    cmd, console_echo_enabled, parse_line, render_line, set_console_echo, subcommands, Command,
-    Console, ConsoleWriter, FnCommand, HistoryLine, Key, LineKind, SubcommandSet,
+    cmd, console_echo_enabled, parse_line, render_line, set_console_echo, Command, Console,
+    ConsoleWriter, FnCommand, HistoryLine, Key, LineKind,
     MAX_HISTORY_LINES, MAX_INPUT_HISTORY,
 };
 
@@ -35,20 +35,6 @@ impl<Ctx: 'static> ConsoleUi for Console<Ctx> {
         });
         if toggle_pressed {
             self.toggle();
-        }
-
-        if !self.is_open() {
-            let mut fired: Vec<String> = Vec::new();
-            egui_ctx.input_mut(|i| {
-                for (bound, line) in self.binds() {
-                    if i.consume_key(egui::Modifiers::NONE, key::to_egui(bound)) {
-                        fired.push(line.to_string());
-                    }
-                }
-            });
-            for line in fired {
-                self.execute(&line);
-            }
         }
 
         if self.is_open() {

@@ -432,8 +432,6 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
     install_worker_failure_handler(&worker, &host, button_id)?;
     install_page_control(&worker, &host, &channel)?;
     set_host_state(&host, "loading");
-    #[cfg(feature = "measure")]
-    install_measurement_result_handler(&worker, host_id)?;
     if let Link::Page(port) = &worker {
         port.start();
     }
@@ -1193,48 +1191,6 @@ fn install_worker_state_handler(worker: &Link, host: &Element, button_id: &str) 
         .add_event_listener_with_callback("message", cb.as_ref().unchecked_ref())
         .map_err(|e| anyhow!("worker.addEventListener('message') for state: {e:?}"))?;
     cb.forget();
-    Ok(())
-}
-
-#[cfg(feature = "measure")]
-fn install_measurement_result_handler(worker: &Link, host_id: &str) -> Result<()> {
-    let host_id = host_id.to_owned();
-    let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
-        let data: JsValue = event.data();
-        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-            .ok()
-            .and_then(|value| value.as_string());
-        if kind.as_deref() != Some("measurement") {
-            return;
-        }
-        let Some(result) = js_sys::Reflect::get(&data, &JsValue::from_str("result"))
-            .ok()
-            .and_then(|value| value.as_string())
-        else {
-            return;
-        };
-        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-            return;
-        };
-        let Some(host) = document.get_element_by_id(&host_id) else {
-            return;
-        };
-        let Ok(panel) = document.create_element("pre") else {
-            return;
-        };
-        panel.set_text_content(Some(&result));
-        let _ = panel.set_attribute("tabindex", "0");
-        let _ = panel.set_attribute("role", "status");
-        let _ = panel.set_attribute(
-            "style",
-            "position:fixed;inset:1rem;z-index:2147483647;margin:0;padding:1rem;overflow:auto;white-space:pre-wrap;background:#111;color:#eee;font:14px/1.45 monospace;user-select:text;-webkit-user-select:text;touch-action:auto",
-        );
-        let _ = host.append_child(&panel);
-    }) as Box<dyn FnMut(MessageEvent)>);
-    worker
-        .add_event_listener_with_callback("message", callback.as_ref().unchecked_ref())
-        .map_err(|error| anyhow!("measurement result listener: {error:?}"))?;
-    callback.forget();
     Ok(())
 }
 

@@ -50,7 +50,6 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo clippy -p loam-app -p polytope_playground --target wasm32-unknown-unknown -- -D warnings
       - run: cargo clippy -p loam-app --no-default-features --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo clippy -p loam-app --no-default-features --features measure --target wasm32-unknown-unknown -- -D warnings
       - name: the facade's app feature links no egui
         run: |
           tree=$(cargo tree -p loam --features app -e normal --target wasm32-unknown-unknown --prefix none)

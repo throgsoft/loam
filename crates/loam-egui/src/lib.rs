@@ -7,8 +7,8 @@ mod slider_edit;
 
 pub use bivector_matrix::{bivector_matrix, cell_text as bivector_matrix_cell_text};
 pub use console::{
-    cmd, console_echo_enabled, parse_line, render_line, set_console_echo, subcommands, Command,
-    Console, ConsoleUi, ConsoleWriter, HistoryLine, Key, LineKind, SubcommandSet,
+    cmd, console_echo_enabled, parse_line, render_line, set_console_echo, Command, Console,
+    ConsoleUi, ConsoleWriter, HistoryLine, Key, LineKind,
 };
 pub use egui;
 pub use floating::{callout, floating_panel, sticky_menu, CalloutState};
