@@ -11,6 +11,7 @@ use crate::body::{BodyDef, RigidBody};
 use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult4, PosedHull4, Sphere4 as GjkSphere4};
 use crate::geometry::GeometryStore;
 use crate::integrator::{BroadphaseBound, PhysicsSpace};
+use crate::manifold::PENETRATION_SLOP;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 
@@ -429,6 +430,12 @@ pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<Euclidean
         1.0,
         &EuclideanR4,
     )
+}
+
+/// A halfspace raised along `normal` so that a body resting on it sits no lower than the plane at `offset`.
+pub fn flush_halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<EuclideanR4>> {
+    // A resting contact settles within twice the slop under the Baumgarte bias.
+    halfspace4_body_r4(normal, offset + 2.0 * PENETRATION_SLOP)
 }
 
 /// Sits at the origin at rest with the uniform-density inertia of the shape.
