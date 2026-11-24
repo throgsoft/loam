@@ -38,8 +38,12 @@ pub fn launch_with<A: Stores>(
 }
 
 fn install_tracing() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    // wgpu's Vulkan probe warns on every start about a missing validation layer and adapters it hides.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(
+            "warn,wgpu_hal::vulkan::instance=error,wgpu_hal::vulkan::adapter=error",
+        )
+    });
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
