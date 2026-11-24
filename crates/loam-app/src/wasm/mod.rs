@@ -62,12 +62,7 @@ impl Endpoint {
 
 // Main ends the loader state on this message.
 pub(crate) fn post_failure(endpoint: &Endpoint, message: &str) {
-    let msg = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &msg,
-        &JsValue::from_str("kind"),
-        &JsValue::from_str("error"),
-    );
+    let msg = messages::Kind::Error.message();
     let _ = js_sys::Reflect::set(
         &msg,
         &JsValue::from_str("message"),

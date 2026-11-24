@@ -11,6 +11,7 @@ use web_sys::{
 
 use crate::session::input::message::wheel_lines;
 use crate::session::input::queue::MESSAGE_QUEUE_CAPACITY;
+use crate::wasm::messages::Kind;
 use crate::{LaunchMode, WasmConfig};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -99,7 +100,7 @@ struct HostMessage {
 #[derive(Default)]
 struct HostChannel {
     ready: bool,
-    control: Option<&'static str>,
+    control: Option<Kind>,
     pending: VecDeque<HostMessage>,
 }
 
@@ -131,7 +132,7 @@ impl HostChannel {
             return;
         }
         for message in self.pending.drain(..) {
-            let msg = build_msg("host_message");
+            let msg = Kind::HostMessage.message();
             set_msg_string(&msg, "topic", &message.topic);
             let _ = js_sys::Reflect::set(
                 &msg,
@@ -192,10 +193,7 @@ fn install_host_channel(
     let host = host.clone();
     let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
-        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-            .ok()
-            .and_then(|value| value.as_string());
-        if kind.as_deref() != Some("host_post") {
+        if Kind::of(&data) != Some(Kind::HostPost) {
             return;
         }
         let detail = js_sys::Object::new();
@@ -351,17 +349,14 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
     let channel_for_ready = channel.clone();
     let on_ready = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
-        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-            .ok()
-            .and_then(|v| v.as_string());
-        if kind.as_deref() != Some("ready") {
+        if Kind::of(&data) != Some(Kind::Ready) {
             return;
         }
         if let Some(url) = bootstrap_url.as_deref() {
             let _ = web_sys::Url::revoke_object_url(url);
         }
 
-        let msg = build_msg("init");
+        let msg = Kind::Init.message();
         set_msg_u32(&msg, "width", width);
         set_msg_u32(&msg, "height", height);
         set_msg_f32(&msg, "dpr", metrics.scale);
@@ -396,7 +391,7 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
             return;
         }
         if background {
-            if let Err(e) = worker_for_ready.post_message(&build_msg("start")) {
+            if let Err(e) = worker_for_ready.post_message(&Kind::Start.message()) {
                 show_worker_failure(
                     &format!("worker start message failed: {e:?}"),
                     &host_for_ready,
@@ -410,8 +405,8 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
             channel.control.take()
         };
         if let Some(kind) = control {
-            if let Err(error) = worker_for_ready.post_message(&build_msg(kind)) {
-                tracing::error!("loam_app::wasm: postMessage {kind} failed: {error:?}");
+            if let Err(error) = worker_for_ready.post_message(&kind.message()) {
+                tracing::error!("loam_app::wasm: postMessage {kind:?} failed: {error:?}");
             }
         }
     }) as Box<dyn FnMut(MessageEvent)>);
@@ -457,7 +452,7 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
             }
             fired.set(true);
 
-            let msg = build_msg("start");
+            let msg = Kind::Start.message();
             if let Err(e) = worker_for_click.post_message(&msg) {
                 fired.set(false);
                 tracing::error!("post start failed: {e:?}");
@@ -540,8 +535,8 @@ fn install_page_control(
     let callback = Closure::wrap(Box::new(move |event: web_sys::CustomEvent| {
         let detail = event.detail().as_string();
         let kind = match detail.as_deref() {
-            Some("pause") => "host_pause",
-            Some("resume") => "host_resume",
+            Some("pause") => Kind::HostPause,
+            Some("resume") => Kind::HostResume,
             other => {
                 tracing::warn!("loam_app::wasm: {HOST_CONTROL_EVENT} ignored: {other:?}");
                 return;
@@ -552,8 +547,8 @@ fn install_page_control(
             channel.control = Some(kind);
             return;
         }
-        if let Err(error) = worker.post_message(&build_msg(kind)) {
-            tracing::error!("loam_app::wasm: postMessage {kind} failed: {error:?}");
+        if let Err(error) = worker.post_message(&kind.message()) {
+            tracing::error!("loam_app::wasm: postMessage {kind:?} failed: {error:?}");
         }
     }) as Box<dyn FnMut(web_sys::CustomEvent)>);
     host.add_event_listener_with_callback(HOST_CONTROL_EVENT, callback.as_ref().unchecked_ref())
@@ -592,7 +587,7 @@ fn install_embed_lifecycle(worker: &Link, host_id: &str, button_id: &str) -> Res
     let host_for_resume = host_id.to_string();
     let button_for_resume = button_id.to_string();
     let on_resume_click: Rc<Closure<dyn FnMut()>> = Rc::new(Closure::wrap(Box::new(move || {
-        let msg = build_msg("resume");
+        let msg = Kind::Resume.message();
         if let Err(e) = worker_for_resume.post_message(&msg) {
             tracing::error!(
                 "loam_app::wasm::worker: postMessage resume failed: {e:?}; \
@@ -618,7 +613,7 @@ fn install_embed_lifecycle(worker: &Link, host_id: &str, button_id: &str) -> Res
         if !active_for_deact.replace(false) {
             return;
         }
-        let msg = build_msg("pause");
+        let msg = Kind::Pause.message();
         if let Err(e) = worker_for_deact.post_message(&msg) {
             tracing::error!("loam_app::wasm::worker: postMessage pause failed: {e:?}");
         }
@@ -698,10 +693,7 @@ fn install_cursor_control(
         let wanted = wanted.clone();
         let callback = Closure::wrap(Box::new(move |event: MessageEvent| {
             let data: JsValue = event.data();
-            let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-                .ok()
-                .and_then(|value| value.as_string());
-            if kind.as_deref() != Some("cursor_lock") {
+            if Kind::of(&data) != Some(Kind::CursorLock) {
                 return;
             }
             let locked = js_sys::Reflect::get(&data, &JsValue::from_str("locked"))
@@ -718,7 +710,7 @@ fn install_cursor_control(
             {
                 document.exit_pointer_lock();
             } else {
-                let message = build_msg("pointer_lock_changed");
+                let message = Kind::PointerLockChanged.message();
                 set_msg_bool(&message, "locked", false);
                 set_msg_bool(&message, "released", false);
                 let _ = worker_for_callback.post_message(&message);
@@ -745,7 +737,7 @@ fn install_cursor_control(
             if locked && !wanted.get() {
                 document_for_event.exit_pointer_lock();
             }
-            let message = build_msg("pointer_lock_changed");
+            let message = Kind::PointerLockChanged.message();
             set_msg_bool(&message, "locked", locked);
             set_msg_bool(&message, "released", released);
             let _ = worker.post_message(&message);
@@ -871,7 +863,7 @@ fn install_dom_input_forwarders(
         *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move || {
             if channel_for_resize.borrow().ready {
                 if let Some((width, height)) = viewport.borrow_mut().take() {
-                    let msg = build_msg("viewport");
+                    let msg = Kind::Viewport.message();
                     set_msg_f32(&msg, "width", width);
                     set_msg_f32(&msg, "height", height);
                     let _ = worker_for_raf.post_message(&msg);
@@ -893,7 +885,7 @@ fn install_dom_input_forwarders(
             };
             if let Some(metrics) = commit.filter(|metrics| *metrics != committed.get()) {
                 committed.set(metrics);
-                let msg = build_msg("resize");
+                let msg = Kind::Resize.message();
                 set_msg_u32(&msg, "width", metrics.width);
                 set_msg_u32(&msg, "height", metrics.height);
                 set_msg_f32(&msg, "dpr", metrics.scale);
@@ -946,7 +938,7 @@ fn install_dom_input_forwarders(
         *raf_cb.borrow_mut() = Some(Closure::wrap(Box::new(move || {
             channel_for_raf.borrow_mut().flush(&worker_for_raf);
             if let Some((x, y, buttons, dx, dy, time)) = pending_for_raf.borrow_mut().take() {
-                let msg = build_msg("mouse_move");
+                let msg = Kind::MouseMove.message();
                 set_msg_f32(&msg, "x", x);
                 set_msg_f32(&msg, "y", y);
                 set_msg_u32(&msg, "buttons", buttons);
@@ -981,7 +973,7 @@ fn install_dom_input_forwarders(
             if prevent {
                 ev.prevent_default();
             }
-            let msg = build_msg("mouse_button");
+            let msg = Kind::MouseButton.message();
             set_msg_f32(&msg, "x", ev.offset_x() as f32);
             set_msg_f32(&msg, "y", ev.offset_y() as f32);
             set_msg_u32(&msg, "button", ev.button() as u32);
@@ -1008,7 +1000,7 @@ fn install_dom_input_forwarders(
             if ev.pointer_type() == "mouse" {
                 return;
             }
-            let msg = build_msg("pointer");
+            let msg = Kind::Pointer.message();
             set_msg_f64(&msg, "id", f64::from(ev.pointer_id()));
             set_msg_f32(&msg, "x", ev.offset_x() as f32);
             set_msg_f32(&msg, "y", ev.offset_y() as f32);
@@ -1047,7 +1039,7 @@ fn install_dom_input_forwarders(
                 _ => wheel_lines(delta),
             };
             ev.prevent_default();
-            let msg = build_msg("mouse_wheel");
+            let msg = Kind::MouseWheel.message();
             set_msg_f32(&msg, "dx", dx);
             set_msg_f32(&msg, "dy", dy);
             let _ = worker.post_message(&msg);
@@ -1079,7 +1071,7 @@ fn install_dom_input_forwarders(
             if suppress_alt || (owned_unmodified && no_modifier) {
                 ev.prevent_default();
             }
-            let msg = build_msg("key");
+            let msg = Kind::Key.message();
             set_msg_string(&msg, "code", &code);
             set_msg_string(&msg, "key", &ev.key());
             set_msg_bool(&msg, "pressed", pressed);
@@ -1107,7 +1099,7 @@ fn install_focus_and_visibility(
     for (event_name, focused) in [("focus", true), ("blur", false)] {
         let worker = worker.clone();
         let cb = Closure::wrap(Box::new(move || {
-            let msg = build_msg("focus");
+            let msg = Kind::Focus.message();
             set_msg_bool(&msg, "focused", focused);
             let _ = worker.post_message(&msg);
         }) as Box<dyn FnMut()>);
@@ -1121,7 +1113,7 @@ fn install_focus_and_visibility(
         let worker = worker.clone();
         let document_for_query = document.clone();
         let cb = Closure::wrap(Box::new(move || {
-            let msg = build_msg("visibility");
+            let msg = Kind::Visibility.message();
             set_msg_bool(&msg, "visible", is_visible(&document_for_query));
             let _ = worker.post_message(&msg);
         }) as Box<dyn FnMut()>);
@@ -1132,12 +1124,6 @@ fn install_focus_and_visibility(
     }
 
     Ok(())
-}
-
-fn build_msg(kind: &str) -> js_sys::Object {
-    let obj = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("kind"), &JsValue::from_str(kind));
-    obj
 }
 
 fn set_msg_u32(obj: &js_sys::Object, key: &str, v: u32) {
@@ -1165,12 +1151,9 @@ fn install_worker_state_handler(worker: &Link, host: &Element, button_id: &str) 
     let button_id_owned: String = button_id.to_string();
     let cb = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
-        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-            .ok()
-            .and_then(|v| v.as_string());
-        match kind.as_deref() {
-            Some("presented") => set_host_state(&host, "ready"),
-            Some("preview_ready") => {
+        match Kind::of(&data) {
+            Some(Kind::Presented) => set_host_state(&host, "ready"),
+            Some(Kind::PreviewReady) => {
                 let Some(document) = web_sys::window().and_then(|w| w.document()) else {
                     return;
                 };
@@ -1196,10 +1179,7 @@ fn install_worker_failure_handler(worker: &Link, host: &Element, button_id: &str
     let button_for_message = button_id.to_string();
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data: JsValue = event.data();
-        let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-            .ok()
-            .and_then(|v| v.as_string());
-        if kind.as_deref() != Some("error") {
+        if Kind::of(&data) != Some(Kind::Error) {
             return;
         }
         let message = js_sys::Reflect::get(&data, &JsValue::from_str("message"))

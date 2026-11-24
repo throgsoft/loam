@@ -4,26 +4,126 @@ use wasm_bindgen::{JsCast, JsValue};
 
 use crate::session::input::message::{InputMessage, PointerPhase};
 
-/// `Ok(None)` covers the `init` kind, which the caller handles, and unknown kinds, which are dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Init,
+    Start,
+    Pause,
+    Resume,
+    HostPause,
+    HostResume,
+    Visibility,
+    Resize,
+    Viewport,
+    MouseMove,
+    MouseButton,
+    MouseWheel,
+    Key,
+    Focus,
+    PointerLockChanged,
+    Pointer,
+    HostMessage,
+    Ready,
+    PreviewReady,
+    Presented,
+    Error,
+    CursorLock,
+    HostPost,
+}
+
+impl Kind {
+    const ALL: [Self; 23] = [
+        Self::Init,
+        Self::Start,
+        Self::Pause,
+        Self::Resume,
+        Self::HostPause,
+        Self::HostResume,
+        Self::Visibility,
+        Self::Resize,
+        Self::Viewport,
+        Self::MouseMove,
+        Self::MouseButton,
+        Self::MouseWheel,
+        Self::Key,
+        Self::Focus,
+        Self::PointerLockChanged,
+        Self::Pointer,
+        Self::HostMessage,
+        Self::Ready,
+        Self::PreviewReady,
+        Self::Presented,
+        Self::Error,
+        Self::CursorLock,
+        Self::HostPost,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Init => "init",
+            Self::Start => "start",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::HostPause => "host_pause",
+            Self::HostResume => "host_resume",
+            Self::Visibility => "visibility",
+            Self::Resize => "resize",
+            Self::Viewport => "viewport",
+            Self::MouseMove => "mouse_move",
+            Self::MouseButton => "mouse_button",
+            Self::MouseWheel => "mouse_wheel",
+            Self::Key => "key",
+            Self::Focus => "focus",
+            Self::PointerLockChanged => "pointer_lock_changed",
+            Self::Pointer => "pointer",
+            Self::HostMessage => "host_message",
+            Self::Ready => "ready",
+            Self::PreviewReady => "preview_ready",
+            Self::Presented => "presented",
+            Self::Error => "error",
+            Self::CursorLock => "cursor_lock",
+            Self::HostPost => "host_post",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+
+    pub(crate) fn of(data: &JsValue) -> Option<Self> {
+        read_string_field(data, "kind").and_then(|name| Self::parse(&name))
+    }
+
+    pub(crate) fn message(self) -> js_sys::Object {
+        let message = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("kind"),
+            &JsValue::from_str(self.name()),
+        );
+        message
+    }
+}
+
+/// `Ok(None)` covers the kinds that carry no input, which the caller handles, and unknown kinds, which are dropped.
 pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
-    let kind = js_sys::Reflect::get(data, &JsValue::from_str("kind"))
-        .ok()
-        .and_then(|v| v.as_string());
+    let name = read_string_field(data, "kind")
+        .ok_or_else(|| anyhow::anyhow!("postMessage missing 'kind' field"))?;
+    let Some(kind) = Kind::parse(&name) else {
+        return Ok(None);
+    };
 
-    let kind = kind.ok_or_else(|| anyhow::anyhow!("postMessage missing 'kind' field"))?;
-
-    let msg = match kind.as_str() {
-        "init" => return Ok(None),
-        "resize" => InputMessage::Resize {
+    let msg = match kind {
+        Kind::Resize => InputMessage::Resize {
             width: read_u32_field(data, "width").unwrap_or(0),
             height: read_u32_field(data, "height").unwrap_or(0),
             dpr: read_device_pixel_ratio(data),
         },
-        "viewport" => InputMessage::Viewport {
+        Kind::Viewport => InputMessage::Viewport {
             width: read_f32_field(data, "width").unwrap_or(0.0),
             height: read_f32_field(data, "height").unwrap_or(0.0),
         },
-        "mouse_move" => InputMessage::MouseMove {
+        Kind::MouseMove => InputMessage::MouseMove {
             x: read_f32_field(data, "x").unwrap_or(0.0),
             y: read_f32_field(data, "y").unwrap_or(0.0),
             buttons: read_u32_field(data, "buttons").unwrap_or(0) as u8,
@@ -31,18 +131,18 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
             dy: read_f32_field(data, "dy").unwrap_or(0.0),
             time: read_event_time(data),
         },
-        "mouse_button" => InputMessage::MouseButton {
+        Kind::MouseButton => InputMessage::MouseButton {
             x: read_f32_field(data, "x").unwrap_or(0.0),
             y: read_f32_field(data, "y").unwrap_or(0.0),
             button: read_u32_field(data, "button").unwrap_or(0) as u8,
             pressed: read_bool_field(data, "pressed").unwrap_or(false),
             time: read_event_time(data),
         },
-        "mouse_wheel" => InputMessage::MouseWheel {
+        Kind::MouseWheel => InputMessage::MouseWheel {
             dx: read_f32_field(data, "dx").unwrap_or(0.0),
             dy: read_f32_field(data, "dy").unwrap_or(0.0),
         },
-        "key" => InputMessage::Key {
+        Kind::Key => InputMessage::Key {
             code: read_string_field(data, "code").unwrap_or_default(),
             key: read_string_field(data, "key").unwrap_or_default(),
             pressed: read_bool_field(data, "pressed").unwrap_or(false),
@@ -52,14 +152,16 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
             alt: read_bool_field(data, "alt").unwrap_or(false),
             meta: read_bool_field(data, "meta").unwrap_or(false),
         },
-        "focus" => InputMessage::Focus(read_bool_field(data, "focused").unwrap_or(false)),
-        "visibility" => InputMessage::Visibility(read_bool_field(data, "visible").unwrap_or(false)),
-        "start" => InputMessage::Start,
-        "pointer_lock_changed" => InputMessage::PointerLockChanged {
+        Kind::Focus => InputMessage::Focus(read_bool_field(data, "focused").unwrap_or(false)),
+        Kind::Visibility => {
+            InputMessage::Visibility(read_bool_field(data, "visible").unwrap_or(false))
+        }
+        Kind::Start => InputMessage::Start,
+        Kind::PointerLockChanged => InputMessage::PointerLockChanged {
             locked: read_bool_field(data, "locked").unwrap_or(false),
             released: read_bool_field(data, "released").unwrap_or(false),
         },
-        "pointer" => {
+        Kind::Pointer => {
             let phase = match read_string_field(data, "phase").as_deref() {
                 Some("pointerdown") => PointerPhase::Down,
                 Some("pointermove") => PointerPhase::Move,
@@ -75,7 +177,7 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
                 time: read_event_time(data),
             }
         }
-        "host_message" => {
+        Kind::HostMessage => {
             let Some(topic) = read_string_field(data, "topic") else {
                 return Ok(None);
             };
@@ -84,7 +186,17 @@ pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
                 values: read_f32_array_field(data, "values"),
             }
         }
-        _ => return Ok(None),
+        Kind::Init
+        | Kind::Pause
+        | Kind::Resume
+        | Kind::HostPause
+        | Kind::HostResume
+        | Kind::Ready
+        | Kind::PreviewReady
+        | Kind::Presented
+        | Kind::Error
+        | Kind::CursorLock
+        | Kind::HostPost => return Ok(None),
     };
 
     Ok(Some(msg))

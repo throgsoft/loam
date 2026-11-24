@@ -23,7 +23,7 @@ use super::surface::{Attempt, SurfaceHost};
 use crate::host::HostError;
 use crate::session::input::message::{InputMessage, PointerPhase};
 use crate::session::input::queue;
-use crate::wasm::messages;
+use crate::wasm::messages::{self, Kind};
 use crate::wasm::{install_logging_idempotent, post_failure, worker_scope, Endpoint};
 use crate::{args::Args, WasmConfig};
 
@@ -85,7 +85,7 @@ where
         .listen(on_message.as_ref().unchecked_ref())
         .map_err(|error| anyhow!("addEventListener('message'): {error:?}"))?;
     on_message.forget();
-    post(&endpoint, "ready");
+    post(&endpoint, Kind::Ready);
     Ok(())
 }
 
@@ -127,25 +127,14 @@ fn restart_if_unhalted(was_halted: bool) {
     }
 }
 
-fn post(endpoint: &Endpoint, kind: &str) {
-    let message = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &message,
-        &JsValue::from_str("kind"),
-        &JsValue::from_str(kind),
-    );
-    if let Err(error) = endpoint.post(&message) {
-        tracing::warn!("loam-app::session::browser: post {kind} failed: {error:?}");
+fn post(endpoint: &Endpoint, kind: Kind) {
+    if let Err(error) = endpoint.post(&kind.message()) {
+        tracing::warn!("loam-app::session::browser: post {kind:?} failed: {error:?}");
     }
 }
 
 fn post_cursor_request(endpoint: &Endpoint, locked: bool) {
-    let message = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &message,
-        &JsValue::from_str("kind"),
-        &JsValue::from_str("cursor_lock"),
-    );
+    let message = Kind::CursorLock.message();
     let _ = js_sys::Reflect::set(
         &message,
         &JsValue::from_str("locked"),
@@ -157,12 +146,7 @@ fn post_cursor_request(endpoint: &Endpoint, locked: bool) {
 }
 
 fn post_to_page(endpoint: &Endpoint, topic: &str, values: &[f32]) {
-    let message = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &message,
-        &JsValue::from_str("kind"),
-        &JsValue::from_str("host_post"),
-    );
+    let message = Kind::HostPost.message();
     let _ = js_sys::Reflect::set(
         &message,
         &JsValue::from_str("topic"),
@@ -188,34 +172,32 @@ where
     F: FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
 {
     let data: JsValue = event.data();
-    let kind = js_sys::Reflect::get(&data, &JsValue::from_str("kind"))
-        .ok()
-        .and_then(|value| value.as_string());
-    match kind.as_deref() {
-        Some("start") => {
+    let kind = Kind::of(&data);
+    match kind {
+        Some(Kind::Start) => {
             match RAF_KICKOFF.with(|kickoff| kickoff.borrow_mut().take()) {
                 Some(kickoff) => kickoff(),
                 None => START_REQUESTED.with(|started| started.set(true)),
             }
             return Ok(());
         }
-        Some("pause") => {
+        Some(Kind::Pause) => {
             set_paused(endpoint, &PAUSED, true);
             return Ok(());
         }
-        Some("resume") => {
+        Some(Kind::Resume) => {
             set_paused(endpoint, &PAUSED, false);
             return Ok(());
         }
-        Some("host_pause") => {
+        Some(Kind::HostPause) => {
             set_paused(endpoint, &HOST_PAUSED, true);
             return Ok(());
         }
-        Some("host_resume") => {
+        Some(Kind::HostResume) => {
             set_paused(endpoint, &HOST_PAUSED, false);
             return Ok(());
         }
-        Some("visibility") => {
+        Some(Kind::Visibility) => {
             let was_halted = halted();
             let visible = js_sys::Reflect::get(&data, &JsValue::from_str("visible"))
                 .ok()
@@ -224,7 +206,7 @@ where
             HIDDEN.with(|hidden| hidden.set(!visible));
             restart_if_unhalted(was_halted);
         }
-        Some("init") => {
+        Some(Kind::Init) => {
             let Some(factory) = pending.borrow_mut().take() else {
                 return Err(anyhow!("a second init reached the session worker"));
             };
@@ -280,8 +262,10 @@ where
     }
     if input_paused()
         && matches!(
-            kind.as_deref(),
-            Some("mouse_move" | "mouse_button" | "mouse_wheel" | "key" | "pointer")
+            kind,
+            Some(
+                Kind::MouseMove | Kind::MouseButton | Kind::MouseWheel | Kind::Key | Kind::Pointer
+            )
         )
     {
         return Ok(());
@@ -332,7 +316,7 @@ async fn start<A: Stores>(
         dpr,
         presented: false,
     })));
-    post(&endpoint, "preview_ready");
+    post(&endpoint, Kind::PreviewReady);
     install_animation_frame(endpoint, worker);
     Ok(())
 }
@@ -742,7 +726,7 @@ impl<A: Stores> Worker<A> {
         })?;
         if matches!(attempt, Attempt::Presented) && !*presented {
             *presented = true;
-            post(endpoint, "presented");
+            post(endpoint, Kind::Presented);
         }
         Ok(attempt)
     }
