@@ -168,19 +168,18 @@ impl ScriptRun {
         self.driver.frame()
     }
 
-    // Says whether a line ran. The error names the first line refused here or rejected at the last boundary.
+    // Says whether a line ran. The driver advances on an error too, so a host that carries on stays on its frame index.
     pub(crate) fn advance<A: Stores>(
         &mut self,
         input: &mut InputMap,
         bindings: &Bindings,
         console: &mut SessionConsole<A>,
     ) -> Result<(ScriptStatus, bool), HostError> {
-        if let Some((number, error)) = console.take_refused() {
-            return Err(HostError::Host(format!("script line {number}: {error}")));
-        }
         let lines = &self.lines;
         let mut ran = false;
-        let mut failed = None;
+        let mut failed = console
+            .take_refused()
+            .map(|(number, error)| HostError::Host(format!("script line {number}: {error}")));
         let status = self.driver.advance_with(|index, step| {
             ran = true;
             match &lines[index] {

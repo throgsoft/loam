@@ -273,6 +273,7 @@ impl<A: Stores> SessionConsole<A> {
 
     // A refused dispatch ends on its error line.
     pub(crate) fn dispatch_script_line(&mut self, text: &str, number: usize) -> Option<String> {
+        self.dispatch_pending();
         self.submit.commands.set_report(Report::Script(number));
         self.console.execute(text);
         self.dispatch_pending();
