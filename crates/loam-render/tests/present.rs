@@ -220,12 +220,14 @@ fn landmarks_gpu_probe() {
 // Farther from w = 0 than the ball's radius, so a pass that cuts at w = 0 misses the ball.
 const CUT: f32 = 1.0;
 const BALL_RADIUS: f32 = 0.5;
-const TESSERACT_AT: Vec4 = Vec4::new(-2.0, 0.5, -5.0, CUT);
-const BALL_AT: Vec4 = Vec4::new(2.0, -0.5, -4.0, CUT);
+const TESSERACT_AT: Vec4 = Vec4::new(-4.5, 0.5, -5.0, CUT);
+const BALL_AT: Vec4 = Vec4::new(4.0, -0.5, -4.0, CUT);
 // Rolled and off every axis, so a pass that drops part of the eye draws the solids elsewhere.
 const EYE_AT: [f32; 3] = [1.0, 2.0, 2.0];
 const EYE_TARGET: [f32; 3] = [0.0, 0.0, -4.5];
-const EYE_UP: [f32; 3] = [1.0, 0.5, 0.0];
+const EYE_UP: [f32; 3] = [0.5, 1.0, 0.0];
+// Wider than the square target, as a display is while its canvas lags a resize.
+const EYE_ASPECT: f32 = 1.6;
 const RED: [f32; 4] = [0.9, 0.1, 0.1, 1.0];
 const GREEN: [f32; 4] = [0.1, 0.9, 0.1, 1.0];
 // Shading dims a solid and keeps its hue, so its leading channel stays clear of the others.
@@ -266,7 +268,10 @@ fn section_fill_and_field_gpu_probe() {
         let field = solid(BALL_AT, Instance::new(ball, green));
         [("section fill", filled, 0), ("field solid", field, 1)]
     });
-    session.views_mut().root_mut().eye = Eye::looking_at(EYE_AT, EYE_TARGET, EYE_UP);
+    session.views_mut().root_mut().eye = Eye {
+        aspect: EYE_ASPECT,
+        ..Eye::looking_at(EYE_AT, EYE_TARGET, EYE_UP)
+    };
     session.boundary(Input::default()).unwrap();
     session.tick(&Sequential).unwrap();
     let mut publication = Publication::default();
