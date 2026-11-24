@@ -13,9 +13,13 @@ struct State {
     eye: Eye,
     segments: Vec<SegmentRecord>,
     uploaded: bool,
-    node: Option<LineRasterNode>,
-    device: Option<Device>,
-    queue: Option<Queue>,
+    built: Option<Built>,
+}
+
+struct Built {
+    node: LineRasterNode,
+    device: Device,
+    queue: Queue,
 }
 
 #[derive(Clone)]
@@ -42,9 +46,7 @@ impl LinePass {
                 eye: Eye::default(),
                 segments: Vec::new(),
                 uploaded: false,
-                node: None,
-                device: None,
-                queue: None,
+                built: None,
             })),
         }
     }
@@ -102,13 +104,13 @@ impl FramePass for LinePass {
             eye,
             segments,
             uploaded,
+            built,
+        } = &mut *state;
+        let Some(Built {
             node,
             device,
             queue,
-            ..
-        } = &mut *state;
-        let (Some(node), Some(device), Some(queue)) =
-            (node.as_mut(), device.as_ref(), queue.as_ref())
+        }) = built.as_mut()
         else {
             return Ok(());
         };
@@ -125,8 +127,8 @@ impl FramePass for LinePass {
     }
 
     fn draw(&mut self, pass: &mut RenderPass<'_>, _target: &FrameTarget<'_>) -> anyhow::Result<()> {
-        if let Some(node) = self.shared.borrow().node.as_ref() {
-            node.draw(pass, None);
+        if let Some(built) = self.shared.borrow().built.as_ref() {
+            built.node.draw(pass, None);
         }
         Ok(())
     }
@@ -140,24 +142,26 @@ impl FramePass for LinePass {
             return Ok(());
         };
         self.prepare(encoder, target)?;
-        if let Some(node) = self.shared.borrow().node.as_ref() {
-            node.record(encoder, target.color, Some(depth), None);
+        if let Some(built) = self.shared.borrow().built.as_ref() {
+            built.node.record(encoder, target.color, Some(depth), None);
         }
         Ok(())
     }
 
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
-        state.node = Some(LineRasterNode::new(
-            &gpu.device,
-            frame.color,
-            DepthMode::ReadOnly {
-                format: frame.depth,
-            },
-            DepthConvention::ReversedZ,
-        ));
-        state.device = Some(gpu.device.clone());
-        state.queue = Some(gpu.queue.clone());
+        state.built = Some(Built {
+            node: LineRasterNode::new(
+                &gpu.device,
+                frame.color,
+                DepthMode::ReadOnly {
+                    format: frame.depth,
+                },
+                DepthConvention::ReversedZ,
+            ),
+            device: gpu.device.clone(),
+            queue: gpu.queue.clone(),
+        });
         state.uploaded = false;
         Ok(())
     }

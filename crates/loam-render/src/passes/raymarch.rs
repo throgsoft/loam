@@ -11,8 +11,12 @@ use crate::Viewport;
 struct State {
     source: String,
     uniforms: RayMarchUniforms,
-    node: Option<RayMarchNode>,
-    queue: Option<Queue>,
+    built: Option<Built>,
+}
+
+struct Built {
+    node: RayMarchNode,
+    queue: Queue,
 }
 
 #[derive(Clone)]
@@ -26,8 +30,7 @@ impl RaymarchPass {
             shared: Rc::new(RefCell::new(State {
                 source,
                 uniforms: RayMarchUniforms::default(),
-                node: None,
-                queue: None,
+                built: None,
             })),
         }
     }
@@ -57,12 +60,9 @@ impl FramePass for RaymarchPass {
     ) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
         let State {
-            uniforms,
-            node,
-            queue,
-            ..
+            uniforms, built, ..
         } = &mut *state;
-        let (Some(node), Some(queue)) = (node.as_mut(), queue.as_ref()) else {
+        let Some(Built { node, queue }) = built.as_mut() else {
             return Ok(());
         };
         uniforms.resolution = [target.size.0 as f32, target.size.1 as f32];
@@ -96,8 +96,10 @@ impl FramePass for RaymarchPass {
                 label: Some("loam-render::passes::raymarch"),
                 source: wgpu::ShaderSource::Wgsl(state.source.clone().into()),
             });
-        state.node = Some(RayMarchNode::new(&gpu.device, frame.color, &module));
-        state.queue = Some(gpu.queue.clone());
+        state.built = Some(Built {
+            node: RayMarchNode::new(&gpu.device, frame.color, &module),
+            queue: gpu.queue.clone(),
+        });
         Ok(())
     }
 }

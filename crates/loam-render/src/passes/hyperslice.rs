@@ -17,9 +17,13 @@ struct State {
     uniforms: Hyperslice4DUniforms,
     bodies: Vec<BodyUniform>,
     cells: Vec<(Viewport, f32, BodyUniform)>,
-    node: Option<Hyperslice4DNode>,
-    device: Option<Device>,
-    queue: Option<Queue>,
+    built: Option<Built>,
+}
+
+struct Built {
+    node: Hyperslice4DNode,
+    device: Device,
+    queue: Queue,
 }
 
 /// Draws the field records of the first published view that has any, cut at that view's field cut; `u.params.x` is 1 while the backdrop's ground is visible.
@@ -36,9 +40,7 @@ impl HyperslicePass {
                 uniforms: Hyperslice4DUniforms::default(),
                 bodies: Vec::new(),
                 cells: Vec::new(),
-                node: None,
-                device: None,
-                queue: None,
+                built: None,
             })),
         }
     }
@@ -130,13 +132,14 @@ impl FramePass for HyperslicePass {
             uniforms,
             bodies,
             cells,
+            built,
+            ..
+        } = &mut *state;
+        let Some(Built {
             node,
             device,
             queue,
-            ..
-        } = &mut *state;
-        let (Some(node), Some(device), Some(queue)) =
-            (node.as_mut(), device.as_ref(), queue.as_ref())
+        }) = built.as_mut()
         else {
             return Ok(());
         };
@@ -172,16 +175,18 @@ impl FramePass for HyperslicePass {
                 label: Some("loam-render::passes::hyperslice"),
                 source: wgpu::ShaderSource::Wgsl(state.source.clone().into()),
             });
-        state.node = Some(Hyperslice4DNode::with_depth(
-            &gpu.device,
-            frame.color,
-            &module,
-            DepthMode::ReadWrite {
-                format: frame.depth,
-            },
-        ));
-        state.device = Some(gpu.device.clone());
-        state.queue = Some(gpu.queue.clone());
+        state.built = Some(Built {
+            node: Hyperslice4DNode::with_depth(
+                &gpu.device,
+                frame.color,
+                &module,
+                DepthMode::ReadWrite {
+                    format: frame.depth,
+                },
+            ),
+            device: gpu.device.clone(),
+            queue: gpu.queue.clone(),
+        });
         Ok(())
     }
 }

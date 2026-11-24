@@ -12,8 +12,12 @@ use crate::{DepthConvention, Viewport};
 struct State {
     eye: Eye,
     backdrop: Option<Backdrop>,
-    node: Option<SkyGroundNode>,
-    queue: Option<Queue>,
+    built: Option<Built>,
+}
+
+struct Built {
+    node: SkyGroundNode,
+    queue: Queue,
 }
 
 /// Without a backdrop it neither clears nor draws, so the frame keeps the host's background.
@@ -45,8 +49,7 @@ impl SkyGroundPass {
             shared: Rc::new(RefCell::new(State {
                 eye: Eye::default(),
                 backdrop,
-                node: None,
-                queue: None,
+                built: None,
             })),
         }
     }
@@ -101,13 +104,11 @@ impl FramePass for SkyGroundPass {
         target: &FrameTarget<'_>,
     ) -> anyhow::Result<()> {
         let state = &mut *self.shared.borrow_mut();
-        let (Some(node), Some(queue), Some(backdrop)) =
-            (state.node.as_mut(), state.queue.as_ref(), state.backdrop)
-        else {
+        let (Some(built), Some(backdrop)) = (state.built.as_mut(), state.backdrop) else {
             return Ok(());
         };
-        node.set_uniforms(
-            queue,
+        built.node.set_uniforms(
+            &built.queue,
             &SkyGroundUniforms::new(
                 crate::view::root_view_projection(&state.eye),
                 Viewport::full([target.size.0, target.size.1]),
@@ -120,8 +121,10 @@ impl FramePass for SkyGroundPass {
 
     fn draw(&mut self, pass: &mut RenderPass<'_>, target: &FrameTarget<'_>) -> anyhow::Result<()> {
         let state = self.shared.borrow();
-        if let (Some(node), Some(_)) = (state.node.as_ref(), state.backdrop) {
-            node.draw(pass, Some(&Viewport::full([target.size.0, target.size.1])));
+        if let (Some(built), Some(_)) = (state.built.as_ref(), state.backdrop) {
+            built
+                .node
+                .draw(pass, Some(&Viewport::full([target.size.0, target.size.1])));
         }
         Ok(())
     }
@@ -136,8 +139,8 @@ impl FramePass for SkyGroundPass {
         };
         self.prepare(encoder, target)?;
         let state = self.shared.borrow();
-        if let (Some(node), Some(_)) = (state.node.as_ref(), state.backdrop) {
-            node.record(
+        if let (Some(built), Some(_)) = (state.built.as_ref(), state.backdrop) {
+            built.node.record(
                 encoder,
                 target.color,
                 depth,
@@ -149,13 +152,15 @@ impl FramePass for SkyGroundPass {
 
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
-        state.node = Some(SkyGroundNode::new(
-            &gpu.device,
-            frame.color,
-            frame.depth,
-            DepthConvention::ReversedZ,
-        ));
-        state.queue = Some(gpu.queue.clone());
+        state.built = Some(Built {
+            node: SkyGroundNode::new(
+                &gpu.device,
+                frame.color,
+                frame.depth,
+                DepthConvention::ReversedZ,
+            ),
+            queue: gpu.queue.clone(),
+        });
         Ok(())
     }
 }

@@ -16,9 +16,13 @@ struct State {
     mesh: PointMesh<3>,
     uploaded: bool,
     uploads: u64,
-    node: Option<PointRasterNode>,
-    device: Option<Device>,
-    queue: Option<Queue>,
+    built: Option<Built>,
+}
+
+struct Built {
+    node: PointRasterNode,
+    device: Device,
+    queue: Queue,
 }
 
 #[derive(Clone)]
@@ -46,9 +50,7 @@ impl PointPass {
                 mesh: PointMesh::default(),
                 uploaded: false,
                 uploads: 0,
-                node: None,
-                device: None,
-                queue: None,
+                built: None,
             })),
         }
     }
@@ -115,13 +117,13 @@ impl FramePass for PointPass {
             mesh,
             uploaded,
             uploads,
+            built,
+        } = &mut *state;
+        let Some(Built {
             node,
             device,
             queue,
-            ..
-        } = &mut *state;
-        let (Some(node), Some(device), Some(queue)) =
-            (node.as_mut(), device.as_ref(), queue.as_ref())
+        }) = built.as_mut()
         else {
             return Ok(());
         };
@@ -141,14 +143,16 @@ impl FramePass for PointPass {
 
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
         let mut state = self.shared.borrow_mut();
-        state.node = Some(PointRasterNode::new(
-            &gpu.device,
-            frame.color,
-            DepthMode::Off,
-            DepthConvention::ReversedZ,
-        ));
-        state.device = Some(gpu.device.clone());
-        state.queue = Some(gpu.queue.clone());
+        state.built = Some(Built {
+            node: PointRasterNode::new(
+                &gpu.device,
+                frame.color,
+                DepthMode::Off,
+                DepthConvention::ReversedZ,
+            ),
+            device: gpu.device.clone(),
+            queue: gpu.queue.clone(),
+        });
         state.uploaded = false;
         Ok(())
     }
