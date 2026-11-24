@@ -428,7 +428,7 @@ pub enum Plane4 {
 impl Plane4 {
     pub const ALL: [Self; 6] = [Self::Xy, Self::Xz, Self::Xw, Self::Yz, Self::Yw, Self::Zw];
 
-    /// Stable serialization key.
+    /// Lowercase axis pair, such as `"xy"`.
     pub fn label(self) -> &'static str {
         match self {
             Self::Xy => "xy",
@@ -616,9 +616,6 @@ impl Rotor4 {
         zw: 0.0,
         xyzw: 0.0,
     };
-
-    /// [`Rotor4::IDENTITY`] in the `From<Rotor4> for [f32; 8]` slot order.
-    pub const IDENTITY_SLOT: [f32; 8] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
     pub fn norm_squared(self) -> f32 {
         self.s * self.s

@@ -132,7 +132,6 @@ impl Shape {
     }
 }
 
-/// A new variant goes last, because [`ShapeKind::index`] feeds stored geometry hashes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ShapeKind {
     Sphere,

@@ -247,11 +247,6 @@ impl<S: PhysicsSpace> World<S> {
         &self.geometry
     }
 
-    /// Pops the newest of the last two released shapes so its buffer can be reused.
-    pub fn reclaim_geometry(&mut self) -> Option<Shape> {
-        self.geometry.take_released()
-    }
-
     pub fn collider(&self, body: &RigidBody<S>) -> Option<&Shape> {
         self.geometry.get(body.collider())
     }
@@ -375,11 +370,9 @@ impl<S: PhysicsSpace> World<S> {
         inertia: S::Inertia,
     ) -> Result<(), EditError> {
         if self.bodies.get(id).is_none() {
-            self.geometry.stash(collider);
             return Err(EditError::StaleHandle);
         }
         if !self.space.valid_inertia(inertia) {
-            self.geometry.stash(collider);
             return Err(EditError::InvalidInertia);
         }
         self.bodies[id].replace_collider(&mut self.geometry, &self.space, collider, inertia)?;

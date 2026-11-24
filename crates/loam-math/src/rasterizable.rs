@@ -78,8 +78,6 @@ pub enum Projection<const N: usize> {
 }
 
 pub trait RasterizableSpace<const N: usize>: Space {
-    fn point_to_array(p: Self::Point) -> [f32; N];
-
     fn array_to_point(arr: [f32; N]) -> Self::Point;
 
     fn project_point(point: Self::Point, projection: &Projection<N>) -> Option<Vec3>;
@@ -94,10 +92,6 @@ pub trait RasterizableSpace<const N: usize>: Space {
 }
 
 impl RasterizableSpace<3> for EuclideanR3 {
-    fn point_to_array(p: Vec3) -> [f32; 3] {
-        p.to_array()
-    }
-
     fn array_to_point(arr: [f32; 3]) -> Vec3 {
         Vec3::from_array(arr)
     }
@@ -126,10 +120,6 @@ impl RasterizableSpace<3> for EuclideanR3 {
 }
 
 impl RasterizableSpace<4> for EuclideanR4 {
-    fn point_to_array(p: Vec4) -> [f32; 4] {
-        p.to_array()
-    }
-
     fn array_to_point(arr: [f32; 4]) -> Vec4 {
         Vec4::from_array(arr)
     }

@@ -97,10 +97,6 @@ impl IsometryGroup for SphericalS3Embedded {
 }
 
 impl RasterizableSpace<4> for SphericalS3Embedded {
-    fn point_to_array(p: Vec4) -> [f32; 4] {
-        p.to_array()
-    }
-
     fn array_to_point(arr: [f32; 4]) -> Vec4 {
         Vec4::from_array(arr).normalize()
     }

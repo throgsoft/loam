@@ -9,26 +9,10 @@ use crate::edit::EditError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GeometryId(u32);
 
-impl GeometryId {
-    pub fn index(self) -> u32 {
-        self.0
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GeometryRef {
     id: GeometryId,
     version: u32,
-}
-
-impl GeometryRef {
-    pub fn id(self) -> GeometryId {
-        self.id
-    }
-
-    pub fn version(self) -> u32 {
-        self.version
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -55,19 +39,16 @@ struct Entry {
     shape: Option<Shape>,
 }
 
-const RELEASED_BUFFERS: usize = 2;
-
 #[derive(Clone, Default)]
 pub struct GeometryStore {
     entries: Vec<Entry>,
     free: Vec<u32>,
-    released: Vec<Shape>,
     index: HashMap<u64, Vec<GeometryId>>,
     buckets: Vec<Vec<GeometryId>>,
 }
 
 impl GeometryStore {
-    /// A shape equal to one already held shares its entry, and the duplicate joins the released pool.
+    /// A shape equal to one already held shares its entry.
     pub fn prepare(&mut self, shape: Shape) -> ColliderRef {
         let kind = shape.kind();
         let hash = shape_hash(&shape);
@@ -84,7 +65,6 @@ impl GeometryStore {
             let entry = &mut self.entries[id.0 as usize];
             entry.uses += 1;
             let version = entry.version;
-            self.stash(shape);
             return ColliderRef {
                 kind,
                 geometry: GeometryRef { id, version },
@@ -143,7 +123,7 @@ impl GeometryStore {
         if entry.uses > 0 {
             return;
         }
-        let freed = entry.shape.take();
+        entry.shape = None;
         let hash = entry.hash;
         if let Some(bucket) = self.index.get_mut(&hash) {
             bucket.retain(|held| *held != collider.geometry.id);
@@ -158,20 +138,6 @@ impl GeometryStore {
             entry.version = next;
             self.free.push(slot as u32);
         }
-        if let Some(freed) = freed {
-            self.stash(freed);
-        }
-    }
-
-    pub(crate) fn stash(&mut self, shape: Shape) {
-        if self.released.len() == RELEASED_BUFFERS {
-            self.released.remove(0);
-        }
-        self.released.push(shape);
-    }
-
-    pub fn take_released(&mut self) -> Option<Shape> {
-        self.released.pop()
     }
 
     pub fn get(&self, collider: ColliderRef) -> Option<&Shape> {
@@ -193,9 +159,7 @@ impl GeometryStore {
         &self,
         colliders: impl Iterator<Item = ColliderRef>,
     ) -> Result<(), EditError> {
-        if self.released.len() > RELEASED_BUFFERS
-            || self.buckets.iter().any(|bucket| !bucket.is_empty())
-        {
+        if self.buckets.iter().any(|bucket| !bucket.is_empty()) {
             return Err(EditError::InvalidGeometry);
         }
         let mut free = vec![false; self.entries.len()];

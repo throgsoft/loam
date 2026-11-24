@@ -227,11 +227,9 @@ impl<S: PhysicsSpace> RigidBody<S> {
         inertia: S::Inertia,
     ) -> Result<(), EditError> {
         if self.mass > 0.0 && is_halfspace_kind(collider.kind()) {
-            geometry.stash(collider);
             return Err(EditError::DynamicHalfSpace);
         }
         if !valid_collider(space, &collider, self.mass) {
-            geometry.stash(collider);
             return Err(EditError::UnsupportedCollider);
         }
         let replacement = geometry.prepare(collider);

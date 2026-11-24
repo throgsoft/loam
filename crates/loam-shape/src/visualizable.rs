@@ -4,10 +4,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotVisualizable {
-    Unbounded,
-
-    WrongDimension,
-
     Degenerate,
 }
 

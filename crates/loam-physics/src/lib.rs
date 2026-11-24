@@ -1,4 +1,4 @@
-//! A body's collider is a `loam_shape::Shape`, and `Shape::Sphere::center` is ignored because the body position is the centre.
+//! A body's collider is a `loam_shape::Shape`, and a `Shape::Sphere` collider is refused unless its `center` is zero because the body position is the centre.
 
 pub mod body;
 pub mod dirty;

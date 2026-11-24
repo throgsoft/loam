@@ -32,15 +32,6 @@ pub trait VectorOps:
     fn length(self) -> f32 {
         self.length_squared().sqrt()
     }
-
-    fn normalize_or(self, fallback: Self) -> Self {
-        let l2 = self.length_squared();
-        if l2 > 1e-12 {
-            self * (1.0 / l2.sqrt())
-        } else {
-            fallback
-        }
-    }
 }
 
 impl VectorOps for Vec3 {
