@@ -1,7 +1,7 @@
 use loam_math::{EuclideanR3, Space};
 
+use crate::image::{Eye, Views};
 use crate::input::{ActionId, Input, PointerButton};
-use crate::view::{Eye, Views};
 
 type Vec3 = <EuclideanR3 as Space>::Vector;
 

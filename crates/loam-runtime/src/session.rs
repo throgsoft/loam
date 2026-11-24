@@ -13,13 +13,14 @@ use crate::domain::{
 };
 use crate::drag::{Drag, DragError, DragRelease, Manipulation};
 use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
+use crate::image::{Views, ViewsSnapshot};
 use crate::input::{ActionId, Input};
 use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, SystemEntry, Tick};
-use crate::publication::{Publication, Stamp};
+use crate::publication::{Overlay, Publication, Stamp};
 use crate::store::{Owner, SchemaId};
 use crate::stores::Stores;
 use crate::value::Setting;
-use crate::view::{Overlay, Pick, Views, ViewsSnapshot};
+use crate::view::Pick;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SimConfig {
@@ -833,7 +834,8 @@ mod tests {
 
     #[test]
     fn grab_and_plain_pick() {
-        use crate::view::{Eye, Projection4, Section4, Vec4, ViewId};
+        use crate::image::Eye;
+        use crate::view::{Projection4, Section4, Vec4, ViewId};
         use loam_math::EuclideanR4;
 
         const DEPTH: f32 = 4.0;
@@ -881,7 +883,8 @@ mod tests {
 
     #[test]
     fn section_pick_past_missed_body() {
-        use crate::view::{Eye, Section4};
+        use crate::image::Eye;
+        use crate::view::Section4;
         use loam_shape::polytope::Polytope4;
 
         const SCALE: f32 = 0.45;

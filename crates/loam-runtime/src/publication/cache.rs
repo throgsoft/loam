@@ -1,9 +1,8 @@
 use std::ops::Range;
 
-use super::{FieldRecord, SegmentRecord, TriangleRecord};
+use super::{FieldRecord, SegmentRecord, Stamp, TriangleRecord};
 use crate::domain::{DomainSpace, Instance, Pose};
 use crate::entity::Entity;
-use crate::publication::Stamp;
 use crate::store::{Change, Cursor, Store};
 
 const NO_OUTPUT: u32 = u32::MAX;

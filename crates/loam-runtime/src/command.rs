@@ -6,11 +6,12 @@ use crate::domain::{
     Instance, Pose,
 };
 use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
+use crate::image::Views;
 use crate::session::RestoreError;
 use crate::store::{Owner, StoreError};
 use crate::stores::{HasRelation, HasStore, Stores};
 use crate::value::Setting;
-use crate::view::{ViewId, ViewMapping, ViewSpec, Views};
+use crate::view::{ViewId, ViewMapping, ViewSpec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(u64);

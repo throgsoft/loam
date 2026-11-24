@@ -1,8 +1,21 @@
 use crate::assets::Library;
 use crate::domain::{DomainError, DomainId, Domains};
 use crate::entity::SceneId;
+use crate::image::{Backdrop, Views};
 use crate::phase::Tick;
-use crate::view::{Backdrop, Overlay, ViewRecords, ViewTarget, Views};
+use crate::view::ViewTarget;
+
+mod cache;
+mod records;
+
+pub(crate) use cache::{
+    EntityOutput, Motion, PatchCursors, PatchScratch, Planned, RecordCache, ViewState,
+};
+pub(crate) use records::SectionScratchpad;
+pub use records::{
+    FieldRecord, InstanceRecord, Overlay, PointRecord, RecordBuffer, RefusalSource, SegmentRecord,
+    TextRecord, TriangleRecord, ViewRecords, ViewRefusal, ViewRefusals,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stamp {
@@ -137,11 +150,12 @@ mod tests {
     use crate::assets::{Assets, Material, MaterialId, PreparedGeometry, PreparedId};
     use crate::command::{Rejection, SpawnBundle};
     use crate::domain::{DomainBuilder, Instance, Pose};
+    use crate::image::ImageRay;
     use crate::input::Input;
     use crate::phase::{Ctx, Phase};
     use crate::session::{Session, SimConfig};
     use crate::store::{LogCapacity, Store};
-    use crate::view::{DepthEnvelope, DomainRay, ImageRay, ViewMapping, ViewSpec};
+    use crate::view::{DepthEnvelope, DomainRay, ViewMapping, ViewSpec};
 
     crate::stores! {
         #[derive(Default)]
@@ -154,8 +168,9 @@ mod tests {
         line_style: Option<(f32, f32)>,
         sectioned: bool,
         prepare: impl FnOnce(&mut Session<Quiet>) -> (PreparedId, MaterialId),
-    ) -> Vec<crate::view::SegmentRecord> {
-        use crate::view::{Eye, Section4, Vec4};
+    ) -> Vec<SegmentRecord> {
+        use crate::image::Eye;
+        use crate::view::{Section4, Vec4};
 
         let mut session = Session::new(Quiet::default(), SimConfig::default());
         let r4 = session
@@ -191,7 +206,8 @@ mod tests {
 
     #[test]
     fn tesseract_cut_at_w_zero() {
-        use crate::view::{Eye, Section4, Vec4, ViewId};
+        use crate::image::Eye;
+        use crate::view::{Section4, Vec4, ViewId};
 
         const SIZE: f32 = 0.7;
         const LIFT: f32 = 0.2;

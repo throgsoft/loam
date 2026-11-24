@@ -1,7 +1,8 @@
 use super::{Domain, DomainError, DomainHandle, DomainId, DomainOwner, DomainSpace, TypedDomain};
 use crate::assets::PreparedGeometry;
 use crate::entity::RuntimeId;
-use crate::view::{Pick, Views};
+use crate::image::Views;
+use crate::view::Pick;
 
 pub struct Domains {
     runtime: RuntimeId,

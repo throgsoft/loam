@@ -11,13 +11,12 @@ use crate::assets::{Library, PreparedGeometry};
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
 use crate::field::FieldCost;
+use crate::image::{ImageRay, Views};
 use crate::phase::Step;
-use crate::publication::Stamp;
+use crate::publication::{Stamp, ViewRecords};
 use crate::session::RestoreError;
 use crate::store::{Owner, Store, StoreError, StoreField, StoreSnapshot};
-use crate::view::{
-    ImageRay, Pick, ViewId, ViewRecords, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views,
-};
+use crate::view::{Pick, ViewId, ViewSpec, ViewStyle, ViewSummary, ViewTarget};
 
 mod blend;
 mod builder;

@@ -3,7 +3,8 @@ use loam_shape::polytope::Polytope4;
 use super::{ChartPoint, ChartTangent, DomainError, DomainSpace, Pose, TypedDomain};
 use crate::assets::PreparedGeometry;
 use crate::entity::Entity;
-use crate::view::{self, DomainRay, ImageRay, Pick, Vec4, ViewId, Views};
+use crate::image::{ImageRay, Views};
+use crate::view::{self, DomainRay, Pick, Vec4, ViewId};
 
 impl<S: DomainSpace> TypedDomain<S> {
     pub(super) fn pick_view(

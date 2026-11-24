@@ -5,6 +5,7 @@ pub mod domain;
 pub mod drag;
 pub mod entity;
 pub mod field;
+pub mod image;
 pub mod input;
 pub mod phase;
 #[cfg(feature = "physics")]
@@ -34,25 +35,29 @@ pub use domain::{
 pub use drag::{Drag, DragError, DragRelease};
 pub use entity::{Entities, EntitiesSnapshot, Entity, EntityKey, Epoch, RuntimeId, SceneId};
 pub use field::{FieldCost, FieldError, FieldOp, FIELD_FAR, FIELD_PROGRAM_ERROR};
+pub use image::{
+    Backdrop, Eye, Ground, ImageRay, ImageSpace, ImageSpaceId, Sky, Views, ViewsSnapshot,
+};
 pub use input::{ActionEvent, ActionId, HostMessages, Input, Pointer, PointerButton, PointerPhase};
 pub use phase::{Ctx, Order, Phase, PhaseError, Step, SystemEntry, Tick};
 #[cfg(feature = "physics")]
 pub use physics::{GrabConfig, GrabHold, Physics, PhysicsConfig, RestConfig, ThrowConfig};
-pub use publication::{Publication, PublishedView, Stamp};
+pub use publication::{
+    FieldRecord, InstanceRecord, Overlay, PointRecord, Publication, PublishedView, RecordBuffer,
+    RefusalSource, SegmentRecord, Stamp, TextRecord, TriangleRecord, ViewRecords, ViewRefusal,
+    ViewRefusals,
+};
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
     Growth, RestoreError, Session, SessionSnapshot, SimConfig, SimConfigError, DOMAIN_STEP,
 };
 pub use store::{
-    Change, Changes, Cursor, LogCapacity, Owner, Part, Partition, PartitionError, Parts,
-    RecordBuffer, Removal, SchemaId, Store, StoreError, StoreField, StoreSnapshot, Version,
-    DEFAULT_LOG_CAPACITY,
+    Change, Changes, Cursor, LogCapacity, Owner, Part, Partition, PartitionError, Parts, Removal,
+    SchemaId, Store, StoreError, StoreField, StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,
 };
 pub use stores::{HasRelation, HasStore, Stores};
 pub use value::{Setting, Value};
 pub use view::{
-    Backdrop, DepthEnvelope, DomainRay, Eye, FieldRecord, Ground, ImageRay, ImageSpace,
-    ImageSpaceId, InstanceRecord, Overlay, Pick, PointRecord, Projection4, RefusalSource, Section4,
-    SectionCut, SegmentRecord, Sky, TextRecord, TriangleRecord, ViewId, ViewMapping, ViewRecords,
-    ViewRefusal, ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
+    DepthEnvelope, DomainRay, Pick, Projection4, Section4, SectionCut, ViewId, ViewMapping,
+    ViewSpec, ViewStyle, ViewSummary, ViewTarget,
 };

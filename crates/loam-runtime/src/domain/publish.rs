@@ -6,12 +6,12 @@ use super::views::ViewEntry;
 use super::{DomainError, DomainSpace, EdgeShading, Instance, Pose, TypedDomain};
 use crate::assets::{Library, PreparedGeometry};
 use crate::entity::Entity;
-use crate::publication::Stamp;
-use crate::view::{
-    self, EntityOutput, FieldRecord, InstanceRecord, Motion, PatchCursors, PatchScratch, Planned,
-    RefusalSource, SegmentRecord, TriangleRecord, Vec4, ViewId, ViewMapping, ViewRecords,
+use crate::publication::{
+    EntityOutput, FieldRecord, InstanceRecord, Motion, PatchCursors, PatchScratch, Planned,
+    RefusalSource, SectionScratchpad, SegmentRecord, Stamp, TriangleRecord, ViewRecords,
     ViewRefusals, ViewState,
 };
+use crate::view::{Vec4, ViewId, ViewMapping};
 
 fn lerp_color(back: [f32; 4], front: [f32; 4], t: f32) -> [f32; 4] {
     let mut mixed = [0.0; 4];
@@ -164,7 +164,7 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
         pose: &Pose<S>,
         library: &Library<'_>,
         instance: &Instance,
-        scratch: &mut view::SectionScratchpad,
+        scratch: &mut SectionScratchpad,
         segments: &mut Vec<SegmentRecord>,
         triangles: &mut Vec<TriangleRecord>,
     ) -> Result<(), DomainError> {
