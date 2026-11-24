@@ -1,8 +1,10 @@
 use glam::Vec4;
 use loam::math::{EuclideanR4, Rotor, Rotor4};
-use loam::physics::euclidean_r4::register_default_narrowphase;
+use loam::physics::euclidean_r4::{
+    halfspace4_body_r4, register_default_narrowphase, regular_polytope_body_r4,
+};
 use loam::physics::manifold::PENETRATION_SLOP;
-use loam::physics::{BodyDef, Collider, EditError, RigidBody};
+use loam::physics::{BodyDef, Collider, RigidBody};
 use loam::runtime::{
     Dispatch, DomainHandle, Domains, Entity, GrabConfig, Instance, PhysicsConfig, Pose, Rejection,
     RestConfig, SpawnBundle, ThrowConfig,
@@ -215,8 +217,10 @@ fn asset_of(polytope: Polytope4, cards: &[Card]) -> Option<(ShapeEntry, Instance
         .and_then(|index| Some((SHAPE_CATALOG[index], cards.get(index)?.toy()?)))
 }
 
-pub(crate) fn body(polytope: Polytope4) -> Result<BodyDef<EuclideanR4>, EditError> {
-    BodyDef::regular_polytope(polytope, BODY_SIZE, BODY_MASS)?.restitution(BODY_RESTITUTION)
+pub(crate) fn body(polytope: Polytope4) -> Result<BodyDef<EuclideanR4>, Rejection> {
+    let body = regular_polytope_body_r4(polytope, BODY_SIZE, BODY_MASS)
+        .ok_or(Rejection::Unsupported("the toy collider"))?;
+    Ok(body.restitution(BODY_RESTITUTION)?)
 }
 
 fn spawn_toy(
@@ -250,7 +254,9 @@ fn spawn_walls(
     domain: DomainHandle<EuclideanR4>,
 ) -> Result<(), Rejection> {
     for (normal, offset, restitution) in arena() {
-        let plane = BodyDef::halfspace(normal, offset)?.restitution(restitution)?;
+        let plane = halfspace4_body_r4(normal, offset)
+            .ok_or(Rejection::Unsupported("the wall collider"))?
+            .restitution(restitution)?;
         dispatch.spawn(
             SpawnBundle::new()
                 .at(domain, Pose::at(Vec4::ZERO))

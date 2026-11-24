@@ -9,8 +9,10 @@ use loam::app::host;
 use loam::app::script::{driver_from_args, ScriptDriver};
 use loam::app::session::{launch_or_headless, run_script};
 use loam::physics::body::MASK_ALL;
-use loam::physics::euclidean_r4::{polytope_body_r4, register_default_narrowphase};
-use loam::physics::{BodyDef, BodyId};
+use loam::physics::euclidean_r4::{
+    halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope_body_r4,
+};
+use loam::physics::BodyId;
 use loam::prelude::*;
 use loam::render::TriangleFeed;
 use loam::shape::polytope::{polytope_section_faces_append, SectionScratch};
@@ -412,7 +414,8 @@ fn spawn_drop(
     position: Vec4,
     tumble: Bivector4,
 ) -> Result<Entity, Rejection> {
-    let body = BodyDef::regular_polytope(polytope, RAIN_SIZE, RAIN_MASS)?
+    let body = regular_polytope_body_r4(polytope, RAIN_SIZE, RAIN_MASS)
+        .ok_or(DomainError::Unsupported("drop collider"))?
         .restitution(RESTITUTION)?
         .velocity(
             Vec4::new(0.0, -RAIN_ENTRY_SPEED, 0.0, 0.0),
@@ -524,7 +527,9 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
             let entry = letter.entry;
             d.spawn(SpawnBundle::new().at(r4, Pose::at(entry)).row(letter))?;
         }
-        let floor = BodyDef::halfspace(Vec4::Y, FLOOR_Y)?.restitution(RESTITUTION)?;
+        let floor = halfspace4_body_r4(Vec4::Y, FLOOR_Y)
+            .ok_or(DomainError::Unsupported("floor collider"))?
+            .restitution(RESTITUTION)?;
         d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)).body(floor))?;
         d.domains.physics(r4)?.set_solver_iterations(PILE_PGS_ITERS);
         Ok(())
