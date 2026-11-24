@@ -190,3 +190,138 @@ impl FramePass for HyperslicePass {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use glam::{Quat, Vec4};
+    use loam_math::{EuclideanR4, Iso3};
+    use loam_runtime::{
+        Backdrop, BridgeSpec, DomainBuilder, Eye, Ground, Instance, LogCapacity, Material, Overlay,
+        Placement, Pose, PreparedGeometry, Publication, Section4, Session, SimConfig, SpawnBundle,
+        ViewSpec,
+    };
+    use loam_shape::FieldShape;
+
+    use super::*;
+
+    loam_runtime::stores! {
+        #[derive(Default)]
+        pub struct Probe {
+            tags: Store<u8>,
+        }
+    }
+
+    const GROUND_Y: f32 = -0.75;
+
+    fn placed_field() -> Session<Probe> {
+        let mut session = Session::new(Probe::default(), SimConfig::default());
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let sphere = session.prepare(PreparedGeometry::Field {
+            shape: FieldShape::ThreeSphere,
+            size: 0.5,
+        });
+        let material = session.add_material(Material::flat([1.0; 4]));
+        let root = session.views().root();
+        let (view, anchor) = session.dispatch(|d| {
+            let eye = d
+                .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
+                .unwrap();
+            let anchor = d
+                .spawn(
+                    SpawnBundle::new()
+                        .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, 0.0)))
+                        .instance(Instance::new(sphere, material)),
+                )
+                .unwrap();
+            let view = d
+                .domains
+                .typed(r4)
+                .unwrap()
+                .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+                .unwrap();
+            (view, anchor)
+        });
+        session
+            .domains_mut()
+            .typed(r4)
+            .unwrap()
+            .view_mut(view)
+            .unwrap()
+            .fields = true;
+        session
+            .bridge(BridgeSpec {
+                anchor,
+                into: root,
+                source: r4.id(),
+                view,
+                placement: Placement::Rigid(Rigid {
+                    pose: Iso3 {
+                        rotation: Quat::from_euler(glam::EulerRot::XYZ, 0.4, -0.7, 1.1),
+                        translation: Vec3::new(0.3, -1.2, 2.0),
+                    },
+                    scale: 0.25,
+                }),
+            })
+            .unwrap();
+        session
+    }
+
+    #[test]
+    fn the_ground_plane_is_the_backdrops_floor_carried_into_the_placed_views_image() {
+        let mut session = placed_field();
+        let mut publication = Publication::default();
+        session.publish(&mut publication).unwrap();
+        let placement = publication.views[0].placement;
+        assert_ne!(placement, Rigid::IDENTITY, "the view was not placed");
+        assert!(!publication.views[0].records.fields().is_empty());
+
+        let mut pass = HyperslicePass::with_ground();
+        pass.read(&PublishedFrame {
+            eye: Eye::default(),
+            viewport_px: glam::Vec2::splat(64.0),
+            pixels_per_point: 1.0,
+            text_origin_px: [0.0; 2],
+            views: &publication.views,
+            overlay: &Overlay::default(),
+            backdrop: Some(Backdrop {
+                sky: DEFAULT_SKY,
+                ground: Ground {
+                    y: GROUND_Y,
+                    dark: [0.0; 3],
+                    light: [1.0; 3],
+                    fog_per_unit: 0.0,
+                    fog_start: 0.0,
+                    visible: true,
+                },
+            }),
+        });
+
+        let uniforms = pass.shared.borrow().uniforms;
+        assert_eq!(uniforms.params[0], 1.0, "a visible floor left the gate off");
+        let [nx, ny, nz, offset] = uniforms.ground_plane;
+        let normal = Vec3::new(nx, ny, nz);
+        assert!((normal.length() - 1.0).abs() < 1e-4, "normal {normal}");
+        let to_image = placement.inverse();
+        let image = |world: [f32; 3]| Vec3::from(to_image.apply(world));
+        for (x, z) in [(0.0, 0.0), (3.0, -2.0), (-5.0, 7.0)] {
+            let on_floor = image([x, GROUND_Y, z]);
+            assert!(
+                (normal.dot(on_floor) - offset).abs() < 1e-3,
+                "the floor point ({x}, {GROUND_Y}, {z}) is {} off the plane",
+                normal.dot(on_floor) - offset
+            );
+        }
+        let above = image([0.0, GROUND_Y + 1.0, 0.0]);
+        assert!(
+            normal.dot(above) > offset,
+            "the plane's normal points below the floor"
+        );
+    }
+
+    #[test]
+    fn the_ground_source_passes_the_validation_attach_runs() {
+        crate::shader::validate_hyperslice_wgsl(&hyperslice_ground_wgsl())
+            .unwrap_or_else(|error| panic!("ground scene under the kernel: {error}"));
+    }
+}

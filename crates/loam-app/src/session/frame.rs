@@ -903,6 +903,35 @@ mod tests {
         assert_eq!(recorded.load(Ordering::Relaxed), 3);
     }
 
+    #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+    #[test]
+    fn on_change_draws_the_still_frame_whose_hook_queued_a_capture_request() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let mut frames = 0_u32;
+        let app = host("still").on_frame(move |hook| {
+            frames += 1;
+            if frames == 3 {
+                hook.capture.stop().expect("capture supported");
+            }
+        });
+        let (mut frame, recorded) = on_change(world(false), app, &gpu);
+        let start = Instant::now();
+        for (millis, drawn) in [(0, 1), (20, 1), (25, 2), (30, 2)] {
+            run_at(
+                &mut frame,
+                &gpu,
+                &texture,
+                start + Duration::from_millis(millis),
+            );
+            assert_eq!(
+                recorded.load(Ordering::Relaxed),
+                drawn,
+                "draws after the frame at {millis} ms"
+            );
+        }
+    }
+
     #[test]
     fn a_registered_pass_records_again_after_the_device_is_recovered() {
         let gpu = noop_gpu();

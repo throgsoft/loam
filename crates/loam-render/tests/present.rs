@@ -1,13 +1,13 @@
 use glam::{Vec2, Vec3, Vec4};
 use loam_math::{EuclideanR4, HyperbolicH3, Iso3};
 use loam_render::device::{FeatureRequest, GpuContext};
-use loam_render::pass::{FramePass, PublishedFrame};
+use loam_render::pass::{ColorLoad, FramePass, PublishedFrame};
 use loam_render::present::Presenter;
 use loam_render::SkyGroundPass;
 use loam_runtime::{
     Backdrop, BridgeSpec, DomainBuilder, Entity, Eye, Ground, Instance, Klein, LogCapacity,
-    Material, Phase, Placement, PointRecord, Pose, PreparedGeometry, Projection4, Publication,
-    Rigid, Section4, SegmentRecord, Session, SimConfig, Sky, SpawnBundle, ViewSpec,
+    Material, Overlay, Phase, Placement, PointRecord, Pose, PreparedGeometry, Projection4,
+    Publication, Rigid, Section4, SegmentRecord, Session, SimConfig, Sky, SpawnBundle, ViewSpec,
 };
 use wgpu::*;
 
@@ -398,5 +398,41 @@ fn a_registered_sky_pass_paints_over_the_background_when_no_backdrop_is_publishe
     assert!(
         sky[0] >= INK_MIN,
         "the pixel at {SKY_PIXEL:?} shows {sky:?}, so the background clear won over the sky"
+    );
+}
+
+#[test]
+fn a_sky_pass_fed_by_its_owner_keeps_its_own_backdrop_through_a_frame_that_carries_another() {
+    let mut own = SkyGroundPass::new(HIDDEN_GROUND);
+    own.publish(&Eye::default(), RED_SKY, HIDDEN_GROUND);
+    let red = own.clear_color();
+    let overlay = Overlay::default();
+    let frame = |backdrop| PublishedFrame {
+        eye: Eye::default(),
+        viewport_px: Vec2::splat(SIZE as f32),
+        pixels_per_point: 1.0,
+        text_origin_px: [0.0; 2],
+        views: &[],
+        overlay: &overlay,
+        backdrop,
+    };
+
+    own.read(&frame(None));
+    assert_eq!(
+        own.color_load(),
+        ColorLoad::Clear,
+        "a frame with no backdrop took the pass's own sky away"
+    );
+    own.read(&frame(Some(Backdrop {
+        sky: Sky {
+            below: [0.1, 0.1, 0.9],
+            above: [0.1, 0.1, 0.9],
+        },
+        ground: HIDDEN_GROUND,
+    })));
+    assert_eq!(
+        own.clear_color(),
+        red,
+        "the frame's backdrop replaced the sky the owner published"
     );
 }
