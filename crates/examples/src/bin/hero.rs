@@ -5,9 +5,6 @@ use std::process::ExitCode;
 
 use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
 use loam::app::environment::Environment;
-use loam::app::host;
-use loam::app::script::{driver_from_args, ScriptDriver};
-use loam::app::session::{launch_or_headless, run_script};
 use loam::physics::body::MASK_ALL;
 use loam::physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope_body_r4,
@@ -89,10 +86,6 @@ struct Letter {
     entry: Vec4,
     slide: Track<Vec4>,
     w_before: f32,
-}
-
-struct Scene {
-    r4: DomainHandle<EuclideanR4>,
 }
 
 #[derive(Clone, Copy)]
@@ -498,7 +491,7 @@ fn compose(
     }
 }
 
-fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
+fn build() -> Result<Session<HeroStores>, HostError> {
     let font = FontRef::try_from_slice(FONT).map_err(refused)?;
     let params = GlyphParams::default();
     let solids = layout_word(&font, WORD, &params).map_err(refused)?;
@@ -742,7 +735,7 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
 
     // Taken here so a reset straight after build has a state to return to.
     session.set_initial()?;
-    Ok((session, Scene { r4 }))
+    Ok(session)
 }
 
 fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
@@ -751,6 +744,8 @@ fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
     let mut recording = start.is_some();
     SessionApp::with_args(HostConfig::new("loam", bindings()), args)
         .recover_on_fault(RESEED)
+        .record_every(RECORD_STRIDE)
+        .on_record(|session: &Session<HeroStores>, out| write_mesh(out, session.app.mesh.get()))
         .pass(feed.pass(FragmentShading::FaceNormalLambert))
         .target_fps(TICK_HZ as f32)
         .on_published(move |hook: &mut PublishedHook<'_, HeroStores>| {
@@ -774,77 +769,6 @@ fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
         })
 }
 
-fn letter_height(
-    session: &Session<HeroStores>,
-    r4: DomainHandle<EuclideanR4>,
-    index: usize,
-) -> Option<f32> {
-    let entity = session
-        .app
-        .letters
-        .iter()
-        .find(|(_, letter)| letter.index == index)
-        .map(|(entity, _)| entity)?;
-    let pose = session.domains().read(r4).ok()?.poses().get(entity)?;
-    Some(pose.point.y)
-}
-
-fn headless(
-    session: &mut Session<HeroStores>,
-    r4: DomainHandle<EuclideanR4>,
-    steps: u32,
-    records: bool,
-) -> Result<(), HostError> {
-    let config = HostConfig::new("hero", bindings());
-    if records {
-        let mut dump = String::new();
-        host::write_headless(
-            &mut dump,
-            session,
-            &config,
-            steps,
-            1.0,
-            RECORD_STRIDE,
-            |_, session, out| match out {
-                Some(out) => write_mesh(out, session.app.mesh.get())
-                    .map_err(|_| refused("the record dump failed")),
-                None => Ok(()),
-            },
-        )?;
-        print!("{dump}");
-        return Ok(());
-    }
-    host::run_headless(session, &config, steps, &[], 1.0, |_, _, _| Ok(()))?;
-    let y = letter_height(session, r4, 0).ok_or_else(|| refused("the first letter has no pose"))?;
-    let frame = session.app.stage.get().frame();
-    println!("hero letter 0 after {steps} ticks (frame {frame}): y = {y:.4}");
-    Ok(())
-}
-
-fn scripted(
-    session: &mut Session<HeroStores>,
-    args: Args,
-    driver: ScriptDriver,
-) -> Result<(), HostError> {
-    let mut app = host(args, None);
-    let mut dump = String::new();
-    run_script(
-        session,
-        &mut app,
-        driver,
-        1.0,
-        |step, session, publication| {
-            if host::write_stride(&mut dump, step, RECORD_STRIDE, session, publication)? {
-                write_mesh(&mut dump, session.app.mesh.get())
-                    .map_err(|_| refused("the record dump failed"))?;
-            }
-            Ok(())
-        },
-    )?;
-    print!("{dump}");
-    Ok(())
-}
-
 // A record dump keeps every 20th step so it stays short enough to diff.
 const RECORD_STRIDE: NonZeroU32 = NonZeroU32::new(20).expect("the record stride is nonzero");
 
@@ -859,31 +783,11 @@ fn write_mesh(out: &mut String, mesh: &TriangleMesh<3>) -> std::fmt::Result {
 }
 
 fn main() -> ExitCode {
-    let outcome = launch_or_headless(
-        |args| {
-            let (session, _) = build()?;
-            let record = record_request(&args);
-            Ok((session, host(args, record)))
-        },
-        |args| {
-            let driver = driver_from_args(&args).map_err(|error| refused(format!("{error:#}")))?;
-            if let Some(driver) = driver {
-                if !args.has_bare_flag("records") || args.flag_value("headless").is_some() {
-                    return Err(refused(
-                        "--script runs as --headless --records with no tick count",
-                    ));
-                }
-                let (mut session, _) = build()?;
-                return scripted(&mut session, args, driver);
-            }
-            let steps = args
-                .flag_value("headless")
-                .and_then(|count| count.parse::<u32>().ok())
-                .ok_or_else(|| refused("--headless needs a tick count"))?;
-            let (mut session, scene) = build()?;
-            headless(&mut session, scene.r4, steps, args.has_bare_flag("records"))
-        },
-    );
+    let outcome = launch(|args| {
+        let session = build()?;
+        let record = record_request(&args);
+        Ok((session, host(args, record)))
+    });
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -901,7 +805,7 @@ mod tests {
 
     #[test]
     fn reset_at_same_tick() {
-        let (mut session, _) = build().expect("hero builds");
+        let mut session = build().expect("hero builds");
         session.app.stage.set(Stage::seeded(DEFAULT_SEED));
         let mut publication = Publication::default();
         session.publish(&mut publication, 1.0).expect("publication");
@@ -930,7 +834,7 @@ mod tests {
 
     #[test]
     fn mesh_through_ticks_and_reset() {
-        let (mut session, _) = build().expect("hero builds");
+        let mut session = build().expect("hero builds");
         let mut publication = Publication::default();
         publish(&mut session, &mut publication);
         let first = publication.value.mesh.vertices.clone();
@@ -950,7 +854,7 @@ mod tests {
 
     #[test]
     fn backdrop_after_reset() {
-        let (mut session, _) = build().expect("hero builds");
+        let mut session = build().expect("hero builds");
         let built = session.views_mut().root_mut().backdrop;
         assert!(built.is_some(), "hero was built with no backdrop");
 

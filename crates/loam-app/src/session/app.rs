@@ -1,3 +1,6 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::num::NonZeroU32;
+
 use loam_console::ConsoleWriter;
 #[cfg(feature = "egui")]
 use loam_egui::egui;
@@ -13,7 +16,6 @@ use super::pacing::Pacer;
 use crate::args::Args;
 use crate::capture::{CaptureRequest, CaptureUnavailable};
 use crate::host::{HostConfig, HostError};
-use crate::script::{driver_from_args, ScriptDriver};
 
 /// Runs before the frame boundary with read-only session input.
 #[non_exhaustive]
@@ -161,6 +163,12 @@ impl<'a> CaptureControl<'a> {
 
 pub(crate) type PublishedFn<A> = Box<dyn FnMut(&mut PublishedHook<'_, A>)>;
 pub(crate) type InputFn<A> = Box<dyn FnMut(&InputHook<'_, A>)>;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type RecordFn<A> = Box<dyn FnMut(&Session<A>, &mut String) -> std::fmt::Result>;
+
+// Every 10th step keeps a record dump short enough to diff.
+#[cfg(not(target_arch = "wasm32"))]
+const RECORD_STRIDE: NonZeroU32 = NonZeroU32::new(10).expect("the record stride is nonzero");
 
 pub struct SessionApp<A: Stores> {
     pub config: HostConfig,
@@ -179,7 +187,10 @@ pub struct SessionApp<A: Stores> {
     pub(crate) debug_layer: bool,
     #[cfg(feature = "text")]
     pub(crate) font: Option<Vec<u8>>,
-    pub(crate) script: Option<ScriptDriver>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) record: Option<RecordFn<A>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) record_stride: NonZeroU32,
 }
 
 impl<A: Stores> SessionApp<A> {
@@ -207,7 +218,10 @@ impl<A: Stores> SessionApp<A> {
             debug_layer: true,
             #[cfg(feature = "text")]
             font: None,
-            script: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            record: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            record_stride: RECORD_STRIDE,
         };
         host.apply_args();
         host
@@ -223,10 +237,6 @@ impl<A: Stores> SessionApp<A> {
             _ => None,
         } {
             self.vsync = Some(vsync);
-        }
-        match driver_from_args(&self.args) {
-            Ok(driver) => self.script = driver,
-            Err(error) => tracing::error!("--script ignored: {error:#}"),
         }
     }
 
@@ -325,6 +335,23 @@ impl<A: Stores> SessionApp<A> {
     pub fn capture(mut self, request: CaptureRequest) -> Result<Self, CaptureUnavailable> {
         queue_capture(&mut self.captures, request, CAPTURE_SUPPORTED)?;
         Ok(self)
+    }
+
+    /// Writes lines into a headless record dump after the engine's own lines for each recorded step.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_record(
+        mut self,
+        hook: impl FnMut(&Session<A>, &mut String) -> std::fmt::Result + 'static,
+    ) -> Self {
+        self.record = Some(Box::new(hook));
+        self
+    }
+
+    /// A headless record dump writes every `stride`th step; the default is 10.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn record_every(mut self, stride: NonZeroU32) -> Self {
+        self.record_stride = stride;
+        self
     }
 
     pub fn debug_layer(mut self, enabled: bool) -> Self {

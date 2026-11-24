@@ -27,6 +27,7 @@ use crate::capture::Capture;
 use crate::host::HostError;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::host::{HostConfig, Key};
+use crate::script::{driver_from_args, ScriptRun};
 
 pub struct Target<'a> {
     pub view: &'a TextureView,
@@ -76,6 +77,7 @@ struct LoopState<A: Stores> {
     shown: Shown,
     drawn: Option<Shown>,
     capture: Capture,
+    script: Option<ScriptRun>,
 }
 
 pub(crate) struct Frame<A: Stores> {
@@ -100,6 +102,17 @@ impl<A: Stores> Frame<A> {
         let timestep = sim
             .dt()
             .map(|_| FixedTimestep::new(sim.fixed_hz).with_max_catch_up(sim.max_ticks_per_frame));
+        let script = driver_from_args(&app.args)
+            .map_err(|error| failed(format!("{error:#}")))
+            .and_then(|driver| {
+                driver
+                    .map(|driver| ScriptRun::new(driver, &app.console))
+                    .transpose()
+            })
+            .unwrap_or_else(|error| {
+                tracing::error!("--script ignored: {error}");
+                None
+            });
         Ok(Self {
             presenter: None,
             state: LoopState {
@@ -120,6 +133,7 @@ impl<A: Stores> Frame<A> {
                 shown: Shown::default(),
                 drawn: None,
                 capture: Capture::new(),
+                script,
             },
             trace: None,
         })
@@ -554,10 +568,17 @@ impl<A: Stores> LoopState<A> {
             Err(error) => Some(error),
         };
         let layered = self.layer.finish(&mut self.app.console);
-        if let Some(driver) = self.app.script.as_mut() {
-            driver.advance_console(&mut self.app.console);
-        }
-        let dispatched = self.app.console.dispatch_pending();
+        let scripted = self.script.as_mut().is_some_and(|script| {
+            let app = &mut self.app;
+            match script.advance(&mut self.input, &app.config.bindings, &mut app.console) {
+                Ok((_, ran)) => ran,
+                Err(error) => {
+                    tracing::warn!("{error}");
+                    true
+                }
+            }
+        });
+        let dispatched = self.app.console.dispatch_pending() || scripted;
         if let Some(error) = terminal {
             return Err(error);
         }

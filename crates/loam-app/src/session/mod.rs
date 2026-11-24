@@ -13,6 +13,8 @@ mod commands;
 mod cursor;
 mod frame;
 mod headless;
+#[cfg(not(target_arch = "wasm32"))]
+mod records;
 mod surface;
 #[cfg(feature = "text")]
 mod text;
@@ -34,6 +36,6 @@ pub use headless::run_script;
 pub use pacing::{Pace, Pacer};
 
 #[cfg(target_arch = "wasm32")]
-pub use browser::{launch, launch_or_headless, launch_with};
+pub use browser::{launch, launch_with};
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{launch, launch_or_headless, launch_with};
+pub use native::{launch, launch_with};

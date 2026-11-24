@@ -2,6 +2,8 @@
 # Each line is `frame verb args`. A line runs after its frame publishes and lands at the next boundary.
 # Raw input: key <code> down|up, pointer <x> <y> down|up [button], pointer <x> <y> move, wheel <lines>, look <dx> <dy>.
 
+0 spin on
+
 # Orbit with a secondary drag, then zoom in and back out.
 10 pointer 0 0 down secondary
 12 pointer 0.1 0 move

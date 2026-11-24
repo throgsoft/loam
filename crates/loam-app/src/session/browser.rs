@@ -50,14 +50,6 @@ pub fn launch_with<A: Stores>(
     crate::wasm::launch_page(&wasm, in_page).map_err(|error| failed(format!("{error:#}")))
 }
 
-pub fn launch_or_headless<A: Stores>(
-    factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
-    headless: impl FnOnce(Args) -> Result<(), HostError>,
-) -> Result<(), HostError> {
-    drop(headless);
-    launch(factory)
-}
-
 type Pending<F> = Rc<RefCell<Option<F>>>;
 
 thread_local! {

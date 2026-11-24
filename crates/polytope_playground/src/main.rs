@@ -1,10 +1,6 @@
-use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use loam::app::environment::Environment;
-use loam::app::host::{run_headless, write_headless, write_stride};
-use loam::app::script::driver_from_args;
-use loam::app::session::{launch_or_headless, run_script};
 use loam::prelude::*;
 use loam::render::raymarch::{shape_id, BodyUniform};
 
@@ -52,18 +48,6 @@ const PLANE: [ActionId; 6] = [
 const SECTION_COLOR: [f32; 4] = [1.0, 0.85, 0.35, 1.0];
 const SECTION_WIDTH_PX: f32 = 2.0;
 const EDGE_WIDTH_PX: f32 = display::DEFAULT_WIREFRAME_WIDTH_PX;
-const HEADLESS_STEPS: u32 = 8;
-const HEADLESS_FRAME: (u32, u32) = (1280, 720);
-// The record dump keeps every 10th step so it stays short enough to diff.
-const RECORD_STRIDE: NonZeroU32 = NonZeroU32::new(10).expect("the record stride is nonzero");
-const RECORD_STEPS: u32 = 160;
-const RECORD_WIREFRAME_ON: u32 = 20;
-const RECORD_TOYBOX: u32 = 60;
-const RECORD_THROW_STEP: u32 = 80;
-const RECORD_WIREFRAME_OFF: u32 = 140;
-const RECORD_THROWN_SLOT: usize = 2;
-// A sideways flick that sends the center toy into its neighbour.
-const RECORD_THROW: [f32; 3] = [20.0, 8.0, 0.0];
 const CAMERA_DISTANCE: f32 = 8.0;
 const DOMAIN_NAME: &str = "r4";
 
@@ -205,18 +189,14 @@ pub(crate) enum Action {
     PlaneAngle(usize, f32),
 }
 
-pub(crate) struct Boot {
-    pub(crate) session: Session<Playground>,
-    pub(crate) domain: DomainHandle<EuclideanR4>,
-    pub(crate) section: ViewId,
-}
-
 fn rest_of(index: usize, len: usize) -> Vec4 {
     let center = (len.max(1) - 1) as f32 * 0.5;
     Vec4::new((index as f32 - center) * BODY_X_SPACING, BODY_Y, 0.0, 0.0)
 }
 
-pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
+pub(crate) fn boot(
+    row: &[ShapeEntry],
+) -> Result<(Session<Playground>, DomainHandle<EuclideanR4>), HostError> {
     let mut session = Session::new(
         Playground {
             slots: Store::tracked(LogCapacity::default()),
@@ -268,11 +248,7 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
 
     let cards = session.app.catalog.cards.clone();
     install_systems(&mut session, domain, layers, cards);
-    Ok(Boot {
-        session,
-        domain,
-        section: layers.section,
-    })
+    Ok((session, domain))
 }
 
 #[derive(Clone, Copy)]
@@ -722,12 +698,26 @@ struct Scratch {
 }
 
 fn main() -> Result<(), HostError> {
-    launch_or_headless(interactive, headless)
+    launch(interactive)
 }
 
 fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground>), HostError> {
     let row = catalog::parse_row(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
-    let booted = boot(&row)?;
+    let (mut session, _) = boot(&row)?;
+    let surface = match args.flag_value("surface") {
+        None => None,
+        Some("raster") => Some(Surface::Raster),
+        Some("sdf") => Some(Surface::Sdf),
+        Some("off") => Some(Surface::Off),
+        Some(other) => {
+            return Err(HostError::Host(format!(
+                "--surface {other:?} is not raster, sdf or off"
+            )))
+        }
+    };
+    if let Some(surface) = surface {
+        session.app.display.get_mut().surface = surface;
+    }
     let frame = Frame::new();
     let config = HostConfig::new("polytope playground", bindings());
 
@@ -757,7 +747,7 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
             ui::strip_labels(context, shown.strip, &scratch.cells);
         }
     });
-    Ok((booted.session, app))
+    Ok((session, app))
 }
 
 fn focus_camera(
@@ -921,195 +911,6 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
     ctx.app.control.get_mut().gimbal = gimbal;
 }
 
-fn report(booted: &mut Boot, config: &HostConfig) -> Result<Vec<String>, HostError> {
-    let publication = run_headless(
-        &mut booted.session,
-        config,
-        HEADLESS_STEPS,
-        &[],
-        1.0,
-        |_, _, _| Ok(()),
-    )?;
-    let active = *booted.session.app.active.get();
-    let entry = booted
-        .session
-        .app
-        .slots
-        .iter()
-        .find(|(_, slot)| slot.index == active)
-        .map(|(_, slot)| slot.entry);
-    let edges = entry
-        .and_then(|entry| entry.shape.polytope4())
-        .map_or(0, |polytope| polytope.edge_count());
-    Ok(vec![
-        format!(
-            "active: {} with {edges} edges",
-            entry.map_or("none", |entry| entry.label)
-        ),
-        format!(
-            "published segments: {}",
-            publication
-                .views
-                .iter()
-                .map(|view| view.records.segments().len())
-                .sum::<usize>()
-        ),
-        format!(
-            "section fills: {} triangles",
-            publication
-                .views
-                .iter()
-                .map(|view| view.records.triangles().len())
-                .sum::<usize>()
-        ),
-        strip_line(&mut Scratch::default(), *booted.session.app.strip.get()),
-    ])
-}
-
-fn strip_line(scratch: &mut Scratch, strip: Strip) -> String {
-    let mut shown = strip;
-    shown.on = true;
-    fill_strip(
-        &shown,
-        Bivector4::ZERO,
-        loam::math::Rotor4::IDENTITY,
-        HEADLESS_FRAME,
-        0.0,
-        scratch,
-    );
-    let (cols, rows, _) = shown.grid();
-    format!("filmstrip: {} cells, {cols} by {rows}", scratch.strip.len())
-}
-
-fn headless(args: Args) -> Result<(), HostError> {
-    let scripted = args.has_bare_flag("script") || args.get("script").is_some();
-    if scripted && !args.has_bare_flag("records") {
-        return Err(HostError::Host(
-            "--script runs as --headless --records".into(),
-        ));
-    }
-    let row = catalog::parse_row(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
-    let mut booted = boot(&row)?;
-    let config = HostConfig::new("polytope playground", bindings());
-    if args.has_bare_flag("records") {
-        return records(&mut booted, config, args);
-    }
-    for line in report(&mut booted, &config)? {
-        println!("{line}");
-    }
-    Ok(())
-}
-
-fn submit(session: &mut Session<Playground>, action: Action) {
-    session.submit(Command::App(Box::new(action)));
-}
-
-fn records(booted: &mut Boot, config: HostConfig, args: Args) -> Result<(), HostError> {
-    let alpha = match args.flag_value("alpha") {
-        None => 1.0,
-        Some(raw) => raw
-            .parse::<f32>()
-            .ok()
-            .filter(|alpha| alpha.is_finite())
-            .ok_or_else(|| HostError::Host(format!("--alpha {raw:?} is not a finite number")))?,
-    };
-    let surface = match args.flag_value("surface") {
-        None => None,
-        Some("raster") => Some(Surface::Raster),
-        Some("sdf") => Some(Surface::Sdf),
-        Some("off") => Some(Surface::Off),
-        Some(other) => {
-            return Err(HostError::Host(format!(
-                "--surface {other:?} is not raster, sdf or off"
-            )))
-        }
-    };
-    if let Some(surface) = surface {
-        let mut display = *booted.session.app.display.get();
-        display.surface = surface;
-        submit(&mut booted.session, Action::Display(display));
-    }
-    submit(&mut booted.session, Action::Running(Some(true)));
-    let section = booted.section;
-    let domain = booted.domain;
-    let mut dump = String::new();
-    let driver = driver_from_args(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
-    if let Some(driver) = driver {
-        let mut app = console::install(SessionApp::with_args(config, args));
-        run_script(
-            &mut booted.session,
-            &mut app,
-            driver,
-            alpha,
-            |step, session, publication| {
-                write_stride(&mut dump, step, RECORD_STRIDE, session, publication).map(drop)
-            },
-        )?;
-        print!("{dump}");
-        return Ok(());
-    }
-    write_headless(
-        &mut dump,
-        &mut booted.session,
-        &config,
-        RECORD_STEPS,
-        alpha,
-        RECORD_STRIDE,
-        |step, session, _| {
-            match step + 1 {
-                RECORD_WIREFRAME_ON => wireframe(session, true),
-                RECORD_TOYBOX => submit(session, Action::Mode(Mode::Toybox)),
-                RECORD_THROW_STEP => throw(session, domain, section)?,
-                RECORD_WIREFRAME_OFF => wireframe(session, false),
-                _ => {}
-            }
-            Ok(())
-        },
-    )?;
-    print!("{dump}");
-    Ok(())
-}
-
-fn wireframe(session: &mut Session<Playground>, on: bool) {
-    let mut display = *session.app.display.get();
-    display.wireframe = on;
-    submit(session, Action::Display(display));
-}
-
-fn throw(
-    session: &mut Session<Playground>,
-    domain: DomainHandle<EuclideanR4>,
-    section: ViewId,
-) -> Result<(), HostError> {
-    let thrown = session
-        .app
-        .slots
-        .iter()
-        .find(|(entity, slot)| {
-            slot.index == RECORD_THROWN_SLOT && session.app.toys.contains(*entity)
-        })
-        .map(|(entity, _)| entity)
-        .ok_or_else(|| HostError::Host("the thrown toy is missing".into()))?;
-    let r4 = session
-        .domains()
-        .get(domain.id())
-        .ok_or(DomainError::UnknownDomain(domain.id()))?;
-    let at = r4
-        .image_of(section, thrown)
-        .ok_or_else(|| HostError::Host("the thrown toy is out of view".into()))?;
-    let velocity = r4.lift_tangent(section, at, RECORD_THROW)?;
-    // A pointer release submits this command, so the scenario throws through the engine's own path.
-    session.submit(Command::Chart(
-        domain.id(),
-        ChartCommand::Throw {
-            entity: thrown,
-            view: section,
-            velocity,
-        },
-    ));
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use loam::math::Rotor;
@@ -1130,8 +931,14 @@ mod tests {
 
     const EYE_BACK: f32 = 5.0;
 
+    pub(crate) struct Boot {
+        pub(crate) session: Session<Playground>,
+        pub(crate) domain: DomainHandle<EuclideanR4>,
+    }
+
     fn one_slot() -> Boot {
-        let mut booted = boot(&[CELL24]).expect("the session boots");
+        let (session, domain) = boot(&[CELL24]).expect("the session boots");
+        let mut booted = Boot { session, domain };
         booted.session.views_mut().root_mut().eye =
             Eye::looking_at([0.0, BODY_Y, EYE_BACK], [0.0, BODY_Y, 0.0], [0.0, 1.0, 0.0]);
         booted.session.app.spin.get_mut().running = false;

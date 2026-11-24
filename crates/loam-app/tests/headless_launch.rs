@@ -1,9 +1,9 @@
-use loam_app::host::{run_headless, Bindings, HostConfig, Key};
 use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
-    ActionId, AppCommand, Command, Dispatch, DomainBuilder, DomainHandle, Outcome, Pose, Rejection,
-    Session, SimConfig, SpawnBundle, Tick,
+    ActionEvent, ActionId, AppCommand, Command, Dispatch, DomainBuilder, DomainHandle, Input,
+    Outcome, Pose, Rejection, Session, SimConfig, SpawnBundle, Tick,
 };
+use loam_time::par::Sequential;
 
 type Vec4 = <EuclideanR4 as Space>::Point;
 
@@ -41,6 +41,30 @@ impl AppCommand<Probe> for Mark {
     }
 }
 
+// Launches like a host and holds `action` through the first step.
+fn launch(session: &mut Session<Probe>, steps: u32, action: ActionId) {
+    session.capture_initial();
+    for step in 0..steps {
+        let pressed = step == 0;
+        let released = step == 1;
+        let actions = (pressed || released)
+            .then_some(ActionEvent { action, pressed })
+            .into_iter()
+            .collect();
+        let held = if pressed { vec![action] } else { Vec::new() };
+        session
+            .boundary(Input {
+                actions,
+                held,
+                ..Input::default()
+            })
+            .expect("a launch does not fail on what its setup left");
+        session
+            .tick(&Sequential)
+            .expect("a launch does not fail on what its setup left");
+    }
+}
+
 #[test]
 fn reset_target() {
     const MARK: ActionId = ActionId("mark");
@@ -52,17 +76,7 @@ fn reset_target() {
             Ok(())
         });
         setup(&mut session, r4);
-        let config = HostConfig::new("probe", Bindings::new().key(Key::Space, MARK));
-        let first_frame = [(Key::Space, 0..1)];
-        run_headless(
-            &mut session,
-            &config,
-            2,
-            &first_frame,
-            1.0,
-            |_, _, _| Ok(()),
-        )
-        .expect("a launch does not fail on what its setup left");
+        launch(&mut session, 2, MARK);
         assert_eq!(session.current_tick(), Tick(2));
         session.reset().unwrap();
         assert_eq!(session.current_tick(), Tick(0));

@@ -35,18 +35,6 @@ pub fn launch_with<A: Stores>(
     run(Args::current(), factory)
 }
 
-pub fn launch_or_headless<A: Stores>(
-    factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
-    headless: impl FnOnce(Args) -> Result<(), HostError>,
-) -> Result<(), HostError> {
-    install_tracing();
-    let args = Args::current();
-    if args.has_bare_flag("headless") || args.get("headless").is_some() {
-        return headless(args);
-    }
-    run(args, factory)
-}
-
 fn install_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
@@ -69,7 +57,11 @@ fn run<A: Stores>(
     args: Args,
     factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
 ) -> Result<(), HostError> {
-    let (mut session, app) = factory(args)?;
+    let headless = args.has_bare_flag("headless") || args.get("headless").is_some();
+    let (mut session, mut app) = factory(args)?;
+    if headless {
+        return super::records::run(&mut session, &mut app);
+    }
     session.capture_initial();
     let event_loop = EventLoop::new().map_err(failed)?;
     event_loop.set_control_flow(ControlFlow::Poll);

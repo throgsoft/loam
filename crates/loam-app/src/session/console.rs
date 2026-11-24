@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::bail;
-use loam_console::{cmd, CommandLine, Console, ConsoleWriter, HistoryLine};
+use loam_console::{cmd, CommandLine, Console, ConsoleWriter, HistoryLine, LineKind};
 use loam_runtime::{
     AppCommand, Backdrop, CursorPolicy, Dispatch, FreeCamera, Outcome, Rejection, Rig, Setting,
     Stores, Views,
@@ -271,11 +271,17 @@ impl<A: Stores> SessionConsole<A> {
         }
     }
 
-    pub(crate) fn dispatch_script_line(&mut self, text: &str, number: usize) {
+    // A refused dispatch ends on its error line.
+    pub(crate) fn dispatch_script_line(&mut self, text: &str, number: usize) -> Option<String> {
         self.submit.commands.set_report(Report::Script(number));
         self.console.execute(text);
         self.dispatch_pending();
         self.submit.commands.set_report(Report::Console);
+        self.console
+            .history()
+            .back()
+            .filter(|line| line.kind == LineKind::Error)
+            .map(|line| line.text.clone())
     }
 
     pub(crate) fn take_refused(&mut self) -> Option<(usize, String)> {
