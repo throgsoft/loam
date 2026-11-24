@@ -191,7 +191,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_ground_source_passes_the_validation_attach_runs() {
+    fn ground_source() {
         crate::shader::validate_hyperslice_wgsl(&hyperslice_ground_wgsl())
             .unwrap_or_else(|error| panic!("ground scene under the kernel: {error}"));
     }

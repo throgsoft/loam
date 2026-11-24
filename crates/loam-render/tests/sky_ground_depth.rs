@@ -140,7 +140,7 @@ fn reversed_z_depths() -> Vec<f32> {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn reversed_z_background_clears_far_and_the_ground_writes_its_projective_depth_gpu_probe() {
+fn reversed_z_depth_gpu_probe() {
     let depths = reversed_z_depths();
     let at = |(x, y): (u32, u32)| depths[(y * SIZE + x) as usize];
 

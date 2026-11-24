@@ -807,7 +807,7 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn an_uncaptured_pipeline_error_is_attributed_to_its_pass_and_phase() {
+    fn uncaptured_pipeline_error() {
         let gpu = crate::device::noop_context();
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
         schedule.register(Box::new(WrongVertexInput)).unwrap();
@@ -918,7 +918,7 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn registration_refuses_a_clear_outside_the_background_and_depth_under_the_other_convention() {
+    fn misplaced_clear() {
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
         let refused = schedule.register(Box::new(Probe {
             name: "standard-z overlay",
@@ -964,7 +964,7 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn a_failed_attach_suppresses_recording_until_every_pass_attaches() {
+    fn failed_attach() {
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         use std::sync::Arc;
 
@@ -1124,7 +1124,7 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn a_shared_run_clears_on_open_loads_after_a_split_and_stores_depth_that_is_read() {
+    fn shared_run_load_ops() {
         assert_eq!(
             steps(&[faces(), faces()]),
             [shared(

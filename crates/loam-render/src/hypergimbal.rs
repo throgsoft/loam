@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn drag_yields_the_rotation_its_plane_predicts() {
+    fn drag_rotation() {
         for plane in Plane4::ALL {
             let ring = WIDGET.ring(plane);
             for grab_step in 0..8 {
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn grazing_and_backward_rays_miss_the_ring_plane() {
+    fn grazing_and_backward_rays() {
         let ring = WIDGET.ring(Plane4::Xy);
         let eye = ring.center + ring.normal() * 3.0;
         assert!(ring.ray_hit(eye, -ring.normal()).is_some());

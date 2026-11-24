@@ -34,7 +34,7 @@ fn noop_device() -> (Device, Queue) {
 }
 
 #[test]
-fn a_registered_hyperslice_pass_holds_one_body_per_published_field_record() {
+fn field_records() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let r4 = session
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));

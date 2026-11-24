@@ -332,7 +332,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shader_validates_and_uniforms_match_host_layout() {
+    fn shader_and_uniform_layout() {
         let module = naga::front::wgsl::parse_str(SKY_GROUND_NODE_WGSL).expect("parse");
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),

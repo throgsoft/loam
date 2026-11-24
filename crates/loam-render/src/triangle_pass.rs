@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mesh_is_uploaded_once_per_source_change_and_once_per_device() {
+    fn mesh_upload() {
         let gpu = noop_context();
         let feed = TriangleFeed::default();
         let mut source = loam_runtime::Value::new(TriangleMesh {
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-    fn a_triangle_covers_only_its_image_pixels_and_writes_projective_depth_gpu_probe() {
+    fn triangle_coverage_gpu_probe() {
         let gpu = pollster::block_on(GpuContext::new(
             Instance::default(),
             FeatureRequest::default(),

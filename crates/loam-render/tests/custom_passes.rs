@@ -191,7 +191,7 @@ fn pixel(gpu: &GpuContext, texture: &Texture, size: (u32, u32), at: (u32, u32)) 
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn a_custom_pass_paints_the_frame_after_a_resize_and_a_device_recreation_gpu_probe() {
+fn resize_and_device_recreation_gpu_probe() {
     const GREEN: [u8; 4] = [0, 255, 0, 255];
     const RESIZED: (u32, u32) = (96, 48);
     let mut gpu = pollster::block_on(GpuContext::new(

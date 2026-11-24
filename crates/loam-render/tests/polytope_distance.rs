@@ -6,7 +6,7 @@ use support::{dispatch, request_device};
 
 #[test]
 #[ignore = "requires a working wgpu adapter"]
-fn generated_facets_bound_the_shape_geometry_gpu_probe() {
+fn generated_facets_gpu_probe() {
     let (device, queue) = pollster::block_on(request_device());
     for (shape, name) in [
         (Polytope4::Cell120, "cell120"),

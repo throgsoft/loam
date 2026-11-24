@@ -424,7 +424,7 @@ mod tests {
     const SIZE: (u32, u32) = (800, 600);
 
     #[test]
-    fn launch_names_the_absent_required_feature_or_limit() {
+    fn missing_feature_or_limit() {
         let adapter_features = Features::TIMESTAMP_QUERY | Features::SHADER_F16;
         let adapter_limits = Limits::default();
         let request = FeatureRequest {
@@ -487,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn regenerable_presentation_resources_rebuild_on_the_new_device_after_device_loss() {
+    fn device_loss() {
         let mut context = noop_context();
         let spec = PresentationSpec {
             format: TextureFormat::Bgra8Unorm,

@@ -8,7 +8,7 @@ const WIDGET: Hypergimbal = Hypergimbal {
 };
 
 #[test]
-fn a_ring_drag_turns_the_grabbed_point_to_the_cursor_and_holds_when_the_ray_misses_the_plane() {
+fn ring_drag() {
     for (plane, a, b) in [
         (Plane4::Xy, Vec4::X, Vec4::Y),
         (Plane4::Zw, Vec4::Z, Vec4::W),

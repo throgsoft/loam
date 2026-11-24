@@ -1009,7 +1009,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kernel_uniforms_match_the_host_layout() {
+    fn kernel_uniform_layout() {
         let source = format!(
             "{HYPERSLICE_KERNEL_WGSL}\n{}\n{EMPTY_SCENE_STUB}",
             super::super::polytope_data::polytope_stub_sdfs_wgsl()
@@ -1211,7 +1211,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-    fn each_strip_cell_renders_its_own_w_slice_gpu_probe() {
+    fn strip_cell_w_slices_gpu_probe() {
         const SIZE: [u32; 2] = [192, 64];
         let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
 
@@ -1302,7 +1302,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
     #[test]
     #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-    fn the_thirty_third_body_shades_its_pixel_at_the_root_eyes_projective_depth_gpu_probe() {
+    fn thirty_third_body_gpu_probe() {
         let size = Extent3d {
             width: DEPTH_PROBE_SIZE,
             height: DEPTH_PROBE_SIZE,

@@ -38,7 +38,7 @@ fn unorm_byte(linear: f64) -> u8 {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
+fn filmstrip_clear_gpu_probe() {
     let instance = Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
         power_preference: PowerPreference::LowPower,
@@ -196,7 +196,7 @@ fn probe_attachment(device: &Device, format: TextureFormat, label: &'static str)
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn a_published_strip_records_a_pipeline_its_attachments_accept_gpu_probe() {
+fn strip_pipeline_gpu_probe() {
     let gpu = pollster::block_on(GpuContext::new(
         Instance::default(),
         FeatureRequest::default(),

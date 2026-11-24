@@ -71,7 +71,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_horizontal_tiles_without_gaps() {
+    fn uneven_split() {
         let v = Viewport {
             x: 100,
             y: 50,

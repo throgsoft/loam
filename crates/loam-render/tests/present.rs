@@ -178,7 +178,7 @@ fn texel(pixels: &[u8], (x, y): (u32, u32)) -> [u8; 4] {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn published_landmarks_are_absent_from_their_own_ndc_positions_gpu_probe() {
+fn landmarks_gpu_probe() {
     let (mut session, landmarks) = landmark_scene();
     let mut publication = Publication::default();
     session.publish(&mut publication, 1.0).unwrap();
@@ -228,7 +228,7 @@ const HIDDEN_GROUND: Ground = Ground {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn an_overlay_line_and_point_from_a_publication_system_are_drawn_where_they_stand_gpu_probe() {
+fn overlay_line_and_point_gpu_probe() {
     let mut session = Session::new(Landmarks::default(), SimConfig::default());
     session.system(Phase::Publication, "marks", |ctx| {
         let [x, y, z] = OVERLAY_LINE_AT;
@@ -268,7 +268,7 @@ fn an_overlay_line_and_point_from_a_publication_system_are_drawn_where_they_stan
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn the_root_backdrop_paints_its_sky_over_the_background_gpu_probe() {
+fn root_backdrop_gpu_probe() {
     let mut session = Session::new(Landmarks::default(), SimConfig::default());
     session.views_mut().root_mut().backdrop = Some(Backdrop {
         sky: RED_SKY,
@@ -286,7 +286,7 @@ fn the_root_backdrop_paints_its_sky_over_the_background_gpu_probe() {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn a_registered_sky_pass_paints_over_the_background_when_no_backdrop_is_published_gpu_probe() {
+fn sky_pass_without_backdrop_gpu_probe() {
     let own = SkyGroundPass::new(HIDDEN_GROUND);
     own.publish(&Eye::default(), RED_SKY, HIDDEN_GROUND);
 
@@ -299,7 +299,7 @@ fn a_registered_sky_pass_paints_over_the_background_when_no_backdrop_is_publishe
 }
 
 #[test]
-fn a_sky_pass_fed_by_its_owner_keeps_its_own_backdrop_through_a_frame_that_carries_another() {
+fn owner_fed_sky_pass() {
     let mut own = SkyGroundPass::new(HIDDEN_GROUND);
     own.publish(&Eye::default(), RED_SKY, HIDDEN_GROUND);
     let red = own.clear_color();

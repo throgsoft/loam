@@ -1,7 +1,7 @@
 use loam_render::shader::validate_wgsl;
 
 #[test]
-fn standalone_shader_files_validate() {
+fn standalone_shaders() {
     for (name, source) in [
         ("line", include_str!("../src/line_raster.wgsl")),
         ("point", include_str!("../src/point_raster.wgsl")),

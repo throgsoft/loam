@@ -215,7 +215,7 @@ fn assert_every_texel(pixels: &[u8], expected: [u8; 4], tolerance: u8, what: &st
 
 #[test]
 #[ignore = "requires a working wgpu adapter; CI runs software-adapter probes"]
-fn composite_encodes_channels_and_refreshes_after_scene_changes_gpu_probe() {
+fn channels_and_scene_change_gpu_probe() {
     let probe = Probe::new();
     probe.record_scene();
     probe.run_composite();

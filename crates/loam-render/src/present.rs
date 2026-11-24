@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn a_view_is_uploaded_when_its_records_change_and_not_while_they_are_unchanged() {
+    fn view_upload() {
         let mut session = Session::new(Spun::default(), SimConfig::default());
         let r4 = session
             .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn a_view_dropped_from_the_publication_takes_its_section_fills_with_it() {
+    fn dropped_view() {
         use loam_runtime::{Section4, ViewId};
 
         let mut session = Session::new(Spun::default(), SimConfig::default());
@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn dropping_the_first_of_two_equally_stamped_views_skips_the_survivors_lines() {
+    fn equally_stamped_views() {
         let mut session = Session::new(Spun::default(), SimConfig::default());
         let white = session.add_material(Material::lines([1.0; 4], 1.0));
         let root = session.views().root_id();
@@ -666,8 +666,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-    fn a_background_pass_survives_the_clear_and_translucency_follows_all_opaque_geometry_gpu_probe()
-    {
+    fn background_and_translucency_gpu_probe() {
         let gpu = pollster::block_on(GpuContext::new(
             wgpu::Instance::default(),
             crate::device::FeatureRequest::default(),

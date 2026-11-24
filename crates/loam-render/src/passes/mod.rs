@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn a_publish_that_changes_only_a_color_still_reaches_the_gpu() {
+    fn color_only_publish() {
         let gpu = noop_gpu();
         let mut point = PointPass::new("vertices");
         let record = PointRecord {
