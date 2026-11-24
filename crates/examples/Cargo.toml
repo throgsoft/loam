@@ -10,9 +10,7 @@ description = "Loam example bins: hero, mandelbulb and tesseract."
 publish = false
 
 [dependencies]
-glam.workspace = true
 tracing.workspace = true
-web-time.workspace = true
 
 loam = { path = "../..", features = ["app", "capture", "physics", "text"] }
 

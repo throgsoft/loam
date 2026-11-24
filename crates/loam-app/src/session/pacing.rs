@@ -20,14 +20,6 @@ impl Pacer {
             .then(|| Duration::from_nanos(((1_000_000_000.0 / f64::from(fps)) as u64).max(1)));
     }
 
-    pub fn target_fps(&self) -> f32 {
-        self.period.map_or(0.0, |period| 1.0 / period.as_secs_f32())
-    }
-
-    pub fn target_period(&self) -> Option<Duration> {
-        self.period
-    }
-
     pub fn reset(&mut self) {
         self.anchor = None;
     }

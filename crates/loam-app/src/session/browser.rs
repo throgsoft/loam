@@ -647,7 +647,6 @@ fn feed_layer(
     }
 }
 
-#[derive(Clone)]
 enum Canvas {
     Offscreen(OffscreenCanvas),
     Page(HtmlCanvasElement),

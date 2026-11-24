@@ -1,5 +1,4 @@
 #[path = "../src/wasm/metrics.rs"]
-#[allow(dead_code)]
 mod metrics;
 
 use metrics::capped;

@@ -104,7 +104,6 @@ fn clamp_target_to_arena(current: Vec4, target: Vec4) -> Vec4 {
 pub(crate) struct DepthBand {
     pub(crate) entity: Entity,
     pub(crate) index: usize,
-    pub(crate) center: f32,
     pub(crate) min: f32,
     pub(crate) max: f32,
     pub(crate) color: [f32; 3],
@@ -138,7 +137,6 @@ pub(crate) fn fill_depth_bands(
         out.push(DepthBand {
             entity,
             index: slot.index,
-            center: 0.0,
             min: 0.0,
             max: 0.0,
             color: slot.entry.body_color,
@@ -167,7 +165,6 @@ pub(crate) fn fill_depth_bands(
         let Some(pose) = r4.drawn_pose(band.entity, alpha) else {
             return false;
         };
-        band.center = pose.point.w;
         (band.min, band.max) = depth_bounds(pose.point, pose.frame, vertices);
         band.asleep = body.is_sleeping();
         true

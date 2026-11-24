@@ -117,11 +117,6 @@ impl Args {
             None => Vec::new(),
         }
     }
-
-    /// Order is HashMap-arbitrary.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.map.iter().map(|(k, v)| (k.as_str(), v.as_str()))
-    }
 }
 
 #[cfg(target_arch = "wasm32")]

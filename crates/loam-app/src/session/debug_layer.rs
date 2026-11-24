@@ -138,7 +138,6 @@ struct Layer {
     renderer: Renderer,
     device: Device,
     queue: Queue,
-    format: TextureFormat,
     feed: Feed,
     primitives: Vec<egui::ClippedPrimitive>,
     textures: egui::TexturesDelta,
@@ -173,7 +172,6 @@ impl Layer {
             renderer: renderer(&gpu.device, format),
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
-            format,
             feed,
             primitives: Vec::new(),
             textures: egui::TexturesDelta::default(),
@@ -584,7 +582,6 @@ impl FramePass for LayerPass {
         let mut layer = self.shared.borrow_mut();
         layer.device = gpu.device.clone();
         layer.queue = gpu.queue.clone();
-        layer.format = frame.color;
         layer.renderer = renderer(&gpu.device, frame.color);
         let Layer {
             renderer,

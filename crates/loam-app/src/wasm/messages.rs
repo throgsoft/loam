@@ -4,8 +4,7 @@ use wasm_bindgen::{JsCast, JsValue};
 
 use crate::session::input::message::{InputMessage, PointerPhase};
 
-/// `Ok(None)` covers both the `init` kind, which the caller handles, and unknown
-/// kinds, which are logged and dropped.
+/// `Ok(None)` covers the `init` kind, which the caller handles, and unknown kinds, which are dropped.
 pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
     let kind = js_sys::Reflect::get(data, &JsValue::from_str("kind"))
         .ok()

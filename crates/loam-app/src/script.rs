@@ -69,10 +69,6 @@ impl Script {
         Self::parse(&source).with_context(|| format!("parsing script {}", path.display()))
     }
 
-    pub fn steps(&self) -> &[ScriptStep] {
-        &self.steps
-    }
-
     pub fn last_frame(&self) -> u64 {
         self.steps.last().map_or(0, |step| step.frame)
     }

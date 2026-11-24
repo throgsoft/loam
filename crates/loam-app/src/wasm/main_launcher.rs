@@ -270,7 +270,7 @@ fn set_host_state(host: &Element, state: &str) {
     }
 }
 
-// Set by the demo's inline script (`window.__loam_wasm_url = import.meta.url`).
+// The page's inline script sets this to the wasm-bindgen JS bundle's URL.
 fn read_wasm_bundle_url() -> Result<String> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
     let val = js_sys::Reflect::get(&window, &JsValue::from_str("__loam_wasm_url"))
@@ -378,9 +378,6 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
         set_msg_string(&msg, "search", &search);
         set_msg_string(&msg, "hash", &hash);
         set_msg_bool(&msg, "visible", is_visible(&document_for_ready));
-        if let Some(max_pixels) = max_pixels {
-            set_msg_u32(&msg, "max_pixels", max_pixels);
-        }
         let posted = match offscreen_for_ready.as_ref() {
             Some(offscreen) => {
                 let _ = js_sys::Reflect::set(&msg, &JsValue::from_str("canvas"), offscreen);

@@ -19,9 +19,7 @@ pub(crate) enum Attempt {
     Paced,
     #[cfg(target_arch = "wasm32")]
     EmptySurface,
-    ReconfiguredSurface,
-    TimedOutSurface,
-    FailedSurface,
+    SkippedSurface,
 }
 
 pub(crate) struct SurfaceHost {
@@ -148,18 +146,18 @@ impl SurfaceHost {
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 self.reconfigure(&device.context.device);
                 frame.invalidate();
-                return Ok(Attempt::ReconfiguredSurface);
+                return Ok(Attempt::SkippedSurface);
             }
             Err(wgpu::SurfaceError::Timeout) => {
                 tracing::warn!("surface frame timed out");
-                return Ok(Attempt::TimedOutSurface);
+                return Ok(Attempt::SkippedSurface);
             }
             Err(wgpu::SurfaceError::OutOfMemory) => {
                 return Err(failed("surface ran out of memory"));
             }
             Err(wgpu::SurfaceError::Other) => {
                 tracing::warn!("surface frame failed");
-                return Ok(Attempt::FailedSurface);
+                return Ok(Attempt::SkippedSurface);
             }
         };
         {

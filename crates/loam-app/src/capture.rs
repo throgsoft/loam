@@ -90,7 +90,6 @@ enum SequenceWriter {
 
 struct WarmingState {
     buffer: Vec<WarmupFrame>,
-    target_frames: u32,
 }
 
 struct WarmupFrame {
@@ -536,7 +535,6 @@ impl Capture {
                     PaletteMode::Local => None,
                     PaletteMode::Global => Some(WarmingState {
                         buffer: Vec::with_capacity(GIF_WARMUP_FRAMES as usize),
-                        target_frames: GIF_WARMUP_FRAMES,
                     }),
                 };
                 SequenceWriter::Gif {
@@ -904,7 +902,7 @@ impl SequenceWriter {
                                 height,
                                 captured_at,
                             });
-                            if w.buffer.len() as u32 >= w.target_frames {
+                            if w.buffer.len() as u32 >= GIF_WARMUP_FRAMES {
                                 let nq = Arc::new(train_global_palette(&w.buffer));
                                 tracing::info!(
                                     "capture: gif global palette trained from {} frames",

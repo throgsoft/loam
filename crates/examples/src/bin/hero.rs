@@ -14,7 +14,6 @@ use loam::physics::euclidean_r4::{
 };
 use loam::physics::BodyId;
 use loam::prelude::*;
-use loam::render::TriangleFeed;
 use loam::shape::polytope::{polytope_section_faces_append, SectionScratch};
 use loam::text::ab_glyph::FontRef;
 use loam::text::glyph::{
@@ -896,7 +895,6 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use loam::runtime::Publication;
     use loam::time::par::Sequential;
 
     use super::*;
