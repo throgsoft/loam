@@ -19,7 +19,6 @@ use super::app::SessionApp;
 use super::frame::{failed, Frame};
 #[cfg(feature = "egui")]
 use super::input::TouchCapture;
-use super::pacing::Pace;
 use super::surface::{Attempt, SurfaceHost};
 use crate::host::HostError;
 use crate::session::input::message::{InputMessage, PointerPhase};
@@ -724,18 +723,7 @@ impl<A: Stores> Worker<A> {
             self.apply(message);
         }
         self.flush_cursor_request();
-        if let Some(enabled) = self.frame.app_mut().vsync.take() {
-            self.surface.set_vsync(&self.rd.context.device, enabled);
-            self.frame.invalidate();
-        }
         let now = Instant::now();
-        if let Pace::Wait(_) = self.frame.app_mut().pacer.decide(now) {
-            return Ok(Attempt::Paced);
-        }
-        let size = self.surface.size();
-        if size.0 == 0 || size.1 == 0 {
-            return Ok(Attempt::EmptySurface);
-        }
         let Worker {
             frame,
             surface,

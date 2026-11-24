@@ -14,7 +14,6 @@ use super::app::SessionApp;
 use super::frame::{failed, Frame};
 use super::input::message::wheel_lines;
 use super::input::{winit_alt, winit_key};
-use super::pacing::Pace;
 use super::surface::{Attempt, SurfaceHost};
 use crate::args::Args;
 use crate::host::HostError;
@@ -123,8 +122,7 @@ impl<A: Stores> Host<A> {
         let Some(surface) = surface.as_mut() else {
             return Ok(());
         };
-        let size = surface.size();
-        if size.0 == 0 || size.1 == 0 {
+        if surface.is_empty() {
             return Ok(());
         }
 
@@ -135,35 +133,22 @@ impl<A: Stores> Host<A> {
             return frame.recover(&device.context);
         }
 
-        if let Some(enabled) = frame.app_mut().vsync.take() {
-            surface.set_vsync(&device.context.device, enabled);
-            frame.invalidate();
-        }
-
         let now = Instant::now();
-        if let Pace::Wait(deadline) = frame.app_mut().pacer.decide(now) {
-            *redraw_deadline = Some(deadline);
-            elwt.set_control_flow(ControlFlow::WaitUntil(deadline));
-            return Ok(());
-        }
-        *redraw_deadline = frame.app_mut().pacer.deadline();
-        match *redraw_deadline {
-            Some(deadline) => elwt.set_control_flow(ControlFlow::WaitUntil(deadline)),
-            None => elwt.set_control_flow(ControlFlow::Poll),
-        };
-
         let window = window.as_deref();
         let attempt = surface.present(device, frame, now, |frame, stepped| {
             if stepped {
                 Self::apply_cursor_request(frame, window);
             }
         })?;
+        *redraw_deadline = frame.app_mut().pacer.deadline();
         // ControlFlow::Poll would spin the loop on skipped frames.
         if matches!(attempt, Attempt::Unchanged) && redraw_deadline.is_none() {
-            let deadline = now + *refresh;
-            *redraw_deadline = Some(deadline);
-            elwt.set_control_flow(ControlFlow::WaitUntil(deadline));
+            *redraw_deadline = Some(now + *refresh);
         }
+        match *redraw_deadline {
+            Some(deadline) => elwt.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => elwt.set_control_flow(ControlFlow::Poll),
+        };
         Ok(())
     }
 

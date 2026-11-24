@@ -10,14 +10,13 @@ use wgpu::{
 
 use super::app::Redraw;
 use super::frame::{failed, Frame, Target};
+use super::pacing::Pace;
 use crate::host::HostError;
 
 pub(crate) enum Attempt {
     Presented,
     Unchanged,
-    #[cfg(target_arch = "wasm32")]
     Paced,
-    #[cfg(target_arch = "wasm32")]
     EmptySurface,
     SkippedSurface,
 }
@@ -75,8 +74,8 @@ impl SurfaceHost {
         ))
     }
 
-    pub(crate) fn size(&self) -> (u32, u32) {
-        self.size
+    pub(crate) fn is_empty(&self) -> bool {
+        self.size.0 == 0 || self.size.1 == 0
     }
 
     pub(crate) fn format(&self) -> TextureFormat {
@@ -89,7 +88,7 @@ impl SurfaceHost {
 
     pub(crate) fn resize(&mut self, device: &Device, size: (u32, u32)) {
         self.size = size;
-        if size.0 == 0 || size.1 == 0 {
+        if self.is_empty() {
             return;
         }
         self.config.width = size.0;
@@ -106,12 +105,22 @@ impl SurfaceHost {
     }
 
     pub(crate) fn present<A: Stores>(
-        &self,
+        &mut self,
         device: &RenderDevice,
         frame: &mut Frame<A>,
         now: Instant,
         after_step: impl FnOnce(&mut Frame<A>, bool),
     ) -> std::result::Result<Attempt, HostError> {
+        if let Some(enabled) = frame.app_mut().vsync.take() {
+            self.set_vsync(&device.context.device, enabled);
+            frame.invalidate();
+        }
+        if let Pace::Wait(_) = frame.app_mut().pacer.decide(now) {
+            return Ok(Attempt::Paced);
+        }
+        if self.is_empty() {
+            return Ok(Attempt::EmptySurface);
+        }
         match frame.redraw() {
             Redraw::EveryFrame => self.draw(device, frame, |frame, target, finish| {
                 let stepped = frame.step(&device.context, target, now, finish);
