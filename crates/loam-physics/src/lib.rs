@@ -17,8 +17,6 @@ pub mod world;
 pub mod collision;
 #[cfg(all(test, feature = "r3"))]
 mod determinism_fixture;
-#[cfg(feature = "r2")]
-pub mod euclidean_r2;
 #[cfg(feature = "r3")]
 pub mod euclidean_r3;
 #[cfg(feature = "r4")]

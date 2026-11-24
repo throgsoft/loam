@@ -108,11 +108,6 @@ pub struct World<S: PhysicsSpace> {
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     const fn assert_no_allocation<T: Copy>() {}
-    #[cfg(feature = "r2")]
-    {
-        assert_send_sync::<World<loam_math::EuclideanR2>>();
-        assert_no_allocation::<RigidBody<loam_math::EuclideanR2>>();
-    }
     #[cfg(feature = "r3")]
     {
         assert_send_sync::<World<loam_math::EuclideanR3>>();
@@ -1010,7 +1005,7 @@ fn split_two_mut<T>(slice: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     }
 }
 
-#[cfg(all(test, feature = "r2", feature = "r3", feature = "r4"))]
+#[cfg(all(test, feature = "r3", feature = "r4"))]
 mod tests {
     use std::alloc::System;
 

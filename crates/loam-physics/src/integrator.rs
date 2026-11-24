@@ -1,6 +1,6 @@
 use std::ops::{Add, Mul, Neg, Sub};
 
-use glam::{Vec2, Vec3, Vec4};
+use glam::{Vec3, Vec4};
 use loam_math::{Bivector, IsometryGroup, Space};
 
 use crate::body::RigidBody;
@@ -40,18 +40,6 @@ pub trait VectorOps:
         } else {
             fallback
         }
-    }
-}
-
-impl VectorOps for Vec2 {
-    fn zero() -> Self {
-        Vec2::ZERO
-    }
-    fn dot(self, rhs: Self) -> f32 {
-        Vec2::dot(self, rhs)
-    }
-    fn is_finite(self) -> bool {
-        Vec2::is_finite(self)
     }
 }
 
