@@ -88,6 +88,7 @@ pub struct SessionSnapshot<A: Stores> {
     views: ViewsSnapshot,
     tick: Tick,
     config: SimConfig,
+    paused: bool,
     next_request: RequestId,
 }
 
@@ -145,6 +146,7 @@ pub struct Session<A: Stores> {
     assets: Assets,
     overlay: Overlay,
     config: SimConfig,
+    paused: bool,
     tick: Tick,
     sequence: u64,
     initial: Option<SessionSnapshot<A>>,
@@ -198,6 +200,7 @@ impl<A: Stores> Session<A> {
             assets: Assets::default(),
             overlay: Overlay::default(),
             config,
+            paused: false,
             tick: Tick::default(),
             sequence: 0,
             initial: None,
@@ -209,6 +212,15 @@ impl<A: Stores> Session<A> {
 
     pub fn config(&self) -> SimConfig {
         self.config
+    }
+
+    pub fn paused(&self) -> bool {
+        self.paused
+    }
+
+    /// While paused a tick runs no simulation system and leaves the tick count alone, and boundaries and publishes go on as usual.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
     }
 
     pub fn scene(&self) -> SceneId {
@@ -353,9 +365,14 @@ impl<A: Stores> Session<A> {
         });
     }
 
-    /// Adds a dispatch system after those already registered that submits [`Command::Reset`] at each boundary where `action` is pressed. The systems that [`Self::on_action`], [`Self::reset_on`] and [`Self::toggle_on`] add take the action's name, so a system and an action should not share a name.
+    /// Adds a dispatch system after those already registered that submits [`Command::Reset`] at each boundary where `action` is pressed. The systems that [`Self::on_action`], [`Self::reset_on`], [`Self::pause_on`] and [`Self::toggle_on`] add take the action's name, so a system and an action should not share a name.
     pub fn reset_on(&mut self, action: ActionId) {
         self.submit_on(action, || Command::Reset);
+    }
+
+    /// Adds a dispatch system after those already registered that submits [`Command::TogglePause`] at each boundary where `action` is pressed.
+    pub fn pause_on(&mut self, action: ActionId) {
+        self.submit_on(action, || Command::TogglePause);
     }
 
     /// Adds a dispatch system after those already registered that flips `setting` as a command named after `action` at each boundary where it is pressed.
@@ -471,6 +488,14 @@ impl<A: Stores> Session<A> {
         let Some(dt) = self.config.dt() else {
             return Ok(());
         };
+        if self.paused {
+            // An empty tick drops the blend, so a paused publish draws each pose where it stands.
+            for domain in self.domains.iter_mut() {
+                domain.begin_tick();
+                domain.end_tick();
+            }
+            return Ok(());
+        }
         self.unfinished = Some(Phase::Simulation);
         let step = Step {
             tick: self.tick,
@@ -577,6 +602,7 @@ impl<A: Stores> Session<A> {
             views: self.views.snapshot(),
             tick: self.tick,
             config: self.config,
+            paused: self.paused,
             next_request: self.commands.next_request(),
         })
     }
@@ -612,6 +638,7 @@ impl<A: Stores> Session<A> {
         self.manipulation.clear();
         self.tick = from.tick;
         self.config = from.config;
+        self.paused = from.paused;
         self.unfinished = None;
         self.phase_error = None;
         Ok(())
@@ -658,6 +685,10 @@ impl<A: Stores> Session<A> {
                         self.phase_error = phase_error;
                     }
                     outcome
+                }
+                Command::TogglePause => {
+                    self.paused = !self.paused;
+                    Ok(Outcome::Done)
                 }
                 command => self.dispatch(|dispatch| dispatch.apply(command)),
             };

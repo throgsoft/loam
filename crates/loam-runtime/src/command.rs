@@ -105,6 +105,7 @@ pub enum Command<A> {
     Chart(DomainId, ChartCommand),
     App(Box<dyn AppCommand<A>>),
     Reset,
+    TogglePause,
 }
 
 impl<A: 'static> Command<A> {
@@ -115,6 +116,7 @@ impl<A: 'static> Command<A> {
             Self::Chart(_, _) => "chart",
             Self::App(command) => command.name(),
             Self::Reset => "reset",
+            Self::TogglePause => "pause",
         }
     }
 
@@ -562,6 +564,9 @@ impl<'a, A: Stores> Dispatch<'a, A> {
             Command::App(mut command) => command.apply(self),
             Command::Reset => Err(Rejection::Unsupported(
                 "reset applies at a session boundary",
+            )),
+            Command::TogglePause => Err(Rejection::Unsupported(
+                "pause applies at a session boundary",
             )),
         }
     }
