@@ -155,8 +155,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_malformed_script_or_a_detached_script_path_is_refused_and_a_misordered_one_names_its_line()
-    {
+    fn malformed_filename() {
         for source in ["10", " 10  ", "-1 reset", "1.5 reset", "abc reset"] {
             assert!(Script::parse(source).is_err(), "{source}");
         }
