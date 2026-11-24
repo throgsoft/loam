@@ -172,6 +172,26 @@ impl Ring {
     }
 }
 
+/// Anchored at the press, so a widget following the subject does not chase its own drag.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct RingDrag {
+    pub ring: Ring,
+    grab: Vec3,
+}
+
+impl RingDrag {
+    pub fn press(ring: Ring, ray_origin: Vec3, ray_direction: Vec3) -> Option<Self> {
+        ring.ray_hit(ray_origin, ray_direction)
+            .map(|grab| Self { ring, grab })
+    }
+
+    /// `None` when the ray misses the ring's plane, and callers then hold the last rotor.
+    pub fn rotor(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<Rotor4> {
+        let cursor = self.ring.ray_hit(ray_origin, ray_direction)?;
+        Some(self.ring.drag_rotor(self.grab, cursor))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RingStyle {
     pub segments: usize,

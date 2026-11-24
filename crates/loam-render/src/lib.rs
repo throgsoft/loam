@@ -1,7 +1,6 @@
 pub mod composite;
 pub mod depth;
 pub mod device;
-pub mod gizmo;
 pub mod gpu_timer;
 pub mod hypergimbal;
 pub mod lattice;
