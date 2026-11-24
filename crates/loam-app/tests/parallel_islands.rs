@@ -1,7 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use glam::Vec3;
-use loam_app::par_native::ScopedThreads;
+use loam_app::native::par::ScopedThreads;
 use loam_math::EuclideanR3;
 use loam_physics::euclidean_r3::{halfspace_body_r3, register_default_narrowphase, sphere_body_r3};
 use loam_physics::world::ISLANDS_PER_SOLVE_WORKER;

@@ -15,16 +15,16 @@ use loam_time::par::Sequential;
 use web_time::Instant;
 
 use super::animation::{self, Lifecycle, Next};
-use super::app::SessionApp;
-use super::frame::{failed, Frame};
-#[cfg(feature = "egui")]
-use super::input::TouchCapture;
-use super::surface::{Attempt, SurfaceHost};
+use super::messages::{self, Kind};
+use super::{install_logging_idempotent, post_failure, worker_scope, Endpoint};
 use crate::host::HostError;
+use crate::session::app::SessionApp;
+use crate::session::frame::{failed, Frame};
 use crate::session::input::message::{InputMessage, PointerPhase};
 use crate::session::input::queue;
-use crate::wasm::messages::{self, Kind};
-use crate::wasm::{install_logging_idempotent, post_failure, worker_scope, Endpoint};
+#[cfg(feature = "egui")]
+use crate::session::input::TouchCapture;
+use crate::session::surface::{Attempt, SurfaceHost};
 use crate::{args::Args, WasmConfig};
 
 pub fn launch<A: Stores>(
@@ -38,15 +38,15 @@ pub fn launch_with<A: Stores>(
     factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
 ) -> Result<(), HostError> {
     install_logging_idempotent();
-    if crate::wasm::is_worker_context() {
+    if super::is_worker_context() {
         return worker_scope()
             .and_then(|scope| listen(Endpoint::Worker(scope), None, factory))
             .map_err(|error| failed(format!("{error:#}")));
     }
-    let in_page: crate::wasm::InPage = Box::new(move |port, window, canvas| {
+    let in_page: super::InPage = Box::new(move |port, window, canvas| {
         listen(Endpoint::Page(port, window), Some(canvas), factory)
     });
-    crate::wasm::launch_page(&wasm, in_page).map_err(|error| failed(format!("{error:#}")))
+    super::launch_page(&wasm, in_page).map_err(|error| failed(format!("{error:#}")))
 }
 
 type Pending<F> = Rc<RefCell<Option<F>>>;
@@ -471,7 +471,7 @@ async fn recover<A: Stores>(
 
 #[cfg(feature = "egui")]
 fn feed_layer(
-    layer: &super::DebugLayer,
+    layer: &crate::session::DebugLayer,
     touches: &mut TouchCapture,
     message: &InputMessage,
 ) -> bool {
@@ -490,7 +490,7 @@ fn feed_layer(
             pressed,
             ..
         } => {
-            if let Some(egui_button) = crate::keymap::mouse_button_egui(*button) {
+            if let Some(egui_button) = super::keymap::mouse_button_egui(*button) {
                 layer.push(egui::Event::PointerButton {
                     pos: egui::pos2(*x, *y) / context.zoom_factor(),
                     button: egui_button,
@@ -526,7 +526,7 @@ fn feed_layer(
                 command: *ctrl || *meta,
             };
             layer.set_modifiers(modifiers);
-            if let Some(egui_key) = crate::keymap::keycode_egui(code) {
+            if let Some(egui_key) = super::keymap::keycode_egui(code) {
                 layer.push(egui::Event::Key {
                     key: egui_key,
                     physical_key: Some(egui_key),

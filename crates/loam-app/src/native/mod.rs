@@ -10,15 +10,18 @@ use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 use loam_render::device::{FeatureRequest, RenderDevice};
 use loam_runtime::{PointerButton, Session, Stores};
 
-use super::app::SessionApp;
-use super::frame::{failed, Frame};
-use super::input::message::wheel_lines;
-use super::input::{winit_alt, winit_key};
-use super::surface::{Attempt, SurfaceHost};
+pub mod keys;
+pub mod par;
+
 use crate::args::Args;
 use crate::host::HostError;
-use crate::par_native::ScopedThreads;
+use crate::session::app::SessionApp;
+use crate::session::frame::{failed, Frame};
+use crate::session::input::message::wheel_lines;
+use crate::session::surface::{Attempt, SurfaceHost};
 use crate::WasmConfig;
+use keys::{winit_alt, winit_key};
+use par::ScopedThreads;
 
 pub fn launch<A: Stores>(
     factory: impl FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError>,
@@ -59,7 +62,7 @@ fn run<A: Stores>(
     let headless = args.has_bare_flag("headless") || args.get("headless").is_some();
     let (mut session, mut app) = factory(args)?;
     if headless {
-        return super::records::run(&mut session, &mut app);
+        return crate::session::records::run(&mut session, &mut app);
     }
     session.capture_initial();
     let event_loop = EventLoop::new().map_err(failed)?;

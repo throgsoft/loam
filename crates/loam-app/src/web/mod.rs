@@ -1,12 +1,17 @@
 //! Requires WebGPU. The session runs in a module worker on a transferred OffscreenCanvas, or on
 //! the page itself in Firefox, which copies a worker's canvas back on every page repaint.
 
+mod animation;
+#[cfg(feature = "egui")]
+pub mod keymap;
 pub mod launch;
-pub mod main_launcher;
 pub mod messages;
 mod metrics;
+pub mod page;
+mod session;
 
-pub(crate) use main_launcher::{launch_page, InPage};
+pub(crate) use page::{launch_page, InPage};
+pub use session::{launch, launch_with};
 
 use anyhow::{anyhow, Result};
 use wasm_bindgen::{JsCast, JsValue};
@@ -83,7 +88,7 @@ pub(crate) fn install_logging_idempotent() {
                     post_failure(&Endpoint::Worker(scope), &format!("worker panic: {info}"))
                 }
                 // A panic traps the page's only instance, so no message listener would report it.
-                Err(_) => main_launcher::fail_page(&format!("panic: {info}")),
+                Err(_) => page::fail_page(&format!("panic: {info}")),
             }
         }));
         #[cfg(debug_assertions)]

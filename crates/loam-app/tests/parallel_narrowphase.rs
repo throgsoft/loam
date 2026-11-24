@@ -1,7 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use glam::Vec3;
-use loam_app::par_native::ScopedThreads;
+use loam_app::native::par::ScopedThreads;
 use loam_math::EuclideanR3;
 use loam_physics::euclidean_r3::{box_body, halfspace_body_r3, register_default_narrowphase};
 use loam_physics::world::PAIRS_PER_NARROWPHASE_WORKER;

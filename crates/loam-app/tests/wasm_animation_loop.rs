@@ -1,4 +1,4 @@
-#[path = "../src/session/animation.rs"]
+#[path = "../src/web/animation.rs"]
 #[allow(dead_code)]
 mod animation;
 

@@ -1,4 +1,4 @@
-#[path = "../src/wasm/metrics.rs"]
+#[path = "../src/web/metrics.rs"]
 mod metrics;
 
 use metrics::capped;

@@ -415,14 +415,14 @@ impl DebugLayer {
     }
 
     #[cfg(any(target_arch = "wasm32", test))]
-    pub(super) fn cancel_touch(&self, id: u64, pos: egui::Pos2, pointer: bool) {
+    pub(crate) fn cancel_touch(&self, id: u64, pos: egui::Pos2, pointer: bool) {
         if let Some(feed) = self.shared.borrow_mut().raw() {
             feed.cancel_touch(id, pos, pointer);
         }
     }
 
     #[cfg(any(target_arch = "wasm32", test))]
-    pub(super) fn cancel_touches(&self, touches: &mut TouchCapture) {
+    pub(crate) fn cancel_touches(&self, touches: &mut TouchCapture) {
         for (id, pos) in touches.cancel_all() {
             self.cancel_touch(id, egui::pos2(pos[0], pos[1]), false);
         }

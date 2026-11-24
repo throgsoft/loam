@@ -11,20 +11,13 @@ pub mod input;
 
 mod commands;
 mod cursor;
-mod frame;
+pub(crate) mod frame;
 mod headless;
 #[cfg(not(target_arch = "wasm32"))]
-mod records;
-mod surface;
+pub(crate) mod records;
+pub(crate) mod surface;
 #[cfg(feature = "text")]
 mod text;
-
-#[cfg(target_arch = "wasm32")]
-mod animation;
-#[cfg(target_arch = "wasm32")]
-mod browser;
-#[cfg(not(target_arch = "wasm32"))]
-mod native;
 
 pub use app::{CaptureControl, InputHook, PublishedHook, Redraw, SessionApp};
 pub use commands::CommandSender;
@@ -35,7 +28,7 @@ pub use frame::Target;
 pub use headless::run_script;
 pub use pacing::{Pace, Pacer};
 
-#[cfg(target_arch = "wasm32")]
-pub use browser::{launch, launch_with};
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{launch, launch_with};
+pub use crate::native::{launch, launch_with};
+#[cfg(target_arch = "wasm32")]
+pub use crate::web::{launch, launch_with};

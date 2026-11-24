@@ -15,15 +15,13 @@ mod capture_types;
 
 pub mod environment;
 pub mod host;
-#[cfg(feature = "egui")]
-pub mod keymap;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod par_native;
+pub mod native;
 pub mod script;
 pub mod session;
 pub mod trace;
 #[cfg(target_arch = "wasm32")]
-pub mod wasm;
+pub mod web;
 
 #[cfg(feature = "egui")]
 pub use loam_egui::egui;
