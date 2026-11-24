@@ -226,7 +226,6 @@ pub struct SessionApp<A: Stores> {
     pub(crate) captures: Vec<CaptureRequest>,
     pub(crate) background: wgpu::Color,
     pub(crate) redraw: Redraw,
-    #[cfg(feature = "egui")]
     pub(crate) debug_layer: bool,
     #[cfg(feature = "text")]
     pub(crate) font: Option<Vec<u8>>,
@@ -255,7 +254,6 @@ impl<A: Stores> SessionApp<A> {
             captures: Vec::new(),
             background: DEFAULT_BACKGROUND,
             redraw: Redraw::default(),
-            #[cfg(feature = "egui")]
             debug_layer: true,
             #[cfg(feature = "text")]
             font: None,
@@ -386,14 +384,8 @@ impl<A: Stores> SessionApp<A> {
         Ok(self)
     }
 
-    #[cfg_attr(not(feature = "egui"), allow(unused_mut))]
     pub fn debug_layer(mut self, enabled: bool) -> Self {
-        #[cfg(feature = "egui")]
-        {
-            self.debug_layer = enabled;
-        }
-        #[cfg(not(feature = "egui"))]
-        let _ = enabled;
+        self.debug_layer = enabled;
         self
     }
 

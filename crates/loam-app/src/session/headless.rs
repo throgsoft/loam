@@ -5,6 +5,7 @@ use loam_runtime::{Bindings, Key, PointerButton, Publication, Session, Stores};
 use super::app::SessionApp;
 use super::console::SessionConsole;
 use super::cursor::CursorCapture;
+use super::debug_layer::LayerSlot;
 use super::frame::advance_session;
 use super::input::{dom_key, InputMap};
 use crate::script::{ScriptDriver, ScriptStatus, ScriptStep};
@@ -42,8 +43,7 @@ pub fn run_script<A: Stores>(
             &mut input,
             &mut cursor,
             FRAME,
-            #[cfg(feature = "egui")]
-            None,
+            &LayerSlot::default(),
             |session, _| session.tick(),
         )?;
         if let Some((number, error)) = app.console.take_refused() {

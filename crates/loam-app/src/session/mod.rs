@@ -3,6 +3,9 @@ pub mod camera;
 pub mod console;
 #[cfg(feature = "egui")]
 pub mod debug_layer;
+#[cfg(not(feature = "egui"))]
+#[path = "debug_layer_off.rs"]
+mod debug_layer;
 pub mod pacing;
 
 pub mod input;

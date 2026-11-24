@@ -4,10 +4,13 @@ pub mod capture;
 pub mod args;
 #[cfg(any(not(feature = "capture"), target_arch = "wasm32"))]
 pub mod capture {
+    pub(crate) use crate::capture_off::Capture;
     pub use crate::capture_types::{
         CaptureFormat, CaptureRequest, CaptureStage, CaptureUnavailable, PaletteMode,
     };
 }
+#[cfg(any(not(feature = "capture"), target_arch = "wasm32"))]
+mod capture_off;
 mod capture_types;
 
 pub mod environment;

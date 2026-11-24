@@ -17,6 +17,7 @@ use wgpu::{
 pub use crate::capture_types::{
     CaptureFormat, CaptureRequest, CaptureStage, CaptureUnavailable, PaletteMode,
 };
+use crate::session::Target;
 
 impl CaptureStage {
     fn wants_pre(self) -> bool {
@@ -442,7 +443,7 @@ impl Capture {
         self.pending = still_running;
     }
 
-    pub(crate) fn apply_requests(&mut self, requests: Vec<CaptureRequest>) -> Vec<String> {
+    fn apply_requests(&mut self, requests: Vec<CaptureRequest>) -> Vec<String> {
         let mut log = Vec::new();
         for req in requests {
             match req {
@@ -656,7 +657,7 @@ impl Capture {
         }
     }
 
-    pub(crate) fn wants_pre(&self) -> bool {
+    fn wants_pre(&self) -> bool {
         match &self.state {
             CaptureState::Idle => false,
             CaptureState::OneShot { path_pre, .. } => path_pre.is_some(),
@@ -664,7 +665,7 @@ impl Capture {
         }
     }
 
-    pub(crate) fn wants_post(&self) -> bool {
+    fn wants_post(&self) -> bool {
         match &self.state {
             CaptureState::Idle => false,
             CaptureState::OneShot { path_post, .. } => path_post.is_some(),
@@ -672,7 +673,7 @@ impl Capture {
         }
     }
 
-    pub(crate) fn should_capture(&self, now: Instant) -> bool {
+    fn should_capture(&self, now: Instant) -> bool {
         match &self.state {
             CaptureState::Idle => false,
             CaptureState::OneShot { .. } => true,
@@ -690,7 +691,7 @@ impl Capture {
         }
     }
 
-    pub(crate) fn consume_frame(
+    fn consume_frame(
         &mut self,
         is_pre: bool,
         rgba: Vec<u8>,
@@ -729,7 +730,7 @@ impl Capture {
         }
     }
 
-    pub(crate) fn advance_frame(&mut self, now: Instant) {
+    fn advance_frame(&mut self, now: Instant) {
         match &mut self.state {
             CaptureState::OneShot {
                 path_pre,
@@ -749,6 +750,104 @@ impl Capture {
             }
             CaptureState::Idle => {}
         }
+    }
+}
+
+/// The copies one drawn frame owes the capture.
+pub(crate) struct Shot {
+    pre: Slot,
+    post: Slot,
+}
+
+enum Slot {
+    Skipped,
+    Wanted,
+    Recorded(TextureReadback),
+}
+
+impl Slot {
+    fn new(wanted: bool) -> Self {
+        if wanted {
+            Slot::Wanted
+        } else {
+            Slot::Skipped
+        }
+    }
+}
+
+impl Shot {
+    pub(crate) fn wants(&self, pre: bool) -> bool {
+        let copy = if pre { &self.pre } else { &self.post };
+        matches!(copy, Slot::Wanted)
+    }
+}
+
+impl Capture {
+    /// True when this frame copies anything, counting requests not yet applied.
+    pub(crate) fn pending(&self, requests: &[CaptureRequest], now: Instant) -> bool {
+        !requests.is_empty() || self.should_capture(now)
+    }
+
+    /// Drains `requests` into the capture state.
+    pub(crate) fn begin(&mut self, requests: &mut Vec<CaptureRequest>, now: Instant) -> Shot {
+        if !requests.is_empty() {
+            for line in self.apply_requests(std::mem::take(requests)) {
+                tracing::info!("{line}");
+            }
+        }
+        let taken = self.should_capture(now);
+        Shot {
+            pre: Slot::new(taken && self.wants_pre()),
+            post: Slot::new(taken && self.wants_post()),
+        }
+    }
+
+    pub(crate) fn record(
+        &self,
+        shot: &mut Shot,
+        pre: bool,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        target: &Target<'_>,
+    ) {
+        let copy = if pre { &mut shot.pre } else { &mut shot.post };
+        if !matches!(copy, Slot::Wanted) {
+            return;
+        }
+        *copy = match record_texture_rgba(
+            device,
+            encoder,
+            target.texture,
+            target.size.0,
+            target.size.1,
+            target.format,
+        ) {
+            Ok(readback) => Slot::Recorded(readback),
+            Err(error) => {
+                tracing::error!("capture: copy failed: {error:#}");
+                Slot::Skipped
+            }
+        };
+    }
+
+    /// Reads back the recorded copies, so it runs after the frame's submit.
+    pub(crate) fn finish(&mut self, shot: Shot, device: &Device, now: Instant) {
+        for (is_pre, copy) in [(true, shot.pre), (false, shot.post)] {
+            let Slot::Recorded(readback) = copy else {
+                continue;
+            };
+            match readback.read(device) {
+                Ok(image) => {
+                    if let Err(error) =
+                        self.consume_frame(is_pre, image.rgba, image.width, image.height, now)
+                    {
+                        tracing::error!("capture: write failed: {error:#}");
+                    }
+                }
+                Err(error) => tracing::error!("capture: readback failed: {error:#}"),
+            }
+        }
+        self.advance_frame(now);
     }
 }
 
@@ -902,13 +1001,13 @@ fn default_name() -> String {
 }
 
 // Row-major RGBA8, already R/B-swapped from BGRA sources.
-pub(crate) struct RawImage {
+struct RawImage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
 }
 
-pub(crate) struct TextureReadback {
+struct TextureReadback {
     buffer: Buffer,
     width: u32,
     height: u32,
@@ -917,7 +1016,7 @@ pub(crate) struct TextureReadback {
     format: TextureFormat,
 }
 
-pub(crate) fn record_texture_rgba(
+fn record_texture_rgba(
     device: &Device,
     encoder: &mut CommandEncoder,
     texture: &Texture,
@@ -968,7 +1067,7 @@ pub(crate) fn record_texture_rgba(
 }
 
 impl TextureReadback {
-    pub(crate) fn read(self, device: &Device) -> Result<RawImage> {
+    fn read(self, device: &Device) -> Result<RawImage> {
         let Self {
             buffer,
             width,

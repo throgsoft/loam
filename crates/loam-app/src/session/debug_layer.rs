@@ -7,12 +7,14 @@ use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use loam_egui::egui;
 use loam_render::device::GpuContext;
 use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use loam_runtime::Stores;
 use wgpu::{CommandBuffer, CommandEncoder, Device, Queue, TextureFormat, TextureView};
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event::WindowEvent;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::window::Window;
 
+use super::console::SessionConsole;
 #[cfg(any(target_arch = "wasm32", test))]
 use super::input::TouchCapture;
 
@@ -471,6 +473,89 @@ impl DebugLayer {
 
     pub fn take_callbacks(&self, into: &mut Vec<CommandBuffer>) {
         into.append(&mut self.shared.borrow_mut().callbacks);
+    }
+}
+
+/// The debug layer, if the app enabled one, and its egui context while a frame is open.
+#[derive(Default)]
+pub(crate) struct LayerSlot {
+    layer: Option<DebugLayer>,
+    ui: Option<egui::Context>,
+}
+
+impl LayerSlot {
+    pub(crate) fn get(&self) -> Option<&DebugLayer> {
+        self.layer.as_ref()
+    }
+
+    pub(crate) fn attach(
+        &mut self,
+        gpu: &GpuContext,
+        format: TextureFormat,
+        #[cfg(not(target_arch = "wasm32"))] window: Option<Arc<Window>>,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Option<Box<dyn FramePass>> {
+        let layer = match self.layer.take() {
+            Some(layer) => layer,
+            #[cfg(not(target_arch = "wasm32"))]
+            None => match window {
+                Some(window) => DebugLayer::on_window(gpu, format, window, size),
+                None => DebugLayer::offscreen(gpu, format, size, scale),
+            },
+            #[cfg(target_arch = "wasm32")]
+            None => DebugLayer::offscreen(gpu, format, size, scale),
+        };
+        let pass = layer.pass();
+        self.layer = Some(layer);
+        Some(pass)
+    }
+
+    pub(crate) fn resize(&self, width: u32, height: u32, scale: f32) {
+        if let Some(layer) = self.layer.as_ref() {
+            layer.resize(width, height, scale);
+        }
+    }
+
+    pub(crate) fn begin(&mut self) {
+        self.ui = self.layer.as_ref().map(DebugLayer::begin);
+    }
+
+    pub(crate) fn ui(&self) -> Option<&egui::Context> {
+        self.ui.as_ref()
+    }
+
+    pub(crate) fn typing(&self) -> bool {
+        self.ui
+            .as_ref()
+            .is_some_and(egui::Context::wants_keyboard_input)
+    }
+
+    /// The text origin in physical pixels below the egui panels, and the pixels per point.
+    pub(crate) fn seat(&self, scale: f32) -> ([f32; 2], f32) {
+        self.ui.as_ref().map_or(([0.0; 2], scale), |context| {
+            let free = context.available_rect().min;
+            let scale = context.pixels_per_point();
+            ([free.x * scale, free.y * scale], scale)
+        })
+    }
+
+    /// Draws the console and closes the pass, and returns whether a layer drew this frame.
+    pub(crate) fn finish<A: Stores>(&mut self, console: &mut SessionConsole<A>) -> bool {
+        let Some(context) = self.ui.take() else {
+            return false;
+        };
+        loam_egui::ConsoleUi::ui(console.ui_mut(), &context);
+        if let Some(layer) = self.layer.as_ref() {
+            layer.finish();
+        }
+        true
+    }
+
+    pub(crate) fn take_callbacks(&self, into: &mut Vec<CommandBuffer>) {
+        if let Some(layer) = self.layer.as_ref() {
+            layer.take_callbacks(into);
+        }
     }
 }
 
