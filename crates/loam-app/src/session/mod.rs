@@ -11,7 +11,6 @@ mod commands;
 mod cursor;
 mod frame;
 mod headless;
-mod simulation;
 mod surface;
 #[cfg(feature = "text")]
 mod text;

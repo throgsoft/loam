@@ -61,10 +61,5 @@ impl Default for WasmConfig {
     }
 }
 
-pub(crate) const FRAME_LOOP_SECTIONS: &[&str] = &[
-    "dispatch",
-    "simulation",
-    "simulation wait",
-    "publication",
-    "presentation",
-];
+pub(crate) const FRAME_LOOP_SECTIONS: &[&str] =
+    &["dispatch", "simulation", "publication", "presentation"];

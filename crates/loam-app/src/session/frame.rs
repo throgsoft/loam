@@ -12,9 +12,9 @@ use loam_render::present::Presenter;
 #[cfg(not(target_arch = "wasm32"))]
 use loam_runtime::host::HostConfig;
 use loam_runtime::host::HostError;
-use loam_runtime::{Eye, Session, Stores};
-use loam_time::frame_trace;
+use loam_runtime::{Eye, Publication, PublishError, Records, Session, Stores};
 use loam_time::par::Executor;
+use loam_time::{frame_trace, FixedTimestep};
 
 use super::app::{
     CaptureControl, FrameFn, FrameHook, InputHook, Posts, PublishedHook, Redraw, SessionApp,
@@ -23,7 +23,6 @@ use super::cursor::CursorCapture;
 #[cfg(feature = "egui")]
 use super::debug_layer::DebugLayer;
 use super::input::InputMap;
-use super::simulation::{Failure, Prepared, Simulation, Simulator};
 #[cfg(feature = "text")]
 use super::text::{ScreenText, Seat};
 
@@ -51,7 +50,10 @@ fn redraws(policy: Redraw, drawn: Option<&Shown>, next: &Shown, forced: bool) ->
 }
 
 struct Inner<A: Stores> {
-    simulator: Simulator<A>,
+    session: Session<A>,
+    executor: Box<dyn Executor>,
+    records: Records<A::Published>,
+    timestep: Option<FixedTimestep>,
     callbacks: Vec<CommandBuffer>,
     input: InputMap,
     cursor: CursorCapture,
@@ -78,44 +80,30 @@ pub(crate) struct Frame<A: Stores> {
 }
 
 impl<A: Stores> Frame<A> {
-    #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) fn new(
         session: Session<A>,
         app: SessionApp<A>,
         executor: Box<dyn Executor>,
     ) -> Result<Self, HostError> {
-        let simulation = Simulation::new(session, &app, executor)?;
-        Ok(Self::with(Simulator::local(simulation), app))
-    }
-
-    // An app whose hooks borrow the session keeps it on the drawing thread.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn threaded(
-        session: Session<A>,
-        app: SessionApp<A>,
-        executor: Box<dyn Executor>,
-    ) -> Result<Self, HostError> {
-        let simulation = Simulation::new(session, &app, executor)?;
-        let simulator = if app.borrows_session() {
-            Simulator::local(simulation)
-        } else {
-            Simulator::spawn(simulation)?
-        };
-        Ok(Self::with(simulator, app))
-    }
-
-    fn with(simulator: Simulator<A>, app: SessionApp<A>) -> Self {
         #[cfg(feature = "text")]
         let (font, app) = {
             let mut app = app;
             (app.font.take(), app)
         };
-        Self {
+        let sim = session.config();
+        sim.check().map_err(failed)?;
+        let timestep = sim
+            .dt()
+            .map(|_| FixedTimestep::new(sim.fixed_hz).with_max_catch_up(sim.max_ticks_per_frame));
+        Ok(Self {
             presenter: None,
             #[cfg(feature = "egui")]
             layer: None,
             inner: Inner {
-                simulator,
+                session,
+                executor,
+                records: Records::default(),
+                timestep,
                 callbacks: Vec::new(),
                 input: InputMap::default(),
                 cursor: CursorCapture::new(),
@@ -133,7 +121,7 @@ impl<A: Stores> Frame<A> {
                 capture: crate::capture::Capture::new(),
             },
             trace: None,
-        }
+        })
     }
 
     pub(crate) fn redraw(&self) -> Redraw {
@@ -155,10 +143,7 @@ impl<A: Stores> Frame<A> {
 
     #[cfg(any(all(target_arch = "wasm32", feature = "measure"), test))]
     pub(crate) fn phase_error(&self) -> Option<loam_runtime::PhaseError> {
-        self.inner
-            .simulator
-            .session()
-            .and_then(Session::phase_error)
+        self.inner.session.phase_error()
     }
 
     #[cfg(any(target_arch = "wasm32", test))]
@@ -248,7 +233,9 @@ impl<A: Stores> Frame<A> {
     }
 
     pub(crate) fn reset_clock(&mut self, now: Instant) {
-        self.inner.simulator.reset_clock(now);
+        if let Some(timestep) = self.inner.timestep.as_mut() {
+            timestep.reset_clock(now);
+        }
         self.inner.app.pacer.reset();
     }
 
@@ -403,6 +390,121 @@ impl<A: Stores> Frame<A> {
 }
 
 impl<A: Stores> Inner<A> {
+    fn advance(
+        &mut self,
+        now: Instant,
+        size: (u32, u32),
+        #[cfg(feature = "egui")] ui: Option<&loam_egui::egui::Context>,
+    ) -> Result<(), HostError> {
+        let controls = self.app.console.take_controls();
+        if let Some(fps) = controls.target_fps {
+            self.app.pacer.set_target_fps(fps);
+        }
+        if controls.vsync.is_some() {
+            self.app.vsync = controls.vsync;
+        }
+        let Inner {
+            session,
+            executor,
+            input,
+            timestep,
+            app,
+            ..
+        } = self;
+        let aspect = input
+            .display_aspect()
+            .unwrap_or(size.0 as f32 / size.1 as f32);
+        session.views_mut().root_mut().eye.aspect = aspect;
+        let gathered = input.take();
+        let sender = app.commands.sender();
+        let was_faulted = session.faulted_phase().is_some();
+        if app
+            .fault_recovery
+            .is_some_and(|action| was_faulted && gathered.pressed(action))
+        {
+            sender.reset();
+        }
+        if let Some(hook) = app.input.as_mut() {
+            hook(&InputHook {
+                session,
+                input: &gathered,
+                #[cfg(feature = "egui")]
+                ui,
+                size,
+                sender: &sender,
+            });
+        }
+        let result = (|| {
+            {
+                let _dispatch = frame_trace::scope("dispatch");
+                app.boundary(session, gathered)?;
+            }
+            session.views_mut().root_mut().eye.aspect = aspect;
+            if let Some(timestep) = timestep.as_mut() {
+                if was_faulted && session.faulted_phase().is_none() {
+                    timestep.reset_clock(now);
+                }
+                let _simulation = frame_trace::scope("simulation");
+                for _ in timestep.advance(now) {
+                    session.tick_with(executor.as_ref())?;
+                }
+            }
+            session.views_mut().root_mut().eye.aspect = aspect;
+            Ok(())
+        })();
+        input.reclaim(session.take_input());
+        result
+    }
+
+    fn prepare(
+        &mut self,
+        now: Instant,
+        size: (u32, u32),
+        #[cfg(feature = "egui")] ui: Option<&loam_egui::egui::Context>,
+    ) -> Result<(Publication<A::Published>, Eye), HostError> {
+        self.advance(
+            now,
+            size,
+            #[cfg(feature = "egui")]
+            ui,
+        )?;
+        {
+            let _publication = frame_trace::scope("publication");
+            let alpha = self.timestep.as_ref().map_or(1.0, FixedTimestep::alpha);
+            self.records
+                .publish_with(&mut self.session, alpha, self.executor.as_ref())
+                .map_err(|error| match error {
+                    PublishError::Borrowed => {
+                        HostError::Host("publication buffer is borrowed".into())
+                    }
+                    PublishError::Phase(error) => HostError::Phase(error),
+                })?;
+        }
+        self.session.views_mut().root_mut().eye.aspect = self
+            .input
+            .display_aspect()
+            .unwrap_or(size.0 as f32 / size.1 as f32);
+        let root = self.session.views().root();
+        let eye = self
+            .session
+            .views()
+            .get(root)
+            .map(|view| view.eye)
+            .ok_or_else(|| HostError::Host("the root view is missing".into()))?;
+        let records = self
+            .records
+            .lend()
+            .ok_or_else(|| HostError::Host("the publication buffer is unavailable".into()))?;
+        if records.views.is_empty() && !self.no_views_reported {
+            self.no_views_reported = true;
+            tracing::warn!("the session published no views, so nothing is drawn");
+            self.app
+                .console
+                .note("the session published no views, so nothing is drawn".to_string());
+        }
+        Ok((records, eye))
+    }
+
     fn update(
         &mut self,
         gpu: &GpuContext,
@@ -413,66 +515,124 @@ impl<A: Stores> Inner<A> {
     ) -> Result<bool, HostError> {
         #[cfg(feature = "egui")]
         let context = layer.map(DebugLayer::begin);
-        let controls = self.app.console.take_controls();
-        if let Some(fps) = controls.target_fps {
-            self.app.pacer.set_target_fps(fps);
-        }
-        if controls.vsync.is_some() {
-            self.app.vsync = controls.vsync;
-        }
-        let exchanged = {
-            let Inner {
-                simulator,
-                input,
-                app,
-                ..
-            } = self;
-            let sender = app.commands.sender();
+        let faulted_before = self.session.faulted_phase();
+        let scene_before = self.session.scene();
+        let prepared = self.prepare(
+            now,
+            size,
             #[cfg(feature = "egui")]
-            let ui = context.as_ref();
-            simulator.exchange(input, now, size, |session, gathered| {
-                if let Some(hook) = app.input.as_mut() {
-                    hook(&InputHook {
-                        session,
-                        input: gathered,
-                        #[cfg(feature = "egui")]
-                        ui,
-                        size,
-                        sender: &sender,
-                    });
-                }
-            })
-        };
+            context.as_ref(),
+        );
         let mut requested = false;
-        let terminal = match exchanged {
-            Ok(reply) => {
-                self.input.reclaim(reply.input);
-                if let Some(fault) = reply.recovered {
-                    self.app.console.note(format!("recovered: {fault}"));
-                }
-                self.app.console.collect();
-                match reply.outcome {
-                    Ok(prepared) => {
-                        self.show(
-                            prepared,
-                            size,
-                            presenter,
-                            gpu,
-                            &mut requested,
+        let terminal = match prepared {
+            Ok((records, eye)) => {
+                #[cfg(feature = "text")]
+                let seat = Seat {
+                    origin_px: [0.0; 2],
+                    pixels_per_point: self.input.scale(),
+                };
+                #[cfg(all(feature = "text", feature = "egui"))]
+                let seat = context.as_ref().map_or(seat, |context| {
+                    let free = context.available_rect().min;
+                    let scale = context.pixels_per_point();
+                    Seat {
+                        origin_px: [free.x * scale, free.y * scale],
+                        pixels_per_point: scale,
+                    }
+                });
+                {
+                    let root = self.session.views().root();
+                    let wanted = self
+                        .session
+                        .views()
+                        .get(root)
+                        .and_then(|image| image.rig.cursor());
+                    #[cfg(feature = "egui")]
+                    let typing = context
+                        .as_ref()
+                        .is_some_and(|context| context.wants_keyboard_input());
+                    #[cfg(not(feature = "egui"))]
+                    let typing = false;
+                    self.cursor.follow_rig(wanted.filter(|_| !typing));
+                    let sender = self.app.commands.sender();
+                    let (hook, captures, cursor, background, posts) = (
+                        self.app.frame.as_mut(),
+                        &mut self.app.captures,
+                        &mut self.cursor,
+                        &mut self.app.background,
+                        &mut self.posts,
+                    );
+                    match hook {
+                        Some(FrameFn::Session(hook)) => hook(&mut FrameHook {
+                            session: &self.session,
+                            published: &records,
+                            alpha: records.alpha,
+                            sections: presenter.sections(),
                             #[cfg(feature = "egui")]
-                            context.as_ref(),
-                        );
-                        None
+                            ui: context.as_ref(),
+                            size,
+                            sender: &sender,
+                            capture: CaptureControl::new(captures),
+                            cursor,
+                            background,
+                            posts,
+                            redraw: &mut requested,
+                        }),
+                        Some(FrameFn::Published(hook)) => hook(&mut PublishedHook {
+                            published: &records,
+                            eye,
+                            sections: presenter.sections(),
+                            #[cfg(feature = "egui")]
+                            ui: context.as_ref(),
+                            size,
+                            sender: &sender,
+                            capture: CaptureControl::new(captures),
+                            cursor,
+                            background,
+                            posts,
+                            redraw: &mut requested,
+                        }),
+                        None => {}
                     }
-                    Err(Failure::Faulted { error, fresh }) => {
-                        if fresh {
-                            tracing::error!("session frame failed: {error}");
-                            self.cursor.suspend();
-                        }
-                        None
-                    }
-                    Err(Failure::Fatal(error)) => Some(error),
                 }
+                let _presentation = frame_trace::scope("presentation");
+                #[cfg(test)]
+                {
+                    self.presented = Some(eye);
+                }
+                presenter.upload(
+                    &gpu.device,
+                    &gpu.queue,
+                    &eye,
+                    Vec2::new(size.0 as f32, size.1 as f32),
+                    &records.views,
+                );
+                presenter.upload_overlay(&eye, &records.overlay);
+                presenter.upload_backdrop(&eye, records.backdrop);
+                #[cfg(feature = "text")]
+                let dropped = self.text.publish(&records.overlay, seat);
+                #[cfg(not(feature = "text"))]
+                let dropped = records.overlay.text().next().is_some();
+                if dropped && !self.dropped_text_reported {
+                    self.dropped_text_reported = true;
+                    let note = "the session published text, but this build has no font or no text feature, so none is drawn";
+                    tracing::warn!("{note}");
+                    self.app.console.note(note.to_string());
+                }
+                self.shown.content = records.content();
+                self.shown.eye = eye;
+                self.records.release(records);
+                None
+            }
+            Err(error) if self.session.faulted_phase().is_some() => {
+                if faulted_before.is_none() || self.session.scene() != scene_before {
+                    tracing::error!("session frame failed: {error}");
+                    self.cursor.suspend();
+                }
+                if let Some(timestep) = self.timestep.as_mut() {
+                    timestep.reset_clock(now);
+                }
+                None
             }
             Err(error) => Some(error),
         };
@@ -484,11 +644,6 @@ impl<A: Stores> Inner<A> {
             driver.advance_console(&mut self.app.console);
         }
         let dispatched = self.app.console.dispatch_pending();
-        #[cfg(not(target_arch = "wasm32"))]
-        let terminal = match terminal {
-            None => self.simulator.send_ahead(&mut self.input, now, size).err(),
-            some => some,
-        };
         #[cfg(feature = "egui")]
         if let Some(layer) = layer {
             layer.finish();
@@ -517,119 +672,6 @@ impl<A: Stores> Inner<A> {
             self.drawn = None;
         }
         Ok(draw)
-    }
-
-    fn show(
-        &mut self,
-        prepared: Prepared<A::Published>,
-        size: (u32, u32),
-        presenter: &mut Presenter,
-        gpu: &GpuContext,
-        requested: &mut bool,
-        #[cfg(feature = "egui")] context: Option<&loam_egui::egui::Context>,
-    ) {
-        let Prepared {
-            publication: records,
-            eye,
-            cursor: wanted,
-        } = prepared;
-        if records.views.is_empty() && !self.no_views_reported {
-            self.no_views_reported = true;
-            tracing::warn!("the session published no views, so nothing is drawn");
-            self.app
-                .console
-                .note("the session published no views, so nothing is drawn".to_string());
-        }
-        #[cfg(feature = "text")]
-        let seat = Seat {
-            origin_px: [0.0; 2],
-            pixels_per_point: self.input.scale(),
-        };
-        #[cfg(all(feature = "text", feature = "egui"))]
-        let seat = context.map_or(seat, |context| {
-            let free = context.available_rect().min;
-            let scale = context.pixels_per_point();
-            Seat {
-                origin_px: [free.x * scale, free.y * scale],
-                pixels_per_point: scale,
-            }
-        });
-        {
-            #[cfg(feature = "egui")]
-            let typing = context.is_some_and(|context| context.wants_keyboard_input());
-            #[cfg(not(feature = "egui"))]
-            let typing = false;
-            self.cursor.follow_rig(wanted.filter(|_| !typing));
-            let sender = self.app.commands.sender();
-            let (hook, captures, cursor, background, posts) = (
-                self.app.frame.as_mut(),
-                &mut self.app.captures,
-                &mut self.cursor,
-                &mut self.app.background,
-                &mut self.posts,
-            );
-            match hook {
-                Some(FrameFn::Session(hook)) => hook(&mut FrameHook {
-                    session: self.simulator.session().expect(
-                        "an app whose frame hook borrows the session keeps it on the drawing thread",
-                    ),
-                    published: &records,
-                    alpha: records.alpha,
-                    sections: presenter.sections(),
-                    #[cfg(feature = "egui")]
-                    ui: context,
-                    size,
-                    sender: &sender,
-                    capture: CaptureControl::new(captures),
-                    cursor,
-                    background,
-                    posts,
-                    redraw: requested,
-                }),
-                Some(FrameFn::Published(hook)) => hook(&mut PublishedHook {
-                    published: &records,
-                    eye,
-                    sections: presenter.sections(),
-                    #[cfg(feature = "egui")]
-                    ui: context,
-                    size,
-                    sender: &sender,
-                    capture: CaptureControl::new(captures),
-                    cursor,
-                    background,
-                    posts,
-                    redraw: requested,
-                }),
-                None => {}
-            }
-        }
-        let _presentation = frame_trace::scope("presentation");
-        #[cfg(test)]
-        {
-            self.presented = Some(eye);
-        }
-        presenter.upload(
-            &gpu.device,
-            &gpu.queue,
-            &eye,
-            Vec2::new(size.0 as f32, size.1 as f32),
-            &records.views,
-        );
-        presenter.upload_overlay(&eye, &records.overlay);
-        presenter.upload_backdrop(&eye, records.backdrop);
-        #[cfg(feature = "text")]
-        let dropped = self.text.publish(&records.overlay, seat);
-        #[cfg(not(feature = "text"))]
-        let dropped = records.overlay.text().next().is_some();
-        if dropped && !self.dropped_text_reported {
-            self.dropped_text_reported = true;
-            let note = "the session published text, but this build has no font or no text feature, so none is drawn";
-            tracing::warn!("{note}");
-            self.app.console.note(note.to_string());
-        }
-        self.shown.content = records.content();
-        self.shown.eye = eye;
-        self.simulator.release(records);
     }
 
     fn draw(
@@ -869,14 +911,6 @@ mod tests {
 
     fn quiet<A: Stores>(app: SessionApp<A>) -> SessionApp<A> {
         app.debug_layer(false)
-    }
-
-    fn session_of<A: Stores>(frame: &Frame<A>) -> &Session<A> {
-        frame
-            .inner
-            .simulator
-            .session()
-            .expect("a test frame keeps its session on the test thread")
     }
 
     fn run_one<A: Stores>(frame: &mut Frame<A>, gpu: &GpuContext, texture: &Texture) {
@@ -1144,11 +1178,7 @@ mod tests {
         run_at(&mut frame, &gpu, &texture, start);
         run_at(&mut frame, &gpu, &texture, start + dt * 3 / 2);
 
-        let publication = frame
-            .inner
-            .simulator
-            .released()
-            .expect("the buffer is free");
+        let publication = frame.inner.records.lend().expect("the buffer is free");
         let x = publication.views[0].records.instances.rows()[0]
             .pose
             .coordinates[0];
@@ -1178,8 +1208,8 @@ mod tests {
             .expect("attached");
         run_at(&mut frame, &gpu, &texture, Instant::now());
 
-        let root = session_of(&frame).views().root();
-        let aspect = session_of(&frame).views().get(root).unwrap().eye.aspect;
+        let root = frame.inner.session.views().root();
+        let aspect = frame.inner.session.views().get(root).unwrap().eye.aspect;
         assert!(
             (aspect - SIZE.0 as f32 / SIZE.1 as f32).abs() <= 1e-6,
             "a Publication-phase eye write published aspect {aspect}"
@@ -1285,8 +1315,8 @@ mod tests {
         assert_eq!(filled.load(Ordering::Relaxed), 2);
 
         assert_eq!(frame.phase_error(), None);
-        assert_eq!(session_of(&frame).scene().epoch(), epoch.advance());
-        assert_eq!(session_of(&frame).current_tick(), Tick(0));
+        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
+        assert_eq!(frame.inner.session.current_tick(), Tick(0));
         assert_eq!(filled.load(Ordering::Relaxed), 2);
         assert_eq!(frame.take_cursor_request(), Some(true));
         run_at(
@@ -1295,7 +1325,7 @@ mod tests {
             &texture,
             start + Duration::from_secs(60) + Duration::from_millis(1),
         );
-        assert_eq!(session_of(&frame).scene().epoch(), epoch.advance());
+        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
     }
 
     #[test]
@@ -1542,234 +1572,6 @@ mod tests {
             *seen.lock().unwrap_or_else(|error| error.into_inner()),
             [1, 2],
             "the hook did not read each frame's published value"
-        );
-    }
-
-    loam_runtime::stores! {
-        #[derive(Default)]
-        pub struct Marked {
-            mark: Value<u32>,
-        }
-        publishes u32;
-    }
-
-    fn marked() -> Session<Marked> {
-        let mut session = Session::new(Marked::default(), SimConfig::default());
-        session.publish_value("mark", |ctx, value: &mut u32| {
-            *value = *ctx.app.mark.get();
-            Ok(())
-        });
-        session
-    }
-
-    fn threaded<A: Stores>(session: Session<A>, app: SessionApp<A>, gpu: &GpuContext) -> Frame<A> {
-        let mut frame = Frame::threaded(session, app, Box::new(Sequential))
-            .expect("the frame accepted the simulation config");
-        frame
-            .attach(gpu, FORMAT, None, SIZE, 1.0)
-            .expect("attached");
-        frame
-    }
-
-    fn values(seen: &Mutex<Vec<u32>>) -> Vec<u32> {
-        seen.lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
-    }
-
-    #[test]
-    fn a_threaded_frame_hands_the_hook_every_publication_in_order_and_a_session_borrowing_hook_stays_local(
-    ) {
-        let gpu = noop_gpu();
-        let texture = offscreen(&gpu);
-        let mut session = Session::new(Valued::default(), SimConfig::default());
-        let mut publishes = 0_u32;
-        session.publish_value("publishes", move |_, value: &mut u32| {
-            publishes += 1;
-            *value = publishes;
-            Ok(())
-        });
-        let seen: Arc<Mutex<Vec<u32>>> = Arc::default();
-        let read = seen.clone();
-        let app = host::<Valued>("threaded").on_published(move |hook| {
-            read.lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push(hook.published.value);
-        });
-        let mut frame = threaded(session, app, &gpu);
-        assert!(
-            frame.inner.simulator.session().is_none(),
-            "an app with only a published hook kept its session on the drawing thread"
-        );
-
-        for _ in 0..4 {
-            run_one(&mut frame, &gpu, &texture);
-        }
-        drop(frame);
-
-        assert_eq!(
-            values(&seen),
-            [1, 2, 3, 4],
-            "the hook skipped or repeated a publication"
-        );
-
-        for (hook, app) in [
-            ("on_frame", host::<Valued>("frame").on_frame(|_| {})),
-            ("on_input", host::<Valued>("input").on_input(|_| {})),
-        ] {
-            let session = Session::new(Valued::default(), SimConfig::default());
-            let frame = Frame::threaded(session, app, Box::new(Sequential))
-                .expect("the frame accepted the simulation config");
-            assert!(
-                frame.inner.simulator.session().is_some(),
-                "an {hook} hook borrows the session, which left the drawing thread"
-            );
-        }
-    }
-
-    #[test]
-    fn a_command_a_threaded_hook_sends_reaches_the_publication_two_frames_later_and_stays() {
-        let gpu = noop_gpu();
-        let texture = offscreen(&gpu);
-        let seen: Arc<Mutex<Vec<u32>>> = Arc::default();
-        let read = seen.clone();
-        let mut sent = false;
-        let app = host::<Marked>("command").on_published(move |hook| {
-            if !sent {
-                sent = true;
-                hook.sender
-                    .app_fn("mark", |dispatch| dispatch.app.mark.set(5));
-            }
-            read.lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push(hook.published.value);
-        });
-        let mut frame = threaded(marked(), app, &gpu);
-
-        for _ in 0..4 {
-            run_one(&mut frame, &gpu, &texture);
-        }
-
-        let seen = values(&seen);
-        assert_eq!(seen[0], 0);
-        assert_eq!(
-            seen[2..],
-            [5, 5],
-            "the command sent in the first frame was late or lost"
-        );
-    }
-
-    #[test]
-    fn a_threaded_publication_fault_suspends_the_cursor_once_and_the_reset_key_brings_publications_back(
-    ) {
-        const RESET: ActionId = ActionId("reset");
-
-        let gpu = noop_gpu();
-        let texture = offscreen(&gpu);
-        let seen: Arc<Mutex<Vec<u32>>> = Arc::default();
-        let read = seen.clone();
-        let app = quiet(SessionApp::<Marked>::with_args(
-            HostConfig::new(
-                "threaded fault",
-                Bindings::new().key(Key::Letter('r'), RESET),
-            ),
-            Args::default(),
-        ))
-        .recover_on_fault(RESET)
-        .on_published(move |hook| {
-            read.lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push(hook.published.value);
-        });
-        let mut session = marked();
-        let mut publishes = 0_u32;
-        session.system(
-            Phase::Publication,
-            "trip",
-            move |_ctx: loam_runtime::Ctx<'_, Marked>| {
-                publishes += 1;
-                if publishes == 3 {
-                    return Err(loam_runtime::DomainError::ChartBoundary);
-                }
-                Ok(())
-            },
-        );
-        session.set_initial().expect("initial state");
-        // A reset restores the initial 0, so the published mark tells the reset scene apart.
-        session.app.mark.set(7);
-        let mut frame = threaded(session, app, &gpu);
-
-        run_one(&mut frame, &gpu, &texture);
-        run_one(&mut frame, &gpu, &texture);
-        assert_eq!(frame.take_cursor_request(), None);
-        run_one(&mut frame, &gpu, &texture);
-        assert_eq!(
-            frame.take_cursor_request(),
-            Some(false),
-            "the fault did not release the cursor"
-        );
-        run_one(&mut frame, &gpu, &texture);
-        assert_eq!(
-            frame.take_cursor_request(),
-            None,
-            "a later frame of the same fault was reported as a new one"
-        );
-        assert_eq!(
-            values(&seen),
-            [7, 7],
-            "the hook ran on a frame with no publication"
-        );
-
-        frame.action(Key::Letter('r'), true, false);
-        for _ in 0..3 {
-            run_one(&mut frame, &gpu, &texture);
-        }
-        assert_eq!(
-            values(&seen).last(),
-            Some(&0),
-            "the reset key did not bring back publications of the reset scene"
-        );
-    }
-
-    #[test]
-    fn a_threaded_hook_and_the_presenter_get_one_eye_with_the_aspect_of_the_frame_drawn() {
-        const TALL: (u32, u32) = (48, 64);
-
-        let gpu = noop_gpu();
-        let texture = offscreen(&gpu);
-        let seen: Arc<Mutex<Option<Eye>>> = Arc::default();
-        let read = seen.clone();
-        let app = host::<Valued>("eye").on_published(move |hook| {
-            *read.lock().unwrap_or_else(|error| error.into_inner()) = Some(hook.eye);
-        });
-        let session = Session::new(Valued::default(), SimConfig::default());
-        let mut frame = threaded(session, app, &gpu);
-        run_one(&mut frame, &gpu, &texture);
-
-        frame.resize(TALL.0, TALL.1, 1.0);
-        let view = texture.create_view(&TextureViewDescriptor::default());
-        let target = Target {
-            view: &view,
-            texture: &texture,
-            format: FORMAT,
-            size: TALL,
-        };
-        frame
-            .step(&gpu, &target, Instant::now(), |_| {})
-            .expect("the frame stepped");
-
-        let hooked = seen
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .expect("the hook ran");
-        assert!(
-            frame.inner.presented == Some(hooked),
-            "the hook read a different eye from the one the presenter uploaded"
-        );
-        assert!(
-            (hooked.aspect - TALL.0 as f32 / TALL.1 as f32).abs() <= 1e-6,
-            "the frame drawn after a resize kept the old aspect {}",
-            hooked.aspect
         );
     }
 
