@@ -375,8 +375,6 @@ pub(crate) fn advance_session<A: Stores>(
     cursor: &mut CursorCapture,
     size: (u32, u32),
     layer: &LayerSlot,
-    // Only a caller that ends frames traces, since only `end_frame` drains the sections.
-    traced: bool,
     simulate: impl FnOnce(&mut Session<A>, bool) -> Result<(), PhaseError>,
 ) -> Result<(), HostError> {
     let aspect = input
@@ -404,12 +402,12 @@ pub(crate) fn advance_session<A: Stores>(
     }
     let result = (|| -> Result<(), HostError> {
         {
-            let _dispatch = traced.then(|| frame_trace::scope("dispatch"));
+            let _dispatch = frame_trace::scope("dispatch");
             app.boundary(session, gathered)?;
         }
         session.views_mut().root_mut().eye.aspect = aspect;
         {
-            let _simulation = traced.then(|| frame_trace::scope("simulation"));
+            let _simulation = frame_trace::scope("simulation");
             let recovered = was_faulted && session.faulted_phase().is_none();
             simulate(session, recovered)?;
         }
@@ -450,7 +448,6 @@ impl<A: Stores> LoopState<A> {
             cursor,
             size,
             layer,
-            true,
             |session, recovered| {
                 if let Some(timestep) = timestep.as_mut() {
                     if recovered {

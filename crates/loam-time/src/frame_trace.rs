@@ -80,6 +80,10 @@ impl Drop for Scope {
     fn drop(&mut self) {
         let elapsed = self.start.elapsed();
         let name = self.name;
+        // Only `end_frame` drains the sections, so one recorded outside a frame would pile up.
+        if CURRENT_FRAME_START.with(|c| c.get().is_none()) {
+            return;
+        }
         CURRENT_SECTIONS.with(|s| {
             if let Ok(mut s) = s.try_borrow_mut() {
                 s.push(Section { name, elapsed });
@@ -88,6 +92,7 @@ impl Drop for Scope {
     }
 }
 
+/// Records nothing unless it drops between `begin_frame` and `end_frame`.
 #[cfg(feature = "frame-trace")]
 #[inline]
 pub fn scope(name: &'static str) -> Scope {
