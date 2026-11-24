@@ -45,10 +45,7 @@ pub use facility::Facility;
 pub use fields::{Field, FieldProgram};
 pub use instance::{EdgeShading, Instance};
 pub use registry::Domains;
-pub use space::{
-    homogeneous_carry, homogeneous_local, homogeneous_moved, homogeneous_place,
-    homogeneous_relative, homogeneous_walk, DomainSpace, Homogeneous,
-};
+pub use space::{DomainSpace, Homogeneous};
 
 use blend::Blend;
 use fields::Fields;

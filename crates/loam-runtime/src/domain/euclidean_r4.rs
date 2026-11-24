@@ -1,10 +1,7 @@
 use loam_math::{Bivector, EuclideanR4, Iso4Flat, IsometryGroup, Rotor, Rotor4};
 
 use super::chart::{finite, single_chart};
-use super::space::{
-    homogeneous_capabilities, homogeneous_carry, homogeneous_local, homogeneous_moved,
-    homogeneous_place, homogeneous_relative, homogeneous_walk,
-};
+use super::space::homogeneous_capabilities;
 use super::{
     ChartId, ChartPoint, ChartPose, ChartTangent, DomainError, DomainSpace, Homogeneous, Pose,
 };

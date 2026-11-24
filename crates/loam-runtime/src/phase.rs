@@ -20,8 +20,6 @@ pub enum Phase {
 }
 
 impl Phase {
-    pub const ALL: [Phase; 3] = [Phase::Dispatch, Phase::Simulation, Phase::Publication];
-
     fn index(self) -> usize {
         self as usize
     }

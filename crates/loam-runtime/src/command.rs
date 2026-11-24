@@ -230,14 +230,6 @@ impl<A: Stores> Commands<A> {
         Ok(Reservation { request, entity })
     }
 
-    pub fn pending(&self) -> &[Request<A>] {
-        &self.queue
-    }
-
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -425,24 +417,12 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         self.assets.prepare(geometry)
     }
 
-    pub fn prepared(&self, id: PreparedId) -> Option<&PreparedGeometry> {
-        self.assets.prepared(id)
-    }
-
     pub fn add_palette(&mut self, colors: Vec<[f32; 4]>) -> PaletteId {
         self.assets.add_palette(colors)
     }
 
-    pub fn palette(&self, id: PaletteId) -> Option<&[[f32; 4]]> {
-        self.assets.palette(id)
-    }
-
     pub fn add_material(&mut self, material: Material) -> MaterialId {
         self.assets.add_material(material)
-    }
-
-    pub fn material(&self, id: MaterialId) -> Option<&Material> {
-        self.assets.material(id)
     }
 
     pub fn spawn(&mut self, bundle: SpawnBundle<A>) -> Result<Entity, Rejection> {

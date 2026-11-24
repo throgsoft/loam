@@ -45,8 +45,6 @@ pub struct Island {
     pub constraints: Vec<PairKey>,
 }
 
-pub const DEFAULT_SOLVER_TOLERANCE: f32 = 1e-3;
-
 const WAKE_APPROACH_SPEED: f32 = 0.01;
 
 /// Measured with scoped threads on settled three-high stacks, where 128 box islands already gain.
@@ -73,22 +71,6 @@ struct RadialInterval {
     mask: u32,
 }
 
-/// `residual` is the largest normal-impulse change of the last sweep; `converged` compares it to `World::solver_tolerance`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SolveReport {
-    pub residual: f32,
-    pub converged: bool,
-}
-
-impl Default for SolveReport {
-    fn default() -> Self {
-        Self {
-            residual: 0.0,
-            converged: true,
-        }
-    }
-}
-
 struct ScratchUnit {
     key: PairKey,
     a: u32,
@@ -102,7 +84,6 @@ struct IslandSolve<S: PhysicsSpace> {
     dense: Vec<u32>,
     units: Vec<ScratchUnit>,
     points: Vec<ContactPoint<S>>,
-    residual: f32,
     push: Vec<f32>,
     saved: Vec<RigidBody<S>>,
 }
@@ -114,7 +95,6 @@ impl<S: PhysicsSpace> Default for IslandSolve<S> {
             dense: Vec::new(),
             units: Vec::new(),
             points: Vec::new(),
-            residual: 0.0,
             push: Vec::new(),
             saved: Vec::new(),
         }
@@ -172,8 +152,6 @@ pub struct World<S: PhysicsSpace> {
     island_parent: Vec<u32>,
     island_labels: Vec<BodyId>,
     counters: StepCounters,
-    solver_tolerance: f32,
-    report: SolveReport,
     scratch: Vec<IslandSolve<S>>,
     scratch_islands: usize,
     scratch_local: Vec<u32>,
@@ -226,8 +204,6 @@ impl<S: PhysicsSpace> World<S> {
             island_parent: Vec::new(),
             island_labels: Vec::new(),
             counters: StepCounters::default(),
-            solver_tolerance: DEFAULT_SOLVER_TOLERANCE,
-            report: SolveReport::default(),
             scratch: Vec::new(),
             scratch_islands: 0,
             scratch_local: Vec::new(),
@@ -267,18 +243,6 @@ impl<S: PhysicsSpace> World<S> {
         self.pgs_iters = iterations;
     }
 
-    pub fn solver_tolerance(&self) -> f32 {
-        self.solver_tolerance
-    }
-
-    pub fn set_solver_tolerance(&mut self, tolerance: f32) -> Result<(), EditError> {
-        if tolerance.is_nan() || tolerance < 0.0 {
-            return Err(EditError::InvalidSolverTolerance);
-        }
-        self.solver_tolerance = tolerance;
-        Ok(())
-    }
-
     pub fn time(&self) -> f32 {
         self.time
     }
@@ -291,14 +255,6 @@ impl<S: PhysicsSpace> World<S> {
         self.manifold_order
             .iter()
             .map(|key| (key, &self.manifolds[key]))
-    }
-
-    pub fn manifold(&self, key: PairKey) -> Option<&Manifold<S>> {
-        self.manifolds.get(&key)
-    }
-
-    pub fn solve_report(&self) -> SolveReport {
-        self.report
     }
 
     pub fn push_body(&mut self, body: BodyDef<S>) -> BodyId {
@@ -606,9 +562,6 @@ impl<S: PhysicsSpace> World<S> {
         {
             return Err(EditError::InvalidGravity);
         }
-        if self.solver_tolerance.is_nan() || self.solver_tolerance < 0.0 {
-            return Err(EditError::InvalidSolverTolerance);
-        }
         let field_registrations = self.field_narrowphase.registrations();
         if self.narrowphase.registrations() != state.registrations
             || field_registrations.len() != state.field_registrations.len()
@@ -734,7 +687,6 @@ impl<S: PhysicsSpace> World<S> {
         self.island_parent.clear();
         self.island_labels.clear();
         self.scratch_islands = 0;
-        self.report = SolveReport::default();
         Ok(())
     }
 
@@ -1175,9 +1127,7 @@ impl<S: PhysicsSpace> World<S> {
     }
 
     fn scatter_islands(&mut self) {
-        let mut residual = 0.0_f32;
         for island in &self.scratch[..self.scratch_islands] {
-            residual = residual.max(island.residual);
             for (local, &dense) in island.dense.iter().enumerate() {
                 if dense != SCATTERED_NOWHERE {
                     self.bodies[dense as usize] = island.bodies[local];
@@ -1194,10 +1144,6 @@ impl<S: PhysicsSpace> World<S> {
                     .copy_from_slice(&island.points[first..first + unit.count as usize]);
             }
         }
-        self.report = SolveReport {
-            residual,
-            converged: residual <= self.solver_tolerance,
-        };
     }
 
     /// Replaces `pairs` with the sorted candidates: bounding-ball overlaps under a certified bound, every masked non-static pair otherwise.
@@ -1495,19 +1441,16 @@ where
         bodies,
         units,
         points,
-        residual,
         push,
         saved,
         ..
     } = island;
-    *residual = 0.0;
     for _ in 0..iterations {
-        *residual = 0.0;
         for unit in units.iter() {
             let (a, b) = split_two_mut(bodies, unit.a as usize, unit.b as usize);
             let first = unit.first as usize;
             for cp in &mut points[first..first + unit.count as usize] {
-                *residual = residual.max(solve_normal_then_tangent(space, a, b, cp));
+                solve_normal_then_tangent(space, a, b, cp);
             }
         }
     }
@@ -1559,8 +1502,7 @@ fn solve_normal_then_tangent<S>(
     a: &mut RigidBody<S>,
     b: &mut RigidBody<S>,
     cp: &mut ContactPoint<S>,
-) -> f32
-where
+) where
     S: PhysicsSpace,
     S::Vector: VectorOps,
 {
@@ -1574,13 +1516,11 @@ where
     let v_n = VectorOps::dot(v_rel_n_vec, cp.normal);
     let k_n = space.effective_mass_inv(a, b, cp.world_point, cp.normal);
 
-    let mut change = 0.0;
     if k_n > 0.0 {
         let dj = -(v_n + cp.velocity_bias) / k_n;
         let new_acc = (cp.normal_impulse + dj).max(0.0);
         let actual = new_acc - cp.normal_impulse;
         cp.normal_impulse = new_acc;
-        change = actual.abs();
         if actual.abs() > 0.0 {
             space.apply_contact_impulse(a, b, cp.world_point, cp.normal, actual);
         }
@@ -1622,7 +1562,6 @@ where
             -delta_magnitude,
         );
     }
-    change
 }
 
 #[cfg(all(test, feature = "r2", feature = "r3", feature = "r4"))]

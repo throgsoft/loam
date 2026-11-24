@@ -105,12 +105,6 @@ impl Input {
         held(positive) - held(negative)
     }
 
-    pub fn began(&self) -> Option<&Pointer> {
-        self.pointers
-            .iter()
-            .find(|pointer| pointer.phase == PointerPhase::Began)
-    }
-
     pub fn drag(&self, button: PointerButton) -> [f32; 2] {
         self.pointers
             .iter()

@@ -298,16 +298,8 @@ impl<A: Stores> Session<A> {
         self.assets.add_palette(colors)
     }
 
-    pub fn palette(&self, id: PaletteId) -> Option<&[[f32; 4]]> {
-        self.assets.palette(id)
-    }
-
     pub fn add_material(&mut self, material: Material) -> MaterialId {
         self.assets.add_material(material)
-    }
-
-    pub fn material(&self, id: MaterialId) -> Option<&Material> {
-        self.assets.material(id)
     }
 
     pub fn system(
@@ -387,10 +379,6 @@ impl<A: Stores> Session<A> {
             }
             Ok(())
         });
-    }
-
-    pub fn entries(&self, phase: Phase) -> &[SystemEntry<A>] {
-        self.phases.entries(phase)
     }
 
     pub fn dispatch<R>(&mut self, f: impl FnOnce(&mut Dispatch<'_, A>) -> R) -> R {

@@ -145,17 +145,9 @@ impl Assets {
         PaletteId((self.palettes.len() - 1) as u32)
     }
 
-    pub(crate) fn palette(&self, id: PaletteId) -> Option<&[[f32; 4]]> {
-        self.palettes.get(id.index()).map(Vec::as_slice)
-    }
-
     pub(crate) fn add_material(&mut self, material: Material) -> MaterialId {
         self.materials.push(material);
         MaterialId((self.materials.len() - 1) as u32)
-    }
-
-    pub(crate) fn material(&self, id: MaterialId) -> Option<&Material> {
-        self.materials.get(id.index())
     }
 
     pub(crate) fn geometry(&self) -> &[PreparedGeometry] {

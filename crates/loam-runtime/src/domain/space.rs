@@ -104,7 +104,7 @@ pub trait Homogeneous: DomainSpace + IsometryGroup {
     fn transvection(&self, to: Self::Point) -> Self::Iso;
 }
 
-pub fn homogeneous_place<S: Homogeneous>(
+pub(super) fn homogeneous_place<S: Homogeneous>(
     space: &S,
     placement: &S::Iso,
     local: S::Point,
@@ -114,7 +114,7 @@ pub fn homogeneous_place<S: Homogeneous>(
     Ok(point)
 }
 
-pub fn homogeneous_local<S: Homogeneous>(
+pub(super) fn homogeneous_local<S: Homogeneous>(
     space: &S,
     pose: &Pose<S>,
     point: S::Point,
@@ -122,7 +122,7 @@ pub fn homogeneous_local<S: Homogeneous>(
     Ok(space.iso_apply(space.iso_inverse(space.iso_of(pose)), point))
 }
 
-pub fn homogeneous_carry<S: Homogeneous>(
+pub(super) fn homogeneous_carry<S: Homogeneous>(
     space: &S,
     pose: &Pose<S>,
     local: S::Point,
@@ -131,7 +131,7 @@ pub fn homogeneous_carry<S: Homogeneous>(
     Ok(space.iso_transport(space.iso_of(pose), local, tangent))
 }
 
-pub fn homogeneous_relative<S: Homogeneous>(
+pub(super) fn homogeneous_relative<S: Homogeneous>(
     space: &S,
     eye: &Pose<S>,
     pose: &Pose<S>,
@@ -154,11 +154,11 @@ macro_rules! homogeneous_capabilities {
             placement: &Self::Placement,
             local: Self::Point,
         ) -> Result<Self::Point, DomainError> {
-            homogeneous_place(self, placement, local)
+            $crate::domain::space::homogeneous_place(self, placement, local)
         }
 
         fn local(&self, pose: &Pose<Self>, point: Self::Point) -> Result<Self::Point, DomainError> {
-            homogeneous_local(self, pose, point)
+            $crate::domain::space::homogeneous_local(self, pose, point)
         }
 
         fn relative(
@@ -166,7 +166,7 @@ macro_rules! homogeneous_capabilities {
             eye: &Pose<Self>,
             pose: &Pose<Self>,
         ) -> Result<Self::Relative, DomainError> {
-            homogeneous_relative(self, eye, pose)
+            $crate::domain::space::homogeneous_relative(self, eye, pose)
         }
 
         fn place_relative(
@@ -174,7 +174,7 @@ macro_rules! homogeneous_capabilities {
             relative: &Self::Relative,
             local: Self::Point,
         ) -> Result<Self::Point, DomainError> {
-            homogeneous_place(self, relative, local)
+            $crate::domain::space::homogeneous_place(self, relative, local)
         }
 
         fn carry(
@@ -183,11 +183,11 @@ macro_rules! homogeneous_capabilities {
             local: Self::Point,
             tangent: Self::Vector,
         ) -> Result<Self::Vector, DomainError> {
-            homogeneous_carry(self, pose, local, tangent)
+            $crate::domain::space::homogeneous_carry(self, pose, local, tangent)
         }
 
         fn moved(&self, pose: &Pose<Self>, to: Self::Point) -> Result<Pose<Self>, DomainError> {
-            homogeneous_moved(self, pose, to)
+            $crate::domain::space::homogeneous_moved(self, pose, to)
         }
 
         fn walk(
@@ -196,14 +196,14 @@ macro_rules! homogeneous_capabilities {
             tangent: Self::Vector,
             dt: f32,
         ) -> Result<Pose<Self>, DomainError> {
-            homogeneous_walk(self, pose, tangent, dt)
+            $crate::domain::space::homogeneous_walk(self, pose, tangent, dt)
         }
     };
 }
 
 pub(super) use homogeneous_capabilities;
 
-pub fn homogeneous_moved<S: Homogeneous>(
+pub(super) fn homogeneous_moved<S: Homogeneous>(
     space: &S,
     pose: &Pose<S>,
     to: S::Point,
@@ -216,7 +216,7 @@ pub fn homogeneous_moved<S: Homogeneous>(
     Ok(next)
 }
 
-pub fn homogeneous_walk<S: Homogeneous>(
+pub(super) fn homogeneous_walk<S: Homogeneous>(
     space: &S,
     pose: &Pose<S>,
     tangent: S::Vector,

@@ -4,20 +4,20 @@ use crate::domain::{DomainError, DomainSpace, Field, FieldKind, FieldProgram, Po
 use crate::entity::Entity;
 use crate::store::{Change, Cursor, Store};
 
-pub const OP_SPHERE: u32 = 1;
-pub const OP_BOX: u32 = 2;
-pub const OP_HALFSPACE: u32 = 3;
-pub const OP_HYPERSPHERE: u32 = 4;
-pub const OP_HALFSPACE4: u32 = 5;
-pub const OP_UNION: u32 = 6;
-pub const OP_INTERSECTION: u32 = 7;
-pub const OP_SUBTRACTION: u32 = 8;
-pub const OP_SMOOTH_UNION: u32 = 9;
-pub const OP_PUSH_POSE: u32 = 10;
-pub const OP_POP_POSE: u32 = 11;
+pub(crate) const OP_SPHERE: u32 = 1;
+pub(crate) const OP_BOX: u32 = 2;
+pub(crate) const OP_HALFSPACE: u32 = 3;
+pub(crate) const OP_HYPERSPHERE: u32 = 4;
+pub(crate) const OP_HALFSPACE4: u32 = 5;
+pub(crate) const OP_UNION: u32 = 6;
+pub(crate) const OP_INTERSECTION: u32 = 7;
+pub(crate) const OP_SUBTRACTION: u32 = 8;
+pub(crate) const OP_SMOOTH_UNION: u32 = 9;
+pub(crate) const OP_PUSH_POSE: u32 = 10;
+pub(crate) const OP_POP_POSE: u32 = 11;
 
-pub const MAX_STACK: usize = 32;
-pub const MAX_POSE_DEPTH: usize = 8;
+pub(crate) const MAX_STACK: usize = 32;
+pub(crate) const MAX_POSE_DEPTH: usize = 8;
 pub const MAX_PROGRAM_WORDS: usize = 1 << 20;
 
 pub const FIELD_FAR: f32 = 1e9;
@@ -87,18 +87,10 @@ impl FieldOp {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct FieldPrimitive {
+pub(crate) struct FieldPrimitive {
     pub frame: [[f32; 4]; 4],
     pub translation: [f32; 4],
     pub params: [f32; 4],
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FieldCounts {
-    pub primitive_evals: u64,
-    pub instructions: u64,
-    pub node_visits: u64,
-    pub node_skips: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,7 +310,7 @@ fn lower_f32(value: f64) -> f32 {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
-pub struct FieldNode {
+pub(crate) struct FieldNode {
     pub center: [f32; 4],
     pub radius: f32,
     pub scale: f32,
@@ -827,11 +819,10 @@ fn smooth_min_interval(a: FieldInterval, b: FieldInterval, k: FieldInterval) -> 
         .sub(k.mul(h).mul(one.sub(h)))
 }
 
-fn run<const COUNT: bool>(
+pub(crate) fn evaluate(
     program: &[u32],
     primitives: &[FieldPrimitive],
     point: [f32; 4],
-    counts: &mut FieldCounts,
 ) -> Result<f32, FieldError> {
     if program.is_empty() {
         return Ok(FIELD_FAR);
@@ -846,17 +837,11 @@ fn run<const COUNT: bool>(
     let mut p = point;
     for word in program.chunks_exact(2) {
         let (op, arg) = (word[0], word[1]);
-        if COUNT {
-            counts.instructions += 1;
-        }
         match op {
             OP_SPHERE | OP_BOX | OP_HALFSPACE | OP_HYPERSPHERE | OP_HALFSPACE4 => {
                 let prim = primitives
                     .get(arg as usize)
                     .ok_or(FieldError::Primitive(arg))?;
-                if COUNT {
-                    counts.primitive_evals += 1;
-                }
                 if sp == MAX_STACK {
                     return Err(FieldError::StackOverflow);
                 }
@@ -1005,28 +990,22 @@ fn forward_error(
     Ok(upper_f32(error).max(FIELD_PROGRAM_ERROR))
 }
 
-fn traverse<const COUNT: bool>(
+// Skips a subtree whose ball's lower bound exceeds the best value so far by more than `tolerance`; an empty `nodes` slice evaluates the whole program.
+pub(crate) fn evaluate_bounded(
     program: &[u32],
     primitives: &[FieldPrimitive],
     nodes: &[FieldNode],
     point: [f32; 4],
     tolerance: f32,
-    counts: &mut FieldCounts,
 ) -> Result<f32, FieldError> {
     if nodes.is_empty() {
-        return run::<COUNT>(program, primitives, point, counts);
+        return evaluate(program, primitives, point);
     }
     let mut best = f32::INFINITY;
     let mut index = 0usize;
     while index < nodes.len() {
         let node = nodes[index];
-        if COUNT {
-            counts.node_visits += 1;
-        }
         if node.is_bounded() && node.lower_bound(point) > best + tolerance {
-            if COUNT {
-                counts.node_skips += 1;
-            }
             index = node.escape as usize;
             continue;
         }
@@ -1034,57 +1013,11 @@ fn traverse<const COUNT: bool>(
             let range = program
                 .get(node.start as usize..node.end as usize)
                 .ok_or(FieldError::Truncated)?;
-            best = best.min(run::<COUNT>(range, primitives, point, counts)?);
+            best = best.min(evaluate(range, primitives, point)?);
         }
         index += 1;
     }
     Ok(best)
-}
-
-pub fn evaluate(
-    program: &[u32],
-    primitives: &[FieldPrimitive],
-    point: [f32; 4],
-) -> Result<f32, FieldError> {
-    run::<false>(program, primitives, point, &mut FieldCounts::default())
-}
-
-pub fn evaluate_counted(
-    program: &[u32],
-    primitives: &[FieldPrimitive],
-    point: [f32; 4],
-    counts: &mut FieldCounts,
-) -> Result<f32, FieldError> {
-    run::<true>(program, primitives, point, counts)
-}
-
-/// Skips a subtree whose ball's lower bound exceeds the best value so far by more than `tolerance`; an empty `nodes` slice evaluates the whole program.
-pub fn evaluate_bounded(
-    program: &[u32],
-    primitives: &[FieldPrimitive],
-    nodes: &[FieldNode],
-    point: [f32; 4],
-    tolerance: f32,
-) -> Result<f32, FieldError> {
-    traverse::<false>(
-        program,
-        primitives,
-        nodes,
-        point,
-        tolerance,
-        &mut FieldCounts::default(),
-    )
-}
-
-pub fn evaluate_bounded_counted(
-    program: &[u32],
-    primitives: &[FieldPrimitive],
-    nodes: &[FieldNode],
-    point: [f32; 4],
-    tolerance: f32,
-    counts: &mut FieldCounts,
-) -> Result<f32, FieldError> {
-    traverse::<true>(program, primitives, nodes, point, tolerance, counts)
 }
 
 pub(crate) fn evaluate_error(
@@ -1094,14 +1027,7 @@ pub(crate) fn evaluate_error(
     point: [f32; 4],
     kind: FieldKind,
 ) -> Result<f32, FieldError> {
-    let value = traverse::<false>(
-        program,
-        primitives,
-        nodes,
-        point,
-        0.0,
-        &mut FieldCounts::default(),
-    )?;
+    let value = evaluate_bounded(program, primitives, nodes, point, 0.0)?;
     forward_error(program, primitives, point, value, kind)
 }
 

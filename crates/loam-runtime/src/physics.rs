@@ -374,10 +374,6 @@ where
         self.world.set_gravity(gravity)
     }
 
-    pub fn set_solver_tolerance(&mut self, tolerance: f32) -> Result<(), EditError> {
-        self.world.set_solver_tolerance(tolerance)
-    }
-
     pub fn body(&self, entity: Entity) -> Option<BodyId> {
         if entity.scene() != self.scene {
             return None;

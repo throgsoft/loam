@@ -36,12 +36,7 @@ pub use domain::{
 };
 pub use drag::{Drag, DragError, DragRelease};
 pub use entity::{Entities, EntitiesSnapshot, Entity, EntityKey, Epoch, RuntimeId, SceneId};
-pub use field::{
-    evaluate, evaluate_bounded, evaluate_bounded_counted, evaluate_counted, FieldCost, FieldCounts,
-    FieldError, FieldNode, FieldOp, FieldPrimitive, FIELD_FAR, FIELD_PROGRAM_ERROR, MAX_POSE_DEPTH,
-    MAX_STACK, OP_BOX, OP_HALFSPACE, OP_HALFSPACE4, OP_HYPERSPHERE, OP_INTERSECTION, OP_POP_POSE,
-    OP_PUSH_POSE, OP_SMOOTH_UNION, OP_SPHERE, OP_SUBTRACTION, OP_UNION,
-};
+pub use field::{FieldCost, FieldError, FieldOp, FIELD_FAR, FIELD_PROGRAM_ERROR};
 pub use host::{HostConfig, HostError};
 pub use input::{
     ActionEvent, ActionId, Bindings, HostMessages, Input, Key, Pointer, PointerButton, PointerPhase,
