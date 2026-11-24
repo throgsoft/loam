@@ -113,6 +113,8 @@ impl<A: Stores> Frame<A> {
                 tracing::error!("--script ignored: {error}");
                 None
             });
+        // A program that draws through its own pass publishes no views on purpose.
+        let draws_itself = !app.passes.is_empty();
         Ok(Self {
             presenter: None,
             state: LoopState {
@@ -126,7 +128,7 @@ impl<A: Stores> Frame<A> {
                 app,
                 posts: Posts::default(),
                 layer: LayerSlot::default(),
-                no_views_reported: false,
+                no_views_reported: draws_itself,
                 dropped_text_reported: false,
                 #[cfg(feature = "text")]
                 text: ScreenText::new(font),
