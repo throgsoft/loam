@@ -467,7 +467,7 @@ impl<A: Stores> LoopState<A> {
             let _publication = frame_trace::scope("publication");
             let alpha = self.timestep.as_ref().map_or(1.0, FixedTimestep::alpha);
             self.records
-                .publish_with(&mut self.session, alpha, self.executor.as_ref())
+                .publish_at(&mut self.session, alpha)
                 .map_err(|error| match error {
                     PublishError::Borrowed => {
                         HostError::Host("publication buffer is borrowed".into())

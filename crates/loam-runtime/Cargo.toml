@@ -26,10 +26,6 @@ name = "publication"
 harness = false
 
 [[bench]]
-name = "view_build"
-harness = false
-
-[[bench]]
 name = "fields"
 harness = false
 required-features = ["physics"]

@@ -571,16 +571,6 @@ impl<A: Stores> Session<A> {
         into: &mut Publication<A::Published>,
         alpha: f32,
     ) -> Result<(), PhaseError> {
-        self.publish_with(into, alpha, &Sequential)
-    }
-
-    /// Publishes as [`Self::publish_at`] does, building the views on `executor`, and the publication is the same for any `executor`.
-    pub fn publish_with(
-        &mut self,
-        into: &mut Publication<A::Published>,
-        alpha: f32,
-        executor: &dyn Executor,
-    ) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
@@ -592,11 +582,11 @@ impl<A: Stores> Session<A> {
         self.unfinished = Some(Phase::Publication);
         self.overlay.clear();
         for index in 0..self.phases.entries(Phase::Publication).len() {
-            self.run_entry(Phase::Publication, index, step, alpha, executor)?;
+            self.run_entry(Phase::Publication, index, step, alpha, &Sequential)?;
         }
         let scene = self.scene();
         into.claim(scene);
-        self.run_value(&mut into.value, step, alpha, executor)?;
+        self.run_value(&mut into.value, step, alpha)?;
         self.domains.synchronize();
         for domain in self.domains.iter_mut() {
             domain.present(alpha);
@@ -613,7 +603,6 @@ impl<A: Stores> Session<A> {
             &self.views,
             self.assets.library(),
             &self.overlay,
-            executor,
         );
         if let Err(error) = reconciled {
             let error = PhaseError::unnamed(Phase::Publication, error);
@@ -765,7 +754,6 @@ impl<A: Stores> Session<A> {
         value: &mut A::Published,
         step: Step,
         alpha: f32,
-        executor: &dyn Executor,
     ) -> Result<(), PhaseError> {
         let Session {
             app,
@@ -796,7 +784,7 @@ impl<A: Stores> Session<A> {
                 step,
                 alpha,
                 overlay,
-                executor,
+                executor: &Sequential,
                 manipulation,
             },
             value,

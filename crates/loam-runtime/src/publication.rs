@@ -1,5 +1,3 @@
-use loam_time::par::{self, Executor, Sequential};
-
 use crate::assets::Library;
 use crate::domain::{DomainError, DomainId, Domains};
 use crate::entity::SceneId;
@@ -7,9 +5,6 @@ use crate::phase::{PhaseError, Tick};
 use crate::session::Session;
 use crate::stores::Stores;
 use crate::view::{Backdrop, Overlay, Rigid, ViewRecords, ViewTarget, Views};
-
-// Measured with scoped threads by the `view_build` bench: 64 instances across two or four views gain and 16 lose.
-const INSTANCES_PER_PARALLEL_PUBLICATION: usize = 64;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stamp {
@@ -60,9 +55,8 @@ impl<V: Default> Publication<V> {
         views: &Views,
         library: Library<'_>,
         overlay: &Overlay,
-        executor: &dyn Executor,
     ) -> Result<(), DomainError> {
-        let built = self.draw(scene, domains, views, library, overlay, executor);
+        let built = self.draw(scene, domains, views, library, overlay);
         match built {
             Ok(()) => self.source = Some(scene),
             Err(_) => *self = Self::default(),
@@ -79,7 +73,6 @@ impl<V> Publication<V> {
         views: &Views,
         library: Library<'_>,
         overlay: &Overlay,
-        executor: &dyn Executor,
     ) -> Result<(), DomainError> {
         let (stamp, alpha) = (self.stamp, self.alpha);
         // A buffer that claim cleared has no source until this publish succeeds.
@@ -121,33 +114,11 @@ impl<V> Publication<V> {
         }
         changed |= self.views.len() != count;
         self.views.truncate(count);
-        let owner = |id: DomainId| {
-            domains
-                .owner(id)
-                .expect("a published view names a domain of this session")
-        };
-        let mut work = 0;
         for view in &mut self.views {
-            work +=
-                owner(view.domain).prepare(view.target.view, &mut view.records, stamp, alpha)?;
-        }
-        let build = |views: &mut [PublishedView]| {
-            for view in views {
-                owner(view.domain).build(
-                    view.target.view,
-                    library,
-                    &mut view.records,
-                    stamp,
-                    alpha,
-                );
-            }
-        };
-        if work < INSTANCES_PER_PARALLEL_PUBLICATION {
-            build(&mut self.views);
-        } else {
-            par::for_each_chunk(executor, &mut self.views, 1, build);
-        }
-        for view in &self.views {
+            domains
+                .owner(view.domain)
+                .expect("a published view names a domain of this session")
+                .publish(view.target.view, library, &mut view.records, stamp, alpha)?;
             changed |= view.records.built() == stamp;
         }
         changed |= self.overlay != *overlay;
@@ -199,17 +170,8 @@ impl<V> Records<V> {
         session: &mut Session<A>,
         alpha: f32,
     ) -> Result<Stamp, PublishError> {
-        self.publish_with(session, alpha, &Sequential)
-    }
-
-    pub fn publish_with<A: Stores<Published = V>>(
-        &mut self,
-        session: &mut Session<A>,
-        alpha: f32,
-        executor: &dyn Executor,
-    ) -> Result<Stamp, PublishError> {
         let buffer = self.idle.as_mut().ok_or(PublishError::Borrowed)?;
-        session.publish_with(buffer, alpha, executor)?;
+        session.publish_at(buffer, alpha)?;
         Ok(buffer.stamp)
     }
 

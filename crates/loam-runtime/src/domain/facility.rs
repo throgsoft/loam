@@ -11,7 +11,7 @@ use crate::store::{Owner, Store};
 use crate::view::ViewMapping;
 
 /// Engine-owned work inside one domain: `step` runs in the simulation phase's domain-step entry, `release` at dispatch before the stores forget the entity, and `apply` gets first offer of a chart command.
-pub trait Facility<S: DomainSpace>: Any + Send + Sync + 'static {
+pub trait Facility<S: DomainSpace>: Any + Send + 'static {
     fn name(&self) -> &'static str;
 
     fn bind(&mut self, _scene: SceneId, _owner: Owner) {}

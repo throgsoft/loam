@@ -258,25 +258,17 @@ pub trait Domain: Send + 'static {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
-pub(crate) trait DomainOwner: Domain + Sync {
+pub(crate) trait DomainOwner: Domain {
     fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError>;
 
-    fn prepare(
-        &self,
-        view: ViewId,
-        into: &mut ViewRecords,
-        stamp: Stamp,
-        alpha: f32,
-    ) -> Result<usize, DomainError>;
-
-    fn build(
+    fn publish(
         &self,
         view: ViewId,
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
         alpha: f32,
-    );
+    ) -> Result<(), DomainError>;
 
     fn step(&mut self, step: Step, executor: &dyn Executor) -> Result<(), DomainError>;
 
@@ -579,25 +571,15 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         self.views.retarget(view, image)
     }
 
-    fn prepare(
-        &self,
-        view: ViewId,
-        into: &mut ViewRecords,
-        stamp: Stamp,
-        alpha: f32,
-    ) -> Result<usize, DomainError> {
-        self.prepare_view(view, into, stamp, alpha)
-    }
-
-    fn build(
+    fn publish(
         &self,
         view: ViewId,
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
         alpha: f32,
-    ) {
-        self.build_view(view, library, into, stamp, alpha);
+    ) -> Result<(), DomainError> {
+        self.publish_view(view, library, into, stamp, alpha)
     }
 
     fn step(&mut self, step: Step, executor: &dyn Executor) -> Result<(), DomainError> {

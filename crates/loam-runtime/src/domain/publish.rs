@@ -8,8 +8,9 @@ use crate::assets::{Library, PreparedGeometry};
 use crate::entity::Entity;
 use crate::publication::Stamp;
 use crate::view::{
-    self, EntityOutput, FieldRecord, InstanceRecord, Motion, PatchScratch, Planned, RefusalSource,
-    SegmentRecord, TriangleRecord, Vec4, ViewId, ViewMapping, ViewRecords, ViewRefusals, ViewState,
+    self, EntityOutput, FieldRecord, InstanceRecord, Motion, PatchCursors, PatchScratch, Planned,
+    RefusalSource, SegmentRecord, TriangleRecord, Vec4, ViewId, ViewMapping, ViewRecords,
+    ViewRefusals, ViewState,
 };
 
 fn lerp_color(back: [f32; 4], front: [f32; 4], t: f32) -> [f32; 4] {
@@ -378,13 +379,14 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
 }
 
 impl<S: DomainSpace> TypedDomain<S> {
-    pub(super) fn prepare_view(
+    pub(super) fn publish_view(
         &self,
         view: ViewId,
+        library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
         alpha: f32,
-    ) -> Result<usize, DomainError> {
+    ) -> Result<(), DomainError> {
         let spec = self.views.get(view).ok_or(DomainError::UnknownView(view))?;
         let revision = self
             .views
@@ -399,49 +401,25 @@ impl<S: DomainSpace> TypedDomain<S> {
             eye: spec.eye,
             patchable: spec.style.enabled && into.refusals.count == 0,
         };
-        Ok(
-            match into
-                .cache
-                .plan(&self.poses, &self.instances, motion, alpha, state)
-            {
-                Planned::Current => {
-                    into.instances.restamp(stamp);
-                    0
-                }
-                Planned::Patch(changed) => changed,
-                Planned::Rebuild => self.instances.len(),
-            },
-        )
-    }
-
-    pub(super) fn build_view(
-        &self,
-        view: ViewId,
-        library: Library<'_>,
-        into: &mut ViewRecords,
-        stamp: Stamp,
-        alpha: f32,
-    ) {
-        let spec = self
-            .views
-            .get(view)
-            .expect("a prepared view is still registered");
-        match into.cache.pending() {
-            Planned::Current => return,
-            Planned::Patch(_) => {
-                if self.patch_view(spec, library, into, stamp, alpha) {
-                    return;
+        match into
+            .cache
+            .plan(&self.poses, &self.instances, motion, alpha, state)
+        {
+            Planned::Current => {
+                into.instances.restamp(stamp);
+                return Ok(());
+            }
+            Planned::Patch(cursors) => {
+                if self.patch_view(spec, library, into, cursors, stamp, alpha) {
+                    return Ok(());
                 }
             }
             Planned::Rebuild => {}
         }
-        let revision = self
-            .views
-            .revision(view)
-            .expect("a prepared view is still registered");
         self.rebuild_view(spec, library, into, stamp, alpha);
         into.cache
             .commit_rebuild(&self.poses, &self.instances, revision, stamp);
+        Ok(())
     }
 
     fn rebuild_view(
@@ -549,6 +527,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         spec: &ViewEntry<S>,
         library: Library<'_>,
         into: &mut ViewRecords,
+        cursors: PatchCursors,
         stamp: Stamp,
         alpha: f32,
     ) -> bool {
@@ -645,7 +624,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             patched = true;
         }
         instances.restamp(stamp);
-        cache.commit_patch(stamp, patched);
+        cache.commit_patch(cursors, stamp, patched);
         true
     }
 }

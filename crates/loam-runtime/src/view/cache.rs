@@ -52,21 +52,14 @@ impl ViewOutputCache {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-enum PendingBuild {
-    #[default]
-    Current,
-    Patch {
-        poses: Cursor,
-        attachments: Cursor,
-    },
-    Rebuild,
+pub(crate) struct PatchCursors {
+    poses: Cursor,
+    attachments: Cursor,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Planned {
     Current,
-    Patch(usize),
+    Patch(PatchCursors),
     Rebuild,
 }
 
@@ -98,7 +91,6 @@ pub(crate) struct RecordCache {
     changed: Vec<Entity>,
     poses: Cursor,
     attachments: Cursor,
-    pending: PendingBuild,
     revision: u32,
     built: Stamp,
     alpha: f32,
@@ -163,27 +155,16 @@ impl RecordCache {
             if self.changed.is_empty() {
                 self.poses = pose_cursor;
                 self.attachments = attachment_cursor;
-                self.pending = PendingBuild::Current;
                 return Planned::Current;
             }
             if view.patchable {
-                self.pending = PendingBuild::Patch {
+                return Planned::Patch(PatchCursors {
                     poses: pose_cursor,
                     attachments: attachment_cursor,
-                };
-                return Planned::Patch(self.changed.len());
+                });
             }
         }
-        self.pending = PendingBuild::Rebuild;
         Planned::Rebuild
-    }
-
-    pub(crate) fn pending(&self) -> Planned {
-        match self.pending {
-            PendingBuild::Current => Planned::Current,
-            PendingBuild::Patch { .. } => Planned::Patch(self.changed.len()),
-            PendingBuild::Rebuild => Planned::Rebuild,
-        }
     }
 
     pub(crate) fn patch(&mut self) -> PatchScratch<'_> {
@@ -196,12 +177,9 @@ impl RecordCache {
         }
     }
 
-    pub(crate) fn commit_patch(&mut self, stamp: Stamp, patched: bool) {
-        let PendingBuild::Patch { poses, attachments } = self.pending else {
-            unreachable!("a patch commits only after plan chose a patch");
-        };
-        self.poses = poses;
-        self.attachments = attachments;
+    pub(crate) fn commit_patch(&mut self, cursors: PatchCursors, stamp: Stamp, patched: bool) {
+        self.poses = cursors.poses;
+        self.attachments = cursors.attachments;
         if patched {
             self.built = stamp;
         }

@@ -20,7 +20,9 @@ use crate::store::RecordBuffer;
 
 mod cache;
 
-pub(crate) use cache::{EntityOutput, Motion, PatchScratch, Planned, RecordCache, ViewState};
+pub(crate) use cache::{
+    EntityOutput, Motion, PatchCursors, PatchScratch, Planned, RecordCache, ViewState,
+};
 
 pub(crate) type Vec3 = <EuclideanR3 as Space>::Point;
 pub(crate) type Vec4 = <EuclideanR4 as Space>::Point;
