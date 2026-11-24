@@ -383,6 +383,20 @@ where
         entity_at(&self.to_entity, body).map(|key| Entity::new(self.scene, key))
     }
 
+    /// Each entity whose body shares a contact point with `entity`'s after the last step, in the world's manifold order.
+    pub fn touching(&self, entity: Entity) -> impl Iterator<Item = (Entity, &RigidBody<S>)> + '_ {
+        let id = self.body(entity);
+        self.world
+            .manifolds()
+            .filter(move |(_, manifold)| !manifold.points.is_empty())
+            .filter_map(move |(&(a, b), _)| match id {
+                Some(id) if a == id => Some(b),
+                Some(id) if b == id => Some(a),
+                _ => None,
+            })
+            .filter_map(|other| Some((self.entity(other)?, self.world.body(other)?)))
+    }
+
     pub fn set_velocity(
         &mut self,
         entity: Entity,
