@@ -29,16 +29,6 @@ pub struct LineRasterUniforms {
     pub _pad: [f32; 2],
 }
 
-impl Default for LineRasterUniforms {
-    fn default() -> Self {
-        Self {
-            view_projection: Mat4::IDENTITY.to_cols_array_2d(),
-            viewport_size: [1.0, 1.0],
-            _pad: [0.0; 2],
-        }
-    }
-}
-
 pub struct LineRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,

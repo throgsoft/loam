@@ -57,10 +57,6 @@ impl PointPass {
         self.shared.borrow_mut().set(eye, points);
     }
 
-    pub fn point_count(&self) -> usize {
-        self.shared.borrow().mesh.positions.len()
-    }
-
     pub fn uploads(&self) -> u64 {
         self.shared.borrow().uploads
     }

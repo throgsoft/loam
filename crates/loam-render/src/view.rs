@@ -1,6 +1,6 @@
 //! Root image space: the eye at the origin looking down -Z. Depth is
 //! `near / -z`, reversed-Z in `Depth32Float`, cleared to zero and compared
-//! `GreaterEqual`; every pass here writes that quantity, and `StandardZ` nodes serve the old paths only.
+//! `GreaterEqual`; every pass here writes that quantity.
 
 use glam::{Mat4, Vec3};
 use loam_runtime::Eye;

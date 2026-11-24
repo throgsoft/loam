@@ -50,10 +50,10 @@ impl Probe {
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("capture-order probe fill"),
+                label: Some("composite probe fill"),
             });
         encoder.begin_render_pass(&RenderPassDescriptor {
-            label: Some("capture-order probe fill"),
+            label: Some("composite probe fill"),
             color_attachments: &[Some(RenderPassColorAttachment {
                 view,
                 depth_slice: None,
@@ -91,7 +91,7 @@ impl Probe {
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("capture-order probe composite"),
+                label: Some("composite probe composite"),
             });
         self.composite.run(&mut encoder, &self.swap_view);
         self.queue.submit(Some(encoder.finish()));
@@ -109,7 +109,7 @@ fn unwritten_color() -> Color {
 
 fn create_target(device: &Device, format: TextureFormat, tag: &str) -> Texture {
     device.create_texture(&TextureDescriptor {
-        label: Some(&format!("capture-order probe {tag}")),
+        label: Some(&format!("composite probe {tag}")),
         size: Extent3d {
             width: SIZE,
             height: SIZE,
@@ -138,7 +138,7 @@ async fn request_device() -> Result<(Device, Queue), String> {
         .map_err(|e| format!("request_adapter failed: {e}"))?;
     adapter
         .request_device(&wgpu::DeviceDescriptor {
-            label: Some("capture-tap-swapchain-order"),
+            label: Some("composite probe"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             memory_hints: wgpu::MemoryHints::default(),
@@ -152,7 +152,7 @@ async fn request_device() -> Result<(Device, Queue), String> {
 fn read_back(probe: &Probe, texture: &Texture) -> Vec<u8> {
     let bytes_per_row = SIZE * 4;
     let buffer = probe.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("capture-order probe readback"),
+        label: Some("composite probe readback"),
         size: (bytes_per_row * SIZE) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
@@ -160,7 +160,7 @@ fn read_back(probe: &Probe, texture: &Texture) -> Vec<u8> {
     let mut encoder = probe
         .device
         .create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("capture-order probe readback"),
+            label: Some("composite probe readback"),
         });
     encoder.copy_texture_to_buffer(
         TexelCopyTextureInfo {

@@ -4,9 +4,6 @@ use wgpu::*;
 
 use loam_runtime::{Ground, Sky};
 
-/// Shared with [`crate::raymarch::HYPERSLICE_KERNEL_WGSL`].
-pub const SKY_GROUND_WGSL: &str = include_str!("sky_ground.wgsl");
-
 pub const DEFAULT_SKY: Sky = Sky {
     below: [0.04, 0.05, 0.10],
     above: [0.10, 0.13, 0.22],

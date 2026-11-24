@@ -157,7 +157,7 @@ impl Default for Hyperslice4DUniforms {
     }
 }
 
-/// Prefixed with [`crate::sky_ground::SKY_GROUND_WGSL`] and the shared `loam_projective_depth`; [`hyperslice_ground_wgsl`] supplies `loam_scene_sdf`.
+/// Prefixed with `sky_ground.wgsl` and the shared `loam_projective_depth`; [`hyperslice_ground_wgsl`] supplies `loam_scene_sdf`.
 pub const HYPERSLICE_KERNEL_WGSL: &str = concat!(
     include_str!("../sky_ground.wgsl"),
     include_str!("../shader/projective_depth.wgsl"),
@@ -177,7 +177,6 @@ const SHAPE_3SPHERE: u32 = 6u;
 const SHAPE_DUOCYLINDER: u32 = 7u;
 const SHAPE_CLIFFORD_TORUS: u32 = 8u;
 const SHAPE_SPHERINDER: u32 = 9u;
-const BODY_KIND_INVALID: u32 = 255u;
 
 struct BodyUniform {
     position: vec4<f32>,
@@ -361,22 +360,6 @@ fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
         d = spherinder_sdf_local(unit_p);
     }
     return d * size;
-}
-
-fn loam_dynamic_bodies_sdf(p3: vec3<f32>) -> f32 {
-    let p4 = vec4<f32>(p3, u.w_slice);
-    let body_count = u32(u.body_count + 0.5);
-    var sdf: f32 = 1.0e9;
-    for (var i: u32 = 0u; i < body_count; i = i + 1u) {
-        let b = body_at(i);
-        let kind = u32(b.kind + 0.5);
-        if (kind == BODY_KIND_SPHERE) {
-            sdf = min(sdf, body_sphere_sdf_4d(p4, b));
-        } else if (kind == BODY_KIND_POLYTOPE) {
-            sdf = min(sdf, body_polytope_sdf_4d(p4, b));
-        }
-    }
-    return sdf;
 }
 
 fn loam_body_sdf_at(p3: vec3<f32>, body_idx: u32) -> f32 {
@@ -754,9 +737,6 @@ impl Hyperslice4DNode {
         }
     }
 
-    pub fn uniforms(&self) -> &Hyperslice4DUniforms {
-        &self.uniforms
-    }
     pub fn uniforms_mut(&mut self) -> &mut Hyperslice4DUniforms {
         &mut self.uniforms
     }
@@ -1105,7 +1085,6 @@ mod tests {
     }
 
     const EMPTY_SCENE_STUB: &str = r#"
-const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
 const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
 const LOAM_PRIM_OTHER: u32 = 255u;
 struct LoamSceneHit { dist: f32, kind: u32 }

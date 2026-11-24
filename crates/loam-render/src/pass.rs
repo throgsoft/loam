@@ -224,18 +224,6 @@ impl PassSchedule {
         }
     }
 
-    pub fn convention(&self) -> DepthConvention {
-        self.convention
-    }
-
-    pub fn unattached(&self) -> Option<&'static str> {
-        self.unattached
-    }
-
-    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.passes.iter().map(|pass| pass.name())
-    }
-
     pub fn sections(&self) -> &[Section] {
         &self.sections
     }

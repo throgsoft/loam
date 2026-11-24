@@ -27,18 +27,6 @@ pub struct MaterialSpec<'a> {
 
 pub struct MaterialPipeline {
     pub pipeline: RenderPipeline,
-    pub bind_group_layouts: Vec<BindGroupLayout>,
-    convention: DepthConvention,
-}
-
-impl MaterialPipeline {
-    pub fn convention(&self) -> DepthConvention {
-        self.convention
-    }
-
-    pub fn group_layout(&self, group: usize) -> Option<&BindGroupLayout> {
-        self.bind_group_layouts.get(group)
-    }
 }
 
 impl MaterialSpec<'_> {
@@ -110,8 +98,6 @@ impl MaterialSpec<'_> {
         });
         Ok(MaterialPipeline {
             pipeline,
-            bind_group_layouts,
-            convention: self.convention,
         })
     }
 }

@@ -16,7 +16,6 @@ const CELLS: u32 = 4;
 const TOLERANCE: u8 = 2;
 
 const FLOOR_SCENE_WGSL: &str = r#"
-const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
 const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
 const LOAM_PRIM_OTHER: u32 = 255u;
 struct LoamSceneHit { dist: f32, kind: u32 }

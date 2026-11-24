@@ -196,17 +196,8 @@ impl RayMarchNode {
         }
     }
 
-    pub fn uniforms(&self) -> &RayMarchUniforms {
-        &self.uniforms
-    }
-
     pub fn uniforms_mut(&mut self) -> &mut RayMarchUniforms {
         &mut self.uniforms
-    }
-
-    pub fn set_uniforms(&mut self, queue: &Queue, uniforms: RayMarchUniforms) {
-        self.uniforms = uniforms;
-        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }
 
     pub fn flush_uniforms(&self, queue: &Queue) {

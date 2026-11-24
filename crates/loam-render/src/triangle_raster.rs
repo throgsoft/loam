@@ -34,14 +34,6 @@ pub struct TriangleRasterUniforms {
     pub view_projection: [[f32; 4]; 4],
 }
 
-impl Default for TriangleRasterUniforms {
-    fn default() -> Self {
-        Self {
-            view_projection: Mat4::IDENTITY.to_cols_array_2d(),
-        }
-    }
-}
-
 /// Matches the vertex attribute layout: position at 0, color at 16.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable, Default)]
