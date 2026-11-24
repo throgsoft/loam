@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 
-use loam_math::Bivector;
 use loam_time::par::{self, Executor, Sequential};
 use loam_time::StateHash;
 
@@ -10,15 +9,20 @@ use crate::dirty::{DirtyBodies, DirtyDrain};
 use crate::edit::EditError;
 use crate::field_contact::FieldNarrowphase;
 use crate::geometry::GeometryStore;
-use crate::integrator::{integrate_body, BroadphaseBound, PhysicsSpace, VectorOps};
-use crate::manifold::{
-    ContactPoint, Manifold, BAUMGARTE_BETA, DEFAULT_PGS_ITERS, MAX_LINEAR_CORRECTION,
-    PENETRATION_SLOP, RESTITUTION_THRESHOLD,
-};
+use crate::integrator::{integrate_body, PhysicsSpace, VectorOps};
+use crate::manifold::{Manifold, DEFAULT_PGS_ITERS, RESTITUTION_THRESHOLD};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
-use crate::response::FRICTION_COEFF;
 use crate::state::WorldState;
+
+mod broadphase;
+mod islands;
+mod solve;
+
+use broadphase::Broadphase;
+use islands::Islands;
+use solve::IslandSolver;
+pub use solve::ISLANDS_PER_SOLVE_WORKER;
 
 /// Handles in ascending order.
 pub type PairKey = (BodyId, BodyId);
@@ -45,61 +49,11 @@ pub struct Island {
 
 const WAKE_APPROACH_SPEED: f32 = 0.01;
 
-/// Measured with scoped threads on settled three-high stacks, where 128 box islands already gain.
-pub const ISLANDS_PER_SOLVE_WORKER: usize = 64;
-
 /// Measured with scoped threads; box pairs gain from 2560 pairs, sphere pairs break even.
 pub const PAIRS_PER_NARROWPHASE_WORKER: usize = 1024;
 
 const STALE_CONSTRAINT_KEY: &str = "constraint buffer outlived its manifold";
 const STALE_MANIFOLD_BODY: &str = "manifold key names a body that is gone";
-
-// do Carmo, Riemannian Geometry, 1992, ch. 7, prop. 3.6.
-const BROADPHASE_TRIANGLE_SLACK: f32 = 4.0 * f32::EPSILON;
-
-#[derive(Clone, Copy)]
-struct RadialInterval {
-    lo: f32,
-    hi: f32,
-    radius: f32,
-    dense: u32,
-    id: BodyId,
-    dynamic: bool,
-    group: u32,
-    mask: u32,
-}
-
-struct ScratchUnit {
-    key: PairKey,
-    a: u32,
-    b: u32,
-    first: u32,
-    count: u32,
-}
-
-struct IslandSolve<S: PhysicsSpace> {
-    bodies: Vec<RigidBody<S>>,
-    dense: Vec<u32>,
-    units: Vec<ScratchUnit>,
-    points: Vec<ContactPoint<S>>,
-    push: Vec<f32>,
-    saved: Vec<RigidBody<S>>,
-}
-
-impl<S: PhysicsSpace> Default for IslandSolve<S> {
-    fn default() -> Self {
-        Self {
-            bodies: Vec::new(),
-            dense: Vec::new(),
-            units: Vec::new(),
-            points: Vec::new(),
-            push: Vec::new(),
-            saved: Vec::new(),
-        }
-    }
-}
-
-const SCATTERED_NOWHERE: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StepCounters {
@@ -144,15 +98,11 @@ pub struct World<S: PhysicsSpace> {
     dirty: DirtyBodies,
     pair_order: Vec<PairKey>,
     constraints: Vec<ConstraintUnit>,
-    broadphase_intervals: Vec<RadialInterval>,
-    broadphase_active: Vec<u32>,
     touched_pairs: Vec<PairKey>,
-    island_parent: Vec<u32>,
-    island_labels: Vec<BodyId>,
     counters: StepCounters,
-    scratch: Vec<IslandSolve<S>>,
-    scratch_islands: usize,
-    scratch_local: Vec<u32>,
+    broadphase: Broadphase,
+    islands: Islands,
+    solver: IslandSolver<S>,
 }
 
 const _: () = {
@@ -196,15 +146,11 @@ impl<S: PhysicsSpace> World<S> {
             dirty: DirtyBodies::default(),
             pair_order: Vec::new(),
             constraints: Vec::new(),
-            broadphase_intervals: Vec::new(),
-            broadphase_active: Vec::new(),
             touched_pairs: Vec::new(),
-            island_parent: Vec::new(),
-            island_labels: Vec::new(),
             counters: StepCounters::default(),
-            scratch: Vec::new(),
-            scratch_islands: 0,
-            scratch_local: Vec::new(),
+            broadphase: Broadphase::default(),
+            islands: Islands::default(),
+            solver: IslandSolver::default(),
         }
     }
 
@@ -442,13 +388,7 @@ impl<S: PhysicsSpace> World<S> {
             self.geometry.stash(collider);
             return Err(EditError::InvalidInertia);
         }
-        let Self {
-            space,
-            bodies,
-            geometry,
-            ..
-        } = self;
-        bodies[id].replace_collider(geometry, space, collider, inertia)?;
+        self.bodies[id].replace_collider(&mut self.geometry, &self.space, collider, inertia)?;
         self.drop_contacts_of(id);
         self.dirty.mark(id);
         Ok(())
@@ -520,8 +460,7 @@ impl<S: PhysicsSpace> World<S> {
 
     /// Yields each body spawned, integrated, edited, or restored since the last drain, skipping despawned ones.
     pub fn drain_dirty(&mut self) -> DirtyDrain<'_, S> {
-        let Self { bodies, dirty, .. } = self;
-        dirty.drain(bodies)
+        self.dirty.drain(&self.bodies)
     }
 
     pub fn snapshot(&self) -> WorldState<S> {
@@ -669,11 +608,9 @@ impl<S: PhysicsSpace> World<S> {
         self.constraints.clear();
         self.touched_pairs.clear();
         self.pending_contacts.clear();
-        self.broadphase_intervals.clear();
-        self.broadphase_active.clear();
-        self.island_parent.clear();
-        self.island_labels.clear();
-        self.scratch_islands = 0;
+        self.broadphase.clear();
+        self.islands.clear();
+        self.solver.clear();
         Ok(())
     }
 
@@ -729,27 +666,22 @@ impl<S: PhysicsSpace> World<S> {
     }
 
     fn update_manifolds(&mut self, executor: &dyn Executor) {
-        let mut pairs = std::mem::take(&mut self.pair_order);
-        Self::fill_broadphase(
+        self.broadphase.fill(
             &self.bodies,
             &self.geometry,
             &self.space,
-            &mut self.broadphase_intervals,
-            &mut self.broadphase_active,
-            &mut pairs,
+            &mut self.pair_order,
             &mut self.counters,
         );
-        let mut touched = std::mem::take(&mut self.touched_pairs);
-        touched.clear();
-        let mut pending = std::mem::take(&mut self.pending_contacts);
-        pending.clear();
-        let mut tested = std::mem::take(&mut self.pair_contacts);
-        tested.clear();
-        tested.extend(pairs.iter().map(|&key| (key, None)));
-        self.test_pairs(&mut tested, executor);
+        self.touched_pairs.clear();
+        self.pending_contacts.clear();
+        self.pair_contacts.clear();
+        self.pair_contacts
+            .extend(self.pair_order.iter().map(|&key| (key, None)));
+        self.test_pairs(executor);
 
-        for &(key, found) in &tested {
-            let (i, j) = self.dense_pair(key);
+        for &(key, found) in &self.pair_contacts {
+            let (i, j) = dense_pair(&self.bodies, key);
             let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
             if let Some(manifold) = self.manifolds.get_mut(&key) {
                 manifold.refresh(&self.space, a, b);
@@ -765,57 +697,39 @@ impl<S: PhysicsSpace> World<S> {
                 a.wake();
                 b.wake();
             }
-            pending.push((key, contact));
+            self.pending_contacts.push((key, contact));
         }
-        self.pair_contacts = tested;
 
-        self.field_manifolds(&mut pending);
+        self.field_manifolds();
 
-        touched.extend(pending.iter().map(|(key, _)| *key));
-        touched.sort_unstable();
-        touched.dedup();
-        self.counters.contacts = pending.len() as u32;
-        self.recycle_untouched_manifolds(&touched);
-        for &(key, contact) in &pending {
+        self.touched_pairs
+            .extend(self.pending_contacts.iter().map(|(key, _)| *key));
+        self.touched_pairs.sort_unstable();
+        self.touched_pairs.dedup();
+        self.counters.contacts = self.pending_contacts.len() as u32;
+        self.recycle_untouched_manifolds();
+        for index in 0..self.pending_contacts.len() {
+            let (key, contact) = self.pending_contacts[index];
             self.ensure_manifold(key, contact.restitution);
-            let Self {
-                bodies,
-                manifolds,
-                space,
-                ..
-            } = self;
-            let i = bodies
-                .dense_index(key.0)
-                .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}"));
-            let j = bodies
-                .dense_index(key.1)
-                .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}"));
-            let (a, b) = split_two_mut(bodies.dense_mut(), i, j);
-            manifolds
+            let (i, j) = dense_pair(&self.bodies, key);
+            let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
+            self.manifolds
                 .get_mut(&key)
-                .unwrap_or_else(|| panic!("{STALE_CONSTRAINT_KEY}"))
-                .add_or_update(space, a, b, contact);
+                .expect(STALE_CONSTRAINT_KEY)
+                .add_or_update(&self.space, a, b, contact);
         }
-        self.touched_pairs = touched;
-        self.pending_contacts = pending;
-        self.pair_order = pairs;
     }
 
     // Each pair writes only its own slot, so the merge that follows sees pair order for any thread count.
-    fn test_pairs(&self, slots: &mut [(PairKey, Option<Contact<S>>)], executor: &dyn Executor) {
+    fn test_pairs(&mut self, executor: &dyn Executor) {
         let test = |chunk: &mut [(PairKey, Option<Contact<S>>)]| {
             for (key, contact) in chunk {
-                let a = self
-                    .bodies
-                    .get(key.0)
-                    .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}"));
-                let b = self
-                    .bodies
-                    .get(key.1)
-                    .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}"));
+                let a = self.bodies.get(key.0).expect(STALE_MANIFOLD_BODY);
+                let b = self.bodies.get(key.1).expect(STALE_MANIFOLD_BODY);
                 *contact = self.narrowphase.test(a, b, &self.geometry, &self.space);
             }
         };
+        let slots = &mut self.pair_contacts;
         let workers = slots.len() / PAIRS_PER_NARROWPHASE_WORKER;
         if workers < 2 {
             test(slots);
@@ -843,16 +757,16 @@ impl<S: PhysicsSpace> World<S> {
         self.manifolds.insert(key, manifold);
     }
 
-    fn recycle_untouched_manifolds(&mut self, touched: &[PairKey]) {
+    fn recycle_untouched_manifolds(&mut self) {
         for &key in &self.manifold_order {
-            if touched.binary_search(&key).is_err() {
+            if self.touched_pairs.binary_search(&key).is_err() {
                 if let Some(manifold) = self.manifolds.remove(&key) {
                     self.manifold_pool.push(manifold);
                 }
             }
         }
         self.manifold_order.clear();
-        self.manifold_order.extend_from_slice(touched);
+        self.manifold_order.extend_from_slice(&self.touched_pairs);
     }
 
     fn wake_approaching_contacts(&mut self) {
@@ -885,7 +799,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn field_manifolds(&mut self, pending: &mut Vec<(PairKey, Contact<S>)>) {
+    fn field_manifolds(&mut self) {
         for index in 0..self.field_bindings.len() {
             let (body, field) = self.field_bindings[index];
             let Some(entry) = self.fields.get(field.0 as usize) else {
@@ -925,50 +839,42 @@ impl<S: PhysicsSpace> World<S> {
                 restitution: (self.bodies[body].restitution + self.bodies[anchor].restitution)
                     * 0.5,
             };
-            let (i, j) = self.dense_pair(key);
+            let (i, j) = dense_pair(&self.bodies, key);
             let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
             if let Some(manifold) = self.manifolds.get_mut(&key) {
                 manifold.refresh(&self.space, a, b);
             }
-            pending.push((key, contact));
+            self.pending_contacts.push((key, contact));
         }
     }
 
     // Manifold membership must stay fixed until the solve ends.
     fn collect_constraints(&mut self) {
-        let mut parent = std::mem::take(&mut self.island_parent);
-        let mut labels = std::mem::take(&mut self.island_labels);
-        Self::fill_islands(
-            &self.bodies,
-            self.manifold_order.iter().copied(),
-            &mut parent,
-            &mut labels,
-        );
-        let mut units = std::mem::take(&mut self.constraints);
-        units.clear();
-        units.extend(self.manifold_order.iter().map(|&key| {
-            let dense = self.dense_pair(key);
-            ConstraintUnit {
-                island: constraint_island(&self.bodies, &labels, dense),
-                key,
-                dense,
-            }
-        }));
-        units.sort_unstable_by_key(|unit| (unit.island, unit.key));
-        self.island_parent = parent;
-        self.island_labels = labels;
-        self.constraints = units;
+        self.islands
+            .fill(&self.bodies, self.manifold_order.iter().copied());
+        self.constraints.clear();
+        self.constraints
+            .extend(self.manifold_order.iter().map(|&key| {
+                let dense = dense_pair(&self.bodies, key);
+                ConstraintUnit {
+                    island: self.islands.constraint_island(&self.bodies, dense),
+                    key,
+                    dense,
+                }
+            }));
+        self.constraints
+            .sort_unstable_by_key(|unit| (unit.island, unit.key));
     }
 
     // Restitution uses velocities from before the warm-start impulse.
     fn prepare_solve(&mut self) {
         for unit in &self.constraints {
-            debug_assert_eq!(unit.dense, self.dense_pair(unit.key));
+            debug_assert_eq!(unit.dense, dense_pair(&self.bodies, unit.key));
             let (i, j) = unit.dense;
             let manifold = self
                 .manifolds
                 .get_mut(&unit.key)
-                .unwrap_or_else(|| panic!("{STALE_CONSTRAINT_KEY}"));
+                .expect(STALE_CONSTRAINT_KEY);
             let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
             for cp in &mut manifold.points {
                 let v_rel = self.space.velocity_at_point(b, cp.world_point)
@@ -989,12 +895,9 @@ impl<S: PhysicsSpace> World<S> {
 
     fn warm_start(&mut self) {
         for unit in &self.constraints {
-            debug_assert_eq!(unit.dense, self.dense_pair(unit.key));
+            debug_assert_eq!(unit.dense, dense_pair(&self.bodies, unit.key));
             let (i, j) = unit.dense;
-            let manifold = self
-                .manifolds
-                .get(&unit.key)
-                .unwrap_or_else(|| panic!("{STALE_CONSTRAINT_KEY}"));
+            let manifold = self.manifolds.get(&unit.key).expect(STALE_CONSTRAINT_KEY);
             let (a, b) = split_two_mut(self.bodies.dense_mut(), i, j);
             for cp in &manifold.points {
                 if cp.normal_impulse > 0.0 {
@@ -1011,197 +914,22 @@ impl<S: PhysicsSpace> World<S> {
     }
 
     fn solve(&mut self, dt: f32, executor: &dyn Executor) {
-        self.gather_islands();
-        let Self {
-            space,
-            scratch,
-            scratch_islands,
-            pgs_iters,
-            ..
-        } = self;
-        let iterations = *pgs_iters;
-        let space = &*space;
-        let islands = &mut scratch[..*scratch_islands];
-        let workers = islands.len() / ISLANDS_PER_SOLVE_WORKER;
-        if workers < 2 {
-            for island in islands.iter_mut() {
-                solve_island(space, iterations, dt, island);
-            }
-        } else {
-            let chunk = islands.len().div_ceil(workers);
-            par::for_each_chunk(executor, islands, chunk, |chunk| {
-                for island in chunk {
-                    solve_island(space, iterations, dt, island);
-                }
-            });
-        }
-        self.scatter_islands();
-    }
-
-    fn gather_islands(&mut self) {
-        self.scratch_local.clear();
-        self.scratch_local
-            .resize(self.bodies.len(), SCATTERED_NOWHERE);
-        self.scratch_islands = 0;
-        let mut current = None;
-        for unit in &self.constraints {
-            if current != Some(unit.island) {
-                current = Some(unit.island);
-                if self.scratch.len() == self.scratch_islands {
-                    self.scratch.push(IslandSolve::default());
-                }
-                let island = &mut self.scratch[self.scratch_islands];
-                island.bodies.clear();
-                island.dense.clear();
-                island.units.clear();
-                island.points.clear();
-                self.scratch_islands += 1;
-            }
-            let island = &mut self.scratch[self.scratch_islands - 1];
-            let (i, j) = unit.dense;
-            let a = gather_body(island, &mut self.scratch_local, &self.bodies, i);
-            let b = gather_body(island, &mut self.scratch_local, &self.bodies, j);
-            let manifold = self
-                .manifolds
-                .get(&unit.key)
-                .unwrap_or_else(|| panic!("{STALE_CONSTRAINT_KEY}"));
-            let first = island.points.len() as u32;
-            island.points.extend_from_slice(&manifold.points);
-            island.units.push(ScratchUnit {
-                key: unit.key,
-                a,
-                b,
-                first,
-                count: manifold.points.len() as u32,
-            });
-        }
-    }
-
-    fn scatter_islands(&mut self) {
-        for island in &self.scratch[..self.scratch_islands] {
-            for (local, &dense) in island.dense.iter().enumerate() {
-                if dense != SCATTERED_NOWHERE {
-                    self.bodies[dense as usize] = island.bodies[local];
-                }
-            }
-            for unit in &island.units {
-                let manifold = self
-                    .manifolds
-                    .get_mut(&unit.key)
-                    .unwrap_or_else(|| panic!("{STALE_CONSTRAINT_KEY}"));
-                let first = unit.first as usize;
-                manifold
-                    .points
-                    .copy_from_slice(&island.points[first..first + unit.count as usize]);
-            }
-        }
+        self.solver
+            .gather(&self.bodies, &self.manifolds, &self.constraints);
+        self.solver.solve(&self.space, self.pgs_iters, dt, executor);
+        self.solver.scatter(&mut self.bodies, &mut self.manifolds);
     }
 
     /// Replaces `pairs` with the sorted candidates: bounding-ball overlaps under a certified bound, every masked non-static pair otherwise.
     pub fn broadphase_into(&mut self, pairs: &mut Vec<PairKey>) {
         self.counters = StepCounters::default();
-        Self::fill_broadphase(
+        self.broadphase.fill(
             &self.bodies,
             &self.geometry,
             &self.space,
-            &mut self.broadphase_intervals,
-            &mut self.broadphase_active,
             pairs,
             &mut self.counters,
         );
-    }
-
-    // Cohen, Lin, Manocha, Ponamgi, I-COLLIDE, 1995, sec. 3; sweep radial distances.
-    fn fill_broadphase(
-        bodies: &BodyArena<S>,
-        geometry: &GeometryStore,
-        space: &S,
-        intervals: &mut Vec<RadialInterval>,
-        active: &mut Vec<u32>,
-        pairs: &mut Vec<PairKey>,
-        counters: &mut StepCounters,
-    ) {
-        pairs.clear();
-        intervals.clear();
-        active.clear();
-        let n = bodies.len();
-        if n < 2 {
-            return;
-        }
-        let certified = space.broadphase_bound() == BroadphaseBound::Certified;
-
-        let anchor = (1..n).fold(0, |lowest, dense| {
-            if bodies.id_at(dense) < bodies.id_at(lowest) {
-                dense
-            } else {
-                lowest
-            }
-        });
-        let origin = bodies[anchor].position;
-
-        for dense in 0..n {
-            let body = &bodies[dense];
-            let radius = geometry
-                .get(body.collider())
-                .map_or(0.0, Collider::bounding_radius);
-            let (lo, hi) = if certified {
-                counters.distance_evals += 1;
-                let d = space.distance(origin, body.position);
-                let slack = d * BROADPHASE_TRIANGLE_SLACK;
-                (d - radius - slack, d + radius + slack)
-            } else {
-                (f32::NEG_INFINITY, f32::INFINITY)
-            };
-            intervals.push(RadialInterval {
-                lo,
-                hi,
-                radius,
-                dense: dense as u32,
-                id: bodies.id_at(dense),
-                dynamic: body.inv_mass() != 0.0,
-                group: body.collision_group,
-                mask: body.collision_mask,
-            });
-        }
-
-        intervals.sort_unstable_by(|a, b| a.lo.total_cmp(&b.lo).then(a.id.cmp(&b.id)));
-
-        for i in 0..n {
-            let entry = intervals[i];
-
-            let mut visits = counters.index_visits;
-            active.retain(|&open| {
-                visits += 1;
-                intervals[open as usize].hi >= entry.lo
-            });
-            counters.index_visits = visits;
-            for &open in active.iter() {
-                counters.index_visits += 1;
-                let other = intervals[open as usize];
-                if !entry.dynamic && !other.dynamic {
-                    continue;
-                }
-
-                if entry.group & other.mask == 0 || other.group & entry.mask == 0 {
-                    continue;
-                }
-                if certified {
-                    counters.distance_evals += 1;
-                    let gap = space.distance(
-                        bodies[other.dense as usize].position,
-                        bodies[entry.dense as usize].position,
-                    );
-                    if gap > other.radius + entry.radius {
-                        continue;
-                    }
-                }
-                pairs.push(canonical_pair(other.id, entry.id));
-            }
-            active.push(i as u32);
-        }
-
-        pairs.sort_unstable();
-        counters.candidates = pairs.len() as u32;
     }
 
     /// Hashes contact keys, point counts, and normal impulses in key order.
@@ -1237,21 +965,15 @@ impl<S: PhysicsSpace> World<S> {
 
     /// Returns islands by id; stale manifold handles panic after a bare [`BodyArena::despawn`].
     pub fn islands(&self) -> Vec<Island> {
-        let mut parent = Vec::new();
-        let mut labels = Vec::new();
-        Self::fill_islands(
-            &self.bodies,
-            self.manifold_order.iter().copied(),
-            &mut parent,
-            &mut labels,
-        );
+        let mut components = Islands::default();
+        components.fill(&self.bodies, self.manifold_order.iter().copied());
 
         let mut by_id: BTreeMap<BodyId, Island> = BTreeMap::new();
         for &key in &self.manifold_order {
             if self.bodies[key.0].inv_mass() == 0.0 && self.bodies[key.1].inv_mass() == 0.0 {
                 continue;
             }
-            let id = constraint_island(&self.bodies, &labels, self.dense_pair(key));
+            let id = components.constraint_island(&self.bodies, dense_pair(&self.bodies, key));
             let island = by_id.entry(id).or_insert_with(|| Island {
                 id,
                 bodies: Vec::new(),
@@ -1272,83 +994,13 @@ impl<S: PhysicsSpace> World<S> {
         }
         islands
     }
-
-    fn fill_islands(
-        bodies: &BodyArena<S>,
-        touched: impl Iterator<Item = PairKey>,
-        parent: &mut Vec<u32>,
-        labels: &mut Vec<BodyId>,
-    ) {
-        let n = bodies.len();
-        parent.clear();
-        parent.extend(0..n as u32);
-        labels.clear();
-        labels.extend((0..n).map(|dense| bodies.id_at(dense)));
-
-        for key in touched {
-            let (i, j) = (
-                bodies
-                    .dense_index(key.0)
-                    .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}")),
-                bodies
-                    .dense_index(key.1)
-                    .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}")),
-            );
-            if bodies[i].inv_mass() == 0.0 || bodies[j].inv_mass() == 0.0 {
-                continue;
-            }
-            let (a, b) = (find_root(parent, i), find_root(parent, j));
-            if a != b {
-                parent[a.max(b)] = a.min(b) as u32;
-            }
-        }
-
-        for dense in 0..n {
-            let root = find_root(parent, dense);
-            labels[root] = labels[root].min(bodies.id_at(dense));
-        }
-        for dense in 0..n {
-            let label = labels[find_root(parent, dense)];
-            labels[dense] = label;
-        }
-    }
-
-    fn dense_pair(&self, key: PairKey) -> (usize, usize) {
-        (
-            self.bodies
-                .dense_index(key.0)
-                .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}")),
-            self.bodies
-                .dense_index(key.1)
-                .unwrap_or_else(|| panic!("{STALE_MANIFOLD_BODY}")),
-        )
-    }
 }
 
-// Tarjan and van Leeuwen, JACM 31(2), 1984, sec. 2.
-fn find_root(parent: &mut [u32], mut dense: usize) -> usize {
-    while parent[dense] as usize != dense {
-        parent[dense] = parent[parent[dense] as usize];
-        dense = parent[dense] as usize;
-    }
-    dense
-}
-
-fn constraint_island<S: PhysicsSpace>(
-    bodies: &BodyArena<S>,
-    labels: &[BodyId],
-    dense: (usize, usize),
-) -> BodyId {
-    let (i, j) = dense;
-    debug_assert!(
-        bodies[i].inv_mass() != 0.0 || bodies[j].inv_mass() != 0.0,
-        "a contact between two static bodies has no island to solve in",
-    );
-    if bodies[i].inv_mass() != 0.0 {
-        labels[i]
-    } else {
-        labels[j]
-    }
+fn dense_pair<S: PhysicsSpace>(bodies: &BodyArena<S>, key: PairKey) -> (usize, usize) {
+    (
+        bodies.dense_index(key.0).expect(STALE_MANIFOLD_BODY),
+        bodies.dense_index(key.1).expect(STALE_MANIFOLD_BODY),
+    )
 }
 
 // Handle order can differ from dense storage order.
@@ -1360,156 +1012,6 @@ fn split_two_mut<T>(slice: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     } else {
         let (left, right) = slice.split_at_mut(i);
         (&mut right[0], &mut left[j])
-    }
-}
-
-fn gather_body<S: PhysicsSpace>(
-    island: &mut IslandSolve<S>,
-    local: &mut [u32],
-    bodies: &BodyArena<S>,
-    dense: usize,
-) -> u32 {
-    if bodies[dense].inv_mass() == 0.0 {
-        island.bodies.push(bodies[dense]);
-        island.dense.push(SCATTERED_NOWHERE);
-        return island.bodies.len() as u32 - 1;
-    }
-    if local[dense] == SCATTERED_NOWHERE {
-        local[dense] = island.bodies.len() as u32;
-        island.bodies.push(bodies[dense]);
-        island.dense.push(dense as u32);
-    }
-    local[dense]
-}
-
-// Catto 2005, "Iterative Dynamics with Temporal Coherence", accumulated impulses with warm start.
-fn solve_island<S>(space: &S, iterations: usize, dt: f32, island: &mut IslandSolve<S>)
-where
-    S: PhysicsSpace,
-{
-    let IslandSolve {
-        bodies,
-        units,
-        points,
-        push,
-        saved,
-        ..
-    } = island;
-    for _ in 0..iterations {
-        for unit in units.iter() {
-            let (a, b) = split_two_mut(bodies, unit.a as usize, unit.b as usize);
-            let first = unit.first as usize;
-            for cp in &mut points[first..first + unit.count as usize] {
-                solve_normal_then_tangent(space, a, b, cp);
-            }
-        }
-    }
-    if dt <= 0.0 {
-        return;
-    }
-    // Split impulse: a dropped pseudo velocity translates bodies apart, adding no energy or creep.
-    saved.clear();
-    saved.extend_from_slice(bodies);
-    for body in bodies.iter_mut() {
-        body.velocity = VectorOps::zero();
-        body.angular_velocity = S::AngVel::zero();
-    }
-    push.clear();
-    push.resize(points.len(), 0.0);
-    for _ in 0..iterations {
-        for unit in units.iter() {
-            let (a, b) = split_two_mut(bodies, unit.a as usize, unit.b as usize);
-            let range = unit.first as usize..(unit.first + unit.count) as usize;
-            for (cp, accumulated) in points[range.clone()].iter().zip(&mut push[range]) {
-                let depth = (cp.penetration - PENETRATION_SLOP).max(0.0);
-                let target = (depth * BAUMGARTE_BETA).min(MAX_LINEAR_CORRECTION) / dt;
-                let k_n = a.inv_mass() + b.inv_mass();
-                if k_n <= 0.0 {
-                    continue;
-                }
-                let v_rel = b.velocity - a.velocity;
-                let next =
-                    (*accumulated + (target - VectorOps::dot(v_rel, cp.normal)) / k_n).max(0.0);
-                let impulse = next - *accumulated;
-                *accumulated = next;
-                if impulse != 0.0 {
-                    a.velocity = a.velocity - cp.normal * (impulse * a.inv_mass());
-                    b.velocity = b.velocity + cp.normal * (impulse * b.inv_mass());
-                }
-            }
-        }
-    }
-    for (body, before) in bodies.iter_mut().zip(saved.iter()) {
-        let from = body.position;
-        integrate_body(space, body, dt);
-        body.velocity = space.parallel_transport(from, body.position, before.velocity);
-        body.angular_velocity = before.angular_velocity;
-    }
-}
-
-fn solve_normal_then_tangent<S>(
-    space: &S,
-    a: &mut RigidBody<S>,
-    b: &mut RigidBody<S>,
-    cp: &mut ContactPoint<S>,
-) where
-    S: PhysicsSpace,
-{
-    debug_assert!(
-        VectorOps::is_finite(cp.normal) && cp.penetration.is_finite(),
-        "non-finite contact in solve_normal_then_tangent",
-    );
-
-    let v_rel_n_vec =
-        space.velocity_at_point(b, cp.world_point) - space.velocity_at_point(a, cp.world_point);
-    let v_n = VectorOps::dot(v_rel_n_vec, cp.normal);
-    let k_n = space.effective_mass_inv(a, b, cp.world_point, cp.normal);
-
-    if k_n > 0.0 {
-        let dj = -(v_n + cp.velocity_bias) / k_n;
-        let new_acc = (cp.normal_impulse + dj).max(0.0);
-        let actual = new_acc - cp.normal_impulse;
-        cp.normal_impulse = new_acc;
-        if actual.abs() > 0.0 {
-            space.apply_contact_impulse(a, b, cp.world_point, cp.normal, actual);
-        }
-    }
-
-    let previous = cp.tangent_dir * cp.tangent_impulse;
-    let v_rel =
-        space.velocity_at_point(b, cp.world_point) - space.velocity_at_point(a, cp.world_point);
-    let slip = v_rel - cp.normal * VectorOps::dot(v_rel, cp.normal);
-    let speed = VectorOps::length(slip);
-    let mut impulse = previous;
-    if speed > 1e-8 {
-        let direction = slip * (1.0 / speed);
-        let inverse_mass = space.effective_mass_inv(a, b, cp.world_point, direction);
-        if inverse_mass > 0.0 {
-            impulse = impulse + slip * (1.0 / inverse_mass);
-        }
-    }
-    let magnitude = VectorOps::length(impulse);
-    let limit = cp.normal_impulse * FRICTION_COEFF;
-    if magnitude > limit {
-        impulse = impulse * (limit / magnitude);
-    }
-    cp.tangent_impulse = VectorOps::length(impulse);
-    cp.tangent_dir = if cp.tangent_impulse > 0.0 {
-        impulse * (1.0 / cp.tangent_impulse)
-    } else {
-        VectorOps::zero()
-    };
-
-    let delta = impulse - previous;
-    let delta_magnitude = VectorOps::length(delta);
-    if delta_magnitude > 0.0 {
-        space.apply_contact_impulse(
-            a,
-            b,
-            cp.world_point,
-            delta * (1.0 / delta_magnitude),
-            -delta_magnitude,
-        );
     }
 }
 
@@ -1533,39 +1035,6 @@ mod tests {
 
     #[global_allocator]
     static COUNTING_ALLOCATOR: CountingAllocator<System> = CountingAllocator::new(System);
-
-    #[test]
-    fn a_group_outside_the_others_mask_never_reaches_the_narrowphase() {
-        let mut world = World::new(EuclideanR3);
-        register_default_narrowphase(&mut world.narrowphase);
-        let a = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 1.0, 1.0).unwrap());
-        let b = world
-            .push_body(sphere_body_r3(Vec3::new(0.5, 0.0, 0.0), Vec3::ZERO, 1.0, 1.0).unwrap());
-        let mut pairs = Vec::new();
-        world.broadphase_into(&mut pairs);
-        assert_eq!(pairs.len(), 1, "the pair does not overlap to begin with");
-
-        world.bodies[a].collision_group = 0b01;
-        world.bodies[a].collision_mask = 0b01;
-        world.bodies[b].collision_group = 0b10;
-        world.bodies[b].collision_mask = 0b10;
-        world.broadphase_into(&mut pairs);
-        assert!(
-            pairs.is_empty(),
-            "a filtered pair still reached the narrowphase"
-        );
-
-        world.bodies[b].collision_mask = 0b11;
-        world.broadphase_into(&mut pairs);
-        assert!(
-            pairs.is_empty(),
-            "a one-sided mask edit produced a pair that collides in one direction"
-        );
-
-        world.bodies[a].collision_mask = 0b11;
-        world.broadphase_into(&mut pairs);
-        assert_eq!(pairs.len(), 1, "agreement did not restore the pair");
-    }
 
     #[test]
     fn a_tape_replays_to_its_recorded_checkpoints_and_a_tampered_one_does_not() {
@@ -2268,7 +1737,7 @@ mod tests {
         );
         assert!(world.despawn_body(doomed).is_ok());
 
-        let (i, j) = world.dense_pair(key);
+        let (i, j) = dense_pair(&world.bodies, key);
         assert_eq!(
             i > j,
             doomed_first,
