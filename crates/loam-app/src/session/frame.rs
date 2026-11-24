@@ -13,7 +13,7 @@ use loam_render::present::Presenter;
 #[cfg(not(target_arch = "wasm32"))]
 use loam_runtime::host::HostConfig;
 use loam_runtime::host::HostError;
-use loam_runtime::{Eye, Publication, PublishError, Records, Session, Stores};
+use loam_runtime::{Eye, PhaseError, Publication, PublishError, Records, Session, Stores};
 use loam_time::par::Executor;
 use loam_time::{frame_trace, FixedTimestep};
 
@@ -390,6 +390,65 @@ impl<A: Stores> Frame<A> {
     }
 }
 
+// `simulate` runs the ticks and learns whether this boundary recovered a fault.
+pub(crate) fn advance_session<A: Stores>(
+    session: &mut Session<A>,
+    app: &mut SessionApp<A>,
+    input: &mut InputMap,
+    cursor: &mut CursorCapture,
+    size: (u32, u32),
+    #[cfg(feature = "egui")] ui: Option<&loam_egui::egui::Context>,
+    simulate: impl FnOnce(&mut Session<A>, bool) -> Result<(), PhaseError>,
+) -> Result<(), HostError> {
+    let aspect = input
+        .display_aspect()
+        .unwrap_or(size.0 as f32 / size.1 as f32);
+    session.views_mut().root_mut().eye.aspect = aspect;
+    let gathered = input.take();
+    let sender = app.commands.sender();
+    let was_faulted = session.faulted_phase().is_some();
+    if app
+        .fault_recovery
+        .is_some_and(|action| was_faulted && gathered.pressed(action))
+    {
+        sender.reset();
+    }
+    if let Some(hook) = app.input.as_mut() {
+        hook(&InputHook {
+            session,
+            input: &gathered,
+            #[cfg(feature = "egui")]
+            ui,
+            size,
+            sender: &sender,
+        });
+    }
+    let result = (|| -> Result<(), HostError> {
+        {
+            let _dispatch = frame_trace::scope("dispatch");
+            app.boundary(session, gathered)?;
+        }
+        session.views_mut().root_mut().eye.aspect = aspect;
+        {
+            let _simulation = frame_trace::scope("simulation");
+            let recovered = was_faulted && session.faulted_phase().is_none();
+            simulate(session, recovered)?;
+        }
+        session.views_mut().root_mut().eye.aspect = aspect;
+        Ok(())
+    })();
+    input.reclaim(session.take_input());
+    result?;
+    #[cfg(feature = "egui")]
+    let typing = ui.is_some_and(|context| context.wants_keyboard_input());
+    #[cfg(not(feature = "egui"))]
+    let typing = false;
+    let views = session.views();
+    let wanted = views.get(views.root()).and_then(|image| image.rig.cursor());
+    cursor.follow_rig(wanted.filter(|_| !typing));
+    Ok(())
+}
+
 impl<A: Stores> Inner<A> {
     fn advance(
         &mut self,
@@ -408,53 +467,31 @@ impl<A: Stores> Inner<A> {
             session,
             executor,
             input,
+            cursor,
             timestep,
             app,
             ..
         } = self;
-        let aspect = input
-            .display_aspect()
-            .unwrap_or(size.0 as f32 / size.1 as f32);
-        session.views_mut().root_mut().eye.aspect = aspect;
-        let gathered = input.take();
-        let sender = app.commands.sender();
-        let was_faulted = session.faulted_phase().is_some();
-        if app
-            .fault_recovery
-            .is_some_and(|action| was_faulted && gathered.pressed(action))
-        {
-            sender.reset();
-        }
-        if let Some(hook) = app.input.as_mut() {
-            hook(&InputHook {
-                session,
-                input: &gathered,
-                #[cfg(feature = "egui")]
-                ui,
-                size,
-                sender: &sender,
-            });
-        }
-        let result = (|| {
-            {
-                let _dispatch = frame_trace::scope("dispatch");
-                app.boundary(session, gathered)?;
-            }
-            session.views_mut().root_mut().eye.aspect = aspect;
-            if let Some(timestep) = timestep.as_mut() {
-                if was_faulted && session.faulted_phase().is_none() {
-                    timestep.reset_clock(now);
+        advance_session(
+            session,
+            app,
+            input,
+            cursor,
+            size,
+            #[cfg(feature = "egui")]
+            ui,
+            |session, recovered| {
+                if let Some(timestep) = timestep.as_mut() {
+                    if recovered {
+                        timestep.reset_clock(now);
+                    }
+                    for _ in timestep.advance(now) {
+                        session.tick_with(executor.as_ref())?;
+                    }
                 }
-                let _simulation = frame_trace::scope("simulation");
-                for _ in timestep.advance(now) {
-                    session.tick_with(executor.as_ref())?;
-                }
-            }
-            session.views_mut().root_mut().eye.aspect = aspect;
-            Ok(())
-        })();
-        input.reclaim(session.take_input());
-        result
+                Ok::<_, PhaseError>(())
+            },
+        )
     }
 
     fn prepare(
@@ -535,19 +572,6 @@ impl<A: Stores> Inner<A> {
                     ([free.x * scale, free.y * scale], scale)
                 });
                 {
-                    let root = self.session.views().root();
-                    let wanted = self
-                        .session
-                        .views()
-                        .get(root)
-                        .and_then(|image| image.rig.cursor());
-                    #[cfg(feature = "egui")]
-                    let typing = context
-                        .as_ref()
-                        .is_some_and(|context| context.wants_keyboard_input());
-                    #[cfg(not(feature = "egui"))]
-                    let typing = false;
-                    self.cursor.follow_rig(wanted.filter(|_| !typing));
                     let sender = self.app.commands.sender();
                     let (hook, captures, cursor, background, posts) = (
                         self.app.frame.as_mut(),

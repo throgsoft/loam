@@ -2,9 +2,10 @@ use loam_console::{render_line, CommandLine, LineKind};
 use loam_runtime::host::HostError;
 use loam_runtime::{Bindings, Key, PointerButton, Publication, Session, Stores};
 
-use super::app::{InputHook, SessionApp};
+use super::app::SessionApp;
 use super::console::SessionConsole;
 use super::cursor::CursorCapture;
+use super::frame::advance_session;
 use super::input::{dom_key, InputMap};
 use crate::script::{ScriptDriver, ScriptStatus, ScriptStep};
 
@@ -26,7 +27,6 @@ pub fn run_script<A: Stores>(
         .collect::<Result<Vec<_>, _>>()?;
     session.capture_initial();
     let dt = f64::from(session.config().dt().unwrap_or(0.0));
-    let aspect = FRAME.0 as f32 / FRAME.1 as f32;
     let mut input = InputMap::default();
     input.resize(FRAME.0, FRAME.1, 1.0);
     let mut cursor = CursorCapture::new();
@@ -36,31 +36,19 @@ pub fn run_script<A: Stores>(
         let step = u32::try_from(frame)
             .map_err(|_| HostError::Host(format!("frame {frame} is past the last step")))?;
         input.fix_clock(f64::from(step) * dt);
-        session.views_mut().root_mut().eye.aspect = aspect;
-        let gathered = input.take();
-        let sender = app.commands.sender();
-        if let Some(hook) = app.input.as_mut() {
-            hook(&InputHook {
-                session,
-                input: &gathered,
-                #[cfg(feature = "egui")]
-                ui: None,
-                size: FRAME,
-                sender: &sender,
-            });
-        }
-        let stepped = app.boundary(session, gathered).and_then(|_| {
-            session.views_mut().root_mut().eye.aspect = aspect;
-            session.tick().map_err(HostError::from)
-        });
-        input.reclaim(session.take_input());
-        stepped?;
+        advance_session(
+            session,
+            app,
+            &mut input,
+            &mut cursor,
+            FRAME,
+            #[cfg(feature = "egui")]
+            None,
+            |session, _| session.tick(),
+        )?;
         if let Some((number, error)) = app.console.take_refused() {
             return Err(HostError::Host(format!("script line {number}: {error}")));
         }
-        session.views_mut().root_mut().eye.aspect = aspect;
-        let views = session.views();
-        cursor.follow_rig(views.get(views.root()).and_then(|image| image.rig.cursor()));
         if let Some(locked) = cursor.take_request() {
             cursor.applied(locked);
             input.set_cursor_locked(locked);
