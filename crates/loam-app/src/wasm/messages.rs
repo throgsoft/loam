@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::time::Duration;
 use wasm_bindgen::{JsCast, JsValue};
 
-use super::input_queue::{InputMessage, PointerPhase};
+use crate::session::input::message::{InputMessage, PointerPhase};
 
 /// `Ok(None)` covers both the `init` kind, which the caller handles, and unknown
 /// kinds, which are logged and dropped.

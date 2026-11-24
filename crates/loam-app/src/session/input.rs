@@ -4,7 +4,10 @@ use loam_runtime::{
     ActionEvent, Bindings, Input, Key, Pointer, PointerButton, PointerPhase as RuntimePointerPhase,
 };
 
-use crate::wasm::input_queue::{InputMessage, PointerPhase};
+pub mod message;
+pub mod queue;
+
+use message::{InputMessage, PointerPhase};
 
 pub struct InputMap {
     input: Input,

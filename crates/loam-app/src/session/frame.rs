@@ -190,7 +190,7 @@ impl<A: Stores> Frame<A> {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn apply_message(
         &mut self,
-        message: &crate::wasm::input_queue::InputMessage,
+        message: &super::input::message::InputMessage,
         consumed: bool,
     ) {
         super::input::apply(
@@ -202,8 +202,8 @@ impl<A: Stores> Frame<A> {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn observe_message(&mut self, message: &crate::wasm::input_queue::InputMessage) {
-        use crate::wasm::input_queue::InputMessage;
+    pub(crate) fn observe_message(&mut self, message: &super::input::message::InputMessage) {
+        use super::input::message::InputMessage;
 
         match message {
             InputMessage::Key {

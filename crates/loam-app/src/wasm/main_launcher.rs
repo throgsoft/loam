@@ -9,7 +9,7 @@ use web_sys::{
     WorkerOptions, WorkerType,
 };
 
-use super::input_queue::MESSAGE_QUEUE_CAPACITY;
+use crate::session::input::queue::MESSAGE_QUEUE_CAPACITY;
 use crate::{LaunchMode, WasmConfig};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1046,6 +1046,7 @@ fn install_dom_input_forwarders(
         let cb = Closure::wrap(Box::new(move |ev: web_sys::WheelEvent| {
             let (dx, dy) = match ev.delta_mode() {
                 1 => (ev.delta_x() as f32, ev.delta_y() as f32),
+                // 100 pixels per wheel line, also applied to page-mode deltas.
                 _ => (ev.delta_x() as f32 / 100.0, ev.delta_y() as f32 / 100.0),
             };
             ev.prevent_default();

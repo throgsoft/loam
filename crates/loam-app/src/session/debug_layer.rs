@@ -608,7 +608,7 @@ mod tests {
     use loam_render::device::FeatureRequest;
     use wgpu::{BackendOptions, Backends, Instance, InstanceDescriptor, NoopBackendOptions};
 
-    use crate::wasm::input_queue::PointerPhase;
+    use crate::session::input::message::PointerPhase;
 
     use super::*;
 

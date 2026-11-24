@@ -22,7 +22,8 @@ use super::frame::{failed, Frame};
 use super::input::TouchCapture;
 use super::pacing::Pace;
 use super::surface::{Attempt, SurfaceHost};
-use crate::wasm::input_queue::{self, InputMessage};
+use crate::session::input::message::{InputMessage, PointerPhase};
+use crate::session::input::queue;
 use crate::wasm::messages;
 use crate::wasm::{install_logging_idempotent, post_failure, worker_scope, Endpoint};
 use crate::{args::Args, WasmConfig};
@@ -117,10 +118,10 @@ fn set_paused(endpoint: &Endpoint, flag: &'static std::thread::LocalKey<Cell<boo
     flag.with(|flag| flag.set(paused));
     match (was_input_paused, input_paused()) {
         (false, true) => {
-            input_queue::enqueue(InputMessage::Focus(false));
+            queue::enqueue(InputMessage::Focus(false));
             post_cursor_request(endpoint, false);
         }
-        (true, false) => input_queue::enqueue(InputMessage::Focus(true)),
+        (true, false) => queue::enqueue(InputMessage::Focus(true)),
         _ => {}
     }
     if !paused {
@@ -344,7 +345,7 @@ where
         return Ok(());
     }
     if let Some(message) = messages::parse_non_init(&data)? {
-        input_queue::enqueue(message);
+        queue::enqueue(message);
     }
     Ok(())
 }
@@ -667,7 +668,7 @@ fn feed_layer(
         } => {
             let pos = egui::pos2(*x, *y) / context.zoom_factor();
             let pointer_before = touches.is_pointer(*id);
-            let over_ui = *phase == crate::wasm::input_queue::PointerPhase::Down
+            let over_ui = *phase == PointerPhase::Down
                 && context.layer_id_at(pos).is_some_and(|layer| {
                     layer.order != egui::Order::Background
                         || !context.available_rect().contains(pos)
@@ -678,12 +679,12 @@ fn feed_layer(
                 return false;
             }
             let touch_phase = match phase {
-                crate::wasm::input_queue::PointerPhase::Down => egui::TouchPhase::Start,
-                crate::wasm::input_queue::PointerPhase::Move => egui::TouchPhase::Move,
-                crate::wasm::input_queue::PointerPhase::Up => egui::TouchPhase::End,
-                crate::wasm::input_queue::PointerPhase::Cancel => egui::TouchPhase::Cancel,
+                PointerPhase::Down => egui::TouchPhase::Start,
+                PointerPhase::Move => egui::TouchPhase::Move,
+                PointerPhase::Up => egui::TouchPhase::End,
+                PointerPhase::Cancel => egui::TouchPhase::Cancel,
             };
-            if *phase == crate::wasm::input_queue::PointerPhase::Cancel {
+            if *phase == PointerPhase::Cancel {
                 layer.cancel_touch(*id, pos, pointer);
             } else {
                 layer.push(egui::Event::Touch {
@@ -696,7 +697,7 @@ fn feed_layer(
             }
             if pointer {
                 match phase {
-                    crate::wasm::input_queue::PointerPhase::Down => {
+                    PointerPhase::Down => {
                         layer.push(egui::Event::PointerMoved(pos));
                         layer.push(egui::Event::PointerButton {
                             pos,
@@ -705,10 +706,10 @@ fn feed_layer(
                             modifiers: layer.modifiers(),
                         });
                     }
-                    crate::wasm::input_queue::PointerPhase::Move => {
+                    PointerPhase::Move => {
                         layer.push(egui::Event::PointerMoved(pos));
                     }
-                    crate::wasm::input_queue::PointerPhase::Up => {
+                    PointerPhase::Up => {
                         layer.push(egui::Event::PointerButton {
                             pos,
                             button: egui::PointerButton::Primary,
@@ -717,7 +718,7 @@ fn feed_layer(
                         });
                         layer.push(egui::Event::PointerGone);
                     }
-                    crate::wasm::input_queue::PointerPhase::Cancel => {}
+                    PointerPhase::Cancel => {}
                 }
             }
             consumed
@@ -818,7 +819,7 @@ impl<A: Stores> Worker<A> {
     }
 
     fn animate(&mut self) -> Result<Attempt, HostError> {
-        input_queue::drain_messages_into(&mut self.messages);
+        queue::drain_messages_into(&mut self.messages);
         while let Some(message) = self.messages.pop_front() {
             self.apply(message);
         }

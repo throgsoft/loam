@@ -23,11 +23,6 @@ pub mod session;
 pub mod trace;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod wasm {
-    #[path = "input_queue.rs"]
-    pub mod input_queue;
-}
 
 #[cfg(feature = "egui")]
 pub use loam_egui::egui;

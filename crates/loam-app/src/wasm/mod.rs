@@ -1,7 +1,6 @@
 //! Requires WebGPU. The session runs in a module worker on a transferred OffscreenCanvas, or on
 //! the page itself in Firefox, which copies a worker's canvas back on every page repaint.
 
-pub mod input_queue;
 pub mod launch;
 pub mod main_launcher;
 pub mod messages;

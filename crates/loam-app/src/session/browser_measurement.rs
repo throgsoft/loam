@@ -1,5 +1,5 @@
 use crate::args::Args;
-use crate::wasm::input_queue::InputMessage;
+use crate::session::input::message::InputMessage;
 use loam_runtime::PhaseError;
 use web_time::Instant;
 
