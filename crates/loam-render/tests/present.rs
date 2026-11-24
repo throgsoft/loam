@@ -1,14 +1,17 @@
-use glam::{Vec2, Vec4};
+use glam::{Vec2, Vec3, Vec4};
 use loam_math::EuclideanR4;
 use loam_render::device::{FeatureRequest, GpuContext};
 use loam_render::pass::{ColorLoad, FramePass, PublishedFrame};
 use loam_render::present::Presenter;
-use loam_render::SkyGroundPass;
+use loam_render::{HyperslicePass, SkyGroundPass};
 use loam_runtime::{
-    Backdrop, DomainBuilder, Entity, Eye, Ground, Instance, LogCapacity, Material, Overlay, Phase,
-    PointRecord, Pose, PreparedGeometry, Projection4, Publication, SegmentRecord, Session,
-    SimConfig, Sky, SpawnBundle, ViewSpec,
+    Backdrop, DomainBuilder, Entity, Eye, Ground, Input, Instance, LogCapacity, Material, Overlay,
+    Phase, PointRecord, Pose, PreparedGeometry, Projection4, Publication, Section4, SegmentRecord,
+    Session, SimConfig, Sky, SpawnBundle, ViewSpec,
 };
+use loam_shape::polytope::Polytope4;
+use loam_shape::FieldShape;
+use loam_time::par::Sequential;
 use wgpu::*;
 
 const SIZE: u32 = 128;
@@ -76,10 +79,14 @@ fn landmark_scene() -> (Session<Landmarks>, [Entity; 1]) {
 }
 
 fn render(publication: &Publication<()>) -> Vec<u8> {
-    render_with(publication, Vec::new())
+    render_with(publication, Eye::default(), Vec::new())
 }
 
-fn render_with(publication: &Publication<()>, passes: Vec<Box<dyn FramePass>>) -> Vec<u8> {
+fn render_with(
+    publication: &Publication<()>,
+    eye: Eye,
+    passes: Vec<Box<dyn FramePass>>,
+) -> Vec<u8> {
     let gpu = pollster::block_on(GpuContext::new(
         wgpu::Instance::default(),
         FeatureRequest::default(),
@@ -111,7 +118,7 @@ fn render_with(publication: &Publication<()>, passes: Vec<Box<dyn FramePass>>) -
         device,
         queue,
         &PublishedFrame {
-            eye: Eye::default(),
+            eye,
             viewport_px: Vec2::splat(SIZE as f32),
             pixels_per_point: 1.0,
             text_origin_px: [0.0; 2],
@@ -210,6 +217,100 @@ fn landmarks_gpu_probe() {
     );
 }
 
+// Farther from w = 0 than the ball's radius, so a pass that cuts at w = 0 misses the ball.
+const CUT: f32 = 1.0;
+const BALL_RADIUS: f32 = 0.5;
+const TESSERACT_AT: Vec4 = Vec4::new(-2.0, 0.5, -5.0, CUT);
+const BALL_AT: Vec4 = Vec4::new(2.0, -0.5, -4.0, CUT);
+// Rolled and off every axis, so a pass that drops part of the eye draws the solids elsewhere.
+const EYE_AT: [f32; 3] = [1.0, 2.0, 2.0];
+const EYE_TARGET: [f32; 3] = [0.0, 0.0, -4.5];
+const EYE_UP: [f32; 3] = [1.0, 0.5, 0.0];
+const RED: [f32; 4] = [0.9, 0.1, 0.1, 1.0];
+const GREEN: [f32; 4] = [0.1, 0.9, 0.1, 1.0];
+// Shading dims a solid and keeps its hue, so its leading channel stays clear of the others.
+const HUE_MIN: u8 = 30;
+const BACKGROUND_TOLERANCE: u8 = 2;
+
+#[test]
+#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+fn section_fill_and_field_gpu_probe() {
+    let mut session = Session::new(Landmarks::default(), SimConfig::default());
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let tesseract = session.prepare(PreparedGeometry::Polytope4 {
+        polytope: Polytope4::Tesseract,
+        scale: 1.0,
+    });
+    let ball = session.prepare(PreparedGeometry::Field {
+        shape: FieldShape::ThreeSphere,
+        size: BALL_RADIUS,
+    });
+    let red = session.add_material(Material::flat(RED));
+    let green = session.add_material(Material::flat(GREEN));
+    let root = session.views().root_id();
+    let solids = session.dispatch(|d| {
+        let walker = d
+            .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
+            .unwrap();
+        let mut section = ViewSpec::new(root, walker, Section4 { w: CUT });
+        section.edges = false;
+        section.section_edges = false;
+        section.fields = true;
+        d.domains.typed(r4).unwrap().add_view(section).unwrap();
+        let mut solid = |at: Vec4, instance: Instance| {
+            d.spawn(SpawnBundle::new().at(r4, Pose::at(at)).instance(instance))
+                .unwrap()
+        };
+        let filled = solid(TESSERACT_AT, Instance::new(tesseract, red).sectioned(red));
+        let field = solid(BALL_AT, Instance::new(ball, green));
+        [("section fill", filled, 0), ("field solid", field, 1)]
+    });
+    session.views_mut().root_mut().eye = Eye::looking_at(EYE_AT, EYE_TARGET, EYE_UP);
+    session.boundary(Input::default()).unwrap();
+    session.tick(&Sequential).unwrap();
+    let mut publication = Publication::default();
+    session.publish(&mut publication, 1.0).unwrap();
+
+    let pixels = render_with(
+        &publication,
+        session.views().root().eye,
+        vec![Box::new(HyperslicePass::with_ground())],
+    );
+    let mut between = Vec3::ZERO;
+    for (name, solid, lead) in solids {
+        let image_point = publication.views[0]
+            .records
+            .instances
+            .rows()
+            .iter()
+            .find(|record| record.entity == solid)
+            .map(|record| record.image_point)
+            .expect("solid published");
+        between += Vec3::from(image_point) / 2.0;
+        let at = pixel(session.views().ndc(image_point).expect("solid in front"));
+        let drawn = texel(&pixels, at);
+        assert!(
+            (0..3).all(|channel| {
+                channel == lead || drawn[lead].saturating_sub(drawn[channel]) >= HUE_MIN
+            }),
+            "the {name} at {at:?} shows {drawn:?}, not its own color"
+        );
+    }
+    let at = pixel(
+        session
+            .views()
+            .ndc(between.to_array())
+            .expect("midpoint in front"),
+    );
+    let empty = texel(&pixels, at);
+    let background = [BACKGROUND.r, BACKGROUND.g, BACKGROUND.b].map(|c| (c * 255.0).round() as u8);
+    assert!(
+        (0..3).all(|channel| empty[channel].abs_diff(background[channel]) <= BACKGROUND_TOLERANCE),
+        "the pixel at {at:?} between the solids shows {empty:?}, not the background {background:?}"
+    );
+}
+
 const OVERLAY_LINE_AT: [f32; 3] = [0.0, 0.5, -4.0];
 const OVERLAY_POINT_AT: [f32; 3] = [0.0, -0.5, -4.0];
 const SKY_PIXEL: (u32, u32) = (64, 8);
@@ -290,7 +391,7 @@ fn sky_pass_without_backdrop_gpu_probe() {
     let own = SkyGroundPass::new(HIDDEN_GROUND);
     own.publish(&Eye::default(), RED_SKY, HIDDEN_GROUND);
 
-    let pixels = render_with(&Publication::default(), vec![Box::new(own)]);
+    let pixels = render_with(&Publication::default(), Eye::default(), vec![Box::new(own)]);
     let sky = texel(&pixels, SKY_PIXEL);
     assert!(
         sky[0] >= INK_MIN,
