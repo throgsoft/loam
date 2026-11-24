@@ -50,10 +50,6 @@ impl FixedTimestep {
         self.dt
     }
 
-    pub fn dt_seconds(&self) -> f32 {
-        self.dt.as_secs_f32()
-    }
-
     /// Fraction of the pending tick elapsed, rounded to `[0, 1]`.
     pub fn alpha(&self) -> f32 {
         let a = self.accumulator.as_secs_f64() / self.dt.as_secs_f64();

@@ -250,7 +250,6 @@ mod tests {
                     elapsed: Duration::from_micros(*us),
                 })
                 .collect(),
-            ..Default::default()
         }
     }
 
