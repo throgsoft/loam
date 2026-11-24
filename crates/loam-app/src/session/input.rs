@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn a_browser_key_message_reaches_the_session_as_its_bound_action() {
+    fn browser_key_message() {
         let bindings = Bindings::new().key(Key::Letter('w'), WALK);
         let mut session = Session::new(Watched::default(), SimConfig::default());
         session.system(Phase::Dispatch, "watch", |ctx: Ctx<'_, Watched>| {
@@ -700,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn the_boundary_stamp_follows_the_pointer_clock_of_host_messages() {
+    fn boundary_stamp() {
         let bindings = Bindings::new();
         let mut map = InputMap::default();
         map.resize(800, 600, 1.0);
@@ -727,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn a_warmed_frame_of_host_input_conversion_asks_the_allocator_for_nothing() {
+    fn warm_frame_allocation() {
         let bindings = Bindings::new().key(Key::Letter('w'), WALK);
         let mut session = Session::new(Watched::default(), SimConfig::default());
         let mut map = InputMap::default();
@@ -761,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reclaimed_input_carries_no_host_messages_from_the_previous_boundary() {
+    fn reclaimed_input() {
         let mut map = InputMap::default();
         map.host_message("reset", &[]);
         let first = map.take();
@@ -775,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn pointers_map_to_the_shown_canvas_while_its_physical_size_lags() {
+    fn lagging_canvas_size() {
         let mut map = InputMap::default();
         map.resize(1600, 900, 1.0);
         map.set_display(2560.0, 900.0);
@@ -785,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn camera_turns_do_not_depend_on_viewport_shape_or_pixel_scale() {
+    fn camera_turn_across_viewports() {
         let turns = [(640, 480, 1.0), (1280, 480, 1.0), (1280, 960, 2.0)].map(
             |(width, height, scale): (u32, u32, f32)| {
                 let mut map = InputMap::default();
@@ -819,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_look_requires_a_confirmed_lock_and_survives_a_leased_input() {
+    fn raw_look() {
         let mut map = InputMap::default();
         map.resize(800, 400, 2.0);
         map.raw_motion(20.0, 10.0);
@@ -837,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn a_release_the_overlay_consumed_still_ends_the_key_or_pointer_hold_the_scene_saw_begin() {
+    fn release_consumed_by_overlay() {
         let bindings = Bindings::new().key(Key::Letter('w'), WALK);
         let mut map = InputMap::default();
         map.host_action(&bindings, Key::Letter('w'), true, false);
@@ -866,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_touch_capture_keeps_its_first_owner_and_source_times() {
+    fn browser_touch_capture() {
         let bindings = Bindings::new();
         let mut map = InputMap::default();
         map.resize(800, 600, 1.0);

@@ -117,7 +117,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn alt_edges_and_platform_release_preserve_explicit_cursor_control() {
+    fn alt_edges_and_platform_release() {
         let mut cursor = CursorCapture::new();
         cursor.capture(true, CursorPolicy::Toggle);
         assert_eq!(cursor.take_request(), Some(true));

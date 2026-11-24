@@ -42,7 +42,7 @@ impl AppCommand<Probe> for Mark {
 }
 
 #[test]
-fn a_headless_launch_resets_to_the_setup_state_or_the_first_boundary_or_the_setups_own_snapshot() {
+fn reset_target() {
     const MARK: ActionId = ActionId("mark");
     let launch_then_reset = |setup: fn(&mut Session<Probe>, DomainHandle<EuclideanR4>)| {
         let (mut session, r4) = session();

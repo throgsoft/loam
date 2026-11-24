@@ -15,7 +15,7 @@ loam_runtime::stores! {
 const SHOW: ActionId = ActionId("show");
 
 #[test]
-fn a_key_a_console_verb_and_the_sender_change_one_setting_at_the_boundary_and_a_bad_argument_changes_nothing(
+fn key_verb_and_sender(
 ) {
     let mut session = Session::new(Flags::default(), SimConfig::default());
     session.toggle_on(SHOW, |app| app.shown.get_mut());

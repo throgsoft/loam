@@ -87,7 +87,7 @@ fn run(executor: &dyn Executor) -> u64 {
 }
 
 #[test]
-fn pairs_tested_on_threads_wake_and_land_bit_for_bit_on_the_serial_result() {
+fn threaded_pairs() {
     let serial = run(&Sequential);
     let threads = ScopedThreads::default();
     assert!(

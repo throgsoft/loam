@@ -61,7 +61,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_capped_loop_anchors_on_the_deadline_it_waited_for_not_on_the_late_wake_up() {
+    fn late_wake_up() {
         let period = Duration::from_millis(10);
         let mut pacer = Pacer::default();
         pacer.set_target_fps(100.0);

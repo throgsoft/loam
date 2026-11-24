@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 #[test]
-fn overflow_releases_held_input_keeps_controls_and_drops_stale_pointer_bursts() {
+fn overflow() {
     enqueue(InputMessage::Resize {
         width: 400,
         height: 300,
@@ -149,7 +149,7 @@ fn pointer(id: u64, phase: PointerPhase, x: f32, millis: u64) -> InputMessage {
 }
 
 #[test]
-fn a_streaming_host_topic_never_purges_a_queued_one_shot_message() {
+fn streaming_topic_beside_one_shot() {
     enqueue(InputMessage::Host {
         topic: "reset".into(),
         values: Vec::new(),
@@ -174,7 +174,7 @@ fn a_streaming_host_topic_never_purges_a_queued_one_shot_message() {
 }
 
 #[test]
-fn coalesced_pointer_motion_keeps_the_latest_sample_and_never_crosses_a_release() {
+fn coalesced_pointer_motion() {
     enqueue(pointer(1, PointerPhase::Down, 0.0, 0));
     enqueue(pointer(1, PointerPhase::Move, 10.0, 10));
     enqueue(pointer(2, PointerPhase::Move, 5.0, 12));

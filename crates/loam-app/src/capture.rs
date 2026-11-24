@@ -1146,7 +1146,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_frame_a_hair_early_is_taken_and_one_a_half_period_early_is_not() {
+    fn early_frame() {
         let interval = Duration::from_micros(33_333);
         assert!(interval_elapsed(interval, interval));
         assert!(interval_elapsed(
@@ -1160,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scaled_capture_keeps_the_frame_aspect_and_refuses_an_empty_image() {
+    fn scaled_capture() {
         assert_eq!(scaled_dims(1920, 1080, Some(720)).unwrap(), (720, 405));
         assert_eq!(scaled_dims(1080, 1920, Some(360)).unwrap(), (360, 640));
         assert_eq!(scaled_dims(800, 600, None).unwrap(), (800, 600));

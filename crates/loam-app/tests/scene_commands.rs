@@ -64,7 +64,7 @@ fn root_rig(session: &Session<Bare>) -> Rig {
 }
 
 #[test]
-fn a_floor_or_ground_write_on_a_scene_without_a_backdrop_is_refused_and_adds_none() {
+fn ground_write_without_backdrop() {
     for line in ["floor off", "ground fog 0.5"] {
         let mut session = scene(None, Rig::Manual);
 
@@ -84,7 +84,7 @@ fn a_floor_or_ground_write_on_a_scene_without_a_backdrop_is_refused_and_adds_non
 }
 
 #[test]
-fn a_ground_color_write_changes_only_that_color_and_floor_then_shows_the_hidden_floor() {
+fn ground_color_write() {
     let mut session = scene(Some(DUSK), Rig::Manual);
 
     let ran = run(&mut session, "0 ground dark 0.25 0.5 0.75\n2 floor\n");
@@ -102,7 +102,7 @@ fn a_ground_color_write_changes_only_that_color_and_floor_then_shows_the_hidden_
 }
 
 #[test]
-fn camera_writes_reach_a_pair_and_are_refused_by_a_rig_without_the_camera_they_name() {
+fn camera_writes() {
     let orbit = Rig::Orbit(Orbit::default());
     for line in [
         "camera",

@@ -158,7 +158,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn launch_arguments_parse_from_a_native_command_line_and_from_a_page_query_and_fragment() {
+    fn command_line_and_page_url() {
         let args = Args::from_argv([
             "--seed=42",
             "sub",

@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn the_unscoped_row_is_the_frame_time_its_direct_sections_do_not_account_for() {
+    fn unscoped_row() {
         type Sections = &'static [(&'static str, u64)];
         let cases: [(Sections, Option<u64>); 5] = [
             (&[("frame", 4000), ("presentation", 130)], Some(3870)),

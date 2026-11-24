@@ -68,7 +68,7 @@ fn run(source: &str) -> Run {
 }
 
 #[test]
-fn a_script_of_accepted_lines_runs_to_its_end_and_applies_them() {
+fn accepted_lines() {
     let ran = run("# pick twice\n0 active 1\n\n2 active 2\n");
 
     assert_eq!(ran.outcome, Ok(()));
@@ -76,7 +76,7 @@ fn a_script_of_accepted_lines_runs_to_its_end_and_applies_them() {
 }
 
 #[test]
-fn a_command_the_session_rejects_fails_the_run_naming_its_script_line() {
+fn rejected_command() {
     let ran = run("# the slots end at 2\n0 active 1\n\n1 active 9\n20 active 2\n");
 
     let error = ran.outcome.expect_err("the rejected command passed");
@@ -88,7 +88,7 @@ fn a_command_the_session_rejects_fails_the_run_naming_its_script_line() {
 }
 
 #[test]
-fn a_console_handler_that_refuses_its_argument_fails_the_run_naming_its_script_line() {
+fn refused_argument() {
     let ran = run("0 active 1\n# not a number\n1 active x\n");
 
     let error = ran.outcome.expect_err("the refused line passed");
@@ -99,7 +99,7 @@ fn a_console_handler_that_refuses_its_argument_fails_the_run_naming_its_script_l
 }
 
 #[test]
-fn a_line_no_frame_could_run_fails_before_the_first_frame_naming_its_line() {
+fn unreachable_line() {
     for (source, line) in [
         ("0 active 1\n\n5 bogus\n", "line 3"),
         ("0 active 1\n5 key Nope down\n", "line 2"),

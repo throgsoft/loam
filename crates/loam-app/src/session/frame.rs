@@ -813,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn on_change_draws_only_the_frames_whose_content_or_scale_changed() {
+    fn on_change_content_or_scale() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let hooked = Arc::new(AtomicU32::new(0));
@@ -856,7 +856,7 @@ mod tests {
 
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     #[test]
-    fn on_change_draws_the_still_frame_whose_hook_queued_a_capture_request() {
+    fn on_change_capture_request() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let mut frames = 0_u32;
@@ -884,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn a_registered_pass_records_again_after_the_device_is_recovered() {
+    fn pass_after_device_recovery() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let recorded = Arc::new(AtomicU32::new(0));
@@ -916,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn a_post_from_one_frame_is_not_flushed_again_on_the_next() {
+    fn post_across_frames() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let mut frames = 0_u32;
@@ -947,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_between_ticks_draws_the_body_at_the_elapsed_fraction_of_the_tick() {
+    fn frame_between_ticks() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let mut session = Session::new(Bare::default(), SimConfig::default());
@@ -1001,7 +1001,7 @@ mod tests {
     }
 
     #[test]
-    fn a_publication_phase_eye_write_keeps_the_frame_aspect() {
+    fn publication_eye_write() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let app = host::<Bare>("aspect");
@@ -1031,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn installed_reset_key_recovers_the_fault_and_restores_cursor_capture_once() {
+    fn reset_key_after_fault() {
         const RESET: ActionId = ActionId("reset");
 
         let gpu = noop_gpu();
@@ -1144,7 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shell_asks_for_the_cursor_once_per_change_in_a_free_rig_and_never_overrides_a_hooks_own_capture(
+    fn cursor_request_in_free_rig(
     ) {
         const RESET: ActionId = ActionId("reset");
         const LAND: ActionId = ActionId("land");
@@ -1253,7 +1253,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scripted_line_reaches_its_verb_on_the_frame_the_script_names() {
+    fn scripted_line() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let directory = tempfile::tempdir().expect("temp dir");
@@ -1304,7 +1304,7 @@ mod tests {
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     #[test]
     #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-    fn a_hook_that_stops_its_capture_finishes_the_file_gpu_probe() {
+    fn hook_stopped_capture_gpu_probe() {
         let instance = Instance::default();
         let gpu = pollster::block_on(GpuContext::new(instance, FeatureRequest::default(), None))
             .expect("a wgpu adapter");
@@ -1357,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn an_on_published_hook_reads_the_value_the_session_wrote_for_that_frame() {
+    fn on_published_hook() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let mut session = Session::new(Valued::default(), SimConfig::default());
@@ -1421,7 +1421,7 @@ mod tests {
 
     #[cfg(not(feature = "egui"))]
     #[test]
-    fn text_published_with_no_way_to_draw_it_is_reported_once_and_never_when_a_font_is_given() {
+    fn text_without_font() {
         let silent = notes_after_three_frames(false, host("plain"));
         assert_eq!(
             notes_after_three_frames(true, host("fontless")),

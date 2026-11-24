@@ -626,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn canceled_touch_never_clicks_and_later_input_lands_in_the_next_pass() {
+    fn canceled_touch() {
         struct Observed {
             a: egui::Rect,
             b: egui::Rect,

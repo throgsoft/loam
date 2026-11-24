@@ -70,7 +70,7 @@ fn run(executor: &dyn Executor) -> u64 {
 }
 
 #[test]
-fn islands_solved_through_the_shim_land_bit_for_bit_on_the_serial_result() {
+fn islands_through_shim() {
     let serial = run(&Sequential);
     let threads = ScopedThreads::default();
     assert!(

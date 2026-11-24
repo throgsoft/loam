@@ -100,7 +100,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_browser_wheel_notch_scrolls_one_line() {
+    fn wheel_notch() {
         // A browser in pixel mode reports one wheel notch as a deltaY of 100.
         assert_eq!(wheel_lines([0.0, 100.0]), [0.0, 1.0]);
     }

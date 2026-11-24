@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn a_console_commands_session_result_reaches_the_console_at_the_next_boundary() {
+    fn session_result() {
         let mut session = Session::new(Counted::default(), SimConfig::default());
         let mut app =
             SessionApp::with_args(HostConfig::new("console", Bindings::new()), Args::default());
@@ -551,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_command_reaches_the_console_whoever_submitted_it_and_a_quiet_success_does_not() {
+    fn refused_command() {
         let mut session = Session::new(Counted::default(), SimConfig::default());
         session.system(Phase::Dispatch, "keys", |ctx: Ctx<'_, Counted>| {
             ctx.commands

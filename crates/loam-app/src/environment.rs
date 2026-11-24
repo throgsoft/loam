@@ -168,7 +168,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_parse_rejects_out_of_range_and_malformed_arguments() {
+    fn bad_arguments() {
         let mut env = Environment::default();
         for line in [
             vec!["fog", "-0.1"],
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn ground_reset_keeps_a_page_set_sky() {
+    fn ground_reset_with_page_sky() {
         let sky = Sky {
             below: [0.9, 0.8, 0.7],
             above: [0.6, 0.5, 0.4],

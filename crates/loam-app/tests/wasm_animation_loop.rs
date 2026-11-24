@@ -9,7 +9,7 @@ mod host {
 use animation::{Lifecycle, Next};
 
 #[test]
-fn recovery_schedules_once_after_success_and_never_while_paused_or_failed() {
+fn recovery_scheduling() {
     let mut animated = 0;
     let mut scheduled = 0;
     let mut lost = true;
@@ -71,7 +71,7 @@ fn recovery_schedules_once_after_success_and_never_while_paused_or_failed() {
 }
 
 #[test]
-fn showing_the_tab_does_not_restart_a_paused_embed_and_resuming_does_not_restart_a_hidden_tab() {
+fn paused_embed_and_hidden_tab() {
     let unhalt = |before: (bool, bool), after: (bool, bool)| {
         animation::resumed(
             before.0 || before.1,

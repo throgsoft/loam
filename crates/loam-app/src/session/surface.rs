@@ -226,7 +226,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn surface_configuration_registers_only_a_supported_gamma_view() {
+    fn gamma_view() {
         let srgb = TextureFormat::Bgra8UnormSrgb;
         let gamma = TextureFormat::Bgra8Unorm;
         for (format, flags, expected) in [
