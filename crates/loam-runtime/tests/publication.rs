@@ -1,4 +1,11 @@
-use loam_runtime::{DomainError, Phase, PhaseError, Publication, Session, SimConfig};
+use loam_math::{EuclideanR4, Space};
+use loam_runtime::{
+    DomainBuilder, DomainError, Instance, LogCapacity, Material, Phase, PhaseError, Pose,
+    PreparedGeometry, Publication, Section4, Session, SimConfig, SpawnBundle, ViewSpec,
+};
+use loam_shape::polytope::Polytope4;
+
+type Vec4 = <EuclideanR4 as Space>::Point;
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -50,4 +57,91 @@ fn the_published_value_is_what_the_latest_value_system_wrote_after_the_publicati
         Some(failure),
         "a failed value system left the session unfaulted"
     );
+}
+
+loam_runtime::stores! {
+    #[derive(Default)]
+    pub struct Bare {}
+}
+
+#[test]
+fn a_still_scene_keeps_its_content_after_a_move_that_changed_the_record_count() {
+    let mut session = Session::new(Bare::default(), SimConfig::default());
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let tesseract = session.prepare(PreparedGeometry::Polytope4 {
+        polytope: Polytope4::Tesseract,
+        scale: 0.5,
+    });
+    let edge = session.add_material(Material::lines([1.0; 4], 1.0));
+    let root = session.views().root_id();
+    let body = session.dispatch(|d| {
+        let eye = d
+            .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
+            .unwrap();
+        let body = d
+            .spawn(
+                SpawnBundle::new()
+                    .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, 0.0)))
+                    .instance(Instance::new(tesseract, edge).sectioned(edge)),
+            )
+            .unwrap();
+        d.domains
+            .typed(r4)
+            .unwrap()
+            .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
+            .unwrap();
+        body
+    });
+    let mut publication = Publication::default();
+    let mut shown = |session: &mut Session<Bare>| {
+        session.publish(&mut publication, 1.0).unwrap();
+        let records = &publication.views[0].records;
+        (
+            publication.content(),
+            records.built(),
+            records.segments().len(),
+        )
+    };
+    let move_to = |session: &mut Session<Bare>, at: Vec4| {
+        session
+            .domains_mut()
+            .typed(r4)
+            .unwrap()
+            .set_pose(body, Pose::at(at))
+            .unwrap();
+    };
+
+    let first = shown(&mut session);
+    move_to(&mut session, Vec4::new(0.5, 0.0, -4.0, 0.0));
+    let slid = shown(&mut session);
+    assert_ne!(slid.0, first.0, "a slide inside the slice drew nothing new");
+    assert_eq!(slid.2, first.2);
+    assert_eq!(
+        shown(&mut session),
+        slid,
+        "a still scene changed after a move that kept its record count"
+    );
+
+    move_to(&mut session, Vec4::new(0.5, 0.0, -4.0, 2.0));
+    let lifted = shown(&mut session);
+    assert_ne!(lifted.0, slid.0, "a lift out of the slice drew nothing new");
+    assert!(
+        lifted.2 < slid.2,
+        "a body lifted out of the slice kept its {} cut segments",
+        slid.2
+    );
+    assert_eq!(
+        shown(&mut session),
+        lifted,
+        "a still scene changed after a move that changed its record count"
+    );
+
+    move_to(&mut session, Vec4::new(0.0, 0.0, -4.0, 2.0));
+    let slid_again = shown(&mut session);
+    assert_ne!(
+        slid_again.0, lifted.0,
+        "a slide after the lift drew nothing new"
+    );
+    assert_eq!(slid_again.2, lifted.2);
 }
