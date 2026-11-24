@@ -1,9 +1,10 @@
 use glam::Vec3;
 
-use loam_physics::{Collider, GeometryStore};
+use loam_physics::GeometryStore;
+use loam_shape::Shape;
 
-fn tetrahedron(apex: Vec3) -> Collider {
-    Collider::ConvexPolytope3D {
+fn tetrahedron(apex: Vec3) -> Shape {
+    Shape::ConvexPolytope3D {
         vertices: vec![Vec3::ZERO, Vec3::X, Vec3::Y, apex],
     }
 }

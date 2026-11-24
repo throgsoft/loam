@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn gjk_r4_reports_overlap_exactly_when_the_shapes_overlap_down_to_small_gaps() {
-        use crate::euclidean_r4::tesseract_vertices;
+        use loam_shape::polytope_geom::tesseract_vertices;
 
         for gap in [1e-5, 1e-4, 5e-4, 1e-3] {
             let a = Sphere4 {

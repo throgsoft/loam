@@ -113,11 +113,11 @@ fn twospace() -> (Session<Landmarks>, [Entity; 2]) {
     (session, landmarks)
 }
 
-fn render(publication: &Publication) -> Vec<u8> {
+fn render(publication: &Publication<()>) -> Vec<u8> {
     render_with(publication, Vec::new())
 }
 
-fn render_with(publication: &Publication, passes: Vec<Box<dyn FramePass>>) -> Vec<u8> {
+fn render_with(publication: &Publication<()>, passes: Vec<Box<dyn FramePass>>) -> Vec<u8> {
     let gpu = pollster::block_on(GpuContext::new(
         wgpu::Instance::default(),
         FeatureRequest::default(),

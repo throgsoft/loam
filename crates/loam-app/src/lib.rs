@@ -27,7 +27,6 @@ pub mod wasm;
 
 #[cfg(feature = "egui")]
 pub use loam_egui::egui;
-pub use session::CursorPolicy;
 
 /// `Background` starts at load with no overlay and leaves keys, wheel, and page scrolling to the page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

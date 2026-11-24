@@ -9,10 +9,9 @@ pub mod scene3;
 pub mod scene4;
 mod shapes;
 
-pub use loam_shape::Shape;
 pub use primitive::Primitive;
 pub use primitive4::Primitive4;
-pub use scene3::{PrimitiveKind, Scene, SceneNode};
+pub use scene3::{Scene, SceneNode};
 pub use scene4::{
     Scene4, SceneNode4, PRIM_KIND_HALFSPACE4D, PRIM_KIND_HYPERSPHERE4D, PRIM_KIND_OTHER,
 };

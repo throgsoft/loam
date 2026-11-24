@@ -18,7 +18,7 @@ pub struct PublishedView {
 }
 
 #[derive(Default)]
-pub struct Publication<V = ()> {
+pub struct Publication<V> {
     pub views: Vec<PublishedView>,
     pub overlay: Overlay,
     pub backdrop: Option<Backdrop>,
@@ -227,7 +227,7 @@ mod tests {
         session.views_mut().root_mut().eye = Eye::default();
 
         let mut publication = Publication::default();
-        let read = |session: &mut Session<Quiet>, publication: &mut Publication| {
+        let read = |session: &mut Session<Quiet>, publication: &mut Publication<()>| {
             session.publish(publication, 1.0).expect("published");
             let view = &publication.views[0];
             (

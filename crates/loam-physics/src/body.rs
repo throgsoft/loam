@@ -1,8 +1,8 @@
 use std::ops::{Deref, Index, IndexMut};
 
 use loam_math::Bivector;
+use loam_shape::{Shape, ShapeKind};
 
-use crate::collider::{Collider, ColliderKind};
 use crate::edit::EditError;
 use crate::geometry::{ColliderRef, GeometryStore};
 use crate::integrator::{PhysicsSpace, VectorOps};
@@ -46,7 +46,7 @@ pub struct BodyDef<S: PhysicsSpace> {
     position: S::Point,
     velocity: S::Vector,
     angular_velocity: S::AngVel,
-    collider: Collider,
+    collider: Shape,
     mass: f32,
     inertia: S::Inertia,
     restitution: f32,
@@ -59,7 +59,7 @@ impl<S: PhysicsSpace> BodyDef<S> {
     pub fn new(
         position: S::Point,
         velocity: S::Vector,
-        collider: Collider,
+        collider: Shape,
         mass: f32,
         inertia: S::Inertia,
         space: &S,
@@ -86,7 +86,7 @@ impl<S: PhysicsSpace> BodyDef<S> {
 
     pub fn fixed(
         position: S::Point,
-        collider: Collider,
+        collider: Shape,
         inertia: S::Inertia,
         space: &S,
     ) -> Option<Self> {
@@ -97,7 +97,7 @@ impl<S: PhysicsSpace> BodyDef<S> {
         self.mass
     }
 
-    pub fn collider(&self) -> &Collider {
+    pub fn collider(&self) -> &Shape {
         &self.collider
     }
 
@@ -231,7 +231,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
         &mut self,
         geometry: &mut GeometryStore,
         space: &S,
-        collider: Collider,
+        collider: Shape,
         inertia: S::Inertia,
     ) -> Result<(), EditError> {
         if self.mass > 0.0 && is_halfspace_kind(collider.kind()) {
@@ -277,17 +277,17 @@ pub(crate) fn valid_mass(mass: f32) -> bool {
     mass.is_finite() && mass >= 0.0 && (mass == 0.0 || mass.recip().is_finite())
 }
 
-fn is_halfspace_kind(kind: ColliderKind) -> bool {
-    matches!(kind, ColliderKind::HalfSpace | ColliderKind::HalfSpace4D)
+fn is_halfspace_kind(kind: ShapeKind) -> bool {
+    matches!(kind, ShapeKind::HalfSpace | ShapeKind::HalfSpace4D)
 }
 
-pub(crate) fn valid_collider<S: PhysicsSpace>(space: &S, collider: &Collider, mass: f32) -> bool {
+pub(crate) fn valid_collider<S: PhysicsSpace>(space: &S, collider: &Shape, mass: f32) -> bool {
     if !space.supports_collider(collider.kind())
         || (mass > 0.0 && is_halfspace_kind(collider.kind()))
     {
         return false;
     }
-    if let Collider::Sphere { center, .. } = collider {
+    if let Shape::Sphere { center, .. } = collider {
         if *center != glam::Vec3::ZERO {
             return false;
         }
@@ -563,7 +563,7 @@ mod tests {
         assert!(BodyDef::new(
             Vec3::ZERO,
             Vec3::ZERO,
-            Collider::HalfSpace {
+            Shape::HalfSpace {
                 normal: Vec3::Y,
                 offset: 0.0
             },
@@ -575,7 +575,7 @@ mod tests {
         assert!(BodyDef::new(
             Vec4::ZERO,
             Vec4::ZERO,
-            Collider::HalfSpace4D {
+            Shape::HalfSpace4D {
                 normal: Vec4::Y,
                 offset: 0.0
             },
@@ -594,7 +594,7 @@ mod tests {
                 assert!(BodyDef::new(
                     position,
                     velocity,
-                    Collider::sphere_at_origin(0.5),
+                    Shape::sphere_at_origin(0.5),
                     1.0,
                     inertia,
                     &EuclideanR3
@@ -606,13 +606,13 @@ mod tests {
         let mut world = World::new(EuclideanR3);
         let id = world.push_body(def_r3(Vec3::ZERO, 2.0, 1.0));
         for collider in [
-            Collider::ConvexPolytope3D { vertices: vec![] },
-            Collider::Box3 {
+            Shape::ConvexPolytope3D { vertices: vec![] },
+            Shape::Box3 {
                 half_extents: Vec3::ONE,
             },
-            Collider::sphere_at_origin(f32::NAN),
-            Collider::sphere_at(Vec3::X, 1.0),
-            Collider::HalfSpace {
+            Shape::sphere_at_origin(f32::NAN),
+            Shape::sphere_at(Vec3::X, 1.0),
+            Shape::HalfSpace {
                 normal: Vec3::Y,
                 offset: 0.0,
             },
@@ -628,7 +628,7 @@ mod tests {
             .is_none());
             assert!(world.set_collider(id, collider, 1.0).is_err());
             let kept = world.collider(&world.bodies[id]);
-            assert!(matches!(kept, Some(Collider::Sphere { radius, .. }) if *radius == 0.5));
+            assert!(matches!(kept, Some(Shape::Sphere { radius, .. }) if *radius == 0.5));
         }
     }
 
@@ -654,7 +654,7 @@ mod tests {
         BodyDef::new(
             position,
             Vec3::ZERO,
-            Collider::sphere_at_origin(0.5),
+            Shape::sphere_at_origin(0.5),
             mass,
             inertia,
             &EuclideanR3,
@@ -671,7 +671,7 @@ mod tests {
             BodyDef::new(
                 position,
                 Vec4::ZERO,
-                Collider::sphere_at_origin(0.5),
+                Shape::sphere_at_origin(0.5),
                 mass,
                 inertia,
                 &EuclideanR4,
@@ -722,7 +722,7 @@ mod tests {
         let mut fixed = row(
             BodyDef::<EuclideanR3>::fixed(
                 Vec3::ZERO,
-                Collider::sphere_at_origin(0.5),
+                Shape::sphere_at_origin(0.5),
                 1.0,
                 &EuclideanR3,
             )

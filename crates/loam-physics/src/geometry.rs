@@ -2,7 +2,8 @@ use std::collections::hash_map::{DefaultHasher, Entry as MapEntry};
 use std::collections::HashMap;
 use std::hash::Hasher;
 
-use crate::collider::{Collider, ColliderKind};
+use loam_shape::{Shape, ShapeKind};
+
 use crate::edit::EditError;
 
 #[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
@@ -35,12 +36,12 @@ impl GeometryRef {
 #[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ColliderRef {
-    kind: ColliderKind,
+    kind: ShapeKind,
     geometry: GeometryRef,
 }
 
 impl ColliderRef {
-    pub fn kind(self) -> ColliderKind {
+    pub fn kind(self) -> ShapeKind {
         self.kind
     }
 
@@ -55,7 +56,7 @@ struct Entry {
     version: u32,
     uses: u32,
     hash: u64,
-    shape: Option<Collider>,
+    shape: Option<Shape>,
 }
 
 const RELEASED_BUFFERS: usize = 2;
@@ -65,14 +66,14 @@ const RELEASED_BUFFERS: usize = 2;
 pub struct GeometryStore {
     entries: Vec<Entry>,
     free: Vec<u32>,
-    released: Vec<Collider>,
+    released: Vec<Shape>,
     index: HashMap<u64, Vec<GeometryId>>,
     buckets: Vec<Vec<GeometryId>>,
 }
 
 impl GeometryStore {
     /// A shape equal to one already held shares its entry, and the duplicate joins the released pool.
-    pub fn prepare(&mut self, shape: Collider) -> ColliderRef {
+    pub fn prepare(&mut self, shape: Shape) -> ColliderRef {
         let kind = shape.kind();
         let hash = shape_hash(&shape);
         let entries = &mut self.entries;
@@ -167,18 +168,18 @@ impl GeometryStore {
         }
     }
 
-    pub(crate) fn stash(&mut self, shape: Collider) {
+    pub(crate) fn stash(&mut self, shape: Shape) {
         if self.released.len() == RELEASED_BUFFERS {
             self.released.remove(0);
         }
         self.released.push(shape);
     }
 
-    pub fn take_released(&mut self) -> Option<Collider> {
+    pub fn take_released(&mut self) -> Option<Shape> {
         self.released.pop()
     }
 
-    pub fn get(&self, collider: ColliderRef) -> Option<&Collider> {
+    pub fn get(&self, collider: ColliderRef) -> Option<&Shape> {
         let entry = self.entries.get(collider.geometry.id.0 as usize)?;
         if entry.version != collider.geometry.version {
             return None;
@@ -240,7 +241,7 @@ impl GeometryStore {
                 return Err(EditError::InvalidGeometry);
             };
             if entry.version != collider.geometry.version
-                || entry.shape.as_ref().map(Collider::kind) != Some(collider.kind)
+                || entry.shape.as_ref().map(Shape::kind) != Some(collider.kind)
             {
                 return Err(EditError::InvalidGeometry);
             }
@@ -266,7 +267,7 @@ impl GeometryStore {
     }
 }
 
-fn shape_hash(shape: &Collider) -> u64 {
+fn shape_hash(shape: &Shape) -> u64 {
     let mut hasher = DefaultHasher::new();
     shape.hash_into(&mut hasher);
     hasher.finish()

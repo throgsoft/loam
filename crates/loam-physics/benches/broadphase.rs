@@ -4,12 +4,12 @@ use std::time::Instant;
 use glam::Vec3;
 use loam_math::{EuclideanR3, Space};
 use loam_physics::body::BodyId;
-use loam_physics::collider::Collider;
 use loam_physics::euclidean_r3::{
     box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
 };
 use loam_physics::world::PairKey;
 use loam_physics::World;
+use loam_shape::Shape;
 use loam_time::par::Sequential;
 
 const BODY_COUNTS: [usize; 3] = [100, 200, 400];
@@ -79,7 +79,7 @@ fn scan(world: &World<EuclideanR3>, radii: &mut Vec<f32>, pairs: &mut Vec<PairKe
         world
             .bodies()
             .iter()
-            .map(|body| world.collider(body).map_or(0.0, Collider::bounding_radius)),
+            .map(|body| world.collider(body).map_or(0.0, Shape::bounding_radius)),
     );
     pairs.clear();
     let n = world.bodies().len();

@@ -1,5 +1,6 @@
+use loam_shape::Shape;
+
 use crate::body::{BodyArena, BodyId};
-use crate::collider::Collider;
 use crate::geometry::GeometryStore;
 use crate::integrator::{BroadphaseBound, PhysicsSpace};
 
@@ -64,7 +65,7 @@ impl Broadphase {
             let body = &bodies[dense];
             let radius = geometry
                 .get(body.collider())
-                .map_or(0.0, Collider::bounding_radius);
+                .map_or(0.0, Shape::bounding_radius);
             let (lo, hi) = if certified {
                 counters.distance_evals += 1;
                 let d = space.distance(origin, body.position);

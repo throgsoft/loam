@@ -23,7 +23,7 @@ struct Trace<S: Space> {
     eye: S::Point,
 }
 
-fn image_of(publication: &Publication, entity: loam_runtime::Entity) -> [f32; 3] {
+fn image_of(publication: &Publication<()>, entity: loam_runtime::Entity) -> [f32; 3] {
     publication
         .views
         .iter()

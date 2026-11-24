@@ -7,11 +7,11 @@ use super::{ChartPoint, ChartPose, ChartTangent, DomainError, Pose};
 use crate::view::DomainRay;
 
 pub trait DomainSpace:
-    Space<Vector: Mul<f32, Output = <Self as Space>::Vector>> + Send + Sync + Sized + 'static
+    Space<Vector: Mul<f32, Output = <Self as Space>::Vector>> + Send + Sized + 'static
 {
-    type Placement: Copy + Send + Sync + 'static;
+    type Placement: Copy + Send + 'static;
 
-    type Relative: Copy + Send + Sync + 'static;
+    type Relative: Copy + Send + 'static;
 
     /// False when `blend` returns `to`, so publication draws tick poses and skips the blend bookkeeping.
     const BLENDS: bool = true;

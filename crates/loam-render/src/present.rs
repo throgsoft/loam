@@ -404,7 +404,7 @@ mod tests {
             }
         };
         let present = |session: &mut Session<Spun>,
-                       publication: &mut Publication,
+                       publication: &mut Publication<()>,
                        presenter: &mut Presenter,
                        encoder: &mut CommandEncoder| {
             session.publish(publication, 1.0).unwrap();

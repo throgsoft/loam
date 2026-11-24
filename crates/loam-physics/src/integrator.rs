@@ -86,7 +86,7 @@ pub trait PhysicsSpace: Space<Vector: VectorOps> + IsometryGroup + Send + Sync {
 
     fn broadphase_bound(&self) -> BroadphaseBound;
 
-    fn supports_collider(&self, kind: crate::ColliderKind) -> bool;
+    fn supports_collider(&self, kind: loam_shape::ShapeKind) -> bool;
 
     fn valid_vector(&self, vector: Self::Vector) -> bool;
 

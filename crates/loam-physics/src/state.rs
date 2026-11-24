@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
+use loam_shape::ShapeKind;
+
 use crate::body::{BodyArena, BodyId};
-use crate::collider::ColliderKind;
 use crate::geometry::GeometryStore;
 use crate::integrator::PhysicsSpace;
 use crate::manifold::Manifold;
@@ -23,7 +24,7 @@ pub struct WorldState<S: PhysicsSpace> {
     pub(crate) field_bindings: Vec<(BodyId, FieldId)>,
     pub(crate) field_anchors: Vec<BodyId>,
     #[cfg_attr(feature = "persist", serde(skip))]
-    pub(crate) registrations: Vec<(ColliderKind, ColliderKind)>,
+    pub(crate) registrations: Vec<(ShapeKind, ShapeKind)>,
     #[cfg_attr(feature = "persist", serde(skip))]
-    pub(crate) field_registrations: Vec<ColliderKind>,
+    pub(crate) field_registrations: Vec<ShapeKind>,
 }

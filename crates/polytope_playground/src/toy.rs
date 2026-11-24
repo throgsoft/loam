@@ -4,12 +4,13 @@ use loam::physics::euclidean_r4::{
     halfspace4_body_r4, register_default_narrowphase, regular_polytope_body_r4,
 };
 use loam::physics::manifold::PENETRATION_SLOP;
-use loam::physics::{BodyDef, Collider, RigidBody};
+use loam::physics::{BodyDef, RigidBody};
 use loam::runtime::{
     Dispatch, DomainHandle, Domains, Entity, GrabConfig, Instance, PhysicsConfig, Pose, Rejection,
     RestConfig, SpawnBundle, ThrowConfig,
 };
 use loam::shape::polytope::Polytope4;
+use loam::shape::Shape;
 
 use crate::catalog::{ShapeEntry, SHAPE_CATALOG};
 use crate::consts::{FLOOR_Y, GRAVITY};
@@ -160,7 +161,7 @@ pub(crate) fn fill_depth_bands(
         let Some(body) = physics.world().body(id) else {
             return false;
         };
-        let Some(Collider::ConvexPolytope4D { vertices }) = physics.world().collider(body) else {
+        let Some(Shape::ConvexPolytope4D { vertices }) = physics.world().collider(body) else {
             return false;
         };
         let Some(pose) = r4.drawn_pose(band.entity, alpha) else {

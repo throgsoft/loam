@@ -793,12 +793,12 @@ mod tests {
                 map.button(map.css_ndc(50.0, 50.0), PointerButton::Secondary, true);
                 map.moved(map.css_ndc(70.0, 70.0));
                 let input = map.take();
-                let mut orbit = crate::session::camera::Orbit::around([0.0; 3], 5.0);
+                let mut orbit = loam_runtime::Orbit::around([0.0; 3], 5.0);
                 orbit.drag(input.drag(PointerButton::Secondary));
 
                 map.set_cursor_locked(true);
                 map.raw_motion(20.0 * scale, 20.0 * scale);
-                let mut camera = crate::session::camera::FreeCamera::default();
+                let mut camera = loam_runtime::FreeCamera::default();
                 camera.look(map.take().look);
                 let [x, y, z] = camera.eye.forward;
                 [orbit.yaw, orbit.pitch, (-x).atan2(-z), y.asin()]

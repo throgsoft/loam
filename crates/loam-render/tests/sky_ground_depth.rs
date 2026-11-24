@@ -1,6 +1,7 @@
 use glam::Vec3;
 use loam_render::view::{self, DEPTH_CLEAR, DEPTH_FORMAT};
-use loam_render::{DepthConvention, Ground, SkyGroundNode, SkyGroundUniforms, Viewport};
+use loam_render::{DepthConvention, SkyGroundNode, SkyGroundUniforms, Viewport};
+use loam_runtime::Ground;
 use wgpu::*;
 
 const SIZE: u32 = 64;

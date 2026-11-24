@@ -1,9 +1,9 @@
 use glam::Vec2;
 
 use loam_math::{Bivector, Bivector2, EuclideanR2, Iso2};
+use loam_shape::{Shape, ShapeKind};
 
 use crate::body::{BodyDef, RigidBody};
-use crate::collider::{Collider, ColliderKind};
 use crate::geometry::GeometryStore;
 use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
@@ -29,8 +29,8 @@ impl PhysicsSpace for EuclideanR2 {
         BroadphaseBound::Certified
     }
 
-    fn supports_collider(&self, kind: ColliderKind) -> bool {
-        matches!(kind, ColliderKind::Sphere | ColliderKind::Polygon2D)
+    fn supports_collider(&self, kind: ShapeKind) -> bool {
+        matches!(kind, ShapeKind::Sphere | ShapeKind::Polygon2D)
     }
 
     fn valid_vector(&self, vector: Vec2) -> bool {
@@ -130,7 +130,7 @@ pub fn sphere_body(
     BodyDef::new(
         position,
         velocity,
-        Collider::sphere_at_origin(radius),
+        Shape::sphere_at_origin(radius),
         mass,
         disk_inertia(mass, radius),
         &EuclideanR2,
@@ -139,17 +139,13 @@ pub fn sphere_body(
 
 /// Reversed pairs are handled by the dispatch table's auto-flip.
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR2>) {
-    np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r2);
+    np.register(ShapeKind::Sphere, ShapeKind::Sphere, sphere_sphere_r2);
     np.register(
-        ColliderKind::Polygon2D,
-        ColliderKind::Polygon2D,
+        ShapeKind::Polygon2D,
+        ShapeKind::Polygon2D,
         polygon_polygon_r2,
     );
-    np.register(
-        ColliderKind::Sphere,
-        ColliderKind::Polygon2D,
-        sphere_polygon_r2,
-    );
+    np.register(ShapeKind::Sphere, ShapeKind::Polygon2D, sphere_polygon_r2);
 }
 
 fn sphere_sphere_r2(
@@ -158,10 +154,10 @@ fn sphere_sphere_r2(
     geometry: &GeometryStore,
     space: &EuclideanR2,
 ) -> Option<Contact<EuclideanR2>> {
-    let Some(&Collider::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
+    let Some(&Shape::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(&Collider::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
+    let Some(&Shape::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -261,10 +257,10 @@ fn polygon_polygon_r2(
     geometry: &GeometryStore,
     _space: &EuclideanR2,
 ) -> Option<Contact<EuclideanR2>> {
-    let Some(Collider::Polygon2D { vertices: a_local }) = geometry.get(a.collider()) else {
+    let Some(Shape::Polygon2D { vertices: a_local }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(Collider::Polygon2D { vertices: b_local }) = geometry.get(b.collider()) else {
+    let Some(Shape::Polygon2D { vertices: b_local }) = geometry.get(b.collider()) else {
         return None;
     };
     if a_local.len() < 3 || b_local.len() < 3 {
@@ -367,10 +363,10 @@ fn sphere_polygon_r2(
     geometry: &GeometryStore,
     _space: &EuclideanR2,
 ) -> Option<Contact<EuclideanR2>> {
-    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
+    let Some(&Shape::Sphere { radius, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(Collider::Polygon2D { vertices: b_local }) = geometry.get(b.collider()) else {
+    let Some(Shape::Polygon2D { vertices: b_local }) = geometry.get(b.collider()) else {
         return None;
     };
     if b_local.len() < 3 {
@@ -434,7 +430,7 @@ pub fn polygon_body(
     BodyDef::new(
         position,
         velocity,
-        Collider::Polygon2D {
+        Shape::Polygon2D {
             vertices: regular_polygon_vertices(n, circumradius),
         },
         mass,
@@ -463,7 +459,7 @@ pub fn rectangle_body(
     BodyDef::new(
         center,
         velocity,
-        Collider::Polygon2D {
+        Shape::Polygon2D {
             vertices: rectangle_vertices(half_extents),
         },
         mass,
@@ -475,7 +471,7 @@ pub fn rectangle_body(
 pub fn static_wall(center: Vec2, half_extents: Vec2) -> Option<BodyDef<EuclideanR2>> {
     BodyDef::fixed(
         center,
-        Collider::Polygon2D {
+        Shape::Polygon2D {
             vertices: rectangle_vertices(half_extents),
         },
         1.0,
@@ -728,13 +724,10 @@ mod tests {
     #[test]
     fn polygon_body_rejects_collinear_or_clockwise_boundaries() {
         for vertices in [vec![Vec2::ZERO; 4], vec![Vec2::ZERO, Vec2::Y, Vec2::X]] {
-            assert!(BodyDef::fixed(
-                Vec2::ZERO,
-                Collider::Polygon2D { vertices },
-                1.0,
-                &EuclideanR2
-            )
-            .is_none());
+            assert!(
+                BodyDef::fixed(Vec2::ZERO, Shape::Polygon2D { vertices }, 1.0, &EuclideanR2)
+                    .is_none()
+            );
         }
     }
 
@@ -802,7 +795,7 @@ mod tests {
         }
 
         for (idx, body) in world.bodies.iter().enumerate().skip(1) {
-            let Some(Collider::Polygon2D { vertices }) = world.collider(body) else {
+            let Some(Shape::Polygon2D { vertices }) = world.collider(body) else {
                 panic!("polygon fixture")
             };
             let lowest = vertices

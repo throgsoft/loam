@@ -1,8 +1,8 @@
+use loam_shape::ShapeKind;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::collider::ColliderKind;
 use crate::edit::EditError;
 use crate::integrator::PhysicsSpace;
 use crate::state::WorldState;
@@ -19,8 +19,8 @@ struct Header {
     schema: String,
     version: u32,
     codec: String,
-    registrations: Vec<(ColliderKind, ColliderKind)>,
-    field_registrations: Vec<ColliderKind>,
+    registrations: Vec<(ShapeKind, ShapeKind)>,
+    field_registrations: Vec<ShapeKind>,
 }
 
 #[derive(Serialize, Deserialize)]

@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
+use loam_shape::Shape;
 use loam_time::par::{self, Executor};
 use loam_time::StateHash;
 
 use crate::body::{BodyArena, BodyDef, BodyId, RigidBody};
-use crate::collider::Collider;
 use crate::dirty::{DirtyBodies, DirtyDrain};
 use crate::edit::EditError;
 use crate::field_contact::FieldNarrowphase;
@@ -254,11 +254,11 @@ impl<S: PhysicsSpace> World<S> {
     }
 
     /// Pops the newest of the last two released shapes so its buffer can be reused.
-    pub fn reclaim_geometry(&mut self) -> Option<Collider> {
+    pub fn reclaim_geometry(&mut self) -> Option<Shape> {
         self.geometry.take_released()
     }
 
-    pub fn collider(&self, body: &RigidBody<S>) -> Option<&Collider> {
+    pub fn collider(&self, body: &RigidBody<S>) -> Option<&Shape> {
         self.geometry.get(body.collider())
     }
 
@@ -377,7 +377,7 @@ impl<S: PhysicsSpace> World<S> {
     pub fn set_collider(
         &mut self,
         id: BodyId,
-        collider: Collider,
+        collider: Shape,
         inertia: S::Inertia,
     ) -> Result<(), EditError> {
         if self.bodies.get(id).is_none() {
@@ -1432,7 +1432,7 @@ mod tests {
         assert_eq!(
             world.set_collider(
                 id,
-                Collider::Box3 {
+                Shape::Box3 {
                     half_extents: Vec3::ONE
                 },
                 2.0
@@ -1440,7 +1440,7 @@ mod tests {
             Err(EditError::UnsupportedCollider)
         );
         assert_eq!(
-            world.set_collider(id, Collider::sphere_at_origin(0.5), f32::INFINITY),
+            world.set_collider(id, Shape::sphere_at_origin(0.5), f32::INFINITY),
             Err(EditError::InvalidInertia)
         );
         assert_eq!(
@@ -1471,7 +1471,7 @@ mod tests {
             world.set_velocity(stale, Vec3::ZERO, Bivector3::ZERO),
             Err(EditError::StaleHandle)
         );
-        let half_space = Collider::HalfSpace {
+        let half_space = Shape::HalfSpace {
             normal: Vec3::Y,
             offset: 0.0,
         };

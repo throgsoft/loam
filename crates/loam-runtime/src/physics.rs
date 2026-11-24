@@ -3,8 +3,9 @@ use std::any::Any;
 use loam_math::Bivector;
 use loam_physics::collision::VectorOps;
 use loam_physics::{
-    BodyDef, BodyId, Collider, EditError, Narrowphase, PhysicsSpace, RigidBody, World, WorldState,
+    BodyDef, BodyId, EditError, Narrowphase, PhysicsSpace, RigidBody, World, WorldState,
 };
+use loam_shape::Shape;
 use loam_time::par::Executor;
 
 use crate::command::{Outcome, Rejection};
@@ -420,7 +421,7 @@ where
     pub fn set_collider(
         &mut self,
         entity: Entity,
-        collider: Collider,
+        collider: Shape,
         inertia: S::Inertia,
     ) -> Result<(), EditError> {
         let id = self.body(entity).ok_or(EditError::StaleHandle)?;

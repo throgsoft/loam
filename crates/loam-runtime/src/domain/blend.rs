@@ -262,7 +262,7 @@ mod tests {
         (session, r4, mover)
     }
 
-    fn drawn_x(session: &mut Session<Probe>, publication: &mut Publication, alpha: f32) -> f32 {
+    fn drawn_x(session: &mut Session<Probe>, publication: &mut Publication<()>, alpha: f32) -> f32 {
         session.publish(publication, alpha).unwrap();
         publication.views[0].records.instances.rows()[0]
             .pose
@@ -346,7 +346,7 @@ mod tests {
             },
         );
         let mut publication = Publication::default();
-        let drawn_y = |session: &mut Session<Probe>, publication: &mut Publication, alpha| {
+        let drawn_y = |session: &mut Session<Probe>, publication: &mut Publication<()>, alpha| {
             session.publish(publication, alpha).unwrap();
             let rows = publication.views[0].records.instances.rows();
             let record = rows.iter().find(|record| record.entity == swapped).unwrap();

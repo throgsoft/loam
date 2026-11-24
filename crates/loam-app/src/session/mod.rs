@@ -1,5 +1,4 @@
 pub mod app;
-pub mod camera;
 pub mod console;
 #[cfg(feature = "egui")]
 pub mod debug_layer;
@@ -26,14 +25,12 @@ mod browser;
 mod native;
 
 pub use app::{CaptureControl, InputHook, PublishedHook, Redraw, SessionApp};
-pub use camera::{look, FreeCamera, Orbit};
 pub use commands::CommandSender;
 pub use console::{SessionConsole, Submit};
 #[cfg(feature = "egui")]
 pub use debug_layer::{DebugLayer, DEBUG_LAYER};
 pub use frame::Target;
 pub use headless::run_script;
-pub use loam_runtime::CursorPolicy;
 pub use pacing::{Pace, Pacer};
 
 #[cfg(target_arch = "wasm32")]

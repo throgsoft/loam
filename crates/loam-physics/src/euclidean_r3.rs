@@ -2,9 +2,9 @@ use glam::{Quat, Vec3};
 
 use loam_math::{Bivector, Bivector3, EuclideanR3, Iso3};
 use loam_shape::shape::convex_polytope3;
+use loam_shape::{Shape, ShapeKind};
 
 use crate::body::{BodyDef, RigidBody};
-use crate::collider::{Collider, ColliderKind};
 use crate::collision::{epa, gjk_intersect, GjkResult, PosedHull, Sphere as GjkSphere};
 use crate::geometry::GeometryStore;
 use crate::integrator::{BroadphaseBound, PhysicsSpace};
@@ -52,10 +52,10 @@ impl PhysicsSpace for EuclideanR3 {
         BroadphaseBound::Certified
     }
 
-    fn supports_collider(&self, kind: ColliderKind) -> bool {
+    fn supports_collider(&self, kind: ShapeKind) -> bool {
         matches!(
             kind,
-            ColliderKind::Sphere | ColliderKind::ConvexPolytope3D | ColliderKind::HalfSpace
+            ShapeKind::Sphere | ShapeKind::ConvexPolytope3D | ShapeKind::HalfSpace
         )
     }
 
@@ -154,10 +154,10 @@ fn sphere_sphere_r3(
     geometry: &GeometryStore,
     space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Some(&Collider::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
+    let Some(&Shape::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(&Collider::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
+    let Some(&Shape::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -189,10 +189,10 @@ fn sphere_halfspace_r3(
     geometry: &GeometryStore,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
+    let Some(&Shape::Sphere { radius, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(&Collider::HalfSpace { normal, offset }) = geometry.get(b.collider()) else {
+    let Some(&Shape::HalfSpace { normal, offset }) = geometry.get(b.collider()) else {
         return None;
     };
     let normal = b.orientation.rotation * normal;
@@ -242,10 +242,10 @@ fn polytope_polytope_r3(
     geometry: &GeometryStore,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Some(Collider::ConvexPolytope3D { vertices: va_local }) = geometry.get(a.collider()) else {
+    let Some(Shape::ConvexPolytope3D { vertices: va_local }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(Collider::ConvexPolytope3D { vertices: vb_local }) = geometry.get(b.collider()) else {
+    let Some(Shape::ConvexPolytope3D { vertices: vb_local }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -283,10 +283,10 @@ fn sphere_polytope_r3(
     geometry: &GeometryStore,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
+    let Some(&Shape::Sphere { radius, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(Collider::ConvexPolytope3D { vertices: vb_local }) = geometry.get(b.collider()) else {
+    let Some(Shape::ConvexPolytope3D { vertices: vb_local }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -322,10 +322,10 @@ fn polytope_halfspace_r3(
     geometry: &GeometryStore,
     _space: &EuclideanR3,
 ) -> Option<Contact<EuclideanR3>> {
-    let Some(Collider::ConvexPolytope3D { vertices: va_local }) = geometry.get(a.collider()) else {
+    let Some(Shape::ConvexPolytope3D { vertices: va_local }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(&Collider::HalfSpace {
+    let Some(&Shape::HalfSpace {
         normal: plane_n,
         offset,
     }) = geometry.get(b.collider())
@@ -360,25 +360,21 @@ fn polytope_halfspace_r3(
 }
 
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR3>) {
-    np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r3);
+    np.register(ShapeKind::Sphere, ShapeKind::Sphere, sphere_sphere_r3);
+    np.register(ShapeKind::Sphere, ShapeKind::HalfSpace, sphere_halfspace_r3);
     np.register(
-        ColliderKind::Sphere,
-        ColliderKind::HalfSpace,
-        sphere_halfspace_r3,
-    );
-    np.register(
-        ColliderKind::ConvexPolytope3D,
-        ColliderKind::ConvexPolytope3D,
+        ShapeKind::ConvexPolytope3D,
+        ShapeKind::ConvexPolytope3D,
         polytope_polytope_r3,
     );
     np.register(
-        ColliderKind::Sphere,
-        ColliderKind::ConvexPolytope3D,
+        ShapeKind::Sphere,
+        ShapeKind::ConvexPolytope3D,
         sphere_polytope_r3,
     );
     np.register(
-        ColliderKind::ConvexPolytope3D,
-        ColliderKind::HalfSpace,
+        ShapeKind::ConvexPolytope3D,
+        ShapeKind::HalfSpace,
         polytope_halfspace_r3,
     );
 }
@@ -396,7 +392,7 @@ pub fn sphere_body_r3(
     BodyDef::new(
         position,
         velocity,
-        Collider::sphere_at_origin(radius),
+        Shape::sphere_at_origin(radius),
         mass,
         sphere_inertia(mass, radius),
         &EuclideanR3,
@@ -408,7 +404,7 @@ pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> Option<BodyDef<EuclideanR
     let n = normal.try_normalize()?;
     BodyDef::fixed(
         Vec3::ZERO,
-        Collider::HalfSpace { normal: n, offset },
+        Shape::HalfSpace { normal: n, offset },
         1.0,
         &EuclideanR3,
     )
@@ -446,7 +442,7 @@ pub fn box_body(
     BodyDef::new(
         position,
         velocity,
-        Collider::ConvexPolytope3D {
+        Shape::ConvexPolytope3D {
             vertices: box_vertices(half_extents),
         },
         mass,
@@ -470,7 +466,7 @@ pub fn polytope_body(
     BodyDef::new(
         position,
         velocity,
-        Collider::ConvexPolytope3D { vertices },
+        Shape::ConvexPolytope3D { vertices },
         mass,
         inertia,
         &EuclideanR3,

@@ -646,7 +646,7 @@ mod tests {
     use super::*;
     use crate::args::Args;
     use crate::host::Bindings;
-    use crate::session::CursorPolicy;
+    use loam_runtime::CursorPolicy;
 
     const FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
     const SIZE: (u32, u32) = (64, 48);

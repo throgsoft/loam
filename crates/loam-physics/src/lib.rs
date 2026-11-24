@@ -1,5 +1,6 @@
+//! A body's collider is a `loam_shape::Shape`, and `Shape::Sphere::center` is ignored because the body position is the centre.
+
 pub mod body;
-pub mod collider;
 pub mod dirty;
 pub mod edit;
 pub mod field_contact;
@@ -24,7 +25,6 @@ pub mod euclidean_r3;
 pub mod euclidean_r4;
 
 pub use body::{BodyArena, BodyDef, BodyId, RigidBody};
-pub use collider::{Collider, ColliderKind};
 pub use dirty::DirtyDrain;
 pub use edit::EditError;
 pub use field_contact::{FieldContact, FieldContactFn, FieldNarrowphase, FieldRefusal};

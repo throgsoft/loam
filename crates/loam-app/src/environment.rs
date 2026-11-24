@@ -2,8 +2,7 @@ use anyhow::{anyhow, Result};
 use loam_render::sky_ground::{
     DEFAULT_FOG_PER_UNIT, DEFAULT_SKY, GROUND_DARK_GREY, GROUND_LIGHT_GREY,
 };
-use loam_render::{Ground, Sky};
-use loam_runtime::Backdrop;
+use loam_runtime::{Backdrop, Ground, Sky};
 
 // Above this the checker blends into the sky inside one body length.
 const MAX_FOG_PER_UNIT: f32 = 1.0;

@@ -5,9 +5,9 @@ use glam::Vec4;
 use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat, Rotor};
 use loam_shape::polytope::Polytope4;
 use loam_shape::shape::convex_polytope4;
+use loam_shape::{Shape, ShapeKind};
 
 use crate::body::{BodyDef, RigidBody};
-use crate::collider::{Collider, ColliderKind};
 use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult4, PosedHull4, Sphere4 as GjkSphere4};
 use crate::geometry::GeometryStore;
 use crate::integrator::{BroadphaseBound, PhysicsSpace};
@@ -34,10 +34,10 @@ impl PhysicsSpace for EuclideanR4 {
         BroadphaseBound::Certified
     }
 
-    fn supports_collider(&self, kind: ColliderKind) -> bool {
+    fn supports_collider(&self, kind: ShapeKind) -> bool {
         matches!(
             kind,
-            ColliderKind::Sphere | ColliderKind::ConvexPolytope4D | ColliderKind::HalfSpace4D
+            ShapeKind::Sphere | ShapeKind::ConvexPolytope4D | ShapeKind::HalfSpace4D
         )
     }
 
@@ -159,10 +159,10 @@ fn sphere_sphere_r4(
     geometry: &GeometryStore,
     space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Some(&Collider::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
+    let Some(&Shape::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(&Collider::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
+    let Some(&Shape::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -194,10 +194,10 @@ fn sphere_halfspace_r4(
     geometry: &GeometryStore,
     _space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
+    let Some(&Shape::Sphere { radius, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(&Collider::HalfSpace4D { normal, offset }) = geometry.get(b.collider()) else {
+    let Some(&Shape::HalfSpace4D { normal, offset }) = geometry.get(b.collider()) else {
         return None;
     };
     let normal = b.orientation.rotation.apply(normal);
@@ -223,10 +223,10 @@ fn polytope_halfspace_r4(
     geometry: &GeometryStore,
     _space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Some(Collider::ConvexPolytope4D { vertices: va_local }) = geometry.get(a.collider()) else {
+    let Some(Shape::ConvexPolytope4D { vertices: va_local }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(&Collider::HalfSpace4D {
+    let Some(&Shape::HalfSpace4D {
         normal: plane_n,
         offset,
     }) = geometry.get(b.collider())
@@ -288,10 +288,10 @@ fn polytope_polytope_r4(
     geometry: &GeometryStore,
     _space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Some(Collider::ConvexPolytope4D { vertices: va_local }) = geometry.get(a.collider()) else {
+    let Some(Shape::ConvexPolytope4D { vertices: va_local }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(Collider::ConvexPolytope4D { vertices: vb_local }) = geometry.get(b.collider()) else {
+    let Some(Shape::ConvexPolytope4D { vertices: vb_local }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -329,10 +329,10 @@ fn sphere_polytope_r4(
     geometry: &GeometryStore,
     _space: &EuclideanR4,
 ) -> Option<Contact<EuclideanR4>> {
-    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
+    let Some(&Shape::Sphere { radius, .. }) = geometry.get(a.collider()) else {
         return None;
     };
-    let Some(Collider::ConvexPolytope4D { vertices: vb_local }) = geometry.get(b.collider()) else {
+    let Some(Shape::ConvexPolytope4D { vertices: vb_local }) = geometry.get(b.collider()) else {
         return None;
     };
 
@@ -362,25 +362,25 @@ fn sphere_polytope_r4(
 }
 
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
-    np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r4);
+    np.register(ShapeKind::Sphere, ShapeKind::Sphere, sphere_sphere_r4);
     np.register(
-        ColliderKind::Sphere,
-        ColliderKind::HalfSpace4D,
+        ShapeKind::Sphere,
+        ShapeKind::HalfSpace4D,
         sphere_halfspace_r4,
     );
     np.register(
-        ColliderKind::ConvexPolytope4D,
-        ColliderKind::ConvexPolytope4D,
+        ShapeKind::ConvexPolytope4D,
+        ShapeKind::ConvexPolytope4D,
         polytope_polytope_r4,
     );
     np.register(
-        ColliderKind::Sphere,
-        ColliderKind::ConvexPolytope4D,
+        ShapeKind::Sphere,
+        ShapeKind::ConvexPolytope4D,
         sphere_polytope_r4,
     );
     np.register(
-        ColliderKind::ConvexPolytope4D,
-        ColliderKind::HalfSpace4D,
+        ShapeKind::ConvexPolytope4D,
+        ShapeKind::HalfSpace4D,
         polytope_halfspace_r4,
     );
 }
@@ -413,7 +413,7 @@ pub fn sphere_body_r4(
     BodyDef::new(
         position,
         velocity,
-        Collider::sphere_at_origin(radius),
+        Shape::sphere_at_origin(radius),
         mass,
         ball4_inertia(mass, radius),
         &EuclideanR4,
@@ -425,7 +425,7 @@ pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<Euclidean
     let normal = normal.try_normalize()?;
     BodyDef::fixed(
         Vec4::ZERO,
-        Collider::HalfSpace4D { normal, offset },
+        Shape::HalfSpace4D { normal, offset },
         1.0,
         &EuclideanR4,
     )
@@ -446,7 +446,7 @@ pub fn regular_polytope_body_r4(
     BodyDef::new(
         Vec4::ZERO,
         Vec4::ZERO,
-        Collider::ConvexPolytope4D { vertices },
+        Shape::ConvexPolytope4D { vertices },
         mass,
         regular_polytope4_inertia(shape, mass, circumradius),
         &EuclideanR4,
@@ -468,20 +468,19 @@ pub fn polytope_body_r4(
     BodyDef::new(
         position,
         velocity,
-        Collider::ConvexPolytope4D { vertices },
+        Shape::ConvexPolytope4D { vertices },
         mass,
         inertia,
         &EuclideanR4,
     )
 }
 
-pub use loam_shape::polytope_geom::*;
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::world::World;
+    use loam_shape::polytope_geom::{cell24_vertices, tesseract_vertices};
     use loam_time::par::Sequential;
 
     fn assert_close(a: f32, b: f32, tol: f32) {
@@ -499,7 +498,7 @@ mod tests {
 
         let wall = BodyDef::fixed(
             Vec4::ZERO,
-            Collider::ConvexPolytope4D {
+            Shape::ConvexPolytope4D {
                 vertices: tesseract_vertices(0.2)
                     .into_iter()
                     .map(|v| v * Vec4::new(1.0, 20.0, 20.0, 20.0))

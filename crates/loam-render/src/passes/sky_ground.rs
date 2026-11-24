@@ -1,12 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use loam_runtime::{Backdrop, Eye};
+use loam_runtime::{Backdrop, Eye, Ground, Sky};
 use wgpu::{Color, CommandEncoder, Queue, RenderPass};
 
 use crate::device::GpuContext;
 use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
-use crate::sky_ground::{horizon, Ground, Sky, SkyGroundNode, SkyGroundUniforms, DEFAULT_SKY};
+use crate::sky_ground::{horizon, SkyGroundNode, SkyGroundUniforms, DEFAULT_SKY};
 use crate::{DepthConvention, Viewport};
 
 struct State {

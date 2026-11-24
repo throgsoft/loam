@@ -5,7 +5,7 @@ use glam::{Vec3, Vec4};
 use super::primitive4::Primitive4;
 use super::shapes;
 use super::SENTINEL_DISTANCE;
-pub use loam_shape::Shape;
+use loam_shape::Shape;
 
 #[derive(Debug, Clone)]
 pub enum SceneNode4 {

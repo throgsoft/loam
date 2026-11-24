@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
+use loam_shape::ShapeKind;
+
 use crate::body::RigidBody;
-use crate::collider::ColliderKind;
 use crate::geometry::GeometryStore;
 use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
@@ -15,8 +16,8 @@ pub type NarrowphaseFn<S> = fn(
 ) -> Option<Contact<S>>;
 
 pub struct Narrowphase<S: PhysicsSpace> {
-    dispatch: HashMap<(ColliderKind, ColliderKind), NarrowphaseFn<S>>,
-    order: Vec<(ColliderKind, ColliderKind)>,
+    dispatch: HashMap<(ShapeKind, ShapeKind), NarrowphaseFn<S>>,
+    order: Vec<(ShapeKind, ShapeKind)>,
 }
 
 impl<S: PhysicsSpace> Default for Narrowphase<S> {
@@ -33,7 +34,7 @@ impl<S: PhysicsSpace> Narrowphase<S> {
         Self::default()
     }
 
-    pub fn register(&mut self, a: ColliderKind, b: ColliderKind, f: NarrowphaseFn<S>) {
+    pub fn register(&mut self, a: ShapeKind, b: ShapeKind, f: NarrowphaseFn<S>) {
         if self.dispatch.insert((a, b), f).is_some() {
             return;
         }
@@ -44,7 +45,7 @@ impl<S: PhysicsSpace> Narrowphase<S> {
         self.order.insert(at, (a, b));
     }
 
-    pub fn registrations(&self) -> &[(ColliderKind, ColliderKind)] {
+    pub fn registrations(&self) -> &[(ShapeKind, ShapeKind)] {
         &self.order
     }
 

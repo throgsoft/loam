@@ -5,11 +5,11 @@ use glam::Vec3;
 use super::literal::wgsl_f32;
 use super::primitive::Primitive;
 use loam_math::{Space, WgslSpace};
-pub use loam_shape::Shape as PrimitiveKind;
+use loam_shape::Shape;
 
 #[derive(Debug, Clone)]
 pub enum SceneNode {
-    Leaf(PrimitiveKind),
+    Leaf(Shape),
     Union(Box<SceneNode>, Box<SceneNode>),
     Intersection(Box<SceneNode>, Box<SceneNode>),
     /// `max(left, -right)`: the right subtree is carved from the left.
@@ -24,20 +24,20 @@ pub enum SceneNode {
 
 impl SceneNode {
     pub fn sphere(center: Vec3, radius: f32) -> Self {
-        SceneNode::Leaf(PrimitiveKind::Sphere { center, radius })
+        SceneNode::Leaf(Shape::Sphere { center, radius })
     }
 
     /// Emits chart-coord `dot(p, n) - d` in flat charts and [`super::SENTINEL_DISTANCE`] in curved ones.
     pub fn plane(normal: Vec3, offset: f32) -> Self {
-        SceneNode::Leaf(PrimitiveKind::HalfSpace { normal, offset })
+        SceneNode::Leaf(Shape::HalfSpace { normal, offset })
     }
 
     pub fn box_(half_extents: Vec3) -> Self {
-        SceneNode::Leaf(PrimitiveKind::Box3 { half_extents })
+        SceneNode::Leaf(Shape::Box3 { half_extents })
     }
 
     pub fn cube(half_side: f32) -> Self {
-        SceneNode::Leaf(PrimitiveKind::Box3 {
+        SceneNode::Leaf(Shape::Box3 {
             half_extents: Vec3::splat(half_side),
         })
     }

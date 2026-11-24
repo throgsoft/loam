@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
 use loam_shape::field::{DistanceField, FieldKind};
+use loam_shape::ShapeKind;
 
 use crate::body::RigidBody;
-use crate::collider::ColliderKind;
 use crate::geometry::GeometryStore;
 use crate::integrator::PhysicsSpace;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldRefusal {
     /// No query is registered for the body's collider kind.
-    Collider(ColliderKind),
+    Shape(ShapeKind),
     Dimension(u32),
     /// The field's value is not an exact distance, so it is not a separation.
     Kind(FieldKind),
@@ -42,8 +42,8 @@ pub type FieldContactFn<S> = fn(
 ) -> Result<FieldContact<S>, FieldRefusal>;
 
 pub struct FieldNarrowphase<S: PhysicsSpace> {
-    dispatch: HashMap<ColliderKind, FieldContactFn<S>>,
-    order: Vec<ColliderKind>,
+    dispatch: HashMap<ShapeKind, FieldContactFn<S>>,
+    order: Vec<ShapeKind>,
 }
 
 impl<S: PhysicsSpace> Default for FieldNarrowphase<S> {
@@ -60,13 +60,13 @@ impl<S: PhysicsSpace> FieldNarrowphase<S> {
         Self::default()
     }
 
-    pub fn register(&mut self, body: ColliderKind, query: FieldContactFn<S>) {
+    pub fn register(&mut self, body: ShapeKind, query: FieldContactFn<S>) {
         if self.dispatch.insert(body, query).is_none() {
             self.order.push(body);
         }
     }
 
-    pub fn registrations(&self) -> &[ColliderKind] {
+    pub fn registrations(&self) -> &[ShapeKind] {
         &self.order
     }
 
@@ -80,7 +80,7 @@ impl<S: PhysicsSpace> FieldNarrowphase<S> {
         let kind = body.collider().kind();
         match self.dispatch.get(&kind) {
             Some(&query) => query(body, geometry, field, space),
-            None => Err(FieldRefusal::Collider(kind)),
+            None => Err(FieldRefusal::Shape(kind)),
         }
     }
 }
@@ -93,8 +93,8 @@ mod r3 {
 
     use super::{FieldContact, FieldNarrowphase, FieldRefusal};
     use crate::body::RigidBody;
-    use crate::collider::{Collider, ColliderKind};
     use crate::geometry::GeometryStore;
+    use loam_shape::{Shape, ShapeKind};
 
     fn finite_upper(value: f64) -> Option<f32> {
         if !value.is_finite() || value > f32::MAX as f64 {
@@ -121,8 +121,8 @@ mod r3 {
         if field.field_kind() != FieldKind::ExactDistance {
             return Err(FieldRefusal::Kind(field.field_kind()));
         }
-        let Some(&Collider::Sphere { radius, .. }) = geometry.get(body.collider()) else {
-            return Err(FieldRefusal::Collider(body.collider().kind()));
+        let Some(&Shape::Sphere { radius, .. }) = geometry.get(body.collider()) else {
+            return Err(FieldRefusal::Shape(body.collider().kind()));
         };
         let center = body.position;
         let point = [center.x, center.y, center.z, 0.0];
@@ -177,7 +177,7 @@ mod r3 {
     }
 
     pub fn register_field_contacts(narrowphase: &mut FieldNarrowphase<EuclideanR3>) {
-        narrowphase.register(ColliderKind::Sphere, sphere_against_field);
+        narrowphase.register(ShapeKind::Sphere, sphere_against_field);
     }
 }
 
@@ -192,11 +192,11 @@ mod tests {
 
     use super::*;
     use crate::body::BodyId;
-    use crate::collider::Collider;
     use crate::edit::EditError;
     use crate::euclidean_r3::{halfspace_body_r3, sphere_body_r3};
     use crate::manifold::PENETRATION_SLOP;
     use crate::world::{FieldId, World};
+    use loam_shape::Shape;
     use loam_time::par::Sequential;
 
     struct Ground;
@@ -285,7 +285,7 @@ mod tests {
         np
     }
 
-    fn one_body(collider: Collider, at: Vec3) -> World<EuclideanR3> {
+    fn one_body(collider: Shape, at: Vec3) -> World<EuclideanR3> {
         let mut world = World::new(EuclideanR3);
         world.push_body(
             crate::body::BodyDef::new(at, Vec3::ZERO, collider, 1.0, 1.0, &EuclideanR3)
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn the_field_narrowphase_refuses_what_it_cannot_answer_and_names_why() {
-        let world = one_body(Collider::sphere_at_origin(0.5), Vec3::new(0.0, 1.0, 0.0));
+        let world = one_body(Shape::sphere_at_origin(0.5), Vec3::new(0.0, 1.0, 0.0));
         let id = world.bodies.id_at(0);
         assert_eq!(
             narrowphase()
@@ -393,7 +393,7 @@ mod tests {
             })
             .collect();
         let world = one_body(
-            Collider::ConvexPolytope3D { vertices: corners },
+            Shape::ConvexPolytope3D { vertices: corners },
             Vec3::new(0.0, 1.0, 0.0),
         );
         let id = world.bodies.id_at(0);
@@ -401,10 +401,10 @@ mod tests {
             narrowphase()
                 .test(&world.bodies[id], world.geometry(), &Ground, &EuclideanR3)
                 .err(),
-            Some(FieldRefusal::Collider(ColliderKind::ConvexPolytope3D))
+            Some(FieldRefusal::Shape(ShapeKind::ConvexPolytope3D))
         );
 
-        let world = one_body(Collider::sphere_at_origin(0.5), Vec3::ZERO);
+        let world = one_body(Shape::sphere_at_origin(0.5), Vec3::ZERO);
         let id = world.bodies.id_at(0);
         assert_eq!(
             narrowphase()

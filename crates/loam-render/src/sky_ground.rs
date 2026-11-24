@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use wgpu::*;
 
-pub use loam_runtime::{Ground, Sky};
+use loam_runtime::{Ground, Sky};
 
 /// Shared with [`crate::raymarch::HYPERSLICE_KERNEL_WGSL`].
 pub const SKY_GROUND_WGSL: &str = include_str!("sky_ground.wgsl");
