@@ -14,7 +14,7 @@ pub mod sky_ground;
 pub mod triangle;
 pub mod viewport;
 
-pub use depth::DepthBuffer;
+pub use depth::{root_projection, root_view_projection, DepthBuffer};
 pub use hyperslice::HyperslicePass;
 pub use line::{LinePass, LineRasterNode, LineRasterUniforms};
 pub use pass::{
