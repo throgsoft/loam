@@ -1883,6 +1883,7 @@ mod tests {
         pub struct Shown {
             scores: Store<u32>,
         }
+        publishes Vec<u32>;
     }
 
     struct Flat;
@@ -1959,8 +1960,13 @@ mod tests {
             }
             Ok(())
         });
+        session.publish_value("scores", |ctx, shown: &mut Vec<u32>| {
+            shown.clear();
+            shown.extend(ctx.app.scores.iter().map(|(_, score)| *score));
+            Ok(())
+        });
         let mut publication = Publication::default();
-        let cycle = |session: &mut Session<Shown>, publication: &mut Publication| {
+        let cycle = |session: &mut Session<Shown>, publication: &mut Publication<Vec<u32>>| {
             session.tick().unwrap();
             session.boundary(Input::default()).unwrap();
             session.publish(publication).unwrap();
@@ -1980,5 +1986,6 @@ mod tests {
             "16 warmed publishes asked the allocator for {bytes} bytes"
         );
         assert_eq!(publication.views[0].records.instances.rows().len(), 8);
+        assert_eq!(publication.value.len(), 8);
     }
 }

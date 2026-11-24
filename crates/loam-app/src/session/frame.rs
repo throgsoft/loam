@@ -1536,6 +1536,95 @@ mod tests {
         );
     }
 
+    loam_runtime::stores! {
+        #[derive(Default)]
+        pub struct Valued {}
+        publishes u32;
+    }
+
+    #[test]
+    fn an_on_published_hook_reads_the_value_the_session_wrote_for_that_frame() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let mut session = Session::new(Valued::default(), SimConfig::default());
+        let mut publishes = 0_u32;
+        session.publish_value("publishes", move |_, value: &mut u32| {
+            publishes += 1;
+            *value = publishes;
+            Ok(())
+        });
+        let seen: Arc<Mutex<Vec<u32>>> = Arc::default();
+        let read = seen.clone();
+        let app = host::<Valued>("value").on_published(move |hook| {
+            read.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(hook.published.value);
+        });
+        let mut frame = Frame::new(session, app, Box::new(Sequential))
+            .expect("the frame accepted the simulation config");
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+
+        run_one(&mut frame, &gpu, &texture);
+        run_one(&mut frame, &gpu, &texture);
+
+        assert_eq!(
+            *seen.lock().unwrap_or_else(|error| error.into_inner()),
+            [1, 2],
+            "the hook did not read each frame's published value"
+        );
+    }
+
+    #[cfg(not(feature = "egui"))]
+    fn notes_after_three_frames(labelled: bool, app: SessionApp<Bare>) -> usize {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        session.system(Phase::Publication, "label", move |ctx| {
+            if labelled {
+                ctx.overlay.push_text(
+                    "score",
+                    loam_runtime::TextRecord {
+                        origin_pt: [8.0, 16.0],
+                        size_pt: 16.0,
+                        color: [1.0; 4],
+                    },
+                );
+            }
+            Ok(())
+        });
+        let mut frame = Frame::new(session, app, Box::new(Sequential))
+            .expect("the frame accepted the simulation config");
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+        for _ in 0..3 {
+            run_one(&mut frame, &gpu, &texture);
+        }
+        frame.inner.app.console.ui().history().len()
+    }
+
+    #[cfg(not(feature = "egui"))]
+    #[test]
+    fn text_published_with_no_way_to_draw_it_is_reported_once_and_never_when_a_font_is_given() {
+        let silent = notes_after_three_frames(false, host("plain"));
+        assert_eq!(
+            notes_after_three_frames(true, host("fontless")),
+            silent + 1,
+            "three frames of dropped text did not leave exactly one note"
+        );
+        #[cfg(feature = "text")]
+        {
+            let font = include_bytes!("../../../examples/fonts/lmroman10-bold.otf").to_vec();
+            assert_eq!(
+                notes_after_three_frames(true, host("font").font(font)),
+                silent,
+                "text drawn with the app's font was reported as dropped"
+            );
+        }
+    }
+
     #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
     fn animation_frames(png: &[u8]) -> Option<u32> {
         let mut at = 8;
