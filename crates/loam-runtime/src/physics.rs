@@ -261,6 +261,44 @@ impl<S: PhysicsSpace> Clone for Released<S> {
 
 impl<S: PhysicsSpace> Copy for Released<S> {}
 
+enum Grip<S: PhysicsSpace> {
+    Free,
+    Held(Held<S>),
+    Released(Released<S>),
+}
+
+impl<S: PhysicsSpace> Clone for Grip<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: PhysicsSpace> Copy for Grip<S> {}
+
+impl<S: PhysicsSpace> Grip<S> {
+    fn held(self) -> Option<Held<S>> {
+        match self {
+            Self::Held(held) => Some(held),
+            _ => None,
+        }
+    }
+
+    fn released(self) -> Option<Released<S>> {
+        match self {
+            Self::Released(released) => Some(released),
+            _ => None,
+        }
+    }
+
+    fn body(self) -> Option<BodyId> {
+        match self {
+            Self::Free => None,
+            Self::Held(held) => Some(held.body),
+            Self::Released(released) => Some(released.body),
+        }
+    }
+}
+
 struct Rest<S: PhysicsSpace> {
     anchor: S::Point,
     time: f32,
@@ -280,8 +318,7 @@ pub struct Physics<S: PhysicsSpace> {
     to_body: Vec<Option<(u32, BodyId)>>,
     to_entity: Vec<Option<(u32, EntityKey)>>,
     rests: Vec<Option<(u32, Rest<S>)>>,
-    held: Option<Held<S>>,
-    released: Option<Released<S>>,
+    grip: Grip<S>,
     min_substeps: u32,
     max_substeps: u32,
     grab: Option<GrabConfig<S>>,
@@ -454,12 +491,12 @@ where
 
     pub fn is_held(&self, entity: Entity) -> bool {
         self.body(entity)
-            .is_some_and(|body| self.held.is_some_and(|held| held.body == body))
+            .is_some_and(|body| self.grip.held().is_some_and(|held| held.body == body))
     }
 
     pub fn held_anchor(&self, entity: Entity) -> Option<S::Point> {
         let body = self.body(entity)?;
-        let held = self.held.filter(|held| held.body == body)?;
+        let held = self.grip.held().filter(|held| held.body == body)?;
         let row = self.world.body(body)?;
         let lever = self
             .world
@@ -477,8 +514,12 @@ where
             .ok_or(EditError::StaleHandle)?
             .angular_velocity;
         self.world.set_velocity(id, velocity, angular)?;
-        if self.released.is_some_and(|released| released.body == id) {
-            self.released = None;
+        if self
+            .grip
+            .released()
+            .is_some_and(|released| released.body == id)
+        {
+            self.grip = Grip::Free;
         }
         Ok(())
     }
@@ -489,7 +530,10 @@ where
     }
 
     fn released_point(&self, body: BodyId) -> Option<S::Point> {
-        let released = self.released.filter(|released| released.body == body)?;
+        let released = self
+            .grip
+            .released()
+            .filter(|released| released.body == body)?;
         let row = self.world.body(body)?;
         let lever =
             self.world
@@ -531,11 +575,8 @@ where
 
     pub fn despawn(&mut self, entity: Entity) -> Option<BodyId> {
         let id = self.body(entity)?;
-        if self.held.is_some_and(|held| held.body == id) {
-            self.held = None;
-        }
-        if self.released.is_some_and(|released| released.body == id) {
-            self.released = None;
+        if self.grip.body() == Some(id) {
+            self.grip = Grip::Free;
         }
         let _ = self.world.despawn_body(id);
         put(&mut self.to_body, entity.key().slot() as usize, None);
@@ -616,7 +657,7 @@ where
         if !self.world.space().valid_point(position) {
             return Err(Rejection::Edit(EditError::NotFinite));
         }
-        if let Some(held) = &mut self.held {
+        if let Grip::Held(held) = &mut self.grip {
             if held.body == id {
                 let target = self.grab.map_or(position, |grab| {
                     (grab.constrain_target)(held.target, position)
@@ -672,8 +713,7 @@ where
         self.world
             .set_velocity(id, VectorOps::zero(), S::AngVel::zero())
             .map_err(Rejection::Edit)?;
-        self.released = None;
-        self.held = Some(Held {
+        self.grip = Grip::Held(Held {
             body: id,
             target,
             anchor: local_anchor,
@@ -683,9 +723,8 @@ where
     }
 
     fn release_grab(&mut self, id: BodyId) -> Result<Outcome, Rejection> {
-        if let Some(held) = self.held.filter(|held| held.body == id) {
-            self.held = None;
-            self.released = Some(Released {
+        if let Some(held) = self.grip.held().filter(|held| held.body == id) {
+            self.grip = Grip::Released(Released {
                 body: held.body,
                 anchor: held.anchor,
             });
@@ -746,7 +785,7 @@ where
     }
 
     fn drive_held(&mut self, dt: f32) -> Result<(), DomainError> {
-        let Some(held) = self.held else {
+        let Some(held) = self.grip.held() else {
             return Ok(());
         };
         let Some(grab) = self.grab else {
@@ -862,7 +901,7 @@ where
             let Some(rest) = self.rest else {
                 continue;
             };
-            let held = self.held.is_some_and(|held| held.body == id);
+            let held = self.grip.held().is_some_and(|held| held.body == id);
             let slot = id.slot() as usize;
             if !matches!(self.rests.get(slot), Some(Some((generation, _))) if *generation == id.generation())
             {
@@ -927,7 +966,9 @@ where
             self.world.step(dt, executor)?;
         }
         self.sync_poses(poses, true);
-        self.released = None;
+        if matches!(self.grip, Grip::Released(_)) {
+            self.grip = Grip::Free;
+        }
         self.settle(step.dt)
     }
 
@@ -991,8 +1032,7 @@ where
         self.to_entity.extend_from_slice(&from.to_entity);
         self.rests.clear();
         self.rests.extend_from_slice(&from.rests);
-        self.held = None;
-        self.released = None;
+        self.grip = Grip::Free;
         for slot in &mut self.to_body {
             *slot = None;
         }
@@ -1069,8 +1109,7 @@ where
             to_body: Vec::new(),
             to_entity: Vec::new(),
             rests: Vec::new(),
-            held: None,
-            released: None,
+            grip: Grip::Free,
             min_substeps: config.min_substeps,
             max_substeps: config.max_substeps,
             grab: config.grab,
@@ -1197,7 +1236,7 @@ mod tests {
             .move_to(id, Vec4::new(9.0, -9.0, 0.0, 7.0))
             .expect("move");
         assert_eq!(
-            physics.held.expect("held").target,
+            physics.grip.held().expect("held").target,
             Vec4::new(1.0, 0.5, 0.0, 0.75)
         );
         physics.release_grab(id).expect("release");

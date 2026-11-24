@@ -131,6 +131,13 @@ struct ValueEntry<A: Stores> {
     system: ValueSystem<A>,
 }
 
+#[derive(Clone, Copy)]
+enum Progress {
+    Idle,
+    Running(Phase),
+    Faulted(PhaseError),
+}
+
 /// A CPU value with no GPU or window object; `Send`, and it builds for wasm32.
 pub struct Session<A: Stores> {
     pub app: A,
@@ -151,8 +158,7 @@ pub struct Session<A: Stores> {
     sequence: u64,
     initial: Option<SessionSnapshot<A>>,
     restored: bool,
-    unfinished: Option<Phase>,
-    phase_error: Option<PhaseError>,
+    progress: Progress,
 }
 
 impl<A: Stores> Session<A> {
@@ -205,8 +211,7 @@ impl<A: Stores> Session<A> {
             sequence: 0,
             initial: None,
             restored: false,
-            unfinished: None,
-            phase_error: None,
+            progress: Progress::Idle,
         }
     }
 
@@ -232,22 +237,29 @@ impl<A: Stores> Session<A> {
     }
 
     pub fn faulted_phase(&self) -> Option<Phase> {
-        self.unfinished
+        match self.progress {
+            Progress::Idle => None,
+            Progress::Running(phase) => Some(phase),
+            Progress::Faulted(error) => Some(error.phase),
+        }
     }
 
     pub fn phase_error(&self) -> Option<PhaseError> {
-        self.phase_error
+        match self.progress {
+            Progress::Faulted(error) => Some(error),
+            Progress::Idle | Progress::Running(_) => None,
+        }
     }
 
     fn unfinished_error(&self) -> Option<PhaseError> {
-        self.unfinished.map(|phase| {
-            self.phase_error.unwrap_or_else(|| {
-                PhaseError::unnamed(
-                    phase,
-                    DomainError::Unsupported("unfinished phase requires restore"),
-                )
-            })
-        })
+        match self.progress {
+            Progress::Idle => None,
+            Progress::Running(phase) => Some(PhaseError::unnamed(
+                phase,
+                DomainError::Unsupported("unfinished phase requires restore"),
+            )),
+            Progress::Faulted(error) => Some(error),
+        }
     }
 
     pub fn register_domain<S: DomainSpace>(
@@ -442,7 +454,7 @@ impl<A: Stores> Session<A> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
-        self.unfinished = Some(Phase::Dispatch);
+        self.progress = Progress::Running(Phase::Dispatch);
         self.results.clear();
         let mut growth = Growth::default();
         self.commit(&mut growth);
@@ -464,15 +476,14 @@ impl<A: Stores> Session<A> {
         for domain in self.domains.iter_mut() {
             domain.boundary();
         }
-        self.unfinished = None;
+        self.progress = Progress::Idle;
         if self.initial.is_none() {
             match self.snapshot() {
                 Ok(initial) => self.initial = Some(initial),
                 Err(cause) => {
                     let error =
                         PhaseError::system(Phase::Dispatch, "initial", DomainError::Restore(cause));
-                    self.unfinished = Some(Phase::Dispatch);
-                    self.phase_error = Some(error);
+                    self.progress = Progress::Faulted(error);
                     return Err(error);
                 }
             }
@@ -497,7 +508,7 @@ impl<A: Stores> Session<A> {
             camera::travel(&mut self.views, &self.input, dt);
             return Ok(());
         }
-        self.unfinished = Some(Phase::Simulation);
+        self.progress = Progress::Running(Phase::Simulation);
         let step = Step {
             tick: self.tick,
             dt,
@@ -517,7 +528,7 @@ impl<A: Stores> Session<A> {
         }
         stepped?;
         self.tick = Tick(self.tick.0 + 1);
-        self.unfinished = None;
+        self.progress = Progress::Idle;
         Ok(())
     }
 
@@ -535,7 +546,7 @@ impl<A: Stores> Session<A> {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
         };
-        self.unfinished = Some(Phase::Publication);
+        self.progress = Progress::Running(Phase::Publication);
         self.overlay.clear();
         for index in 0..self.phases.entries(Phase::Publication).len() {
             self.run_entry(Phase::Publication, index, step, alpha, &Sequential)?;
@@ -562,11 +573,11 @@ impl<A: Stores> Session<A> {
         );
         if let Err(error) = reconciled {
             let error = PhaseError::unnamed(Phase::Publication, error);
-            self.phase_error = Some(error);
+            self.progress = Progress::Faulted(error);
             return Err(error);
         }
         self.sequence = sequence;
-        self.unfinished = None;
+        self.progress = Progress::Idle;
         Ok(())
     }
 
@@ -585,7 +596,7 @@ impl<A: Stores> Session<A> {
 
     /// `Unfinished` while a phase is incomplete and `Pending` while deferred mutation remains.
     pub fn snapshot(&self) -> Result<SessionSnapshot<A>, RestoreError> {
-        if let Some(phase) = self.unfinished {
+        if let Some(phase) = self.faulted_phase() {
             return Err(RestoreError::Unfinished(phase));
         }
         if !self.commands.is_empty() || self.entities().has_reservations() {
@@ -625,8 +636,7 @@ impl<A: Stores> Session<A> {
         let scene = self.scene();
         for (domain, snapshot) in self.domains.iter_mut().zip(&from.domains) {
             if let Err(error) = domain.restore(snapshot, scene) {
-                self.unfinished = Some(Phase::Dispatch);
-                self.phase_error = Some(PhaseError::system(
+                self.progress = Progress::Faulted(PhaseError::system(
                     Phase::Dispatch,
                     "restore",
                     DomainError::Restore(error),
@@ -640,8 +650,7 @@ impl<A: Stores> Session<A> {
         self.tick = from.tick;
         self.config = from.config;
         self.paused = from.paused;
-        self.unfinished = None;
-        self.phase_error = None;
+        self.progress = Progress::Idle;
         Ok(())
     }
 
@@ -675,15 +684,13 @@ impl<A: Stores> Session<A> {
             let outcome = match request.command {
                 Command::Reset if self.restored => Ok(Outcome::Done),
                 Command::Reset => {
-                    let unfinished = self.unfinished;
-                    let phase_error = self.phase_error;
+                    let progress = self.progress;
                     let outcome = self
                         .reset()
                         .map(|()| Outcome::Done)
                         .map_err(Rejection::Restore);
                     if outcome.is_ok() {
-                        self.unfinished = unfinished;
-                        self.phase_error = phase_error;
+                        self.progress = progress;
                     }
                     outcome
                 }
@@ -720,7 +727,7 @@ impl<A: Stores> Session<A> {
             assets,
             overlay,
             manipulation,
-            phase_error,
+            progress,
             ..
         } = self;
         let Some(entry) = entry else {
@@ -746,7 +753,7 @@ impl<A: Stores> Session<A> {
         domains.synchronize();
         result.map_err(|cause| {
             let error = PhaseError::system(Phase::Publication, entry.name, cause);
-            *phase_error = Some(error);
+            *progress = Progress::Faulted(error);
             error
         })
     }
@@ -770,7 +777,7 @@ impl<A: Stores> Session<A> {
             assets,
             overlay,
             manipulation,
-            phase_error,
+            progress,
             ..
         } = self;
         let Some(system) = phases.entries_mut(phase).get_mut(index) else {
@@ -794,7 +801,7 @@ impl<A: Stores> Session<A> {
         domains.synchronize();
         result.map_err(|cause| {
             let error = PhaseError::system(phase, name, cause);
-            *phase_error = Some(error);
+            *progress = Progress::Faulted(error);
             error
         })
     }
