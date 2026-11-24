@@ -28,6 +28,15 @@ pub mod wasm;
 #[cfg(feature = "egui")]
 pub use loam_egui::egui;
 
+pub use args::Args;
+pub use capture::{CaptureFormat, CaptureRequest, CaptureStage, CaptureUnavailable, PaletteMode};
+pub use environment::Environment;
+pub use host::{Bindings, HostConfig, HostError, Key};
+pub use session::{
+    launch, launch_with, CaptureControl, CommandSender, InputHook, PublishedHook, Redraw,
+    SessionApp, SessionConsole, Submit,
+};
+
 /// `Background` starts at load with no overlay and leaves keys, wheel, and page scrolling to the page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LaunchMode {
