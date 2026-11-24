@@ -3,9 +3,6 @@
 //! `GreaterEqual`; every pass here writes that quantity, and `StandardZ` nodes serve the old paths only.
 
 use glam::{Mat4, Vec3};
-use loam_math::hyperbolic::{hyperboloid_to_klein, poincare_to_hyperboloid};
-pub use loam_math::hyperbolic::{H3_DEPTH_ENVELOPE, H3_DEPTH_SEPARATION, H3_EYE_CHART_REACH};
-use loam_math::{Iso3, Iso3H};
 use loam_runtime::{Eye, Rigid};
 use wgpu::{CompareFunction, TextureFormat};
 
@@ -31,10 +28,6 @@ pub fn root_view_projection(eye: &Eye) -> Mat4 {
     root_projection(eye.fov_y, eye.aspect, eye.near) * basis.inverse()
 }
 
-pub fn eye_relative(eye: Iso3) -> Mat4 {
-    Mat4::from_rotation_translation(eye.rotation, eye.translation).inverse()
-}
-
 pub fn placement_matrix(placement: Rigid) -> Mat4 {
     Mat4::from_scale_rotation_translation(
         Vec3::splat(placement.scale),
@@ -45,8 +38,4 @@ pub fn placement_matrix(placement: Rigid) -> Mat4 {
 
 pub fn placed_view_projection(eye: &Eye, placement: Rigid) -> Mat4 {
     root_view_projection(eye) * placement_matrix(placement)
-}
-
-pub fn h3_image_of(eye_inverse: &Iso3H, p: Vec3) -> Vec3 {
-    hyperboloid_to_klein(eye_inverse.matrix * poincare_to_hyperboloid(p))
 }

@@ -5,16 +5,12 @@ use glam::Mat4;
 use loam_math::{EuclideanR3, Projection};
 use loam_runtime::{Eye, Rigid, Version};
 use loam_shape::TriangleMesh;
-use wgpu::{Color, CommandEncoder, Device, Queue, RenderPass};
+use wgpu::{CommandEncoder, Device, Queue, RenderPass};
 
 use crate::device::GpuContext;
-use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
-use crate::sky_ground::SKY_HORIZON;
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use crate::view::placed_view_projection;
-use crate::{
-    DepthConvention, DepthMode, FragmentShading, Ground, SkyGroundNode, SkyGroundUniforms,
-    TriangleRasterNode, Viewport,
-};
+use crate::{DepthConvention, DepthMode, FragmentShading, TriangleRasterNode};
 
 #[derive(Default)]
 struct Input {
@@ -22,27 +18,8 @@ struct Input {
     source_version: Option<Version>,
     revision: u64,
     view_projection: Mat4,
-    ground: Option<Ground>,
-    declared: Option<ColorLoad>,
     uploads: u64,
 }
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct GroundLocked {
-    pub declared: ColorLoad,
-}
-
-impl std::fmt::Display for GroundLocked {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "a registered triangle pass declared {:?}, so the ground cannot be added or removed",
-            self.declared
-        )
-    }
-}
-
-impl std::error::Error for GroundLocked {}
 
 #[derive(Clone, Default)]
 pub struct TriangleFeed {
@@ -51,32 +28,15 @@ pub struct TriangleFeed {
 
 impl TriangleFeed {
     pub fn pass(&self, shading: FragmentShading) -> Box<dyn FramePass> {
-        let load = {
-            let mut input = self.input.borrow_mut();
-            let load = ground_load(input.ground);
-            input.declared = Some(load);
-            load
-        };
         Box::new(TrianglePass {
             input: self.input.clone(),
             shading,
-            load,
             built: None,
         })
     }
 
     pub fn set_view(&self, eye: &Eye, placement: Rigid) {
         self.input.borrow_mut().view_projection = placed_view_projection(eye, placement);
-    }
-
-    pub fn set_ground(&self, ground: Option<Ground>) -> Result<(), GroundLocked> {
-        let mut input = self.input.borrow_mut();
-        let load = ground_load(ground);
-        if let Some(declared) = input.declared.filter(|declared| *declared != load) {
-            return Err(GroundLocked { declared });
-        }
-        input.ground = ground;
-        Ok(())
     }
 
     pub fn edit(&self, build: impl FnOnce(&mut TriangleMesh<3>)) {
@@ -112,21 +72,12 @@ struct Built {
     device: Device,
     queue: Queue,
     triangles: TriangleRasterNode,
-    sky_ground: SkyGroundNode,
     uploaded: Option<u64>,
-}
-
-fn ground_load(ground: Option<Ground>) -> ColorLoad {
-    match ground {
-        Some(_) => ColorLoad::Clear,
-        None => ColorLoad::Load,
-    }
 }
 
 struct TrianglePass {
     input: Rc<RefCell<Input>>,
     shading: FragmentShading,
-    load: ColorLoad,
     built: Option<Built>,
 }
 
@@ -137,10 +88,6 @@ impl FramePass for TrianglePass {
 
     fn stage(&self) -> PassStage {
         PassStage::Scene
-    }
-
-    fn color_load(&self) -> ColorLoad {
-        self.load
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
@@ -155,14 +102,10 @@ impl FramePass for TrianglePass {
         true
     }
 
-    fn clear_color(&self) -> Color {
-        SKY_HORIZON
-    }
-
     fn prepare(
         &mut self,
         _encoder: &mut CommandEncoder,
-        target: &FrameTarget<'_>,
+        _target: &FrameTarget<'_>,
     ) -> anyhow::Result<()> {
         let Some(built) = self.built.as_mut() else {
             return Ok(());
@@ -178,17 +121,6 @@ impl FramePass for TrianglePass {
                 &Projection::Identity,
             );
         }
-        if let (ColorLoad::Clear, Some(ground)) = (self.load, input.ground) {
-            built.sky_ground.set_uniforms(
-                &built.queue,
-                &SkyGroundUniforms::new(
-                    input.view_projection,
-                    Viewport::full([target.size.0, target.size.1]),
-                    crate::sky_ground::DEFAULT_SKY,
-                    ground,
-                ),
-            );
-        }
         built
             .triangles
             .set_camera(&built.queue, input.view_projection);
@@ -199,9 +131,6 @@ impl FramePass for TrianglePass {
         let Some(built) = self.built.as_ref() else {
             return Ok(());
         };
-        if let (ColorLoad::Clear, Some(_)) = (self.load, self.input.borrow().ground) {
-            built.sky_ground.draw(pass, None);
-        }
         built.triangles.draw(pass, None);
         Ok(())
     }
@@ -218,9 +147,6 @@ impl FramePass for TrianglePass {
         let Some(built) = self.built.as_ref() else {
             return Ok(());
         };
-        if let (ColorLoad::Clear, Some(_)) = (self.load, self.input.borrow().ground) {
-            built.sky_ground.record(encoder, target.color, depth, None);
-        }
         built
             .triangles
             .record(encoder, target.color, Some(depth), None);
@@ -237,17 +163,10 @@ impl FramePass for TrianglePass {
             DepthConvention::ReversedZ,
             self.shading,
         )?;
-        let sky_ground = SkyGroundNode::new(
-            &gpu.device,
-            frame.color,
-            frame.depth,
-            DepthConvention::ReversedZ,
-        );
         self.built = Some(Built {
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
             triangles,
-            sky_ground,
             uploaded: None,
         });
         Ok(())

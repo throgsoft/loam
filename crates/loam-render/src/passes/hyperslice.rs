@@ -28,13 +28,11 @@ struct State {
 #[derive(Clone)]
 pub struct HyperslicePass {
     shared: Rc<RefCell<State>>,
-    load: ColorLoad,
 }
 
 impl HyperslicePass {
     pub fn new(source: String) -> Self {
         Self {
-            load: ColorLoad::Load,
             shared: Rc::new(RefCell::new(State {
                 source,
                 uniforms: Hyperslice4DUniforms::default(),
@@ -62,10 +60,6 @@ impl HyperslicePass {
     pub fn body_count(&self) -> usize {
         self.shared.borrow().bodies.len()
     }
-
-    pub fn strip_cells(&self) -> usize {
-        self.shared.borrow().cells.len()
-    }
 }
 
 fn body_of(field: &FieldRecord) -> BodyUniform {
@@ -86,10 +80,6 @@ impl FramePass for HyperslicePass {
 
     fn stage(&self) -> PassStage {
         PassStage::Background
-    }
-
-    fn color_load(&self) -> ColorLoad {
-        self.load
     }
 
     fn depth_convention(&self) -> Option<DepthConvention> {
@@ -159,7 +149,7 @@ impl FramePass for HyperslicePass {
         uniforms.viewport_origin = [0.0, 0.0];
         *node.uniforms_mut() = *uniforms;
         if !cells.is_empty() {
-            node.record_strip(device, queue, encoder, target.color, cells, self.load)?;
+            node.record_strip(device, queue, encoder, target.color, cells, ColorLoad::Load)?;
             return Ok(());
         }
         // Without bodies the kernel would still draw the shader's own scene, such as a floor.
@@ -173,7 +163,7 @@ impl FramePass for HyperslicePass {
             target.color,
             Some(depth),
             Viewport::full([target.size.0, target.size.1]),
-            self.load,
+            ColorLoad::Load,
         );
         Ok(())
     }

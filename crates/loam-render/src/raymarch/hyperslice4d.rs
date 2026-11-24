@@ -675,7 +675,6 @@ pub struct Hyperslice4DNode {
     body_capacity: usize,
     bind_group: BindGroup,
     bind_group_layout: BindGroupLayout,
-    clear_color: Color,
     strip_cells: Option<StripCellUniforms>,
     has_depth: bool,
 }
@@ -755,7 +754,6 @@ impl Hyperslice4DNode {
             body_capacity: INITIAL_BODY_CAPACITY,
             bind_group,
             bind_group_layout: bgl,
-            clear_color: crate::sky_ground::SKY_HORIZON,
             strip_cells: None,
             has_depth: depth.is_active(),
         }
@@ -780,19 +778,11 @@ impl Hyperslice4DNode {
         }
     }
 
-    pub fn set_clear_color(&mut self, color: Color) {
-        self.clear_color = color;
-    }
-
     fn color_load_op(&self, load: ColorLoad) -> LoadOp<Color> {
         match load {
-            ColorLoad::Clear => LoadOp::Clear(self.clear_color),
+            ColorLoad::Clear => LoadOp::Clear(crate::sky_ground::SKY_HORIZON),
             ColorLoad::Load => LoadOp::Load,
         }
-    }
-
-    pub fn body_capacity(&self) -> usize {
-        self.body_capacity
     }
 
     /// Does not auto-flush; pair with [`Self::flush_uniforms`].
@@ -819,16 +809,6 @@ impl Hyperslice4DNode {
 }
 
 impl Hyperslice4DNode {
-    /// `LoadOp::Load`: the kernel discards unshaded pixels, so a background records ahead of it within the same stage.
-    pub fn record_in_viewport(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        viewport: crate::Viewport,
-    ) {
-        self.record(encoder, view, None, viewport, ColorLoad::Load);
-    }
-
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,

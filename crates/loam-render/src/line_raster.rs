@@ -3,9 +3,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
-use loam_math::{Projection, RasterizableSpace};
-use loam_runtime::{Eye, SegmentRecord};
-use loam_shape::LineMesh;
+use loam_runtime::SegmentRecord;
 use wgpu::util::DeviceExt;
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
@@ -52,7 +50,6 @@ pub struct LineRasterNode {
     instance_count: u32,
     instance_capacity: u32,
     has_depth: bool,
-    instances_scratch: Vec<SegmentRecord>,
 }
 
 impl LineRasterNode {
@@ -219,12 +216,7 @@ impl LineRasterNode {
             instance_count: 0,
             instance_capacity,
             has_depth: depth.is_active(),
-            instances_scratch: Vec::new(),
         }
-    }
-
-    pub fn set_root_camera(&self, queue: &Queue, eye: &Eye, viewport_size: Vec2) {
-        self.set_camera(queue, crate::view::root_view_projection(eye), viewport_size);
     }
 
     pub fn set_camera(&self, queue: &Queue, view_projection: Mat4, viewport_size: Vec2) {
@@ -234,24 +226,6 @@ impl LineRasterNode {
             _pad: [0.0; 2],
         };
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
-    }
-
-    pub fn upload<S, const N: usize>(
-        &mut self,
-        device: &Device,
-        queue: &Queue,
-        mesh: &LineMesh<N>,
-        projection: &Projection<N>,
-        samples_per_segment: usize,
-    ) where
-        S: RasterizableSpace<N>,
-    {
-        let samples = samples_per_segment.max(1);
-        build_line_instances::<S, N>(&mut self.instances_scratch, mesh, projection, samples);
-
-        let scratch = std::mem::take(&mut self.instances_scratch);
-        self.upload_segments(device, queue, &scratch);
-        self.instances_scratch = scratch;
     }
 
     pub fn segment_count(&self) -> u32 {
@@ -356,58 +330,4 @@ fn depth_state(
         stencil: StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     })
-}
-
-fn build_line_instances<S, const N: usize>(
-    out: &mut Vec<SegmentRecord>,
-    mesh: &LineMesh<N>,
-    projection: &Projection<N>,
-    samples: usize,
-) where
-    S: RasterizableSpace<N>,
-{
-    out.clear();
-    out.reserve(mesh.segments.len() * samples);
-
-    for ((seg, (color_a, color_b)), &width) in mesh
-        .segments
-        .iter()
-        .zip(mesh.colors.iter())
-        .zip(mesh.widths.iter())
-    {
-        let p0 = S::array_to_point(seg.0);
-        let p1 = S::array_to_point(seg.1);
-        let mut previous = None;
-        let mut index = 0;
-        S::tessellate_segment(p0, p1, samples, |point| {
-            let q1 = S::project_point(point, projection).unwrap_or(glam::Vec3::NAN);
-            if let Some(q0) = previous {
-                let t0 = index as f32 / samples as f32;
-                let t1 = (index + 1) as f32 / samples as f32;
-                if glam::Vec3::is_finite(q0) && q1.is_finite() {
-                    out.push(SegmentRecord {
-                        start: q0.to_array(),
-                        _pad0: 0.0,
-                        end: q1.to_array(),
-                        _pad1: 0.0,
-                        start_color: lerp_color(*color_a, *color_b, t0),
-                        end_color: lerp_color(*color_a, *color_b, t1),
-                        width_px: width,
-                        _pad2: [0.0; 3],
-                    });
-                }
-                index += 1;
-            }
-            previous = Some(q1);
-        });
-    }
-}
-
-fn lerp_color(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-        a[3] + (b[3] - a[3]) * t,
-    ]
 }

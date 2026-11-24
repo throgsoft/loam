@@ -12,20 +12,6 @@ pub use hyperslice4d::{
 };
 pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
 
-/// `None` for the smooth-surface SDFs.
-pub fn polytope4_from_shape_id(shape: u32) -> Option<loam_shape::polytope::Polytope4> {
-    use loam_shape::polytope::Polytope4;
-    Some(match shape {
-        s if s == SHAPE_PENTATOPE => Polytope4::Pentatope,
-        s if s == SHAPE_TESSERACT => Polytope4::Tesseract,
-        s if s == SHAPE_16CELL => Polytope4::Cell16,
-        s if s == SHAPE_24CELL => Polytope4::Cell24,
-        s if s == SHAPE_120CELL => Polytope4::Cell120,
-        s if s == SHAPE_600CELL => Polytope4::Cell600,
-        _ => return None,
-    })
-}
-
 pub fn shape_id(shape: loam_shape::FieldShape) -> u32 {
     use loam_shape::polytope::Polytope4;
     use loam_shape::FieldShape;
@@ -65,8 +51,6 @@ pub struct RayMarchUniforms {
     pub tick: f32,
     /// Four scalar knobs; semantics are up to the user shader.
     pub params: [f32; 4],
-    /// Inverse of the eye's isometry on the domain's embedding; the view map composes it first.
-    pub eye_inverse: [[f32; 4]; 4],
     /// Near distance of the root projection; see [`crate::view`].
     pub near: f32,
     pub _pad3: [f32; 3],
@@ -87,7 +71,6 @@ impl Default for RayMarchUniforms {
             time: 0.0,
             tick: 0.0,
             params: [0.0; 4],
-            eye_inverse: glam::Mat4::IDENTITY.to_cols_array_2d(),
             near: 0.05,
             _pad3: [0.0; 3],
         }
@@ -233,16 +216,6 @@ impl RayMarchNode {
 }
 
 impl RayMarchNode {
-    /// Clears the whole attachment before shading the viewport.
-    pub fn record_in_viewport(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        viewport: crate::Viewport,
-    ) {
-        self.record(encoder, view, None, viewport);
-    }
-
     /// Clears both attachments; depth clears to [`crate::view::DEPTH_CLEAR`].
     pub fn record(
         &self,
