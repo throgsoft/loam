@@ -654,8 +654,8 @@ mod tests {
     use loam_render::device::FeatureRequest;
     use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
     use loam_runtime::{
-        ActionId, Command, DomainBuilder, FreeCamera, LogCapacity, Material, Phase, Pose,
-        PreparedGeometry, Rig, Section4, SimConfig, SpawnBundle, Tick, ViewSpec,
+        ActionId, Command, DomainBuilder, FreeCamera, LogCapacity, Material, Phase, PointerPhase,
+        Pose, PreparedGeometry, Rig, Section4, SimConfig, SpawnBundle, Tick, ViewSpec,
     };
     use wgpu::{
         BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
@@ -1318,6 +1318,118 @@ mod tests {
         assert_eq!(
             *marked.lock().unwrap_or_else(|error| error.into_inner()),
             ["first", "second"]
+        );
+    }
+
+    #[test]
+    fn scripted_input_lines() {
+        const MARK: ActionId = ActionId("mark");
+
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("input.script");
+        std::fs::write(&path, "0 key KeyM down\n0 pointer 0.25 0.5 down\n")
+            .expect("wrote the script");
+
+        let args = Args::from_argv([format!("--script={}", path.display())]);
+        let app = quiet(SessionApp::<Bare>::with_args(
+            HostConfig::new("script", Bindings::new().key(Key::Letter('m'), MARK)),
+            args,
+        ));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let saw = seen.clone();
+        let mut session = Session::new(Bare::default(), SimConfig::default());
+        session.system(
+            Phase::Dispatch,
+            "watch",
+            move |ctx: loam_runtime::Ctx<'_, Bare>| {
+                let began = ctx
+                    .input
+                    .pointers
+                    .iter()
+                    .find(|pointer| pointer.phase == PointerPhase::Began)
+                    .map(|pointer| pointer.ndc);
+                saw.lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push((ctx.input.pressed(MARK), began));
+                Ok(())
+            },
+        );
+        let mut frame = Frame::new(session, app, Box::new(Sequential))
+            .expect("the frame accepted the simulation config");
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+
+        for _ in 0..2 {
+            run_one(&mut frame, &gpu, &texture);
+        }
+
+        assert_eq!(
+            *seen.lock().unwrap_or_else(|error| error.into_inner()),
+            [(false, None), (true, Some([0.25, 0.5]))],
+            "the boundary after the lines' frame did not get their key and pointer"
+        );
+    }
+
+    struct Refuse;
+
+    impl loam_runtime::AppCommand<Bare> for Refuse {
+        fn name(&self) -> &'static str {
+            "reject"
+        }
+
+        fn apply(
+            &mut self,
+            _dispatch: &mut loam_runtime::Dispatch<'_, Bare>,
+        ) -> Result<loam_runtime::Outcome, loam_runtime::Rejection> {
+            Err(loam_runtime::Rejection::Unsupported("refused"))
+        }
+    }
+
+    #[test]
+    fn scripted_refusals() {
+        let gpu = noop_gpu();
+        let texture = offscreen(&gpu);
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("refused.script");
+        std::fs::write(&path, "0 strict\n0 mark first\n0 reject\n2 mark second\n")
+            .expect("wrote the script");
+
+        let marked = Arc::new(AtomicU32::new(0));
+        let marks = marked.clone();
+        let args = Args::from_argv([format!("--script={}", path.display())]);
+        let app = quiet(SessionApp::<Bare>::with_args(
+            HostConfig::new("script", Bindings::new()),
+            args,
+        ))
+        .command("mark", "count a marker", move |_args, _submit, _out| {
+            marks.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })
+        .command("strict", "refuse at dispatch", |_args, _submit, _out| {
+            anyhow::bail!("usage: strict <n>")
+        })
+        .command("reject", "refuse at the boundary", |_args, submit, _out| {
+            submit.app(Refuse);
+            Ok(())
+        });
+        let mut frame = bare(app);
+        frame
+            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .expect("attached");
+
+        let mut after_each = Vec::new();
+        for _ in 0..3 {
+            run_one(&mut frame, &gpu, &texture);
+            after_each.push(marked.load(Ordering::Relaxed));
+        }
+
+        assert_eq!(
+            after_each,
+            [1, 1, 2],
+            "a refused line stopped the lines after it or moved them off their frames"
         );
     }
 

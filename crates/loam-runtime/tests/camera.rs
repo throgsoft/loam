@@ -1,7 +1,7 @@
 use loam_math::{EuclideanR3, Space};
 use loam_runtime::{
     ActionEvent, ActionId, CameraPair, CursorPolicy, Eye, FreeCamera, Input, Orbit, Pointer,
-    PointerButton, PointerPhase, Rig, Session, SimConfig, MOVE_FORWARD, MOVE_RIGHT, MOVE_UP,
+    PointerButton, PointerPhase, Rig, Session, SimConfig, Tick, MOVE_FORWARD, MOVE_RIGHT, MOVE_UP,
 };
 use loam_time::par::Sequential;
 
@@ -245,6 +245,37 @@ fn free_rig() {
         heading(&twice) - heading(&once)
     );
     assert_eq!(twice.aspect, ASPECT);
+}
+
+#[test]
+fn free_rig_while_paused() {
+    const SPEED: f32 = 3.0;
+    const HZ: u32 = 50;
+    const TICKS: u32 = 25;
+    let start = Eye {
+        position: [0.0, 1.0, 0.0],
+        ..Eye::default()
+    };
+    let mut session = hosted(
+        SimConfig::new(HZ, 4).unwrap(),
+        Rig::Free(FreeCamera {
+            eye: start,
+            speed: SPEED,
+            ..FreeCamera::default()
+        }),
+    );
+    session.set_paused(true);
+
+    walk_forward(&mut session, TICKS);
+
+    assert_eq!(session.current_tick(), Tick(0));
+    let walked = eye(&session);
+    let want = Vec3::from(start.position) + Vec3::NEG_Z * (SPEED * TICKS as f32 / HZ as f32);
+    assert!(
+        (Vec3::from(walked.position) - want).length() < 1e-4,
+        "{TICKS} paused ticks forward at {SPEED} units a second ended at {:?}, not {want:?}",
+        walked.position
+    );
 }
 
 #[test]

@@ -2,14 +2,17 @@
 
 use loam_math::{Bivector4, EuclideanR4, Rotor4, Space};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
-use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
+use loam_physics::euclidean_r4::{
+    halfspace4_body_r4, register_default_narrowphase, sphere_body_r4,
+};
 use loam_physics::world::ISLANDS_PER_SOLVE_WORKER;
 use loam_physics::BodyDef;
 use loam_runtime::{
-    Change, ChartCommand, Command, Ctx, Cursor, DomainBuilder, DomainError, DomainHandle,
-    DomainSpace, Entity, GrabConfig, Input, LogCapacity, Phase, PhysicsConfig, Pose, Rejection,
-    RestConfig, Session, SimConfig, SpawnBundle, Store,
+    ActionEvent, ActionId, Change, ChartCommand, Command, Ctx, Cursor, DomainBuilder, DomainError,
+    DomainHandle, DomainSpace, Entity, GrabConfig, Input, LogCapacity, Phase, PhysicsConfig, Pose,
+    Publication, Rejection, RestConfig, Session, SimConfig, SpawnBundle, Store,
 };
 use loam_time::par::{ChunkSource, Executor, Sequential};
 
@@ -410,6 +413,109 @@ fn rest_time_restore() {
     assert!(
         asleep(&session, r4, restored),
         "the restore restarted a rest window that had 20 ticks behind it"
+    );
+}
+
+#[test]
+fn touching_entities() {
+    let (mut session, r4) = session();
+    let floor = bundled(
+        &mut session,
+        r4,
+        Pose::at(Vec4::ZERO),
+        halfspace4_body_r4(Vec4::Y, 0.0).unwrap(),
+    );
+    let resting = ball(&mut session, r4, Vec4::Y * RADIUS);
+    let falling = ball(&mut session, r4, Vec4::new(4.0, 20.0, 0.0, 0.0));
+    let bodiless = session
+        .dispatch(|d| d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::X * 8.0))))
+        .unwrap();
+    ticks(&mut session, 30);
+
+    let physics = session.domains().read(r4).unwrap().physics().unwrap();
+    let touched = |entity: Entity| -> Vec<Entity> {
+        physics.touching(entity).map(|(other, _)| other).collect()
+    };
+    assert_eq!(touched(resting), [floor]);
+    assert_eq!(
+        touched(floor),
+        [resting],
+        "the floor does not name the body that names it"
+    );
+    assert_eq!(touched(falling), [], "a body in the air touches something");
+    assert_eq!(touched(bodiless), []);
+}
+
+#[test]
+fn paused_ticks() {
+    const PAUSE: ActionId = ActionId("pause");
+    let press = || Input {
+        actions: vec![ActionEvent {
+            action: PAUSE,
+            pressed: true,
+        }],
+        ..Input::default()
+    };
+    let (mut session, r4) = session();
+    session.pause_on(PAUSE);
+    let stepped = Arc::new(AtomicUsize::new(0));
+    let steps = stepped.clone();
+    session.system(Phase::Simulation, "count", move |_ctx: Ctx<'_, Probe>| {
+        steps.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    });
+    let entity = ball(&mut session, r4, Vec4::new(0.0, 10.0, 0.0, 0.0));
+    let state = |session: &Session<Probe>| {
+        let physics = session.domains().read(r4).unwrap().physics().unwrap();
+        let body = *physics.world().body(physics.body(entity).unwrap()).unwrap();
+        (
+            pose_of(session, r4, entity),
+            body.position,
+            body.velocity,
+            session.current_tick(),
+            stepped.load(Ordering::Relaxed),
+        )
+    };
+    let drawn = |session: &Session<Probe>, alpha: f32| {
+        let domain = session.domains().read(r4).unwrap();
+        domain.drawn_pose(entity, alpha).unwrap().point
+    };
+    ticks(&mut session, 3);
+    assert_ne!(
+        drawn(&session, 0.5),
+        pose_of(&session, r4, entity),
+        "the fixture draws no blend for a pause to drop"
+    );
+
+    session.boundary(press()).unwrap();
+    let frozen = state(&session);
+    let (pose, _, velocity, tick, steps) = frozen;
+    ticks(&mut session, 5);
+    assert_eq!(state(&session), frozen, "a paused tick moved the world on");
+    let mut publication = Publication::default();
+    session.publish(&mut publication, 0.5).unwrap();
+    assert_eq!(publication.stamp.tick, tick);
+    for alpha in [0.0, 0.5] {
+        assert_eq!(
+            drawn(&session, alpha),
+            pose,
+            "a paused publish at alpha {alpha} drew the body off its pose"
+        );
+    }
+
+    session.boundary(press()).unwrap();
+    session.tick(&Sequential).unwrap();
+    let (_, _, resumed, later, ran) = state(&session);
+    assert_eq!(
+        (later.0, ran),
+        (tick.0 + 1, steps + 1),
+        "the press at a paused boundary did not resume the ticks"
+    );
+    let want = velocity.y - GRAVITY * DT;
+    assert!(
+        (resumed.y - want).abs() < 1e-5,
+        "the body fell on at {}, not at {want} from the speed it was paused with",
+        resumed.y
     );
 }
 

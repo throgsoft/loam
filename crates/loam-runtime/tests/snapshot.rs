@@ -1,4 +1,6 @@
 use std::any::Any;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
@@ -370,6 +372,101 @@ fn failed_cpu_phase() {
     assert_eq!(session.tick(&Sequential), Err(failure));
     session.restore(&captured).unwrap();
     assert!(session.snapshot().is_ok());
+}
+
+struct RejectRestore {
+    armed: Arc<AtomicBool>,
+}
+
+impl Facility<EuclideanR4> for RejectRestore {
+    fn name(&self) -> &'static str {
+        "reject restore"
+    }
+
+    fn step(
+        &mut self,
+        _poses: &mut Store<Pose<EuclideanR4>>,
+        _step: Step,
+        _executor: &dyn Executor,
+        _owner: Owner,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
+        Box::new(())
+    }
+
+    fn check_restore(&self, _from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        Ok(())
+    }
+
+    fn restore(&mut self, _from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
+        if self.armed.load(Ordering::Relaxed) {
+            return Err(RestoreError::Schema(SchemaId::of::<()>()));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn failed_restore_in_a_reset_command() {
+    let armed = Arc::new(AtomicBool::new(false));
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    session.register_domain(DomainBuilder::new("r4", EuclideanR4).untracked().facility(
+        RejectRestore {
+            armed: armed.clone(),
+        },
+    ));
+    let captured = session.snapshot().unwrap();
+    session.set_initial().unwrap();
+
+    armed.store(true, Ordering::Relaxed);
+    session.submit(Command::Reset);
+    let failure = session
+        .boundary(Input::default())
+        .expect_err("a boundary whose reset stopped half way ended clean");
+    assert_eq!(failure.phase, Phase::Dispatch);
+    assert_eq!(session.phase_error(), Some(failure));
+    assert_eq!(session.faulted_phase(), Some(failure.phase));
+    assert_eq!(session.tick(&Sequential), Err(failure));
+
+    armed.store(false, Ordering::Relaxed);
+    session.restore(&captured).unwrap();
+    assert_eq!(
+        (session.faulted_phase(), session.phase_error()),
+        (None, None)
+    );
+    session.tick(&Sequential).unwrap();
+}
+
+#[test]
+fn pause_through_reset_and_restore() {
+    let (mut session, _) = session();
+    session.set_initial().unwrap();
+    session.tick(&Sequential).unwrap();
+    session.submit(Command::TogglePause);
+    session.boundary(Input::default()).unwrap();
+    let paused = session.snapshot().unwrap();
+    session.tick(&Sequential).unwrap();
+    assert_eq!(session.current_tick(), Tick(1));
+
+    session.submit(Command::Reset);
+    session.boundary(Input::default()).unwrap();
+    session.tick(&Sequential).unwrap();
+    assert_eq!(
+        session.current_tick(),
+        Tick(1),
+        "a reset kept a pause its initial state never had"
+    );
+
+    session.restore(&paused).unwrap();
+    session.tick(&Sequential).unwrap();
+    assert_eq!(
+        session.current_tick(),
+        Tick(1),
+        "a restore dropped the pause its snapshot was taken with"
+    );
 }
 
 #[test]

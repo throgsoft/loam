@@ -937,4 +937,38 @@ mod tests {
             "the grab survived the focus change that cancelled the pointer"
         );
     }
+
+    #[test]
+    fn refused_display_edits() {
+        let mut booted = one_slot();
+        send(&mut booted, Action::WireframeWidth(3.0));
+        booted.session.boundary(Input::default()).expect("boundary");
+        let accepted = *booted.session.app.display.get();
+        assert_eq!(
+            accepted.wireframe_width_px, 3.0,
+            "an in range width was refused"
+        );
+
+        let refused = [
+            Action::WireframeWidth(0.0),
+            Action::WireframeWidth(2.0 * display::MAX_WIREFRAME_WIDTH_PX),
+            Action::WireframeWidth(f32::NAN),
+            Action::WireframeOpacity(0.0),
+            Action::WireframeOpacity(1.5),
+            Action::WireframeOpacity(f32::NAN),
+        ];
+        for action in refused {
+            send(&mut booted, action);
+        }
+        booted.session.boundary(Input::default()).expect("boundary");
+
+        let rejected = booted
+            .session
+            .results()
+            .iter()
+            .filter(|result| result.outcome.is_err())
+            .count();
+        assert_eq!(rejected, refused.len(), "an out of range edit was accepted");
+        assert_eq!(*booted.session.app.display.get(), accepted);
+    }
 }

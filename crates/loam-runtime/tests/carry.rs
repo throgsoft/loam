@@ -182,6 +182,21 @@ fn cancel_plain_grab_and_anchor() {
 }
 
 #[test]
+fn despawn_while_held() {
+    let mut stage = stage(hold());
+    stage.grab();
+    assert!(stage.held());
+    let body = stage.body;
+
+    stage.session.dispatch(|d| d.despawn(body)).unwrap();
+
+    stage
+        .session
+        .tick(&Sequential)
+        .expect("the hold outlived its body and failed the step");
+}
+
+#[test]
 fn program_refusal() {
     let mut stage = stage(hold());
     stage
