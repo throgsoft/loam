@@ -14,9 +14,7 @@ use loam_runtime::{Eye, PhaseError, Publication, Session, Stores};
 use loam_time::par::Executor;
 use loam_time::{frame_trace, FixedTimestep};
 
-use super::app::{
-    CaptureControl, FrameFn, FrameHook, InputHook, Posts, PublishedHook, Redraw, SessionApp,
-};
+use super::app::{CaptureControl, InputHook, Posts, PublishedHook, Redraw, SessionApp};
 use super::console::SessionConsole;
 use super::cursor::CursorCapture;
 #[cfg(feature = "egui")]
@@ -77,8 +75,6 @@ struct LoopState<A: Stores> {
     text: ScreenText,
     shown: Shown,
     drawn: Option<Shown>,
-    #[cfg(test)]
-    presented: Option<Eye>,
     capture: Capture,
 }
 
@@ -123,8 +119,6 @@ impl<A: Stores> Frame<A> {
                 text: ScreenText::new(font),
                 shown: Shown::default(),
                 drawn: None,
-                #[cfg(test)]
-                presented: None,
                 capture: Capture::new(),
             },
             trace: None,
@@ -506,30 +500,8 @@ impl<A: Stores> LoopState<A> {
                 let records = &self.publication;
                 {
                     let sender = self.app.commands.sender();
-                    let (hook, captures, cursor, background, posts) = (
-                        self.app.frame.as_mut(),
-                        &mut self.app.captures,
-                        &mut self.cursor,
-                        &mut self.app.background,
-                        &mut self.posts,
-                    );
-                    match hook {
-                        Some(FrameFn::Session(hook)) => hook(&mut FrameHook {
-                            session: &self.session,
-                            published: records,
-                            alpha: records.alpha,
-                            sections: presenter.sections(),
-                            #[cfg(feature = "egui")]
-                            ui: self.layer.ui(),
-                            size,
-                            sender: &sender,
-                            capture: CaptureControl::new(captures),
-                            cursor,
-                            background,
-                            posts,
-                            redraw: &mut requested,
-                        }),
-                        Some(FrameFn::Published(hook)) => hook(&mut PublishedHook {
+                    if let Some(hook) = self.app.published.as_mut() {
+                        hook(&mut PublishedHook {
                             published: records,
                             eye,
                             sections: presenter.sections(),
@@ -537,20 +509,15 @@ impl<A: Stores> LoopState<A> {
                             ui: self.layer.ui(),
                             size,
                             sender: &sender,
-                            capture: CaptureControl::new(captures),
-                            cursor,
-                            background,
-                            posts,
+                            capture: CaptureControl::new(&mut self.app.captures),
+                            cursor: &mut self.cursor,
+                            background: &mut self.app.background,
+                            posts: &mut self.posts,
                             redraw: &mut requested,
-                        }),
-                        None => {}
+                        });
                     }
                 }
                 let _presentation = frame_trace::scope("presentation");
-                #[cfg(test)]
-                {
-                    self.presented = Some(eye);
-                }
                 let (text_origin_px, pixels_per_point) = self.layer.seat(self.input.scale());
                 presenter.upload(
                     &gpu.device,
@@ -856,7 +823,7 @@ mod tests {
         let texture = offscreen(&gpu);
         let hooked = Arc::new(AtomicU32::new(0));
         let hooks = hooked.clone();
-        let app = host("still").on_frame(move |_| {
+        let app = host("still").on_published(move |_| {
             hooks.fetch_add(1, Ordering::Relaxed);
         });
         let (mut frame, recorded) = on_change(world(false), app, &gpu);
@@ -898,7 +865,7 @@ mod tests {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let mut frames = 0_u32;
-        let app = host("still").on_frame(move |hook| {
+        let app = host("still").on_published(move |hook| {
             frames += 1;
             if frames == 3 {
                 hook.capture.stop().expect("capture supported");
@@ -954,51 +921,11 @@ mod tests {
     }
 
     #[test]
-    fn an_input_command_updates_the_eye_before_publication() {
-        let gpu = noop_gpu();
-        let texture = offscreen(&gpu);
-        let published: Arc<Mutex<Option<Eye>>> = Arc::new(Mutex::new(None));
-        let recorded = published.clone();
-        let mut step = 0.0_f32;
-        let app = host::<Bare>("camera")
-            .on_input(move |hook| {
-                step += 1.0;
-                let eye = Eye::looking_at([step, 2.0, 3.0], [0.0; 3], [0.0, 1.0, 0.0]);
-                hook.sender.app_fn("camera", move |dispatch| {
-                    let aspect = dispatch.views.root_mut().eye.aspect;
-                    dispatch.views.root_mut().eye = Eye { aspect, ..eye };
-                });
-            })
-            .on_frame(move |hook| {
-                let root = hook.session.views().root();
-                let eye = hook.session.views().get(root).map(|view| view.eye);
-                *recorded.lock().unwrap_or_else(|error| error.into_inner()) = eye;
-            });
-        let mut frame = bare(app);
-        frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
-            .expect("attached");
-
-        run_one(&mut frame, &gpu, &texture);
-        run_one(&mut frame, &gpu, &texture);
-
-        let published = published
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .expect("the frame hook read the published eye");
-        assert_eq!(
-            frame.state.presented,
-            Some(published),
-            "the presenter did not use the eye committed before publication"
-        );
-    }
-
-    #[test]
     fn a_post_from_one_frame_is_not_flushed_again_on_the_next() {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let mut frames = 0_u32;
-        let app = host::<Bare>("posts").on_frame(move |hook| {
+        let app = host::<Bare>("posts").on_published(move |hook| {
             frames += 1;
             if frames == 1 {
                 hook.post("rect", &[1.0, 2.0, 3.0, 4.0]);
@@ -1129,7 +1056,7 @@ mod tests {
             recorded: recorded.clone(),
             rebuilt: Arc::new(AtomicU32::new(0)),
         }))
-        .on_frame(move |hook| {
+        .on_published(move |hook| {
             fills.fetch_add(1, Ordering::Relaxed);
             hook.capture_cursor(true, CursorPolicy::Toggle);
         });
@@ -1240,7 +1167,7 @@ mod tests {
             Args::default(),
         ))
         .recover_on_fault(RESET)
-        .on_frame(move |hook| {
+        .on_published(move |hook| {
             if owns.load(Ordering::Relaxed) {
                 hook.capture_cursor(true, CursorPolicy::Toggle);
             }
@@ -1389,7 +1316,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         let into = directory.path().to_path_buf();
         let mut frames = 0_u32;
-        let app = host::<Bare>("capture").on_frame(move |hook| {
+        let app = host::<Bare>("capture").on_published(move |hook| {
             frames += 1;
             if frames == 1 {
                 hook.capture

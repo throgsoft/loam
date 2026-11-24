@@ -25,7 +25,7 @@ mod browser;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 
-pub use app::{CaptureControl, FrameHook, InputHook, PublishedHook, Redraw, SessionApp};
+pub use app::{CaptureControl, InputHook, PublishedHook, Redraw, SessionApp};
 pub use camera::{look, orbit, FreeCamera, Orbit};
 pub use commands::CommandSender;
 pub use console::{SessionConsole, Submit};
