@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use loam_render::device::{FeatureRequest, GpuContext};
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
 use loam_render::present::Presenter;
 use wgpu::*;
 
@@ -13,9 +13,15 @@ fn frame_at(gpu: &GpuContext, presenter: &mut Presenter, view: &TextureView, siz
     presenter.upload(
         &gpu.device,
         &gpu.queue,
-        &Default::default(),
-        glam::Vec2::splat(64.0),
-        &[],
+        &PublishedFrame {
+            eye: Default::default(),
+            viewport_px: glam::Vec2::splat(64.0),
+            pixels_per_point: 1.0,
+            text_origin_px: [0.0; 2],
+            views: &[],
+            overlay: &Default::default(),
+            backdrop: None,
+        },
     );
     let mut encoder = gpu
         .device

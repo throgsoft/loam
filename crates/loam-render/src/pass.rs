@@ -1,7 +1,8 @@
 use std::fmt;
 use std::time::Duration;
 
-use loam_runtime::{Backdrop, Eye, PublishedView};
+use glam::Vec2;
+use loam_runtime::{Backdrop, Eye, Overlay, PublishedView};
 use web_time::Instant;
 use wgpu::{
     Color, CommandEncoder, LoadOp, Operations, RenderPass, RenderPassColorAttachment,
@@ -61,6 +62,18 @@ pub struct FrameTarget<'a> {
     pub color: &'a TextureView,
     pub depth: Option<&'a TextureView>,
     pub size: (u32, u32),
+}
+
+/// What the root image published for one presented frame.
+#[derive(Copy, Clone)]
+pub struct PublishedFrame<'a> {
+    pub eye: Eye,
+    pub viewport_px: Vec2,
+    pub pixels_per_point: f32,
+    pub text_origin_px: [f32; 2],
+    pub views: &'a [PublishedView],
+    pub overlay: &'a Overlay,
+    pub backdrop: Option<Backdrop>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -123,11 +136,8 @@ pub trait FramePass {
 
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()>;
 
-    /// Runs once per presented frame before it records, with the root image's eye.
-    fn read_publication(&mut self, _eye: &Eye, _views: &[PublishedView]) {}
-
-    /// Runs once per presented frame with the root image's backdrop.
-    fn read_backdrop(&mut self, _backdrop: Option<&Backdrop>) {}
+    /// Runs once per presented frame before it records.
+    fn read(&mut self, _frame: &PublishedFrame<'_>) {}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -282,15 +292,9 @@ impl PassSchedule {
         Ok(())
     }
 
-    pub fn read_publication(&mut self, eye: &Eye, views: &[PublishedView]) {
+    pub fn read(&mut self, frame: &PublishedFrame<'_>) {
         for pass in self.passes.iter_mut() {
-            pass.read_publication(eye, views);
-        }
-    }
-
-    pub fn read_backdrop(&mut self, backdrop: Option<&Backdrop>) {
-        for pass in self.passes.iter_mut() {
-            pass.read_backdrop(backdrop);
+            pass.read(frame);
         }
     }
 

@@ -27,4 +27,4 @@ pub use loam_render::{
     PointPass, RayMarchUniforms, RaymarchPass, Sky, SkyGroundPass, TriangleFeed, Viewport,
 };
 #[cfg(feature = "text")]
-pub use loam_text::{TextDraw, TextPass};
+pub use loam_text::TextPass;

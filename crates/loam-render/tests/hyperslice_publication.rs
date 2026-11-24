@@ -1,5 +1,6 @@
 use glam::{Vec2, Vec4};
 use loam_math::EuclideanR4;
+use loam_render::pass::PublishedFrame;
 use loam_render::present::Presenter;
 use loam_render::HyperslicePass;
 use loam_runtime::{
@@ -78,9 +79,15 @@ fn a_registered_hyperslice_pass_holds_one_body_per_published_field_record() {
         presenter.upload(
             &device,
             &queue,
-            &Eye::default(),
-            Vec2::splat(64.0),
-            &publication.views,
+            &PublishedFrame {
+                eye: Eye::default(),
+                viewport_px: Vec2::splat(64.0),
+                pixels_per_point: 1.0,
+                text_origin_px: [0.0; 2],
+                views: &publication.views,
+                overlay: &publication.overlay,
+                backdrop: publication.backdrop,
+            },
         );
         publication.views[0].records.fields().len()
     };

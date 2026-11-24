@@ -3,18 +3,17 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use loam_render::device::GpuContext;
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
 
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::TextRenderer;
 
-/// One placement of the published text, in physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TextDraw {
-    pub origin_px: [f32; 2],
-    pub size_px: f32,
-    pub color: [f32; 4],
+struct TextDraw {
+    origin_px: [f32; 2],
+    size_px: f32,
+    color: [f32; 4],
 }
 
 struct State {
@@ -28,7 +27,7 @@ struct State {
     queue: Option<Queue>,
 }
 
-/// A shared text overlay pass without a depth test.
+/// A text overlay pass without a depth test that draws the frame's published text in order, so later text paints over earlier text.
 #[derive(Clone)]
 pub struct TextPass {
     name: &'static str,
@@ -52,21 +51,6 @@ impl TextPass {
         }
     }
 
-    /// Draws in order, so a shadow placed before its body paints under it.
-    pub fn publish<'a>(&self, draws: impl IntoIterator<Item = (&'a str, TextDraw)>) {
-        let mut state = self.shared.borrow_mut();
-        let State {
-            text, draws: kept, ..
-        } = &mut *state;
-        text.clear();
-        kept.clear();
-        for (part, draw) in draws {
-            let start = text.len();
-            text.push_str(part);
-            kept.push((start..text.len(), draw));
-        }
-    }
-
     /// False when the font never parsed, so the pass draws nothing.
     pub fn ready(&self) -> bool {
         self.shared.borrow().renderer.is_some()
@@ -84,6 +68,30 @@ impl FramePass for TextPass {
 
     fn stage(&self) -> PassStage {
         PassStage::Overlay
+    }
+
+    fn read(&mut self, frame: &PublishedFrame<'_>) {
+        let mut state = self.shared.borrow_mut();
+        let State { text, draws, .. } = &mut *state;
+        text.clear();
+        draws.clear();
+        let scale = frame.pixels_per_point;
+        let [x, y] = frame.text_origin_px;
+        for (part, record) in frame.overlay.text() {
+            let start = text.len();
+            text.push_str(part);
+            draws.push((
+                start..text.len(),
+                TextDraw {
+                    origin_px: [
+                        x + record.origin_pt[0] * scale,
+                        y + record.origin_pt[1] * scale,
+                    ],
+                    size_px: record.size_pt * scale,
+                    color: record.color,
+                },
+            ));
+        }
     }
 
     fn record(

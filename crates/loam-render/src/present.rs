@@ -2,16 +2,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::Vec2;
-use loam_runtime::{
-    Backdrop, DomainId, Eye, Overlay, PublishedView, Rigid, SegmentRecord, Stamp, ViewTarget,
-};
+use loam_runtime::{DomainId, Rigid, SegmentRecord, Stamp, ViewTarget};
 use wgpu::{Color, CommandEncoder, Device, Queue, RenderPass, TextureFormat, TextureView};
 
 use crate::depth::DepthBuffer;
 use crate::device::GpuContext;
 use crate::pass::{
     FrameFormat, FramePass, FrameTarget, PassError, PassExecutionError, PassSchedule, PassStage,
-    Section,
+    PublishedFrame, Section,
 };
 use crate::passes::{LinePass, PointPass, SkyGroundPass};
 use crate::triangle_pass::TriangleFeed;
@@ -144,9 +142,6 @@ pub struct Presenter {
     views: Rc<RefCell<Vec<ViewLines>>>,
     fills: TriangleFeed,
     filled: Vec<(DomainId, ViewTarget)>,
-    overlay_lines: LinePass,
-    overlay_points: PointPass,
-    backdrop: SkyGroundPass,
     schedule: PassSchedule,
 }
 
@@ -155,16 +150,13 @@ impl Presenter {
         let fills = TriangleFeed::default();
         let views = Rc::new(RefCell::new(Vec::new()));
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        let backdrop = SkyGroundPass::showing(None);
-        schedule.register(Box::new(backdrop.clone()))?;
+        schedule.register(Box::new(SkyGroundPass::backdrop()))?;
         schedule.register(fills.pass(FragmentShading::FaceNormalLambert))?;
         schedule.register(Box::new(PublishedLines {
             views: views.clone(),
         }))?;
-        let overlay_lines = LinePass::new("overlay-lines");
-        let overlay_points = PointPass::new("overlay-points");
-        schedule.register(Box::new(overlay_lines.clone()))?;
-        schedule.register(Box::new(overlay_points.clone()))?;
+        schedule.register(Box::new(LinePass::overlay("overlay-lines")))?;
+        schedule.register(Box::new(PointPass::overlay("overlay-points")))?;
         Ok(Self {
             format,
             uploads: 0,
@@ -172,9 +164,6 @@ impl Presenter {
             views,
             fills,
             filled: Vec::new(),
-            overlay_lines,
-            overlay_points,
-            backdrop,
             schedule,
         })
     }
@@ -207,16 +196,10 @@ impl Presenter {
         self.schedule.after_submit();
     }
 
-    pub fn upload(
-        &mut self,
-        device: &Device,
-        queue: &Queue,
-        eye: &Eye,
-        viewport: Vec2,
-        views: &[PublishedView],
-    ) {
+    pub fn upload(&mut self, device: &Device, queue: &Queue, frame: &PublishedFrame<'_>) {
         let _scope = loam_time::frame_trace::scope("present-upload");
-        self.schedule.read_publication(eye, views);
+        self.schedule.read(frame);
+        let (eye, views) = (&frame.eye, frame.views);
         let mut line_views = self.views.borrow_mut();
         while line_views.len() < views.len() {
             line_views.push(ViewLines::new(device, self.format));
@@ -225,7 +208,7 @@ impl Presenter {
         let mut rebuilt = false;
         for (slot, view) in line_views.iter_mut().zip(views) {
             let camera = crate::view::placed_view_projection(eye, view.placement);
-            slot.set_camera(queue, camera, viewport);
+            slot.set_camera(queue, camera, frame.viewport_px);
             let published = (view.domain, view.target, view.records.built());
             if slot.uploaded == Some(published) {
                 continue;
@@ -260,16 +243,6 @@ impl Presenter {
                 }
             });
         }
-    }
-
-    pub fn upload_overlay(&mut self, eye: &Eye, overlay: &Overlay) {
-        self.overlay_lines.publish(eye, &overlay.lines);
-        self.overlay_points.publish(eye, &overlay.points);
-    }
-
-    pub fn upload_backdrop(&mut self, eye: &Eye, backdrop: Option<Backdrop>) {
-        self.backdrop.show(eye, backdrop);
-        self.schedule.read_backdrop(backdrop.as_ref());
     }
 
     pub fn record_scene(
@@ -323,8 +296,8 @@ mod tests {
     use crate::pass::ColorLoad;
     use loam_math::EuclideanR4;
     use loam_runtime::{
-        DomainBuilder, Instance, LogCapacity, Material, Pose, PreparedGeometry, Projection4,
-        Records, Session, SimConfig, SpawnBundle, ViewSpec,
+        DomainBuilder, Eye, Instance, LogCapacity, Material, Overlay, Pose, PreparedGeometry,
+        Projection4, PublishedView, Records, Session, SimConfig, SpawnBundle, ViewSpec,
     };
     use wgpu::{
         BackendOptions, Backends, InstanceDescriptor, LoadOp, NoopBackendOptions, Operations,
@@ -333,6 +306,18 @@ mod tests {
     };
 
     use super::*;
+
+    fn frame_of<'a>(views: &'a [PublishedView], overlay: &'a Overlay) -> PublishedFrame<'a> {
+        PublishedFrame {
+            eye: Eye::default(),
+            viewport_px: Vec2::splat(64.0),
+            pixels_per_point: 1.0,
+            text_origin_px: [0.0; 2],
+            views,
+            overlay,
+            backdrop: None,
+        }
+    }
 
     loam_runtime::stores! {
         #[derive(Default)]
@@ -408,7 +393,7 @@ mod tests {
             .create_view(&Default::default());
         let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         let mut records = Records::default();
-        let eye = Eye::default();
+        let overlay = Overlay::default();
         let spin = |session: &mut Session<Spun>| {
             if let Ok(domain) = session.domains_mut().typed(r4) {
                 if let Some(pose) = domain.poses().get(spun) {
@@ -424,7 +409,7 @@ mod tests {
                        encoder: &mut CommandEncoder| {
             records.publish(session).unwrap();
             let published = records.lend().unwrap();
-            presenter.upload(&device, &queue, &eye, Vec2::splat(64.0), &published.views);
+            presenter.upload(&device, &queue, &frame_of(&published.views, &overlay));
             records.release(published);
             presenter
                 .record_scene(&device, encoder, &target, (64, 64), Color::BLACK)
@@ -498,21 +483,15 @@ mod tests {
         let (device, queue) = noop_device();
         let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         let mut records = Records::default();
-        let eye = Eye::default();
+        let overlay = Overlay::default();
         records.publish(&mut session).expect("published");
         let published = records.lend().expect("the buffer is free");
 
-        presenter.upload(&device, &queue, &eye, Vec2::splat(64.0), &published.views);
+        presenter.upload(&device, &queue, &frame_of(&published.views, &overlay));
         let both = presenter.fills.triangles();
         assert!(both > 0, "the two section views published no fills");
 
-        presenter.upload(
-            &device,
-            &queue,
-            &eye,
-            Vec2::splat(64.0),
-            &published.views[..1],
-        );
+        presenter.upload(&device, &queue, &frame_of(&published.views[..1], &overlay));
         assert_eq!(
             presenter.fills.triangles() * 2,
             both,
@@ -559,7 +538,7 @@ mod tests {
         let (device, queue) = noop_device();
         let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
         let mut records = Records::default();
-        let eye = Eye::default();
+        let overlay = Overlay::default();
         records.publish(&mut session).expect("published");
         let published = records.lend().expect("the buffer is free");
         let dropped = &published.views[0].records;
@@ -570,14 +549,8 @@ mod tests {
         );
         let survivor = kept.segments().len() as u32;
 
-        presenter.upload(&device, &queue, &eye, Vec2::splat(64.0), &published.views);
-        presenter.upload(
-            &device,
-            &queue,
-            &eye,
-            Vec2::splat(64.0),
-            &published.views[1..],
-        );
+        presenter.upload(&device, &queue, &frame_of(&published.views, &overlay));
+        presenter.upload(&device, &queue, &frame_of(&published.views[1..], &overlay));
         let line_views = presenter.views.borrow();
         assert_eq!(
             line_views[0].opaque.segment_count() + line_views[0].translucent.segment_count(),

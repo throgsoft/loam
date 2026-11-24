@@ -1,7 +1,7 @@
 use glam::{Vec2, Vec3, Vec4};
 use loam_math::{EuclideanR4, HyperbolicH3, Iso3};
 use loam_render::device::{FeatureRequest, GpuContext};
-use loam_render::pass::FramePass;
+use loam_render::pass::{FramePass, PublishedFrame};
 use loam_render::present::Presenter;
 use loam_render::SkyGroundPass;
 use loam_runtime::{
@@ -148,12 +148,16 @@ fn render_with(publication: &Publication, passes: Vec<Box<dyn FramePass>>) -> Ve
     presenter.upload(
         device,
         queue,
-        &loam_runtime::Eye::default(),
-        Vec2::splat(SIZE as f32),
-        &publication.views,
+        &PublishedFrame {
+            eye: Eye::default(),
+            viewport_px: Vec2::splat(SIZE as f32),
+            pixels_per_point: 1.0,
+            text_origin_px: [0.0; 2],
+            views: &publication.views,
+            overlay: &publication.overlay,
+            backdrop: publication.backdrop,
+        },
     );
-    presenter.upload_overlay(&Eye::default(), &publication.overlay);
-    presenter.upload_backdrop(&Eye::default(), publication.backdrop);
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
         label: Some("present"),
     });

@@ -3,11 +3,11 @@ use std::rc::Rc;
 
 use glam::Vec3;
 
-use loam_runtime::{Backdrop, Eye, FieldRecord, PublishedView, Rigid};
+use loam_runtime::{FieldRecord, Rigid};
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
+use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
 use crate::raymarch::{
     hyperslice_ground_wgsl, shape_id, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
 };
@@ -17,7 +17,6 @@ use crate::{DepthConvention, DepthMode, Viewport};
 struct State {
     source: String,
     uniforms: Hyperslice4DUniforms,
-    to_image: Rigid,
     bodies: Vec<BodyUniform>,
     cells: Vec<(Viewport, f32, BodyUniform)>,
     node: Option<Hyperslice4DNode>,
@@ -39,7 +38,6 @@ impl HyperslicePass {
             shared: Rc::new(RefCell::new(State {
                 source,
                 uniforms: Hyperslice4DUniforms::default(),
-                to_image: Rigid::IDENTITY,
                 bodies: Vec::new(),
                 cells: Vec::new(),
                 node: None,
@@ -102,15 +100,13 @@ impl FramePass for HyperslicePass {
         Some(DepthConvention::ReversedZ)
     }
 
-    fn read_publication(&mut self, eye: &Eye, views: &[PublishedView]) {
+    fn read(&mut self, frame: &PublishedFrame<'_>) {
         let mut state = self.shared.borrow_mut();
         let State {
-            uniforms,
-            to_image: kept,
-            bodies,
-            ..
+            uniforms, bodies, ..
         } = &mut *state;
-        let drawn = views.iter().find_map(|view| {
+        let eye = &frame.eye;
+        let drawn = frame.views.iter().find_map(|view| {
             let cut = view.records.field_cut()?;
             (!view.records.fields().is_empty()).then_some((view, cut))
         });
@@ -121,19 +117,12 @@ impl FramePass for HyperslicePass {
         uniforms.camera_up = to_image.direction(eye.up);
         uniforms.fov_y_tan = (eye.fov_y * 0.5).tan();
         uniforms.near = eye.near * to_image.scale;
-        *kept = to_image;
         bodies.clear();
         if let Some((view, cut)) = drawn {
             uniforms.w_slice = cut;
             bodies.extend(view.records.fields().iter().map(body_of));
         }
-    }
-
-    fn read_backdrop(&mut self, backdrop: Option<&Backdrop>) {
-        let mut state = self.shared.borrow_mut();
-        let State {
-            uniforms, to_image, ..
-        } = &mut *state;
+        let backdrop = frame.backdrop;
         let sky = backdrop.map_or(DEFAULT_SKY, |backdrop| backdrop.sky);
         let floor = backdrop.is_some_and(|backdrop| backdrop.ground.visible);
         uniforms.sky_below = sky.below;

@@ -6,7 +6,7 @@ use loam_runtime::{Eye, SegmentRecord};
 use wgpu::{CommandEncoder, Device, Queue, RenderPass};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
 use crate::{DepthConvention, DepthMode, LineRasterNode};
 
 struct State {
@@ -21,13 +21,23 @@ struct State {
 #[derive(Clone)]
 pub struct LinePass {
     name: &'static str,
+    reads_overlay: bool,
     shared: Rc<RefCell<State>>,
 }
 
 impl LinePass {
     pub fn new(name: &'static str) -> Self {
+        Self::reading(name, false)
+    }
+
+    pub(crate) fn overlay(name: &'static str) -> Self {
+        Self::reading(name, true)
+    }
+
+    fn reading(name: &'static str, reads_overlay: bool) -> Self {
         Self {
             name,
+            reads_overlay,
             shared: Rc::new(RefCell::new(State {
                 eye: Eye::default(),
                 segments: Vec::new(),
@@ -40,15 +50,20 @@ impl LinePass {
     }
 
     pub fn publish(&self, eye: &Eye, segments: &[SegmentRecord]) {
-        let mut state = self.shared.borrow_mut();
-        state.eye = *eye;
-        state.uploaded &= state.segments == segments;
-        state.segments.clear();
-        state.segments.extend_from_slice(segments);
+        self.shared.borrow_mut().set(eye, segments);
     }
 
     pub fn segment_count(&self) -> usize {
         self.shared.borrow().segments.len()
+    }
+}
+
+impl State {
+    fn set(&mut self, eye: &Eye, segments: &[SegmentRecord]) {
+        self.eye = *eye;
+        self.uploaded &= self.segments == segments;
+        self.segments.clear();
+        self.segments.extend_from_slice(segments);
     }
 }
 
@@ -67,6 +82,14 @@ impl FramePass for LinePass {
 
     fn shares_pass(&self) -> bool {
         true
+    }
+
+    fn read(&mut self, frame: &PublishedFrame<'_>) {
+        if self.reads_overlay {
+            self.shared
+                .borrow_mut()
+                .set(&frame.eye, &frame.overlay.lines);
+        }
     }
 
     fn prepare(

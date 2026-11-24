@@ -5,7 +5,7 @@ use loam_runtime::{Backdrop, Eye};
 use wgpu::{Color, CommandEncoder, Queue, RenderPass};
 
 use crate::device::GpuContext;
-use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
+use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
 use crate::sky_ground::{horizon, Ground, Sky, SkyGroundNode, SkyGroundUniforms, DEFAULT_SKY};
 use crate::{DepthConvention, Viewport};
 
@@ -19,19 +19,29 @@ struct State {
 /// Without a backdrop it neither clears nor draws, so the frame keeps the host's background.
 #[derive(Clone)]
 pub struct SkyGroundPass {
+    reads_backdrop: bool,
     shared: Rc<RefCell<State>>,
 }
 
 impl SkyGroundPass {
     pub fn new(ground: Ground) -> Self {
-        Self::showing(Some(Backdrop {
-            sky: DEFAULT_SKY,
-            ground,
-        }))
+        Self::showing(
+            Some(Backdrop {
+                sky: DEFAULT_SKY,
+                ground,
+            }),
+            false,
+        )
     }
 
-    pub(crate) fn showing(backdrop: Option<Backdrop>) -> Self {
+    /// The pass that draws the backdrop each published frame carries.
+    pub(crate) fn backdrop() -> Self {
+        Self::showing(None, true)
+    }
+
+    fn showing(backdrop: Option<Backdrop>, reads_backdrop: bool) -> Self {
         Self {
+            reads_backdrop,
             shared: Rc::new(RefCell::new(State {
                 eye: Eye::default(),
                 backdrop,
@@ -42,13 +52,9 @@ impl SkyGroundPass {
     }
 
     pub fn publish(&self, eye: &Eye, sky: Sky, ground: Ground) {
-        self.show(eye, Some(Backdrop { sky, ground }));
-    }
-
-    pub(crate) fn show(&self, eye: &Eye, backdrop: Option<Backdrop>) {
         let mut state = self.shared.borrow_mut();
         state.eye = *eye;
-        state.backdrop = backdrop;
+        state.backdrop = Some(Backdrop { sky, ground });
     }
 }
 
@@ -71,6 +77,14 @@ impl FramePass for SkyGroundPass {
 
     fn depth_convention(&self) -> Option<DepthConvention> {
         Some(DepthConvention::ReversedZ)
+    }
+
+    fn read(&mut self, frame: &PublishedFrame<'_>) {
+        if self.reads_backdrop {
+            let mut state = self.shared.borrow_mut();
+            state.eye = frame.eye;
+            state.backdrop = frame.backdrop;
+        }
     }
 
     fn shares_pass(&self) -> bool {

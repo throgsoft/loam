@@ -8,6 +8,7 @@ use wgpu::{CommandBuffer, CommandEncoder, Texture, TextureFormat, TextureView};
 use winit::window::Window;
 
 use loam_render::device::GpuContext;
+use loam_render::pass::PublishedFrame;
 use loam_render::present::Presenter;
 #[cfg(not(target_arch = "wasm32"))]
 use loam_runtime::host::HostConfig;
@@ -24,7 +25,7 @@ use super::cursor::CursorCapture;
 use super::debug_layer::DebugLayer;
 use super::input::InputMap;
 #[cfg(feature = "text")]
-use super::text::{ScreenText, Seat};
+use super::text::ScreenText;
 
 pub struct Target<'a> {
     pub view: &'a TextureView,
@@ -526,19 +527,12 @@ impl<A: Stores> Inner<A> {
         let mut requested = false;
         let terminal = match prepared {
             Ok((records, eye)) => {
-                #[cfg(feature = "text")]
-                let seat = Seat {
-                    origin_px: [0.0; 2],
-                    pixels_per_point: self.input.scale(),
-                };
-                #[cfg(all(feature = "text", feature = "egui"))]
+                let seat = ([0.0; 2], self.input.scale());
+                #[cfg(feature = "egui")]
                 let seat = context.as_ref().map_or(seat, |context| {
                     let free = context.available_rect().min;
                     let scale = context.pixels_per_point();
-                    Seat {
-                        origin_px: [free.x * scale, free.y * scale],
-                        pixels_per_point: scale,
-                    }
+                    ([free.x * scale, free.y * scale], scale)
                 });
                 {
                     let root = self.session.views().root();
@@ -600,17 +594,22 @@ impl<A: Stores> Inner<A> {
                 {
                     self.presented = Some(eye);
                 }
+                let (text_origin_px, pixels_per_point) = seat;
                 presenter.upload(
                     &gpu.device,
                     &gpu.queue,
-                    &eye,
-                    Vec2::new(size.0 as f32, size.1 as f32),
-                    &records.views,
+                    &PublishedFrame {
+                        eye,
+                        viewport_px: Vec2::new(size.0 as f32, size.1 as f32),
+                        pixels_per_point,
+                        text_origin_px,
+                        views: &records.views,
+                        overlay: &records.overlay,
+                        backdrop: records.backdrop,
+                    },
                 );
-                presenter.upload_overlay(&eye, &records.overlay);
-                presenter.upload_backdrop(&eye, records.backdrop);
                 #[cfg(feature = "text")]
-                let dropped = self.text.publish(&records.overlay, seat);
+                let dropped = self.text.drops(&records.overlay);
                 #[cfg(not(feature = "text"))]
                 let dropped = records.overlay.text().next().is_some();
                 if dropped && !self.dropped_text_reported {

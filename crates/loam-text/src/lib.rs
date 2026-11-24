@@ -5,7 +5,7 @@
 pub mod glyph;
 pub mod pass;
 
-pub use pass::{TextDraw, TextPass};
+pub use pass::TextPass;
 
 use std::collections::HashMap;
 
