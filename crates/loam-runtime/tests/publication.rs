@@ -30,13 +30,13 @@ fn the_published_value_is_what_the_latest_value_system_wrote_after_the_publicati
     });
     let mut publication = Publication::default();
 
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(
         publication.value,
         [1],
         "the value missed this publish's publication systems or kept a replaced system's write"
     );
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(publication.value, [2]);
 
     let failure = PhaseError {
@@ -44,7 +44,7 @@ fn the_published_value_is_what_the_latest_value_system_wrote_after_the_publicati
         system: Some("frames"),
         cause: DomainError::ChartBoundary,
     };
-    assert_eq!(session.publish(&mut publication), Err(failure));
+    assert_eq!(session.publish(&mut publication, 1.0), Err(failure));
     assert_eq!(
         session.phase_error(),
         Some(failure),

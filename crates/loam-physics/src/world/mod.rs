@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use loam_time::par::{self, Executor, Sequential};
+use loam_time::par::{self, Executor};
 use loam_time::StateHash;
 
 use crate::body::{BodyArena, BodyDef, BodyId, RigidBody};
@@ -614,13 +614,8 @@ impl<S: PhysicsSpace> World<S> {
         Ok(())
     }
 
-    /// `dt` is in seconds.
-    pub fn step(&mut self, dt: f32) -> Result<(), EditError> {
-        self.step_with(dt, &Sequential)
-    }
-
     /// `dt` is in seconds, and the result is the same for any `executor`.
-    pub fn step_with(&mut self, dt: f32, executor: &dyn Executor) -> Result<(), EditError> {
+    pub fn step(&mut self, dt: f32, executor: &dyn Executor) -> Result<(), EditError> {
         if !dt.is_finite() || dt < 0.0 {
             return Err(EditError::InvalidTimeStep);
         }
@@ -1019,6 +1014,8 @@ fn split_two_mut<T>(slice: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
 mod tests {
     use std::alloc::System;
 
+    use loam_time::par::Sequential;
+
     use super::*;
     use crate::determinism_fixture::{
         record_flick_chamber_tape, replay_flick_chamber_tape, sample_body_r3, REPLAY_SEED,
@@ -1105,7 +1102,7 @@ mod tests {
             );
             let steps = (4.0 * REBOUND_GAP / (REBOUND_APPROACH * REBOUND_DT)).ceil() as usize;
             for _ in 0..steps {
-                world.step(REBOUND_DT).unwrap();
+                world.step(REBOUND_DT, &Sequential).unwrap();
             }
 
             let body = &world.bodies[faller];
@@ -1181,7 +1178,7 @@ mod tests {
             S::Vector: VectorOps,
         {
             for _ in 0..SLIDE_STEPS {
-                world.step(SLIDE_DT).unwrap();
+                world.step(SLIDE_DT, &Sequential).unwrap();
             }
 
             let body = &world.bodies[slider];
@@ -1264,7 +1261,7 @@ mod tests {
         }
 
         for _ in 0..settle_steps {
-            world.step(dt).unwrap();
+            world.step(dt, &Sequential).unwrap();
         }
         (world, floor, spheres)
     }
@@ -1312,8 +1309,8 @@ mod tests {
         );
 
         for _ in 0..60 {
-            world.step(dt).unwrap();
-            control.step(dt).unwrap();
+            world.step(dt, &Sequential).unwrap();
+            control.step(dt, &Sequential).unwrap();
         }
 
         assert_eq!(
@@ -1330,8 +1327,8 @@ mod tests {
         world.bodies[newcomer].restitution = 0.0;
 
         for _ in 0..60 {
-            world.step(dt).unwrap();
-            control.step(dt).unwrap();
+            world.step(dt, &Sequential).unwrap();
+            control.step(dt, &Sequential).unwrap();
         }
 
         assert!(
@@ -1394,7 +1391,7 @@ mod tests {
             "the row that took the removed slot was never published"
         );
 
-        world.step(dt).unwrap();
+        world.step(dt, &Sequential).unwrap();
         assert!(
             world.manifolds.contains_key(&(floor, reborn)),
             "the respawned body made no contact"
@@ -1538,13 +1535,13 @@ mod tests {
         );
         assert_eq!(world.gravity(), None);
         for dt in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
-            assert_eq!(world.step(dt), Err(EditError::InvalidTimeStep));
+            assert_eq!(world.step(dt, &Sequential), Err(EditError::InvalidTimeStep));
             assert!(world.body(body).is_some());
             assert_eq!(world.state_hash(sample_body_r3), before);
             assert_eq!(world.time(), 0.0);
         }
 
-        world.step(0.0).unwrap();
+        world.step(0.0, &Sequential).unwrap();
         assert!(world.body(body).is_some());
         assert_eq!(world.state_hash(sample_body_r3), before);
         assert_eq!(world.time(), 0.0);
@@ -1554,7 +1551,7 @@ mod tests {
     fn the_dirty_drain_publishes_every_pose_change_and_no_sleeping_body_that_stayed_put() {
         let (mut world, _, spheres) = settled_islands(EDIT_DT, 4);
         let _ = world.drain_dirty().count();
-        world.step(EDIT_DT).unwrap();
+        world.step(EDIT_DT, &Sequential).unwrap();
         let mut mirror: BTreeMap<BodyId, Vec3> = BTreeMap::new();
         for (id, body) in world.drain_dirty() {
             mirror.insert(id, body.position);
@@ -1569,7 +1566,7 @@ mod tests {
         assert!(world.sleep_body(id).is_ok());
         assert!(world.drain_dirty().count() > 0);
 
-        world.step(EDIT_DT).unwrap();
+        world.step(EDIT_DT, &Sequential).unwrap();
         assert!(
             !world.drain_dirty().any(|(dirty, _)| dirty == id),
             "a sleeping body was published as if it had moved"
@@ -1633,8 +1630,8 @@ mod tests {
         );
 
         for _ in 0..60 {
-            world.step(EDIT_DT).unwrap();
-            rebuilt.step(EDIT_DT).unwrap();
+            world.step(EDIT_DT, &Sequential).unwrap();
+            rebuilt.step(EDIT_DT, &Sequential).unwrap();
         }
         assert_eq!(
             rebuilt.state_hash(sample_body_r3),
@@ -1646,7 +1643,7 @@ mod tests {
             .apply_impulse(spheres[0], Vec3::new(0.0, 20.0, 0.0))
             .is_ok());
         for _ in 0..30 {
-            world.step(EDIT_DT).unwrap();
+            world.step(EDIT_DT, &Sequential).unwrap();
         }
         assert!(
             !world.manifolds.contains_key(&key),
@@ -1704,18 +1701,18 @@ mod tests {
         world.despawn_body(distant).unwrap();
         let dt = 1.0 / 240.0;
         for _ in 0..600 {
-            world.step(dt).unwrap();
+            world.step(dt, &Sequential).unwrap();
         }
         world.sleep_body(lower).unwrap();
         for _ in 0..120 {
-            world.step(dt).unwrap();
+            world.step(dt, &Sequential).unwrap();
             assert!(world.bodies[lower].is_sleeping());
         }
         assert!(world.manifolds.contains_key(&canonical_pair(lower, upper)));
         world
             .set_velocity(upper, -Vec3::Y, Bivector3::ZERO)
             .unwrap();
-        world.step(dt).unwrap();
+        world.step(dt, &Sequential).unwrap();
         assert!(!world.bodies[lower].is_sleeping());
     }
 
@@ -1727,7 +1724,7 @@ mod tests {
 
         let (mut world, lower, upper, doomed) = stacked_pair_world(doomed_first);
         for _ in 0..SETTLE_STEPS {
-            world.step(dt).unwrap();
+            world.step(dt, &Sequential).unwrap();
         }
 
         let key = canonical_pair(lower, upper);
@@ -1757,7 +1754,7 @@ mod tests {
             let mut contact_steps = 0;
             let mut trajectory = Vec::with_capacity(steps);
             for _ in 0..steps {
-                world.step(dt).unwrap();
+                world.step(dt, &Sequential).unwrap();
                 if world.manifolds.contains_key(&key) {
                     contact_steps += 1;
                 }
@@ -1875,7 +1872,7 @@ mod tests {
                     culled > 0,
                     "seed {seed} step {step}: nothing was culled, so this pass proved nothing"
                 );
-                world.step(1.0 / 240.0).unwrap();
+                world.step(1.0 / 240.0, &Sequential).unwrap();
             }
         }
     }
@@ -1885,13 +1882,13 @@ mod tests {
         const DT: f32 = 1.0 / 240.0;
         let mut world = settled_columns(PERMUTATION_SEEDS[0]);
         for _ in 0..2 {
-            world.step(DT).unwrap();
+            world.step(DT, &Sequential).unwrap();
             assert!(world.drain_dirty().count() > 0);
         }
         assert!(world.constraints.len() > 1, "the fixture solves nothing");
         let bytes = bytes_allocated_by(|| {
             for _ in 0..16 {
-                world.step(DT).unwrap();
+                world.step(DT, &Sequential).unwrap();
                 assert!(world.drain_dirty().count() > 0);
             }
         })
@@ -1949,7 +1946,7 @@ mod tests {
             assert!(world.despawn_body(column[0]).is_ok());
         }
         for _ in 0..ISLAND_SETTLE_STEPS {
-            world.step(1.0 / 240.0).unwrap();
+            world.step(1.0 / 240.0, &Sequential).unwrap();
         }
         world
     }

@@ -699,13 +699,13 @@ mod tests {
             (subject, view)
         });
         let mut publication = Publication::default();
-        session.publish(&mut publication).unwrap();
+        session.publish(&mut publication, 1.0).unwrap();
         assert_eq!(publication.views[0].records.instances.rows().len(), 1);
 
         session
             .dispatch(|dispatch| dispatch.despawn(subject))
             .unwrap();
-        session.publish(&mut publication).unwrap();
+        session.publish(&mut publication, 1.0).unwrap();
         assert!(publication.views[0].records.instances.rows().is_empty());
         assert_eq!(
             session
@@ -767,9 +767,9 @@ mod tests {
         let snapshot = session.snapshot().unwrap();
         let mut publication = Publication::default();
         let publish_and_compare = |session: &mut Session<Probe>, publication: &mut Publication| {
-            session.publish(publication).unwrap();
+            session.publish(publication, 1.0).unwrap();
             let mut fresh = Publication::default();
-            session.publish(&mut fresh).unwrap();
+            session.publish(&mut fresh, 1.0).unwrap();
             assert_eq!(publication.views.len(), fresh.views.len());
             for (cached, fresh) in publication.views.iter().zip(&fresh.views) {
                 assert_eq!(cached.domain, fresh.domain);

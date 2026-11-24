@@ -75,7 +75,7 @@ fn a_registered_hyperslice_pass_holds_one_body_per_published_field_record() {
         .expect("registered");
     let mut publication = Publication::default();
     let mut present = |session: &mut Session<Probe>| {
-        session.publish(&mut publication).unwrap();
+        session.publish(&mut publication, 1.0).unwrap();
         presenter.upload(
             &device,
             &queue,

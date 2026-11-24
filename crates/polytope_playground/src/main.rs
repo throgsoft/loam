@@ -1111,9 +1111,10 @@ fn throw(
 #[cfg(test)]
 mod tests {
     use loam::math::Rotor;
-    use loam::runtime::{Command, Records};
+    use loam::runtime::{Command, Publication};
     use loam::shape::polytope::Polytope4;
     use loam::shape::FieldShape;
+    use loam::time::par::Sequential;
 
     use super::*;
 
@@ -1141,22 +1142,19 @@ mod tests {
 
     fn published<R>(
         session: &mut Session<Playground>,
-        records: &mut Records<Shown>,
-        read: impl FnOnce(&loam::runtime::Publication<Shown>) -> R,
+        publication: &mut Publication<Shown>,
+        read: impl FnOnce(&Publication<Shown>) -> R,
     ) -> R {
-        records.publish(session).expect("published");
-        let publication = records.lend().expect("the buffer is free");
-        let value = read(&publication);
-        records.release(publication);
-        value
+        session.publish(publication, 1.0).expect("published");
+        read(publication)
     }
 
     #[test]
     fn the_booted_playground_publishes_its_section_and_reset_returns_the_row_to_rest() {
         let mut booted = one_slot();
-        let mut records = Records::default();
+        let mut publication = Publication::default();
         booted.session.boundary(Input::default()).expect("boundary");
-        published(&mut booted.session, &mut records, |publication| {
+        published(&mut booted.session, &mut publication, |publication| {
             assert!(!publication.views[0].records.triangles().is_empty());
         });
 
@@ -1195,7 +1193,7 @@ mod tests {
             assert_eq!(pose.point, slot.rest);
             assert_eq!(pose.frame, loam::math::Rotor4::IDENTITY);
         }
-        published(&mut booted.session, &mut records, |publication| {
+        published(&mut booted.session, &mut publication, |publication| {
             assert!(!publication.views[0].records.triangles().is_empty());
         });
     }
@@ -1255,7 +1253,7 @@ mod tests {
             .boundary(Input::default())
             .expect("the boundary applied the move");
         for _ in 0..120 {
-            booted.session.tick().expect("the tick ran");
+            booted.session.tick(&Sequential).expect("the tick ran");
         }
         let r4 = booted
             .session
@@ -1279,7 +1277,7 @@ mod tests {
             .boundary(Input::default())
             .expect("the release and throw landed");
         for _ in 0..600 {
-            booted.session.tick().expect("the tick ran");
+            booted.session.tick(&Sequential).expect("the tick ran");
         }
         let polytope = booted
             .session
@@ -1336,7 +1334,7 @@ mod tests {
                     })
                     .expect("the boundary ran");
                 for _ in 0..TICKS / boundaries {
-                    booted.session.tick().expect("the tick ran");
+                    booted.session.tick(&Sequential).expect("the tick ran");
                 }
             }
             *booted.session.app.slice.get()

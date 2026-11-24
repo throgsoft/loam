@@ -6,6 +6,7 @@ use loam_math::EuclideanR3;
 use loam_physics::euclidean_r3::{register_default_narrowphase, sphere_body_r3};
 use loam_physics::{BodyDef, BodyId, World};
 use loam_shape::Isovolume;
+use loam_time::par::Sequential;
 
 const MAJOR: f32 = 1.0;
 const MINOR: f32 = 0.3;
@@ -54,7 +55,7 @@ fn a_body_rests_on_an_sdf_extracted_torus_and_falls_through_its_hole() {
 
     let mut lowest = f32::INFINITY;
     for _ in 0..600 {
-        world.step(DT).unwrap();
+        world.step(DT, &Sequential).unwrap();
         let y = world.body(sphere).unwrap().position.y;
         assert!(y.is_finite(), "simulation diverged");
         lowest = lowest.min(y);
@@ -87,7 +88,7 @@ fn a_body_rests_on_an_sdf_extracted_torus_and_falls_through_its_hole() {
 
     let (mut world, sphere) = torus_world(&volume, 0.0);
     for _ in 0..600 {
-        world.step(DT).unwrap();
+        world.step(DT, &Sequential).unwrap();
     }
     let y = world.body(sphere).unwrap().position.y;
     assert!(

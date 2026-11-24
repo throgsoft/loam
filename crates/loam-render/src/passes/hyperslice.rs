@@ -271,7 +271,7 @@ mod tests {
     fn the_ground_plane_is_the_backdrops_floor_carried_into_the_placed_views_image() {
         let mut session = placed_field();
         let mut publication = Publication::default();
-        session.publish(&mut publication).unwrap();
+        session.publish(&mut publication, 1.0).unwrap();
         let placement = publication.views[0].placement;
         assert_ne!(placement, Rigid::IDENTITY, "the view was not placed");
         assert!(!publication.views[0].records.fields().is_empty());

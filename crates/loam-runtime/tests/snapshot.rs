@@ -6,11 +6,11 @@ use loam_runtime::{
     ActionEvent, ActionId, AppCommand, Backdrop, Bindings, Command, Ctx, DepthEnvelope, Dispatch,
     DomainBuilder, DomainError, DomainHandle, DomainRay, Entity, Eye, Facility, Ground, Growth,
     HostConfig, ImageRay, Input, Instance, Key, LogCapacity, Material, Outcome, Owner, Phase,
-    PhaseError, Pose, PreparedGeometry, PreparedId, Projection4, Publication, PublishError,
-    Records, Rejection, Reservation, RestoreError, SchemaId, Section4, Session, SimConfig, Sky,
-    SpawnBundle, Step, Store, Tick, ViewMapping, ViewSpec, ViewTarget, DOMAIN_STEP,
+    PhaseError, Pose, PreparedGeometry, PreparedId, Projection4, Publication, Rejection,
+    Reservation, RestoreError, SchemaId, Section4, Session, SimConfig, Sky, SpawnBundle, Step,
+    Store, Tick, ViewMapping, ViewSpec, ViewTarget, DOMAIN_STEP,
 };
-use loam_time::par::Executor;
+use loam_time::par::{Executor, Sequential};
 
 type Vec4 = <EuclideanR4 as Space>::Point;
 
@@ -136,7 +136,7 @@ fn a_reset_cancels_pending_commands_and_reservations_and_never_reuses_their_requ
         }
         Ok(())
     });
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     let reservation = session.app.reserved.get()[0];
     assert!(session.entities().is_reserved(reservation.entity));
 
@@ -212,12 +212,12 @@ fn reset_or_restore_leaves_rows_relations_poses_or_the_tick_changed_or_resolves_
     });
     let dt = session.config().dt().unwrap();
     for _ in 0..3 {
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
     let snapshot = session.snapshot().unwrap();
 
     for _ in 0..2 {
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
     let ab = session.app.pairs.outgoing(a).next().unwrap();
     session.app.pairs.unlink(ab).unwrap();
@@ -233,7 +233,7 @@ fn reset_or_restore_leaves_rows_relations_poses_or_the_tick_changed_or_resolves_
     assert_eq!(from.scene(), session.scene());
     assert_eq!(session.app.pairs.outgoing(from).count(), 1);
     assert_eq!(session.app.pairs.incoming(to).count(), 1);
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     let poses = session.domains().read(r4).unwrap().poses();
     let position = |entity| poses.get(entity).map(|pose| (pose.point.x, pose.point.y));
     assert_eq!(position(from), Some((dt + dt + dt + dt, 4.0)));
@@ -296,7 +296,7 @@ fn reset_restores_the_captured_view_configuration_and_rebases_its_entities() {
     assert!(domain.view(later_view).is_none());
 
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(publication.views.len(), 1);
     assert!(publication.views[0].records.instances.rows().is_empty());
 }
@@ -349,7 +349,7 @@ fn a_failed_cpu_phase_cannot_advance_or_publish_until_recovery() {
         system: Some(DOMAIN_STEP),
         cause: DomainError::ChartBoundary,
     };
-    assert_eq!(session.tick(), Err(failure));
+    assert_eq!(session.tick(&Sequential), Err(failure));
     assert_eq!(session.current_tick(), Tick(0));
     assert_eq!(
         session.snapshot().err(),
@@ -366,12 +366,12 @@ fn a_failed_cpu_phase_cannot_advance_or_publish_until_recovery() {
         Some(RestoreError::Unfinished(Phase::Simulation))
     );
     let mut publication = Publication::default();
-    assert_eq!(session.publish(&mut publication), Err(failure));
+    assert_eq!(session.publish(&mut publication, 1.0), Err(failure));
     assert_eq!(publication.stamp, Default::default());
 
     session.reset().unwrap();
     assert!(session.snapshot().is_ok());
-    assert_eq!(session.tick(), Err(failure));
+    assert_eq!(session.tick(&Sequential), Err(failure));
     session.restore(&captured).unwrap();
     assert!(session.snapshot().is_ok());
 }
@@ -405,14 +405,14 @@ fn an_unchanged_view_keeps_its_built_records_and_a_pose_edit_rebuilds_them() {
     });
 
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let first = publication.views[0].records.built();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(publication.views[0].records.built(), first);
 
     for step in 0..24 {
         session.boundary(Input::default()).unwrap();
-        session.publish(&mut publication).unwrap();
+        session.publish(&mut publication, 1.0).unwrap();
         assert_eq!(
             publication.views[0].records.built(),
             first,
@@ -426,7 +426,7 @@ fn an_unchanged_view_keeps_its_built_records_and_a_pose_edit_rebuilds_them() {
         .unwrap()
         .view_mut(view)
         .expect("the view exists");
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(
         publication.views[0].records.built(),
         first,
@@ -434,8 +434,8 @@ fn an_unchanged_view_keeps_its_built_records_and_a_pose_edit_rebuilds_them() {
     );
 
     for alpha in [0.2, 0.9] {
-        session.tick().unwrap();
-        session.publish_at(&mut publication, alpha).unwrap();
+        session.tick(&Sequential).unwrap();
+        session.publish(&mut publication, alpha).unwrap();
         assert_eq!(
             publication.views[0].records.built(),
             first,
@@ -449,7 +449,7 @@ fn an_unchanged_view_keeps_its_built_records_and_a_pose_edit_rebuilds_them() {
         .unwrap()
         .set_pose(drawn, at([5.0, 6.0, 7.0, 8.0]))
         .unwrap();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let records = &publication.views[0].records;
     assert!(records.built().sequence > first.sequence);
     assert_eq!(records.instances.rows()[0].image_point, [5.0, 6.0, 7.0]);
@@ -483,7 +483,7 @@ fn published_segments_miss_the_endpoints_the_mapping_sends_them_to() {
     });
 
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let [segment] = publication.views[0].records.segments() else {
         panic!(
             "{} segments published",
@@ -500,19 +500,6 @@ fn published_segments_miss_the_endpoints_the_mapping_sends_them_to() {
     close(segment.end, [0.0, 4.0 / 3.0, -2.0]);
     assert_eq!(segment.start_color, [0.2, 0.4, 0.6, 1.0]);
     assert_eq!(segment.width_px, 3.0);
-}
-
-#[test]
-fn publish_overwrites_a_record_buffer_the_renderer_still_holds() {
-    let (mut session, _) = session();
-    let mut records = Records::default();
-    let first = records.publish(&mut session).unwrap();
-    let held = records.lend().unwrap();
-    assert_eq!(held.stamp, first);
-    assert_eq!(records.publish(&mut session), Err(PublishError::Borrowed));
-    records.release(held);
-    let second = records.publish(&mut session).unwrap();
-    assert!(second.sequence > first.sequence);
 }
 
 struct PrepareSegment;
@@ -568,7 +555,7 @@ fn geometry_prepared_by_a_command_outlives_the_restore_that_follows_it() {
             .unwrap();
     });
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(publication.views[0].records.instances.rows().len(), 1);
 }
 
@@ -640,7 +627,7 @@ fn a_reset_command_restores_the_first_boundary_once_and_later_requests_in_its_ba
         }
         Ok(())
     });
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     session.boundary(Input::default()).unwrap();
     let outcomes: Vec<_> = session
         .results()
@@ -679,7 +666,7 @@ fn a_reset_action_pressed_with_another_handler_ends_the_boundary_in_the_initial_
     session.set_initial().unwrap();
 
     session.boundary(press(&[MARK])).unwrap();
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     assert_eq!(*session.app.log.get(), [1]);
     let epoch = session.scene().epoch();
 
@@ -768,7 +755,7 @@ fn a_view_added_through_dispatch_publishes_into_the_root_image_from_the_given_ey
     });
 
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let [published] = &publication.views[..] else {
         panic!("{} views published", publication.views.len());
     };
@@ -801,10 +788,10 @@ fn the_root_backdrop_is_published_asks_for_a_redraw_only_when_it_changes_and_is_
     let saved = session.snapshot().unwrap();
     let mut publication = Publication::default();
 
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(publication.backdrop, Some(dusk));
     let drawn = publication.content();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(
         publication.content(),
         drawn,
@@ -819,7 +806,7 @@ fn the_root_backdrop_is_published_asks_for_a_redraw_only_when_it_changes_and_is_
         ..dusk
     };
     session.views_mut().root_mut().backdrop = Some(hidden);
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(publication.backdrop, Some(hidden));
     assert_ne!(
         publication.content(),
@@ -828,6 +815,6 @@ fn the_root_backdrop_is_published_asks_for_a_redraw_only_when_it_changes_and_is_
     );
 
     session.restore(&saved).unwrap();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(publication.backdrop, Some(dusk));
 }

@@ -181,6 +181,7 @@ impl<S: DomainSpace> Blend<S> {
 #[cfg(test)]
 mod tests {
     use loam_math::{EuclideanR4, Rotor4};
+    use loam_time::par::Sequential;
 
     use crate::assets::{Material, PreparedGeometry};
     use crate::command::SpawnBundle;
@@ -262,7 +263,7 @@ mod tests {
     }
 
     fn drawn_x(session: &mut Session<Probe>, publication: &mut Publication, alpha: f32) -> f32 {
-        session.publish_at(publication, alpha).unwrap();
+        session.publish(publication, alpha).unwrap();
         publication.views[0].records.instances.rows()[0]
             .pose
             .coordinates[0]
@@ -273,23 +274,23 @@ mod tests {
     fn a_body_is_drawn_between_its_last_two_ticks_and_a_stop_or_jump_is_not_smeared() {
         let (mut session, _, _) = drawn_session(|tick| Some((tick.0 as f32 + 1.0, false)));
         let mut publication = Publication::default();
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.25), 0.25);
         assert_eq!(drawn_x(&mut session, &mut publication, 0.75), 0.75);
         assert_eq!(drawn_x(&mut session, &mut publication, 1.0), 1.0);
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 1.5);
 
         let (mut session, _, _) = drawn_session(|tick| (tick.0 == 0).then_some((1.0, false)));
         let mut publication = Publication::default();
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 0.5);
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.5), 1.0);
 
         let (mut session, r4, mover) = drawn_session(|_| Some((10.0, true)));
         let mut publication = Publication::default();
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
         assert_eq!(drawn_x(&mut session, &mut publication, 0.25), 10.0);
         session
             .domains_mut()
@@ -304,8 +305,8 @@ mod tests {
     fn drawn_pose_and_image_of_read_the_pose_the_publication_drew() {
         let (mut session, r4, mover) = drawn_session(|tick| Some((tick.0 as f32 + 1.0, false)));
         let mut publication = Publication::default();
-        session.tick().unwrap();
-        session.publish_at(&mut publication, 0.3).unwrap();
+        session.tick(&Sequential).unwrap();
+        session.publish(&mut publication, 0.3).unwrap();
         let published = &publication.views[0];
         let row = &published.records.instances.rows()[0];
         let drawn = session.domains().read(r4).unwrap().drawn_pose(mover, 0.3);
@@ -346,12 +347,12 @@ mod tests {
         );
         let mut publication = Publication::default();
         let drawn_y = |session: &mut Session<Probe>, publication: &mut Publication, alpha| {
-            session.publish_at(publication, alpha).unwrap();
+            session.publish(publication, alpha).unwrap();
             let rows = publication.views[0].records.instances.rows();
             let record = rows.iter().find(|record| record.entity == swapped).unwrap();
             record.pose.coordinates[1] - OBJECT_AT.y
         };
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
         assert_eq!(drawn_y(&mut session, &mut publication, 0.25), 0.25);
         session
             .dispatch(|dispatch| dispatch.despawn(doomed))
@@ -387,8 +388,8 @@ mod tests {
             },
         );
         let mut publication = Publication::default();
-        session.tick().unwrap();
-        session.publish_at(&mut publication, 0.5).unwrap();
+        session.tick(&Sequential).unwrap();
+        session.publish(&mut publication, 0.5).unwrap();
         let drawn = publication.views[0].records.instances.rows()[0].pose.frame;
         let expected = EuclideanR4.chart_pose(&Pose {
             point: OBJECT_AT,

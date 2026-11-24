@@ -12,6 +12,7 @@ use loam_runtime::{
 };
 use loam_shape::polytope::Polytope4;
 use loam_time::alloc::{current_snapshot, delta, AllocDelta, CountingAllocator};
+use loam_time::par::Sequential;
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator<System> = CountingAllocator::new(System);
@@ -179,7 +180,7 @@ impl LinesFixture {
 
     fn publish(&mut self) {
         self.session
-            .publish(&mut self.publication)
+            .publish(&mut self.publication, 1.0)
             .expect("R3 publication");
         black_box(self.publication.stamp);
     }
@@ -279,7 +280,7 @@ impl SectionFixture {
     }
 
     fn tick(&mut self) {
-        self.session.tick().expect("R4 tick");
+        self.session.tick(&Sequential).expect("R4 tick");
     }
 
     fn tick_to_half(&mut self) {
@@ -293,13 +294,6 @@ impl SectionFixture {
         } else {
             self.alpha + 0.25
         };
-    }
-
-    fn publish_at(&mut self) {
-        self.session
-            .publish_at(&mut self.publication, self.alpha)
-            .expect("R4 publication");
-        black_box(self.publication.stamp);
     }
 
     fn edit_one(&mut self) {
@@ -341,7 +335,7 @@ impl SectionFixture {
 
     fn publish(&mut self) {
         self.session
-            .publish(&mut self.publication)
+            .publish(&mut self.publication, self.alpha)
             .expect("R4 publication");
         black_box(self.publication.stamp);
     }
@@ -516,7 +510,7 @@ impl BlendFixture {
 
     fn publish(&mut self) {
         self.session
-            .publish(&mut self.publication)
+            .publish(&mut self.publication, 1.0)
             .expect("blend publication");
         black_box(self.publication.stamp);
     }
@@ -815,7 +809,7 @@ fn main() {
         10_000,
         || SectionFixture::drifting(10_000),
         SectionFixture::next_alpha,
-        SectionFixture::publish_at,
+        SectionFixture::publish,
         SectionFixture::counts,
     );
     run_case(
@@ -824,7 +818,7 @@ fn main() {
         10_000,
         || SectionFixture::drifting(10_000),
         SectionFixture::tick_to_half,
-        SectionFixture::publish_at,
+        SectionFixture::publish,
         SectionFixture::counts,
     );
     run_case(

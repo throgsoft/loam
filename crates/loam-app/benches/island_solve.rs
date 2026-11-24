@@ -36,7 +36,7 @@ fn columns(count: usize) -> World<EuclideanR3> {
         }
     }
     for _ in 0..SETTLE_STEPS {
-        world.step(DT).expect("step");
+        world.step(DT, &Sequential).expect("step");
     }
     world
 }
@@ -71,10 +71,10 @@ fn main() {
         for iters in SOLVER_ITERS {
             world.set_solver_iterations(iters);
             for _ in 0..8 {
-                world.step_with(DT, executor.as_ref()).expect("step");
+                world.step(DT, executor.as_ref()).expect("step");
             }
             let step_ns = median_nanos(|| {
-                world.step_with(DT, executor.as_ref()).expect("step");
+                world.step(DT, executor.as_ref()).expect("step");
                 black_box(&world.time());
             });
             println!("{mode} {threads} {islands} {bodies} {iters} {step_ns:.0}");

@@ -6,6 +6,7 @@ use loam_runtime::{
 };
 use loam_shape::polytope::Polytope4;
 use loam_shape::FieldShape;
+use loam_time::par::Sequential;
 
 type Vec4 = <EuclideanR4 as Space>::Point;
 
@@ -95,7 +96,7 @@ impl Stage {
 
     fn fields(&mut self) -> (Vec<FieldRecord>, Option<f32>) {
         let mut publication = Publication::default();
-        self.session.publish(&mut publication).unwrap();
+        self.session.publish(&mut publication, 1.0).unwrap();
         let records = &publication.views[0].records;
         (records.fields().to_vec(), records.field_cut())
     }
@@ -239,11 +240,11 @@ fn a_patched_publication_holds_the_same_blended_field_pose_as_a_fresh_one() {
     );
 
     let mut held = Publication::default();
-    stage.session.publish(&mut held).unwrap();
-    stage.session.tick().unwrap();
-    stage.session.publish_at(&mut held, 0.5).unwrap();
+    stage.session.publish(&mut held, 1.0).unwrap();
+    stage.session.tick(&Sequential).unwrap();
+    stage.session.publish(&mut held, 0.5).unwrap();
     let mut fresh = Publication::default();
-    stage.session.publish_at(&mut fresh, 0.5).unwrap();
+    stage.session.publish(&mut fresh, 0.5).unwrap();
 
     let drawn = stage
         .session
@@ -310,7 +311,7 @@ fn a_field_solid_publishes_no_lines_or_faces_and_is_picked_at_its_surface() {
     });
 
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let records = &publication.views[0].records;
     assert_eq!(records.instances.rows().len(), 1);
     assert!(

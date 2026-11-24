@@ -488,6 +488,7 @@ mod tests {
     use super::*;
 
     use crate::world::World;
+    use loam_time::par::Sequential;
 
     fn aa_box(center: Vec2, half: Vec2, mass: f32) -> BodyDef<EuclideanR2> {
         rectangle_body(center, Vec2::ZERO, half, mass).unwrap()
@@ -747,7 +748,7 @@ mod tests {
             .push_body(sphere_body(Vec2::new(0.6, 3.0), Vec2::new(0.0, -10.0), 0.3, 1.0).unwrap());
 
         for _ in 0..60 {
-            world.step(1.0 / 120.0).unwrap();
+            world.step(1.0 / 120.0, &Sequential).unwrap();
         }
 
         let omega = world.bodies[square_id].angular_velocity.0;
@@ -763,7 +764,7 @@ mod tests {
         world.push_body(sphere_body(Vec2::new(1.0, 0.0), Vec2::new(-2.0, 0.0), 0.5, 1.0).unwrap());
 
         for _ in 0..30 {
-            world.step(1.0 / 60.0).unwrap();
+            world.step(1.0 / 60.0, &Sequential).unwrap();
         }
 
         for body in world.bodies.iter() {
@@ -797,7 +798,7 @@ mod tests {
         world.set_gravity(Some(Vec2::new(0.0, -9.8))).unwrap();
 
         for _ in 0..240 {
-            world.step(1.0 / 60.0).unwrap();
+            world.step(1.0 / 60.0, &Sequential).unwrap();
         }
 
         for (idx, body) in world.bodies.iter().enumerate().skip(1) {
@@ -835,7 +836,7 @@ mod tests {
         world.set_gravity(Some(Vec2::new(0.0, -9.8))).unwrap();
 
         for _ in 0..300 {
-            world.step(1.0 / 60.0).unwrap();
+            world.step(1.0 / 60.0, &Sequential).unwrap();
         }
 
         for (idx, body) in world.bodies.iter().enumerate().skip(1) {

@@ -1,6 +1,7 @@
 use loam_console::{render_line, CommandLine, LineKind};
 use loam_runtime::host::HostError;
 use loam_runtime::{Bindings, Key, PointerButton, Publication, Session, Stores};
+use loam_time::par::Sequential;
 
 use super::app::SessionApp;
 use super::console::SessionConsole;
@@ -44,7 +45,7 @@ pub fn run_script<A: Stores>(
             &mut cursor,
             FRAME,
             &LayerSlot::default(),
-            |session, _| session.tick(),
+            |session, _| session.tick(&Sequential),
         )?;
         if let Some((number, error)) = app.console.take_refused() {
             return Err(HostError::Host(format!("script line {number}: {error}")));
@@ -53,7 +54,7 @@ pub fn run_script<A: Stores>(
             cursor.applied(locked);
             input.set_cursor_locked(locked);
         }
-        session.publish_at(&mut publication, alpha)?;
+        session.publish(&mut publication, alpha)?;
         each(step, session, &publication)?;
 
         let mut failed = None;

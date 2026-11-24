@@ -9,6 +9,7 @@ use loam_runtime::{
     LogCapacity, Material, Phase, PhysicsConfig, Pointer, PointerButton, PointerPhase, Pose,
     PreparedGeometry, Section4, Session, SimConfig, SpawnBundle, ThrowConfig, ViewId,
 };
+use loam_time::par::Sequential;
 
 type Vec4 = <EuclideanR4 as Space>::Point;
 
@@ -96,7 +97,7 @@ impl Stage {
     fn drag(&mut self, ndc_x: f32) {
         self.session.drag([ndc_x, 0.0], FLICK_SECONDS).unwrap();
         self.boundary(Input::default());
-        self.session.tick().unwrap();
+        self.session.tick(&Sequential).unwrap();
     }
 
     fn motion(&self) -> (Vec4, Bivector4) {

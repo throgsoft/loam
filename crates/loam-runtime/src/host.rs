@@ -2,6 +2,8 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::ops::Range;
 
+use loam_time::par::Sequential;
+
 use crate::command::Rejection;
 use crate::domain::DomainError;
 use crate::input::{ActionEvent, ActionId, Bindings, Input, Key};
@@ -103,8 +105,8 @@ pub fn run_headless<A: Stores>(
             held: held.clone(),
             ..Input::default()
         })?;
-        session.tick()?;
-        session.publish_at(&mut publication, alpha)?;
+        session.tick(&Sequential)?;
+        session.publish(&mut publication, alpha)?;
         each(step, session, &publication)?;
     }
     Ok(publication)

@@ -373,7 +373,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         Ok(())
     }
 
-    /// The pose `publish_at(alpha)` draws: blended across the last tick when only that tick wrote the pose, otherwise the current pose.
+    /// The pose a publish at `alpha` draws: blended across the last tick when only that tick wrote the pose, otherwise the current pose.
     pub fn drawn_pose(&self, entity: Entity, alpha: f32) -> Option<Pose<S>> {
         self.drawn(entity, presented_alpha(alpha))
     }

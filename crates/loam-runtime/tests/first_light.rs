@@ -130,7 +130,7 @@ fn partial_blended_placement_is_refused_during_publication() {
     });
 
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let records = &publication.views[0].records;
     let refusals = records.refusals();
     assert!(records.segments().is_empty());
@@ -275,7 +275,7 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
         (object4, object3)
     });
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let image_of = |entity| {
         publication
             .views

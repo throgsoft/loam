@@ -297,7 +297,7 @@ mod tests {
     use loam_math::EuclideanR4;
     use loam_runtime::{
         DomainBuilder, Eye, Instance, LogCapacity, Material, Overlay, Pose, PreparedGeometry,
-        Projection4, PublishedView, Records, Session, SimConfig, SpawnBundle, ViewSpec,
+        Projection4, Publication, PublishedView, Session, SimConfig, SpawnBundle, ViewSpec,
     };
     use wgpu::{
         BackendOptions, Backends, InstanceDescriptor, LoadOp, NoopBackendOptions, Operations,
@@ -392,7 +392,7 @@ mod tests {
             })
             .create_view(&Default::default());
         let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
-        let mut records = Records::default();
+        let mut publication = Publication::default();
         let overlay = Overlay::default();
         let spin = |session: &mut Session<Spun>| {
             if let Ok(domain) = session.domains_mut().typed(r4) {
@@ -404,13 +404,11 @@ mod tests {
             }
         };
         let present = |session: &mut Session<Spun>,
-                       records: &mut Records,
+                       publication: &mut Publication,
                        presenter: &mut Presenter,
                        encoder: &mut CommandEncoder| {
-            records.publish(session).unwrap();
-            let published = records.lend().unwrap();
-            presenter.upload(&device, &queue, &frame_of(&published.views, &overlay));
-            records.release(published);
+            session.publish(publication, 1.0).unwrap();
+            presenter.upload(&device, &queue, &frame_of(&publication.views, &overlay));
             presenter
                 .record_scene(&device, encoder, &target, (64, 64), Color::BLACK)
                 .expect("recorded the scene");
@@ -422,12 +420,12 @@ mod tests {
         let mut encoder = device.create_command_encoder(&Default::default());
         for _ in 0..8 {
             spin(&mut session);
-            present(&mut session, &mut records, &mut presenter, &mut encoder);
+            present(&mut session, &mut publication, &mut presenter, &mut encoder);
         }
 
         let before = presenter.uploads();
         for _ in 0..16 {
-            present(&mut session, &mut records, &mut presenter, &mut encoder);
+            present(&mut session, &mut publication, &mut presenter, &mut encoder);
         }
         assert_eq!(
             presenter.uploads(),
@@ -436,7 +434,7 @@ mod tests {
         );
         for _ in 0..16 {
             spin(&mut session);
-            present(&mut session, &mut records, &mut presenter, &mut encoder);
+            present(&mut session, &mut publication, &mut presenter, &mut encoder);
         }
         assert_eq!(
             presenter.uploads(),
@@ -482,10 +480,9 @@ mod tests {
 
         let (device, queue) = noop_device();
         let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
-        let mut records = Records::default();
+        let mut published = Publication::default();
         let overlay = Overlay::default();
-        records.publish(&mut session).expect("published");
-        let published = records.lend().expect("the buffer is free");
+        session.publish(&mut published, 1.0).expect("published");
 
         presenter.upload(&device, &queue, &frame_of(&published.views, &overlay));
         let both = presenter.fills.triangles();
@@ -497,7 +494,6 @@ mod tests {
             both,
             "the dropped view left its section fills on screen"
         );
-        records.release(published);
     }
 
     #[test]
@@ -537,10 +533,9 @@ mod tests {
 
         let (device, queue) = noop_device();
         let mut presenter = Presenter::new(TextureFormat::Rgba8Unorm).expect("presenter");
-        let mut records = Records::default();
+        let mut published = Publication::default();
         let overlay = Overlay::default();
-        records.publish(&mut session).expect("published");
-        let published = records.lend().expect("the buffer is free");
+        session.publish(&mut published, 1.0).expect("published");
         let dropped = &published.views[0].records;
         let kept = &published.views[1].records;
         assert!(
@@ -557,7 +552,6 @@ mod tests {
             survivor,
             "the first slot still holds the dropped view's lines"
         );
-        records.release(published);
     }
 
     const PROBE_SIZE: u32 = 64;

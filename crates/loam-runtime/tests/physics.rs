@@ -11,7 +11,7 @@ use loam_runtime::{
     DomainSpace, Entity, GrabConfig, Input, LogCapacity, Phase, PhysicsConfig, Pose, Rejection,
     RestConfig, Session, SimConfig, SpawnBundle, Store,
 };
-use loam_time::par::{ChunkSource, Executor};
+use loam_time::par::{ChunkSource, Executor, Sequential};
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -108,7 +108,7 @@ fn resting_session() -> (Session<Probe>, DomainHandle<EuclideanR4>) {
 
 fn ticks(session: &mut Session<Probe>, count: usize) {
     for _ in 0..count {
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
 }
 
@@ -136,7 +136,7 @@ fn a_stepped_body_moves_its_entity_pose_and_reports_the_row_and_a_sleeping_one_w
         .poses()
         .catch_up(&mut cursor);
 
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
 
     let fallen = 10.0 - GRAVITY * DT * DT;
     let at = pose_of(&session, r4, entity);
@@ -162,12 +162,12 @@ fn a_stepped_body_moves_its_entity_pose_and_reports_the_row_and_a_sleeping_one_w
         .physics_mut()
         .unwrap();
     physics.sleep_body(entity).unwrap();
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
 
     let domain = session.domains().read(r4).unwrap();
     let before = domain.poses().version(entity).unwrap();
     let asleep = domain.poses().get(entity).unwrap().point;
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
 
     let domain = session.domains().read(r4).unwrap();
     assert_eq!(domain.poses().version(entity), Some(before));
@@ -178,9 +178,9 @@ fn a_stepped_body_moves_its_entity_pose_and_reports_the_row_and_a_sleeping_one_w
 fn a_released_entity_leaves_no_body_and_no_pose_row() {
     let (mut session, r4) = session();
     let entity = ball(&mut session, r4, Vec4::new(0.0, 10.0, 0.0, 0.0));
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     session.dispatch(|d| d.despawn(entity)).unwrap();
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
 
     let domain = session.domains().read(r4).unwrap();
     assert!(!domain.poses().contains(entity));
@@ -194,13 +194,13 @@ fn a_restore_rewinds_the_pose_store_and_the_world_and_drops_a_later_body() {
     let (mut session, r4) = session();
     let entity = ball(&mut session, r4, Vec4::new(0.0, 10.0, 0.0, 0.0));
     for _ in 0..5 {
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
     let snapshot = session.snapshot().unwrap();
     let captured = (pose_of(&session, r4, entity), body_of(&session, r4, entity));
     let later = ball(&mut session, r4, Vec4::new(4.0, 10.0, 0.0, 0.0));
     for _ in 0..7 {
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
     assert_ne!(pose_of(&session, r4, entity), captured.0);
 
@@ -284,7 +284,7 @@ fn checked_pose_edits_update_the_body_and_mirror_before_step() {
     );
     session.boundary(Input::default()).unwrap();
     assert_eq!(pose_of(&session, r4, entity), paused);
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     assert_eq!(pose_of(&session, r4, entity), body_of(&session, r4, entity));
 }
 
@@ -440,7 +440,7 @@ fn a_tick_hands_its_executor_to_a_world_with_enough_islands_to_share() {
         drains: AtomicUsize::new(0),
     };
 
-    session.tick_with(&executor).unwrap();
+    session.tick(&executor).unwrap();
 
     let physics = session.domains().read(r4).unwrap().physics().unwrap();
     let islands = physics.world().islands().len();

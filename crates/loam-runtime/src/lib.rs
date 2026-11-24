@@ -44,7 +44,7 @@ pub use input::{
 pub use phase::{Ctx, Order, Phase, PhaseError, Step, SystemEntry, Tick};
 #[cfg(feature = "physics")]
 pub use physics::{GrabConfig, GrabHold, Physics, PhysicsConfig, RestConfig, ThrowConfig};
-pub use publication::{Publication, PublishError, PublishedView, Records, Stamp};
+pub use publication::{Publication, PublishedView, Stamp};
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
     Growth, RestoreError, Session, SessionSnapshot, SimConfig, SimConfigError, DOMAIN_STEP,

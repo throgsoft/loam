@@ -562,6 +562,7 @@ mod tests {
     use super::*;
 
     use crate::world::World;
+    use loam_time::par::Sequential;
 
     fn assert_close(a: f32, b: f32, tol: f32) {
         assert!(
@@ -595,7 +596,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 120.0).unwrap();
+            world.step(1.0 / 120.0, &Sequential).unwrap();
         }
         let a = &world.bodies[0];
         let b = &world.bodies[1];
@@ -619,7 +620,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 240.0).unwrap();
+            world.step(1.0 / 240.0, &Sequential).unwrap();
         }
 
         let target_omega = world.bodies[target_id].angular_velocity.magnitude();

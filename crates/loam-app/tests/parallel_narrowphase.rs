@@ -68,7 +68,7 @@ fn sample(body: &RigidBody<EuclideanR3>, words: &mut Vec<u32>) {
 fn run(executor: &dyn Executor) -> u64 {
     let (mut world, sleepers) = columns();
     for _ in 0..STEPS {
-        world.step_with(DT, executor).expect("step");
+        world.step(DT, executor).expect("step");
     }
     let candidates = world.counters().candidates as usize;
     assert!(

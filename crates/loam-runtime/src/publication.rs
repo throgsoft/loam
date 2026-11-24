@@ -1,9 +1,7 @@
 use crate::assets::Library;
 use crate::domain::{DomainError, DomainId, Domains};
 use crate::entity::SceneId;
-use crate::phase::{PhaseError, Tick};
-use crate::session::Session;
-use crate::stores::Stores;
+use crate::phase::Tick;
 use crate::view::{Backdrop, Overlay, Rigid, ViewRecords, ViewTarget, Views};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -133,63 +131,12 @@ impl<V> Publication<V> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PublishError {
-    Borrowed,
-    Phase(PhaseError),
-}
-
-impl From<PhaseError> for PublishError {
-    fn from(error: PhaseError) -> Self {
-        Self::Phase(error)
-    }
-}
-
-pub struct Records<V = ()> {
-    idle: Option<Publication<V>>,
-}
-
-impl<V: Default> Default for Records<V> {
-    fn default() -> Self {
-        Self {
-            idle: Some(Publication::default()),
-        }
-    }
-}
-
-impl<V> Records<V> {
-    pub fn publish<A: Stores<Published = V>>(
-        &mut self,
-        session: &mut Session<A>,
-    ) -> Result<Stamp, PublishError> {
-        self.publish_at(session, 1.0)
-    }
-
-    pub fn publish_at<A: Stores<Published = V>>(
-        &mut self,
-        session: &mut Session<A>,
-        alpha: f32,
-    ) -> Result<Stamp, PublishError> {
-        let buffer = self.idle.as_mut().ok_or(PublishError::Borrowed)?;
-        session.publish_at(buffer, alpha)?;
-        Ok(buffer.stamp)
-    }
-
-    /// Until the buffer is released, [`Self::publish`] returns [`PublishError::Borrowed`].
-    pub fn lend(&mut self) -> Option<Publication<V>> {
-        self.idle.take()
-    }
-
-    pub fn release(&mut self, publication: Publication<V>) {
-        self.idle = Some(publication);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::view::Vec4;
     use loam_math::{EuclideanR4, Space};
     use loam_time::alloc::bytes_allocated_by;
+    use loam_time::par::Sequential;
 
     use super::*;
     use crate::assets::{Assets, Material, MaterialId, PreparedGeometry, PreparedId};
@@ -197,7 +144,7 @@ mod tests {
     use crate::domain::{DomainBuilder, Instance, Pose};
     use crate::input::Input;
     use crate::phase::{Ctx, Phase};
-    use crate::session::SimConfig;
+    use crate::session::{Session, SimConfig};
     use crate::store::{LogCapacity, Store};
     use crate::view::{DepthEnvelope, DomainRay, ImageRay, ViewMapping, ViewSpec};
 
@@ -242,9 +189,8 @@ mod tests {
             })
             .expect("the view registered");
         session.views_mut().root_mut().eye = Eye::default();
-        let mut records = Records::default();
-        records.publish(&mut session).expect("published");
-        let publication = records.lend().expect("the buffer is free");
+        let mut publication = Publication::default();
+        session.publish(&mut publication, 1.0).expect("published");
         publication.views[0].records.segments().to_vec()
     }
 
@@ -280,21 +226,18 @@ mod tests {
             .expect("the view registered");
         session.views_mut().root_mut().eye = Eye::default();
 
-        let mut records = Records::default();
-        let read = |session: &mut Session<Quiet>, records: &mut Records| {
-            records.publish(session).expect("published");
-            let publication = records.lend().expect("the buffer is free");
+        let mut publication = Publication::default();
+        let read = |session: &mut Session<Quiet>, publication: &mut Publication| {
+            session.publish(publication, 1.0).expect("published");
             let view = &publication.views[0];
-            let read = (
+            (
                 view.records.triangles().len(),
                 view.records.segments().len(),
                 view.records.built(),
-            );
-            records.release(publication);
-            read
+            )
         };
 
-        let (triangles, segments, built) = read(&mut session, &mut records);
+        let (triangles, segments, built) = read(&mut session, &mut publication);
         assert_eq!(
             triangles, 24,
             "the six cells that straddle w = 0 each cut to a square, and each square fans around its centroid into four triangles, not {triangles}"
@@ -305,7 +248,7 @@ mod tests {
             "the wireframe's 32 edges and the cut cube's 24 perimeter segments came to {segments}"
         );
         assert_eq!(
-            read(&mut session, &mut records).2,
+            read(&mut session, &mut publication).2,
             built,
             "an unchanged source and view rebuilt the section"
         );
@@ -320,7 +263,7 @@ mod tests {
                 Ok(())
             })
             .expect("the slice moved");
-        let (lifted, _, moved) = read(&mut session, &mut records);
+        let (lifted, _, moved) = read(&mut session, &mut publication);
         assert_ne!(
             moved, built,
             "a new slice left the section at its old build"
@@ -549,9 +492,9 @@ mod tests {
         });
         let mut publication = Publication::default();
         let cycle = |session: &mut Session<Shown>, publication: &mut Publication<Vec<u32>>| {
-            session.tick().unwrap();
+            session.tick(&Sequential).unwrap();
             session.boundary(Input::default()).unwrap();
-            session.publish(publication).unwrap();
+            session.publish(publication, 1.0).unwrap();
         };
         for _ in 0..4 {
             cycle(&mut session, &mut publication);

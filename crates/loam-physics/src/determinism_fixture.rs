@@ -5,6 +5,7 @@ use crate::euclidean_r3::{
 use crate::world::World;
 use glam::Vec3;
 use loam_math::EuclideanR3;
+use loam_time::par::Sequential;
 use loam_time::{Checkpoint, Tape};
 use std::ops::Range;
 const GRAVITY_MAGNITUDE: f32 = 9.8;
@@ -118,7 +119,7 @@ fn drive_flick_chamber(
     let mut checkpoints = Vec::new();
     for tick in 0..ticks {
         apply_throw(&mut world, input(tick));
-        world.step(MULTI_ISLAND_DT).unwrap();
+        world.step(MULTI_ISLAND_DT, &Sequential).unwrap();
         if (tick + 1).is_multiple_of(CHECKPOINT_PERIOD) {
             checkpoints.push(Checkpoint {
                 tick,

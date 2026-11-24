@@ -219,7 +219,7 @@ fn texel(pixels: &[u8], (x, y): (u32, u32)) -> [u8; 4] {
 fn published_landmarks_are_absent_from_their_own_ndc_positions_gpu_probe() {
     let (mut session, landmarks) = twospace();
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
 
     let pixels = render(&publication);
     for landmark in landmarks {
@@ -294,7 +294,7 @@ fn bridged() -> Session<Landmarks> {
 fn a_bridged_view_rasterizes_where_its_placement_did_not_put_it_gpu_probe() {
     let mut session = bridged();
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let pixels = render(&publication);
 
     for (name, ndc) in [("center", PLACED_NDC), ("tip", TIP_NDC)] {
@@ -351,7 +351,7 @@ fn an_overlay_line_and_point_from_a_publication_system_are_drawn_where_they_stan
         Ok(())
     });
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
 
     let pixels = render(&publication);
     for (name, at) in [("line", OVERLAY_LINE_AT), ("point", OVERLAY_POINT_AT)] {
@@ -378,7 +378,7 @@ fn the_root_backdrop_paints_its_sky_over_the_background_gpu_probe() {
         ground: HIDDEN_GROUND,
     });
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
 
     let sky = texel(&render(&publication), SKY_PIXEL);
     assert!(

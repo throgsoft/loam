@@ -8,6 +8,7 @@ use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
 use loam_physics::{BodyDef, World};
 use loam_shape::Shape;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
+use loam_time::par::Sequential;
 
 const WORD: &str = "LOAM";
 const FIXED_HZ: f32 = 60.0;
@@ -169,11 +170,11 @@ fn time_word(letters: &[GlyphSolid]) -> Result<(usize, f64)> {
 
     let dt = 1.0 / FIXED_HZ;
     for _ in 0..SETTLE_STEPS {
-        world.step(dt).expect("valid timestep");
+        world.step(dt, &Sequential).expect("valid timestep");
     }
     let started = Instant::now();
     for _ in 0..TIMED_STEPS {
-        world.step(dt).expect("valid timestep");
+        world.step(dt, &Sequential).expect("valid timestep");
     }
     let micros = started.elapsed().as_secs_f64() * 1.0e6 / TIMED_STEPS as f64;
     Ok((world.bodies().iter().count(), micros))

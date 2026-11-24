@@ -3,6 +3,7 @@ use loam_runtime::{
     ActionEvent, ActionId, CameraPair, CursorPolicy, Eye, FreeCamera, Input, Orbit, Pointer,
     PointerButton, PointerPhase, Rig, Session, SimConfig, MOVE_FORWARD, MOVE_RIGHT, MOVE_UP,
 };
+use loam_time::par::Sequential;
 
 type Vec3 = <EuclideanR3 as Space>::Vector;
 
@@ -45,7 +46,7 @@ fn walk_forward(session: &mut Session<Bare>, ticks: u32) {
                 ..Input::default()
             })
             .unwrap();
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
 }
 
@@ -193,7 +194,7 @@ fn a_free_rig_walks_speed_times_dt_per_tick_and_looks_once_per_boundary_only_whi
 
     session.boundary(keys(false, [100.0, 50.0])).unwrap();
     for _ in 0..5 {
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
     assert_eq!(
         eye(&session),
@@ -205,7 +206,7 @@ fn a_free_rig_walks_speed_times_dt_per_tick_and_looks_once_per_boundary_only_whi
     for _ in 0..(SECONDS * HZ as f32) as u32 {
         session.boundary(keys(true, [0.0; 2])).unwrap();
         session.boundary(keys(true, [0.0; 2])).unwrap();
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
     let walked = eye(&session);
     let want =
@@ -230,7 +231,7 @@ fn a_free_rig_walks_speed_times_dt_per_tick_and_looks_once_per_boundary_only_whi
         heading(&once)
     );
     for _ in 0..3 {
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
     assert_eq!(
         eye(&session),
@@ -268,7 +269,7 @@ fn a_manual_rig_leaves_the_programs_eye_alone_under_camera_input_at_a_boundary_a
                 ..Input::default()
             })
             .unwrap();
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
     }
     assert_eq!(
         eye(&session),

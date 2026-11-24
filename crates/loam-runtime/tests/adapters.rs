@@ -98,7 +98,7 @@ where
     );
 
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let image = image_of(&publication, object);
     assert_image(label, image, image_at_target);
 
@@ -116,7 +116,7 @@ where
         .find(|(_, pose)| space.distance(pose.point, origin) <= 1e-6)
         .map(|(entity, _)| entity)
         .unwrap_or_else(|| panic!("{label}: restore left no object at the origin"));
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_image(label, image_of(&publication, object), image_at_origin);
 }
 

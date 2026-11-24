@@ -888,6 +888,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use loam::runtime::Publication;
+    use loam::time::par::Sequential;
 
     use super::*;
 
@@ -896,11 +897,11 @@ mod tests {
         let (mut session, _) = build().expect("hero builds");
         session.app.stage.set(Stage::seeded(DEFAULT_SEED));
         let mut publication = Publication::default();
-        session.publish(&mut publication).expect("publication");
+        session.publish(&mut publication, 1.0).expect("publication");
         let before = session.app.mesh.get().clone();
 
         session.reset().expect("reset");
-        session.publish(&mut publication).expect("publication");
+        session.publish(&mut publication, 1.0).expect("publication");
         let after = session.app.mesh.get().clone();
 
         assert_eq!(
@@ -910,7 +911,7 @@ mod tests {
     }
 
     fn publish(session: &mut Session<HeroStores>, into: &mut Publication<Shown>) {
-        session.publish(into).expect("publication");
+        session.publish(into, 1.0).expect("publication");
         let mesh = session.app.mesh.get();
         assert!(
             into.value.mesh.vertices == mesh.vertices
@@ -928,7 +929,7 @@ mod tests {
         let first = publication.value.mesh.vertices.clone();
 
         for _ in 0..TICK_HZ {
-            session.tick().expect("tick");
+            session.tick(&Sequential).expect("tick");
         }
         publish(&mut session, &mut publication);
         assert!(

@@ -197,6 +197,7 @@ mod tests {
     use crate::euclidean_r3::{halfspace_body_r3, sphere_body_r3};
     use crate::manifold::PENETRATION_SLOP;
     use crate::world::{FieldId, World};
+    use loam_time::par::Sequential;
 
     struct Ground;
 
@@ -321,7 +322,7 @@ mod tests {
         world.bind_field(ball, field).expect("binding");
 
         for _ in 0..600 {
-            world.step(1.0 / 240.0).unwrap();
+            world.step(1.0 / 240.0, &Sequential).unwrap();
         }
         let rest = world.bodies[ball].position.y;
         assert!(
@@ -338,7 +339,7 @@ mod tests {
         let ball = uncertain
             .push_body(sphere_body_r3(Vec3::Y * 0.45, Vec3::ZERO, RADIUS, 1.0).expect("ball"));
         uncertain.bind_field(ball, field).expect("binding");
-        uncertain.step(0.0).unwrap();
+        uncertain.step(0.0, &Sequential).unwrap();
         assert_eq!(uncertain.manifolds().len(), 0);
     }
 
@@ -357,7 +358,7 @@ mod tests {
         let (mut world, _, field, ball) = ground_world();
         world.bind_field(ball, field).expect("binding");
         for _ in 0..60 {
-            world.step(1.0 / 240.0).unwrap();
+            world.step(1.0 / 240.0, &Sequential).unwrap();
         }
         let saved = world.snapshot();
         let second = world.push_body(halfspace_body_r3(Vec3::Y, -8.0).expect("anchor"));

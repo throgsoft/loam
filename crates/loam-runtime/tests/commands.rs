@@ -7,7 +7,7 @@ use loam_runtime::{
     Phase, Pose, PreparedGeometry, Rejection, RequestId, Reservation, RestoreError, SchemaId,
     Session, SimConfig, SpawnBundle, Step, Store, StoreError, DOMAIN_STEP,
 };
-use loam_time::par::Executor;
+use loam_time::par::{Executor, Sequential};
 
 type Vec4 = <EuclideanR4 as Space>::Point;
 
@@ -180,7 +180,7 @@ fn later_failed_command_rolls_back_an_earlier_successful_spawn() {
             Ok(())
         },
     );
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     session.boundary(Input::default()).unwrap();
 
     let [good, bad] = session.app.reserved.get()[..] else {
@@ -249,7 +249,7 @@ fn commands_reorder_repeat_or_vanish_around_pause_and_catch_up() {
             .all(|result| result.outcome == Ok(Outcome::Done)));
         delivered.extend(session.results().iter().map(|result| result.request));
         for _ in 0..ticks {
-            session.tick().unwrap();
+            session.tick(&Sequential).unwrap();
             deferred.push(100 + tick);
             tick += 1;
         }
@@ -303,7 +303,7 @@ fn a_spawn_is_live_at_once_through_dispatch_and_a_reserved_one_only_after_its_bo
         ctx.app.log.get_mut().push(u32::from(seen));
         Ok(())
     });
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     let reservation = session.app.reserved.get()[0];
     assert_eq!(session.entities().resolve(reservation.entity), None);
     assert!(!session.app.tags.contains(reservation.entity));
@@ -311,7 +311,7 @@ fn a_spawn_is_live_at_once_through_dispatch_and_a_reserved_one_only_after_its_bo
         session.dispatch(|d| d.despawn(reservation.entity)),
         Err(Rejection::Reserved(reservation.entity))
     );
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     assert_eq!(*session.app.log.get(), [0, 0]);
 
     session.boundary(Input::default()).unwrap();
@@ -328,7 +328,7 @@ fn a_spawn_is_live_at_once_through_dispatch_and_a_reserved_one_only_after_its_bo
         Some(reservation.entity.key())
     );
     assert_eq!(session.app.tags.get(reservation.entity), Some(&Tag(1)));
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     assert_eq!(*session.app.log.get(), [0, 0, 1]);
 
     assert_eq!(
@@ -375,9 +375,9 @@ fn system_after_the_domain_step_does_not_see_the_steps_writes() {
         .unwrap();
     let dt = session.config().dt().unwrap();
 
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     assert_eq!(*session.app.sample.get(), [Some(0.0), Some(dt)]);
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
     assert_eq!(*session.app.sample.get(), [Some(dt), Some(dt + dt)]);
 }
 

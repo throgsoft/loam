@@ -10,6 +10,7 @@ use loam_physics::euclidean_r3::{
 };
 use loam_physics::world::PairKey;
 use loam_physics::World;
+use loam_time::par::Sequential;
 
 const BODY_COUNTS: [usize; 3] = [100, 200, 400];
 const SPREAD_AT_100: f32 = 6.0;
@@ -67,7 +68,7 @@ fn settled_scene(count: usize) -> World<EuclideanR3> {
         world.set_restitution(id, 0.0).unwrap();
     }
     for _ in 0..SETTLE_STEPS {
-        world.step(DT).unwrap();
+        world.step(DT, &Sequential).unwrap();
     }
     world
 }

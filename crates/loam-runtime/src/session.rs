@@ -525,12 +525,8 @@ impl<A: Stores> Session<A> {
         Ok(growth)
     }
 
-    pub fn tick(&mut self) -> Result<(), PhaseError> {
-        self.tick_with(&Sequential)
-    }
-
     /// The result is the same for any `executor`.
-    pub fn tick_with(&mut self, executor: &dyn Executor) -> Result<(), PhaseError> {
+    pub fn tick(&mut self, executor: &dyn Executor) -> Result<(), PhaseError> {
         if let Some(error) = self.unfinished_error() {
             return Err(error);
         }
@@ -561,12 +557,8 @@ impl<A: Stores> Session<A> {
         Ok(())
     }
 
-    pub fn publish(&mut self, into: &mut Publication<A::Published>) -> Result<(), PhaseError> {
-        self.publish_at(into, 1.0)
-    }
-
     /// Draws each pose `alpha` of the way from where it stood before the last tick to where it stands now, with `alpha` clamped to [0, 1] and NaN taken as 1.
-    pub fn publish_at(
+    pub fn publish(
         &mut self,
         into: &mut Publication<A::Published>,
         alpha: f32,

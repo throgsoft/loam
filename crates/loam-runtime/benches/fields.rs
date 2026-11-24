@@ -11,6 +11,7 @@ use loam_runtime::{
     SpawnBundle,
 };
 use loam_shape::field::DistanceField;
+use loam_time::par::Sequential;
 
 const BATCHES: usize = 9;
 const QUERY_REPS: u32 = 20_000;
@@ -396,7 +397,7 @@ fn run_fixed_step_support(name: &str, field_center: [f32; 3], field_radius: f32,
     );
     world.bind_field(body, field).expect("field binding");
     for _ in 0..600 {
-        world.step(1.0 / 240.0).expect("world step");
+        world.step(1.0 / 240.0, &Sequential).expect("world step");
     }
 
     let settled = world.bodies()[body].position;

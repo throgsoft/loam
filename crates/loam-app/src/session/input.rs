@@ -636,6 +636,7 @@ pub fn apply(map: &mut InputMap, bindings: &Bindings, message: &InputMessage, co
 #[cfg(test)]
 mod tests {
     use loam_runtime::{ActionId, Ctx, Phase, Session, SimConfig};
+    use loam_time::par::Sequential;
 
     use super::*;
 
@@ -738,7 +739,7 @@ mod tests {
             map.host_message("scroll", &[0.5]);
             let input = map.take();
             session.boundary(input).expect("boundary");
-            session.tick().expect("tick");
+            session.tick(&Sequential).expect("tick");
             map.reclaim(session.take_input());
         };
         for _ in 0..8 {

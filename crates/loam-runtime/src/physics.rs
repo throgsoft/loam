@@ -909,7 +909,7 @@ where
         let substeps = self.step_count(step.dt);
         let dt = step.dt / substeps as f32;
         for _ in 0..substeps {
-            self.world.step_with(dt, executor)?;
+            self.world.step(dt, executor)?;
         }
         self.sync_poses(poses, true);
         self.released = None;
@@ -1358,10 +1358,10 @@ mod tests {
             },
         ));
         session.boundary(Input::default()).unwrap();
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
         let mut publication = Publication::default();
         let mut drawn_x = |session: &mut Session<Bare>| {
-            session.publish_at(&mut publication, 0.5).unwrap();
+            session.publish(&mut publication, 0.5).unwrap();
             publication.views[0].records.instances.rows()[0]
                 .pose
                 .coordinates[0]

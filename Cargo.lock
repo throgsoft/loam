@@ -1458,6 +1458,7 @@ dependencies = [
  "loam-physics",
  "loam-render",
  "loam-shape",
+ "loam-time",
  "pollster",
  "thiserror 1.0.69",
  "tracing",

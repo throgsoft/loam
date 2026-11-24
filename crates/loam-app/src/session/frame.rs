@@ -13,7 +13,7 @@ use loam_render::present::Presenter;
 #[cfg(not(target_arch = "wasm32"))]
 use loam_runtime::host::HostConfig;
 use loam_runtime::host::HostError;
-use loam_runtime::{Eye, PhaseError, Publication, PublishError, Records, Session, Stores};
+use loam_runtime::{Eye, PhaseError, Publication, Session, Stores};
 use loam_time::par::Executor;
 use loam_time::{frame_trace, FixedTimestep};
 
@@ -63,7 +63,7 @@ fn warn_once<A: Stores>(reported: &mut bool, console: &mut SessionConsole<A>, no
 struct LoopState<A: Stores> {
     session: Session<A>,
     executor: Box<dyn Executor>,
-    records: Records<A::Published>,
+    publication: Publication<A::Published>,
     timestep: Option<FixedTimestep>,
     callbacks: Vec<CommandBuffer>,
     input: InputMap,
@@ -109,7 +109,7 @@ impl<A: Stores> Frame<A> {
             state: LoopState {
                 session,
                 executor,
-                records: Records::default(),
+                publication: Publication::default(),
                 timestep,
                 callbacks: Vec::new(),
                 input: InputMap::default(),
@@ -454,7 +454,7 @@ impl<A: Stores> LoopState<A> {
                         timestep.reset_clock(now);
                     }
                     for _ in timestep.advance(now) {
-                        session.tick_with(executor.as_ref())?;
+                        session.tick(executor.as_ref())?;
                     }
                 }
                 Ok::<_, PhaseError>(())
@@ -462,18 +462,11 @@ impl<A: Stores> LoopState<A> {
         )
     }
 
-    fn publish(&mut self, size: (u32, u32)) -> Result<(Publication<A::Published>, Eye), HostError> {
+    fn publish(&mut self, size: (u32, u32)) -> Result<Eye, HostError> {
         {
             let _publication = frame_trace::scope("publication");
             let alpha = self.timestep.as_ref().map_or(1.0, FixedTimestep::alpha);
-            self.records
-                .publish_at(&mut self.session, alpha)
-                .map_err(|error| match error {
-                    PublishError::Borrowed => {
-                        HostError::Host("publication buffer is borrowed".into())
-                    }
-                    PublishError::Phase(error) => HostError::Phase(error),
-                })?;
+            self.session.publish(&mut self.publication, alpha)?;
         }
         self.session.views_mut().root_mut().eye.aspect = self
             .input
@@ -486,18 +479,14 @@ impl<A: Stores> LoopState<A> {
             .get(root)
             .map(|view| view.eye)
             .ok_or_else(|| HostError::Host("the root view is missing".into()))?;
-        let records = self
-            .records
-            .lend()
-            .ok_or_else(|| HostError::Host("the publication buffer is unavailable".into()))?;
-        if records.views.is_empty() {
+        if self.publication.views.is_empty() {
             warn_once(
                 &mut self.no_views_reported,
                 &mut self.app.console,
                 "the session published no views, so nothing is drawn",
             );
         }
-        Ok((records, eye))
+        Ok(eye)
     }
 
     fn present(
@@ -513,7 +502,8 @@ impl<A: Stores> LoopState<A> {
         let published = self.advance(now, size).and_then(|()| self.publish(size));
         let mut requested = false;
         let terminal = match published {
-            Ok((records, eye)) => {
+            Ok(eye) => {
+                let records = &self.publication;
                 {
                     let sender = self.app.commands.sender();
                     let (hook, captures, cursor, background, posts) = (
@@ -526,7 +516,7 @@ impl<A: Stores> LoopState<A> {
                     match hook {
                         Some(FrameFn::Session(hook)) => hook(&mut FrameHook {
                             session: &self.session,
-                            published: &records,
+                            published: records,
                             alpha: records.alpha,
                             sections: presenter.sections(),
                             #[cfg(feature = "egui")]
@@ -540,7 +530,7 @@ impl<A: Stores> LoopState<A> {
                             redraw: &mut requested,
                         }),
                         Some(FrameFn::Published(hook)) => hook(&mut PublishedHook {
-                            published: &records,
+                            published: records,
                             eye,
                             sections: presenter.sections(),
                             #[cfg(feature = "egui")]
@@ -588,7 +578,6 @@ impl<A: Stores> LoopState<A> {
                 }
                 self.shown.content = records.content();
                 self.shown.eye = eye;
-                self.records.release(records);
                 None
             }
             Err(error) if self.session.faulted_phase().is_some() => {
@@ -1081,7 +1070,7 @@ mod tests {
         run_at(&mut frame, &gpu, &texture, start);
         run_at(&mut frame, &gpu, &texture, start + dt * 3 / 2);
 
-        let publication = frame.state.records.lend().expect("the buffer is free");
+        let publication = &frame.state.publication;
         let x = publication.views[0].records.instances.rows()[0]
             .pose
             .coordinates[0];

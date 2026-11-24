@@ -247,7 +247,7 @@ fn a_bridged_view_publishes_into_its_image_and_a_pick_through_it_returns_the_ana
     assert_eq!(stage.targets(section), (image, image));
 
     let mut publication = Publication::default();
-    stage.session.publish(&mut publication).unwrap();
+    stage.session.publish(&mut publication, 1.0).unwrap();
     let published = publication
         .views
         .iter()

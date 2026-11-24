@@ -1,6 +1,7 @@
 use loam_runtime::{
     Input, Overlay, Phase, PointRecord, Publication, SegmentRecord, Session, SimConfig, TextRecord,
 };
+use loam_time::par::Sequential;
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -57,7 +58,7 @@ fn an_overlay_reaches_the_publication_only_from_a_publication_system_and_only_fo
     let mut publication = Publication::default();
 
     session.boundary(Input::default()).unwrap();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(publication.overlay.lines, [GUIDE]);
     assert_eq!(publication.overlay.points, [HANDLE]);
     let text: Vec<(&str, TextRecord)> = publication
@@ -77,7 +78,7 @@ fn an_overlay_reaches_the_publication_only_from_a_publication_system_and_only_fo
     let drawn = publication.content();
 
     session.boundary(Input::default()).unwrap();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(
         publication.overlay, first,
         "a second frame grew the overlay"
@@ -90,7 +91,7 @@ fn an_overlay_reaches_the_publication_only_from_a_publication_system_and_only_fo
 
     session.app.shown.set(false);
     session.boundary(Input::default()).unwrap();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_eq!(
         publication.overlay,
         Overlay::default(),
@@ -119,9 +120,9 @@ fn a_publication_system_reads_the_clamped_alpha_and_a_simulation_system_reads_on
     let mut publication = Publication::default();
 
     for alpha in [0.25, 2.5, -1.0, f32::NAN] {
-        session.publish_at(&mut publication, alpha).unwrap();
+        session.publish(&mut publication, alpha).unwrap();
     }
-    session.tick().unwrap();
+    session.tick(&Sequential).unwrap();
 
     assert_eq!(*session.app.publication_alphas.get(), [0.25, 1.0, 0.0, 1.0]);
     assert_eq!(*session.app.simulation_alphas.get(), [1.0]);

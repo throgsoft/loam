@@ -502,6 +502,7 @@ mod tests {
     use super::*;
 
     use crate::world::World;
+    use loam_time::par::Sequential;
 
     fn assert_close(a: f32, b: f32, tol: f32) {
         assert!(
@@ -577,7 +578,7 @@ mod tests {
             let mut landed = false;
             let mut apex = f32::MIN;
             for _ in 0..(2.0 / dt) as usize {
-                world.step(dt).unwrap();
+                world.step(dt, &Sequential).unwrap();
                 let body = &world.bodies[body];
                 landed |= body.velocity.y > 0.0;
                 if landed {
@@ -636,7 +637,7 @@ mod tests {
         }
 
         fn step(&mut self) {
-            self.world.step(CORNER_DROP_DT).unwrap();
+            self.world.step(CORNER_DROP_DT, &Sequential).unwrap();
             let decay = self.decay;
             let body = &mut self.world.bodies[self.body];
             body.angular_velocity = body.angular_velocity * decay;
@@ -715,7 +716,7 @@ mod tests {
         let b = world
             .push_body(sphere_body_r4(b_pos, (a_pos - b_pos).normalize() * 2.0, 0.5, 1.0).unwrap());
         for _ in 0..120 {
-            world.step(1.0 / 120.0).unwrap();
+            world.step(1.0 / 120.0, &Sequential).unwrap();
         }
         let rel = world.bodies[b].velocity - world.bodies[a].velocity;
         let axis = (b_pos - a_pos).normalize();
