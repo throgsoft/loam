@@ -1152,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn the_booted_playground_publishes_its_section_and_reset_returns_the_row_to_rest() {
+    fn edit_and_reset() {
         let mut booted = one_slot();
         let mut publication = Publication::default();
         booted.session.boundary(Input::default()).expect("boundary");
@@ -1201,7 +1201,7 @@ mod tests {
     }
 
     #[test]
-    fn a_grabbed_toy_follows_the_drag_and_a_throw_leaves_it_asleep_within_its_slice_reach() {
+    fn grab_drag_and_throw() {
         let mut booted = one_slot();
         send(&mut booted, Action::Mode(Mode::Toybox));
         booted
@@ -1316,7 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn held_slice_motion_uses_fixed_ticks_while_authored_spin_is_paused() {
+    fn held_slice_while_spin_paused() {
         const TICKS: usize = 8;
 
         let scrubbed = |boundaries: usize| {
@@ -1347,7 +1347,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_pointer_releases_a_live_grab() {
+    fn cancelled_pointer() {
         let mut booted = one_slot();
         send(&mut booted, Action::Mode(Mode::Toybox));
         booted

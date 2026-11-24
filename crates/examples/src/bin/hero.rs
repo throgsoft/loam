@@ -902,7 +902,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reset_at_the_same_tick_rebuilds_the_published_mesh() {
+    fn reset_at_same_tick() {
         let (mut session, _) = build().expect("hero builds");
         session.app.stage.set(Stage::seeded(DEFAULT_SEED));
         let mut publication = Publication::default();
@@ -931,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn the_published_mesh_follows_the_sessions_mesh_through_ticks_and_a_reset() {
+    fn mesh_through_ticks_and_reset() {
         let (mut session, _) = build().expect("hero builds");
         let mut publication = Publication::default();
         publish(&mut session, &mut publication);
@@ -951,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_restores_the_sky_and_ground_the_scene_was_built_with() {
+    fn backdrop_after_reset() {
         let (mut session, _) = build().expect("hero builds");
         let built = session.views_mut().root_mut().backdrop;
         assert!(built.is_some(), "hero was built with no backdrop");

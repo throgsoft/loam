@@ -38,7 +38,7 @@ fn instances(output: &Output) -> Vec<Vec<String>> {
 }
 
 #[test]
-fn single_view_dumps_only_the_active_slot_and_shapes_brings_back_the_row() {
+fn single_view() {
     let output = records(
         "single_view",
         "2 view single\n4 active 2\n30 view shapes\n50 active 2\n",
@@ -50,7 +50,7 @@ fn single_view_dumps_only_the_active_slot_and_shapes_brings_back_the_row() {
 }
 
 #[test]
-fn view_turns_the_filmstrip_off() {
+fn filmstrip() {
     let output = records(
         "filmstrip_view",
         "2 key KeyF down\n3 key KeyF up\n25 view shapes\n45 view shapes\n",
@@ -62,14 +62,14 @@ fn view_turns_the_filmstrip_off() {
 }
 
 #[test]
-fn view_with_an_unknown_argument_fails_the_run_with_its_usage() {
+fn unknown_view() {
     let output = records("view_usage", "2 view all\n20 view shapes\n");
     assert!(!output.status.success());
     assert!(stderr(&output).contains("usage: view"));
 }
 
 #[test]
-fn a_script_without_records_is_refused() {
+fn script_without_records() {
     let output = run("no_records", "2 view shapes\n", &["--headless"]);
     assert!(!output.status.success());
     assert!(stderr(&output).contains("--records"));
@@ -97,7 +97,7 @@ fn overlays(output: &Output) -> Vec<(usize, Vec<String>)> {
 }
 
 #[test]
-fn the_toybox_guides_and_the_readout_reach_the_publication_and_leave_it_when_turned_off() {
+fn overlay_toggles() {
     let output = records(
         "overlay",
         "2 demo toybox\n2 hud on\n25 demo rotate\n25 handles off\n25 hud off\n45 view shapes\n",
