@@ -1318,7 +1318,7 @@ mod tests {
             segments: vec![[[0.1, 0.0, 0.0, 0.0], [-0.1, 0.0, 0.0, 0.0]]],
         });
         let material = session.add_material(Material::flat([1.0; 4]));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let body = session.dispatch(|dispatch| {
             let eye = dispatch
                 .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::Z * 4.0)))

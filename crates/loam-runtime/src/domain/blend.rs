@@ -223,7 +223,7 @@ mod tests {
             .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
         let prepared = session.prepare(lines());
         let material = session.add_material(Material::flat([1.0; 4]));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let mover = session.dispatch(|dispatch| {
             let eye = dispatch
                 .spawn(SpawnBundle::new().at(r4, Pose::at(EYE_AT)))

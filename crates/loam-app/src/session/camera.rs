@@ -38,8 +38,7 @@ mod tests {
         orbit(&mut session, |app| app.camera.get_mut());
         session.set_initial().unwrap();
         session.boundary(Input::default()).unwrap();
-        let root = session.views().root();
-        let boot = session.views().get(root).unwrap().eye.position;
+        let boot = session.views().root().eye.position;
 
         let drag = Input {
             pointers: vec![Pointer {
@@ -53,13 +52,13 @@ mod tests {
             ..Input::default()
         };
         session.boundary(drag).unwrap();
-        let turned = session.views().get(root).unwrap().eye.position;
+        let turned = session.views().root().eye.position;
         assert_ne!(turned, boot, "a secondary drag left the orbit where it was");
 
         session.reset().unwrap();
         session.boundary(Input::default()).unwrap();
         assert_eq!(
-            session.views().get(root).unwrap().eye.position,
+            session.views().root().eye.position,
             boot,
             "the reset did not bring the camera back"
         );

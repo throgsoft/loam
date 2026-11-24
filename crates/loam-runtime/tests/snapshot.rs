@@ -242,7 +242,7 @@ fn reset_or_restore_leaves_rows_relations_poses_or_the_tick_changed_or_resolves_
 #[test]
 fn reset_restores_the_captured_view_configuration_and_rebases_its_entities() {
     let (mut session, r4) = session();
-    let root = session.views().root();
+    let root = session.views().root_id();
     let root_eye = Eye::looking_at([2.0, 3.0, 4.0], [0.0; 3], [0.0, 1.0, 0.0]);
     session.views_mut().root_mut().eye = root_eye;
     let (eye, view) = session.dispatch(|d| {
@@ -279,7 +279,7 @@ fn reset_restores_the_captured_view_configuration_and_rebases_its_entities() {
     session.views_mut().root_mut().eye = Eye::default();
 
     session.reset().unwrap();
-    assert_eq!(session.views().get(root).unwrap().eye, root_eye);
+    assert_eq!(session.views().root().eye, root_eye);
     let scene = session.scene();
     let domain = session.domains().read(r4).unwrap();
     let restored = domain.view(view).unwrap();
@@ -384,7 +384,7 @@ fn an_unchanged_view_keeps_its_built_records_and_a_pose_edit_rebuilds_them() {
         segments: Vec::new(),
     });
     let material = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let (view, drawn) = session.dispatch(|d| {
         let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
         let view = d
@@ -463,7 +463,7 @@ fn published_segments_miss_the_endpoints_the_mapping_sends_them_to() {
         segments: vec![[[1.0, 0.0, 0.0, 0.0], [0.0, 2.0, 0.0, 1.0]]],
     });
     let material = session.add_material(Material::lines([0.2, 0.4, 0.6, 1.0], 3.0));
-    let root = session.views().root();
+    let root = session.views().root_id();
     session.dispatch(|d| {
         let eye = d
             .spawn(SpawnBundle::new().at(r4, at([0.0, 0.0, 0.0, 2.0])))
@@ -538,7 +538,7 @@ fn geometry_prepared_by_a_command_outlives_the_restore_that_follows_it() {
     );
 
     let material = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
+    let root = session.views().root_id();
     session.dispatch(|d| {
         let eye = d.spawn(SpawnBundle::new().at(r4, at([0.0; 4]))).unwrap();
         d.spawn(
@@ -708,7 +708,7 @@ fn a_view_added_through_dispatch_publishes_into_the_root_image_from_the_given_ey
     let [published] = &publication.views[..] else {
         panic!("{} views published", publication.views.len());
     };
-    let image = session.views().root();
+    let image = session.views().root_id();
     assert_eq!(published.target, ViewTarget { view, image });
     let [row] = published.records.instances.rows() else {
         panic!("the eye or nothing was drawn");

@@ -355,7 +355,7 @@ mod tests {
                 .collect(),
         });
         let white = session.add_material(Material::lines([1.0; 4], 2.0));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let spun = session.dispatch(|d| {
             let eye = d
                 .spawn(SpawnBundle::new().at(r4, Pose::at(glam::Vec4::ZERO)))
@@ -457,7 +457,7 @@ mod tests {
         });
         let body = session.add_material(Material::lines([1.0; 4], 1.0));
         let cut = session.add_material(Material::lines([1.0, 0.85, 0.35, 1.0], 2.0));
-        let root = session.views().root();
+        let root = session.views().root_id();
         session.dispatch(|d| {
             let eye = d
                 .spawn(SpawnBundle::new().at(r4, Pose::at(glam::Vec4::ZERO)))
@@ -500,7 +500,7 @@ mod tests {
     fn dropping_the_first_of_two_equally_stamped_views_skips_the_survivors_lines() {
         let mut session = Session::new(Spun::default(), SimConfig::default());
         let white = session.add_material(Material::lines([1.0; 4], 1.0));
-        let root = session.views().root();
+        let root = session.views().root_id();
         for (name, polytope) in [
             ("wide", loam_shape::polytope::Polytope4::Tesseract),
             ("narrow", loam_shape::polytope::Polytope4::Pentatope),

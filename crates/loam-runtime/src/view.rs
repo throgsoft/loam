@@ -289,23 +289,19 @@ impl Views {
         }
     }
 
-    pub fn root(&self) -> ImageSpaceId {
+    pub fn root_id(&self) -> ImageSpaceId {
         ImageSpaceId {
             slot: 0,
             generation: 0,
         }
     }
 
+    pub fn root(&self) -> &ImageSpace {
+        &self.root
+    }
+
     pub fn root_mut(&mut self) -> &mut ImageSpace {
         &mut self.root
-    }
-
-    pub fn get(&self, id: ImageSpaceId) -> Option<&ImageSpace> {
-        (id.slot == 0).then_some(&self.root)
-    }
-
-    pub fn get_mut(&mut self, id: ImageSpaceId) -> Option<&mut ImageSpace> {
-        (id.slot == 0).then_some(&mut self.root)
     }
 
     pub(crate) fn place(

@@ -171,10 +171,7 @@ impl Manipulation {
         let center = domain
             .image_of(pick.view, pick.entity)
             .ok_or(DomainError::Stale(pick.entity))?;
-        let eye = views
-            .get(views.root())
-            .ok_or(DomainError::Unsupported("image space"))?
-            .eye;
+        let eye = views.root().eye;
         let plane = into.apply(pick.image_point);
         let normal = into.direction(eye.forward);
         let depth =
@@ -231,10 +228,7 @@ impl Manipulation {
         let ray = views
             .ray(drag.image, ndc)
             .ok_or(DomainError::Unsupported("image space"))?;
-        let eye = views
-            .get(views.root())
-            .ok_or(DomainError::Unsupported("image space"))?
-            .eye;
+        let eye = views.root().eye;
         let into = views
             .to_root(drag.image)
             .and_then(|to| to.rigid())

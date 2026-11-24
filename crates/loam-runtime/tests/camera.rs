@@ -25,12 +25,12 @@ fn hosted(config: SimConfig, rig: Rig) -> Session<Bare> {
 
 fn eye(session: &Session<Bare>) -> Eye {
     let views = session.views();
-    views.get(views.root()).expect("the root image exists").eye
+    views.root().eye
 }
 
 fn rig(session: &Session<Bare>) -> Rig {
     let views = session.views();
-    views.get(views.root()).expect("the root image exists").rig
+    views.root().rig
 }
 
 fn fly(session: &mut Session<Bare>, flying: bool) {
@@ -310,7 +310,7 @@ fn a_reset_action_shows_the_orbit_rigs_starting_eye_on_the_boundary_that_resets(
         .unwrap();
     let views = session.views();
     assert_eq!(
-        views.get(views.root()).unwrap().rig,
+        views.root().rig,
         Rig::Orbit(start),
         "the reset kept the dragged orbit"
     );

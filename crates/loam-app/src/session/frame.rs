@@ -411,7 +411,7 @@ pub(crate) fn advance_session<A: Stores>(
     input.reclaim(session.take_input());
     result?;
     let views = session.views();
-    let wanted = views.get(views.root()).and_then(|image| image.rig.cursor());
+    let wanted = views.root().rig.cursor();
     cursor.follow_rig(wanted.filter(|_| !layer.typing()));
     Ok(())
 }
@@ -466,13 +466,7 @@ impl<A: Stores> LoopState<A> {
             .input
             .display_aspect()
             .unwrap_or(size.0 as f32 / size.1 as f32);
-        let root = self.session.views().root();
-        let eye = self
-            .session
-            .views()
-            .get(root)
-            .map(|view| view.eye)
-            .ok_or_else(|| HostError::Host("the root view is missing".into()))?;
+        let eye = self.session.views().root().eye;
         if self.publication.views.is_empty() {
             warn_once(
                 &mut self.no_views_reported,
@@ -768,7 +762,7 @@ mod tests {
             segments: vec![[[0.0; 3], [1.0, 0.0, 0.0]]],
         });
         let material = session.add_material(Material::lines([1.0; 4], 1.0));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let body = session
             .dispatch(|dispatch| {
                 let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::Z * 4.0)))?;
@@ -962,7 +956,7 @@ mod tests {
             segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
         });
         let material = session.add_material(Material::flat([1.0; 4]));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let body = session
             .dispatch(|dispatch| {
                 let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::Z * 4.0)))?;
@@ -1027,8 +1021,7 @@ mod tests {
             .expect("attached");
         run_at(&mut frame, &gpu, &texture, Instant::now());
 
-        let root = frame.state.session.views().root();
-        let aspect = frame.state.session.views().get(root).unwrap().eye.aspect;
+        let aspect = frame.state.session.views().root().eye.aspect;
         assert!(
             (aspect - SIZE.0 as f32 / SIZE.1 as f32).abs() <= 1e-6,
             "a Publication-phase eye write published aspect {aspect}"
@@ -1063,7 +1056,7 @@ mod tests {
         let mut session = Session::new(Bare::default(), SimConfig::default());
         let r3 = session
             .register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity::default()));
-        let root = session.views().root();
+        let root = session.views().root_id();
         session
             .dispatch(|dispatch| {
                 let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::ZERO)))?;

@@ -498,7 +498,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         mapping: impl ViewMapping<S>,
     ) -> Result<ViewId, Rejection> {
         let eye = self.spawn(SpawnBundle::new().at(domain, eye))?;
-        let root = self.views.root();
+        let root = self.views.root_id();
         let view = self
             .domains
             .typed(domain)?

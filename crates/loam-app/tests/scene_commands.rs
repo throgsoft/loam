@@ -55,12 +55,12 @@ fn run(session: &mut Session<Bare>, source: &str) -> Result<(), String> {
 
 fn root_backdrop(session: &Session<Bare>) -> Option<Backdrop> {
     let views = session.views();
-    views.get(views.root()).expect("the root image").backdrop
+    views.root().backdrop
 }
 
 fn root_rig(session: &Session<Bare>) -> Rig {
     let views = session.views();
-    views.get(views.root()).expect("the root image").rig
+    views.root().rig
 }
 
 #[test]

@@ -121,7 +121,7 @@ impl<V> Publication<V> {
         }
         changed |= self.overlay != *overlay;
         self.overlay.clone_from(overlay);
-        let backdrop = views.get(views.root()).and_then(|root| root.backdrop);
+        let backdrop = views.root().backdrop;
         changed |= self.backdrop != backdrop;
         self.backdrop = backdrop;
         if changed {
@@ -166,7 +166,7 @@ mod tests {
         let r4 = session
             .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
         let (geometry, material) = prepare(&mut session);
-        let root = session.views().root();
+        let root = session.views().root_id();
         session
             .dispatch(|d| -> Result<(), Rejection> {
                 let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
@@ -209,7 +209,7 @@ mod tests {
         });
         let body = session.add_material(Material::lines([1.0; 4], 1.0));
         let cut = session.add_material(Material::lines([1.0, 0.85, 0.35, 1.0], 2.0));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let view = session
             .dispatch(|d| -> Result<ViewId, Rejection> {
                 let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
@@ -455,7 +455,7 @@ mod tests {
             segments: Vec::new(),
         });
         let material = session.add_material(Material::flat([1.0; 4]));
-        let root = session.views().root();
+        let root = session.views().root_id();
         session.dispatch(|d| {
             let eye = d
                 .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))

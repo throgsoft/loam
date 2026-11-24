@@ -53,7 +53,7 @@ where
     let handle = session.register_domain(DomainBuilder::new("traced", space.clone()).untracked());
     let geometry = session.prepare(geometry);
     let material = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let origin = space.origin();
     let eye_pose = Pose::new(&space, trace.eye);
     let image_at_target = mapping.image_point(&eye_pose, trace.target).unwrap();

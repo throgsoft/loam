@@ -177,11 +177,7 @@ pub fn write_stride<A: Stores>(
 }
 
 fn write_eye<A: Stores>(out: &mut impl fmt::Write, session: &Session<A>) -> fmt::Result {
-    let views = session.views();
-    let Some(image) = views.get(views.root()) else {
-        return writeln!(out, "eye none");
-    };
-    let eye = image.eye;
+    let eye = session.views().root().eye;
     writeln!(
         out,
         "eye position {:?} right {:?} up {:?} forward {:?} fov_y {:?} aspect {:?} near {:?} far {:?}",

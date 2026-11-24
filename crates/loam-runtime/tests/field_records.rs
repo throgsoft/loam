@@ -54,7 +54,7 @@ fn stage(eye: Pose<EuclideanR4>) -> Stage {
     });
     let edge = session.add_material(Material::lines([1.0; 4], 2.0));
     let ball_material = session.add_material(Material::flat(BALL_COLOR));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let (view, filled, hollow, ball) = session.dispatch(|d| {
         let eye = d.spawn(SpawnBundle::new().at(r4, eye)).unwrap();
         let mut body = |at: Vec4, instance: Instance| {
@@ -292,7 +292,7 @@ fn a_field_solid_publishes_no_lines_or_faces_and_is_picked_at_its_surface() {
         size: SIZE,
     });
     let material = session.add_material(Material::lines([1.0; 4], 2.0));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let ball = session.dispatch(|d| {
         let eye = d
             .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))

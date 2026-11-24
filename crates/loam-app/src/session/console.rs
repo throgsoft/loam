@@ -303,11 +303,11 @@ const NO_FREE_CAMERA: &str = "this scene has no free camera";
 const NO_CAMERA_PAIR: &str = "this scene has no orbit and free camera pair";
 
 fn root_backdrop(views: &Views) -> Option<Backdrop> {
-    views.get(views.root()).and_then(|root| root.backdrop)
+    views.root().backdrop
 }
 
 fn root_free_camera(views: &Views) -> Option<&FreeCamera> {
-    views.get(views.root()).and_then(|root| root.rig.free())
+    views.root().rig.free()
 }
 
 fn register_ground<A: Stores>(console: &mut Console<Submit<A>>) {

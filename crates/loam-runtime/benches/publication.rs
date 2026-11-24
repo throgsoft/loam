@@ -77,7 +77,7 @@ impl LinesFixture {
             segments: cube_lines(),
         });
         let material = session.add_material(Material::lines([0.4, 0.7, 1.0, 1.0], 1.0));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let (eye, entities) = session.dispatch(|dispatch| {
             let eye = dispatch
                 .spawn(SpawnBundle::new().at(domain, Pose::at(Point3::ZERO)))
@@ -213,7 +213,7 @@ impl SectionFixture {
             scale: 0.04,
         });
         let material = session.add_material(Material::lines([0.9, 0.6, 0.2, 1.0], 1.0));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let (eye, entities) = session.dispatch(|dispatch| {
             let eye = dispatch
                 .spawn(SpawnBundle::new().at(domain, Pose::at(Point4::ZERO)))
@@ -415,7 +415,7 @@ impl BlendFixture {
             BLEND_LANDMARK_SCALE,
         ));
         let material = session.add_material(Material::lines([1.0, 1.0, 1.0, 0.95], 1.6));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let turn = Mat3::from_rotation_y(BLEND_TURN);
         let (mark, landmark) = session.dispatch(|dispatch| {
             let eye = dispatch

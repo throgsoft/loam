@@ -110,7 +110,7 @@ fn partial_blended_placement_is_refused_during_publication() {
         segments: vec![[Vec3::splat(1.0e20).to_array(), [0.0; 3]]],
     });
     let material = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let object = session.dispatch(|dispatch| {
         let eye = dispatch.spawn(SpawnBundle::new().at(blend, pose)).unwrap();
         let object = dispatch
@@ -239,7 +239,7 @@ fn pick_returns_the_wrong_domains_entity_or_a_projection_claims_a_hit_point() {
         segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
     });
     let material = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let center3 = Vec3::new(-0.2, 0.0, -0.5);
     let (object4, object3) = session.dispatch(|d| {
         let eye4 = d

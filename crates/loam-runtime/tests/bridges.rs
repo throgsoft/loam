@@ -45,7 +45,7 @@ fn stage() -> Stage {
         segments: vec![[[RADIUS, 0.0, 0.0, 0.0], [-RADIUS, 0.0, 0.0, 0.0]]],
     });
     let material = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let (eye, object, anchor) = session.dispatch(|d| {
         let eye = d
             .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))

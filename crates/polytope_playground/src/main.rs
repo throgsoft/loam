@@ -229,7 +229,7 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
             .physics(toy::physics_config())
             .map_err(Rejection::from)?,
     );
-    let root = session.views().root();
+    let root = session.views().root_id();
 
     let layers = session.dispatch(|d| -> Result<Layers, Rejection> {
         let cut = d.add_material(Material::lines(SECTION_COLOR, SECTION_WIDTH_PX));
@@ -888,7 +888,7 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
     };
     gimbal.enabled =
         *ctx.app.gimbal.get() && *ctx.app.mode.get() == Mode::Rotate && !ctx.app.strip.get().on;
-    let root = ctx.views.root();
+    let root = ctx.views.root_id();
     let ray = latest.and_then(|pointer| ctx.views.ray(root, pointer.ndc));
     if gimbal.enabled {
         gimbal.aim(ray.as_ref(), center);

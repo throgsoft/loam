@@ -76,7 +76,7 @@ fn twospace() -> (Session<Landmarks>, [Entity; 2]) {
     let edges4 = session.prepare(cross4(REACH));
     let edges3 = session.prepare(cross3(REACH * 0.5));
     let white = session.add_material(Material::lines([1.0, 1.0, 1.0, 1.0], 3.0));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let landmarks = session.dispatch(|d| {
         let landmark4 = d
             .spawn(
@@ -254,7 +254,7 @@ fn bridged() -> Session<Landmarks> {
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
     let edges = session.prepare(cross4(REACH));
     let white = session.add_material(Material::lines([1.0, 1.0, 1.0, 1.0], 3.0));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let (section, anchor) = session.dispatch(|d| {
         let eye = d
             .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))

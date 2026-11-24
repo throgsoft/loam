@@ -47,7 +47,7 @@ fn a_registered_hyperslice_pass_holds_one_body_per_published_field_record() {
         size: 0.5,
     });
     let material = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let view = session.dispatch(|d| {
         let eye = d
             .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))

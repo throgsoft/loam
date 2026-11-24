@@ -871,7 +871,7 @@ mod tests {
             segments: vec![[[0.5, 0.0, 0.0, 0.0], [-0.5, 0.0, 0.0, 0.0]]],
         });
         let white = session.add_material(Material::lines([1.0; 4], 1.0));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let (section, projection) = session
             .dispatch(|d| -> Result<(ViewId, ViewId), Rejection> {
                 let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
@@ -918,7 +918,7 @@ mod tests {
             scale: SCALE,
         });
         let white = session.add_material(Material::lines([1.0; 4], 1.0));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let cut = session
             .dispatch(|d| -> Result<Entity, Rejection> {
                 let eye = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
