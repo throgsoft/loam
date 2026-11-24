@@ -18,7 +18,7 @@ impl Executor for Counting {
 }
 
 #[test]
-fn the_sequential_executor_runs_inline_and_a_handed_in_one_drains_the_chunks() {
+fn sequential_and_handed_in() {
     let mut rows = [1u32, 2, 3, 4];
     par::for_each_chunk(&Sequential, &mut rows, 1, |part| part[0] += 10);
     assert_eq!(DRAINS.load(Ordering::Relaxed), 0);

@@ -271,7 +271,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
-    fn iso_translation_moves_origin_to_target() {
+    fn iso_translation() {
         let target = Vec3::new(0.3, -0.1, 0.2);
         let iso = Iso3H::from_translation(target);
         let moved = HyperbolicH3.iso_apply(iso, Vec3::ZERO);
@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn a_point_past_the_declared_envelope_is_refused() {
+    fn past_envelope() {
         let s = HyperbolicH3;
         let at = |d: f32| Vec3::X * (0.5 * d).tanh();
         assert!(s.valid_point(at(H3_DEPTH_ENVELOPE - 1.0)));
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn the_poincare_klein_and_hyperboloid_charts_agree() {
+    fn chart_agreement() {
         for p in ball_sweep() {
             let expected = 2.0 * p / (1.0 + p.length_squared());
             let k = poincare_to_klein(p);

@@ -657,7 +657,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_rotated_polytope_sections_to_a_closed_surface_inside_and_nothing_outside() {
+    fn rotated_section() {
         let mut state: u32 = 0x517_C0DE;
         let mut rand = || {
             state ^= state << 13;

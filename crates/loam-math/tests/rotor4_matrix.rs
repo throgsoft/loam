@@ -4,7 +4,7 @@ use glam::Vec4;
 use loam_math::{Bivector, Bivector4, Rotor4};
 
 #[test]
-fn from_mat4_rebuilds_rotations_near_a_half_turn_and_rejects_a_reflection() {
+fn near_half_turn_and_reflection() {
     let flip = Rotor4::from_rotation_arc(Vec4::W, -Vec4::W);
     let tilted = |plane: usize| (Bivector4::basis(plane) * (FRAC_PI_2 * 0.05)).exp() * flip;
     let rotors = [

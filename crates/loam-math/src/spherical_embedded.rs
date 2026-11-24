@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn tessellation_walks_the_great_circle_and_stays_on_the_sphere_for_degenerate_arcs() {
+    fn tessellation() {
         let s = SphericalS3Embedded;
 
         let out = tessellate(Vec4::X, Vec4::Y, 4);

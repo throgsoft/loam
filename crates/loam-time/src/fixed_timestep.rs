@@ -85,7 +85,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reset_clock_drops_pause_time_without_rewinding_ticks() {
+    fn reset_clock() {
         let mut clock = FixedTimestep::new(100);
         let start = Instant::now();
         clock.advance(start);
@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn ticks_carry_fractional_time_and_catch_up_drops_backlog_but_keeps_the_remainder() {
+    fn fractional_time_and_catch_up() {
         let mut clock = FixedTimestep::new(100);
         let start = Instant::now();
         let dt = clock.dt();

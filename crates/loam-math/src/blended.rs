@@ -733,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_endpoint_weights_do_not_hide_an_interior_metric_change() {
+    fn equal_endpoint_weights() {
         #[derive(Clone, Copy)]
         struct Bump;
         impl BlendingField for Bump {
@@ -758,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn distinct_nearby_points_keep_nonzero_distance() {
+    fn distinct_nearby_points() {
         let space = BlendedSpace::new(
             EuclideanR3,
             HyperbolicH3,
@@ -791,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn closed_form_log_half_gradient_matches_finite_diff() {
+    fn log_half_gradient() {
         assert_log_half_gradient_matches_finite_diff(
             &HyperbolicH3,
             &[
@@ -815,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_geodesic_carries_the_frame_along_the_curved_path_and_refuses_an_incomplete_step() {
+    fn checked_geodesic() {
         let at = Vec3::new(0.25, -0.1, 0.05);
         let velocity = Vec3::new(0.2, 0.15, -0.04);
         let frame = Mat3::from_cols(velocity, Vec3::Y, Vec3::Z);
@@ -857,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn outside_the_blend_zone_the_space_is_the_pure_component() {
+    fn outside_blend_zone() {
         let pure_a = BlendedSpace::new(
             EuclideanR3,
             HyperbolicH3,

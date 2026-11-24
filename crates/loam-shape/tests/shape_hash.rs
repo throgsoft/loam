@@ -26,7 +26,7 @@ fn stream(tag: u8, fields: &[f32]) -> Vec<u8> {
 
 // A stored geometry table keeps each shape's hash and is refused on load when a shape hashes differently.
 #[test]
-fn every_shape_feeds_the_hasher_the_stream_stored_geometry_was_hashed_with() {
+fn every_shape() {
     let cases = [
         (
             Shape::Sphere {

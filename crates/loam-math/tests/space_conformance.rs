@@ -115,7 +115,7 @@ const GAUSS_BONNET_RELATIVE_TOL: f32 = 0.05;
 mod invariants {
     use super::*;
 
-    pub fn distance_is_symmetric_and_zero_on_the_diagonal<F: SpaceFixture>(f: &F) {
+    pub fn distance_symmetry<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -139,7 +139,7 @@ mod invariants {
         }
     }
 
-    pub fn distance_satisfies_the_triangle_inequality<F: SpaceFixture>(f: &F) {
+    pub fn triangle_inequality<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -169,7 +169,7 @@ mod invariants {
         }
     }
 
-    pub fn exp_inverts_log_on_sampled_pairs<F: SpaceFixture>(f: &F) {
+    pub fn exp_of_log<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -181,7 +181,7 @@ mod invariants {
         }
     }
 
-    pub fn log_inverts_exp_on_sampled_tangents<F: SpaceFixture>(f: &F) {
+    pub fn log_of_exp<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         for a in f.points() {
@@ -199,7 +199,7 @@ mod invariants {
         }
     }
 
-    pub fn log_magnitude_equals_geodesic_distance<F: SpaceFixture>(f: &F) {
+    pub fn log_magnitude<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -217,7 +217,7 @@ mod invariants {
         }
     }
 
-    pub fn exp_advances_by_the_metric_norm_of_its_tangent<F: SpaceFixture>(f: &F) {
+    pub fn exp_step_length<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         for a in f.points() {
@@ -234,7 +234,7 @@ mod invariants {
         }
     }
 
-    pub fn distance_is_invariant_under_isometry<F: IsometryFixture>(f: &F)
+    pub fn iso_distance<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -257,7 +257,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_identity_is_neutral<F: IsometryFixture>(f: &F)
+    pub fn iso_identity<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -289,7 +289,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_inverse_is_two_sided<F: IsometryFixture>(f: &F)
+    pub fn iso_inverse<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -318,7 +318,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_compose_is_associative<F: IsometryFixture>(f: &F)
+    pub fn iso_associativity<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -346,7 +346,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_compose_matches_sequential_apply<F: IsometryFixture>(f: &F)
+    pub fn sequential_apply<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -369,7 +369,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_transport_is_the_differential_of_iso_apply<F: IsometryFixture>(f: &F)
+    pub fn iso_transport_differential<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -393,7 +393,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_transport_preserves_the_metric_norm<F: IsometryFixture>(f: &F)
+    pub fn iso_transport_norm<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -417,7 +417,7 @@ mod invariants {
         }
     }
 
-    pub fn parallel_transport_preserves_the_metric_norm<F: SpaceFixture>(f: &F) {
+    pub fn transport_norm<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -439,7 +439,7 @@ mod invariants {
         }
     }
 
-    pub fn parallel_transport_is_linear_in_the_transported_vector<F: SpaceFixture>(f: &F) {
+    pub fn transport_linearity<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -473,9 +473,7 @@ mod invariants {
         }
     }
 
-    pub fn parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic<F: SpaceFixture>(
-        f: &F,
-    ) {
+    pub fn transport_along_geodesic<F: SpaceFixture>(f: &F) {
         let (ratio, a, b) = worst_geodesic_tangent_ratio(f);
         assert!(
             ratio <= 1.0,
@@ -487,7 +485,7 @@ mod invariants {
     }
 
     // Pennec, Parallel Transport with Pole Ladder, 2018, §3; Helgason, Symmetric Spaces, 1978, ch. IV §3.
-    pub fn parallel_transport_matches_the_one_its_own_geodesics_imply<F: SpaceFixture>(f: &F) {
+    pub fn transport_from_geodesics<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -517,7 +515,7 @@ mod invariants {
     }
 
     // do Carmo, Differential Geometry of Curves and Surfaces, 1976, §4.5.
-    pub fn geodesic_triangle_angle_excess_matches_gauss_bonnet<F: SpaceFixture>(f: &F) {
+    pub fn gauss_bonnet<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let l = TRIANGLE_SIDE;
         let apex = f.points()[0];
@@ -540,7 +538,7 @@ mod invariants {
         );
     }
 
-    pub fn degenerate_inputs_stay_finite<F: SpaceFixture>(f: &F) {
+    pub fn degenerate_inputs<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         for (a, b) in f.degenerate_pairs() {
@@ -574,7 +572,7 @@ mod invariants {
         }
     }
 
-    pub fn isometries_of_degenerate_inputs_stay_finite<F: IsometryFixture>(f: &F)
+    pub fn iso_degenerate_inputs<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -695,10 +693,10 @@ macro_rules! conformance_tests {
 macro_rules! conformance_suite {
     ($suite:ident, $fixture:expr) => {
         conformance_suite!($suite, $fixture;
-            log_magnitude_equals_geodesic_distance,
-            parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic,
-            parallel_transport_matches_the_one_its_own_geodesics_imply,
-            geodesic_triangle_angle_excess_matches_gauss_bonnet,
+            log_magnitude,
+            transport_along_geodesic,
+            transport_from_geodesics,
+            gauss_bonnet,
         );
     };
     ($suite:ident, $fixture:expr; $($extra:ident),* $(,)?) => {
@@ -706,14 +704,14 @@ macro_rules! conformance_suite {
             use super::*;
 
             conformance_tests!($fixture;
-                distance_is_symmetric_and_zero_on_the_diagonal,
-                distance_satisfies_the_triangle_inequality,
-                exp_inverts_log_on_sampled_pairs,
-                log_inverts_exp_on_sampled_tangents,
-                exp_advances_by_the_metric_norm_of_its_tangent,
-                parallel_transport_preserves_the_metric_norm,
-                parallel_transport_is_linear_in_the_transported_vector,
-                degenerate_inputs_stay_finite,
+                distance_symmetry,
+                triangle_inequality,
+                exp_of_log,
+                log_of_exp,
+                exp_step_length,
+                transport_norm,
+                transport_linearity,
+                degenerate_inputs,
                 $($extra,)*
             );
         }
@@ -726,14 +724,14 @@ macro_rules! isometry_conformance_suite {
             use super::*;
 
             conformance_tests!($fixture;
-                distance_is_invariant_under_isometry,
-                iso_identity_is_neutral,
-                iso_inverse_is_two_sided,
-                iso_compose_is_associative,
-                iso_compose_matches_sequential_apply,
-                iso_transport_is_the_differential_of_iso_apply,
-                iso_transport_preserves_the_metric_norm,
-                isometries_of_degenerate_inputs_stay_finite,
+                iso_distance,
+                iso_identity,
+                iso_inverse,
+                iso_associativity,
+                sequential_apply,
+                iso_transport_differential,
+                iso_transport_norm,
+                iso_degenerate_inputs,
             );
         }
     };
@@ -1357,8 +1355,8 @@ conformance_suite!(hyperbolic_h3, HyperbolicH3Fixture);
 conformance_suite!(spherical_s3, SphericalS3Fixture);
 conformance_suite!(spherical_s3_embedded, SphericalS3EmbeddedFixture);
 conformance_suite!(blended_space, BlendedSpaceFixture;
-    log_magnitude_equals_geodesic_distance,
-    parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic,
+    log_magnitude,
+    transport_along_geodesic,
 );
 
 isometry_conformance_suite!(euclidean_r2_isometries, EuclideanR2Fixture);

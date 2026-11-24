@@ -916,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn a_quarter_turn_sends_each_plane_s_first_axis_to_its_second_alone_and_in_a_double_rotation() {
+    fn quarter_turn() {
         let q = FRAC_PI_2;
 
         let r = Bivector2(q).exp();
@@ -960,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn rotor4_product_applies_the_left_factor_first_and_stays_exact_over_many_steps() {
+    fn product_order_and_drift() {
         let ra = Bivector4::new(0.4, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
         let rb = Bivector4::new(0.0, 0.0, 0.0, 0.5, 0.0, 0.0).exp();
         let v = Vec4::new(0.7, -0.3, 1.1, 0.2);
@@ -1017,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn rotation_arc_handles_parallel_and_antipodal_vectors() {
+    fn rotation_arc_parallel_and_antipodal() {
         let cases = [
             (Vec4::X, Vec4::Y),
             (Vec4::W, -Vec4::Y),
@@ -1039,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn rotor4_mat4_applies_like_the_rotor_and_from_mat4_rebuilds_half_turns() {
+    fn mat4_round_trip() {
         let r = Bivector4::new(0.7, 0.0, 0.0, 0.0, 0.0, 0.3).exp();
         let m = r.to_mat4();
 
@@ -1128,7 +1128,7 @@ mod tests {
     ];
 
     #[test]
-    fn rotor4_log_recovers_both_invariant_angles_at_small_near_equal_and_lopsided_angles() {
+    fn log_angles() {
         for (p1, p2) in invariant_plane_pairs() {
             for (t1, t2) in HALF_ANGLE_STRESS_PAIRS {
                 let b = p1 * t1 + p2 * t2;
@@ -1189,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn rotor4_log_returns_the_shortest_generator_of_the_same_rotation() {
+    fn log_shortest_generator() {
         const STEPS: i32 = 47;
         for step in -STEPS..=STEPS {
             let theta = step as f32 * (TAU / STEPS as f32);
@@ -1255,7 +1255,7 @@ mod tests {
     }
 
     #[test]
-    fn bivector4_contract_vec_is_clifford_left_contraction() {
+    fn contract_vec() {
         let b = Bivector4::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_vec4_close_tol(b.contract_vec(Vec4::X), -Vec4::Y, 1e-6);
         assert_vec4_close_tol(b.contract_vec(Vec4::Y), Vec4::X, 1e-6);

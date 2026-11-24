@@ -420,7 +420,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aggregate_uses_retained_frames_and_sorts_percentiles() {
+    fn retained_percentiles() {
         set_capacity(2);
         record_external("discarded", Duration::from_secs(10));
         end_frame();

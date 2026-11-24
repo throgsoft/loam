@@ -4,7 +4,7 @@ use loam_shape::polytope::{polytope_section_faces_append, Polytope4, SectionScra
 use loam_shape::TriangleMesh;
 
 #[test]
-fn section_caps_lie_on_supporting_facets() {
+fn section_caps() {
     for polytope in Polytope4::ALL {
         let (normals, offset) = polytope.face_planes();
         for w in [-0.2, 0.0, 0.2] {

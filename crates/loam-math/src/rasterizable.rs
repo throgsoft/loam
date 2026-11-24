@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_tessellation_emits_both_endpoints_and_evenly_spaced_interior_points() {
+    fn flat_tessellation() {
         let (p0, p1) = (Vec3::ZERO, Vec3::new(2.0, 4.0, -6.0));
         let mut out = Vec::new();
         <EuclideanR3 as RasterizableSpace<3>>::tessellate_segment(p0, p1, 1, |p| out.push(p));
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn perspective4d_scales_by_focal_distance_over_depth_and_refuses_the_eye_plane() {
+    fn perspective4d() {
         let focal = 2.0;
         let proj = Projection::Perspective4D {
             focal_distance: focal,
@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn stereographic_inverts_off_pole_ignores_input_scale_and_stays_finite_at_the_pole() {
+    fn stereographic() {
         let oblique = Vec4::new(0.1, -0.2, 0.3, 0.9).normalize();
         let cases = [
             (Vec4::W, Vec4::new(0.2, 0.1, -0.3, 0.4).normalize()),

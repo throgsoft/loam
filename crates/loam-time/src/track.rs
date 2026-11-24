@@ -105,7 +105,7 @@ mod tests {
     const FPS: NonZeroU32 = NonZeroU32::new(60).unwrap();
 
     #[test]
-    fn a_track_samples_in_timeline_seconds_eases_into_its_keys_and_holds_its_ends() {
+    fn sampling() {
         let track = Track::new()
             .key(0.0, 0.0, Ease::Linear)
             .key(1.0, 10.0, Ease::Linear);

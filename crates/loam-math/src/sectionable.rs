@@ -39,7 +39,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn edge_section_returns_the_crossing_and_refuses_edges_that_miss_the_slice() {
+    fn edge_section() {
         let slice = WPlane::new(0.0);
 
         let (t, p3) = slice
