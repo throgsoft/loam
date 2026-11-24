@@ -406,7 +406,6 @@ impl<S: DomainSpace> TypedDomain<S> {
             .plan(&self.poses, &self.instances, motion, alpha, state)
         {
             Planned::Current => {
-                into.instances.restamp(stamp);
                 return Ok(());
             }
             Planned::Patch(cursors) => {
@@ -416,7 +415,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             }
             Planned::Rebuild => {}
         }
-        self.rebuild_view(spec, library, into, stamp, alpha);
+        self.rebuild_view(spec, library, into, alpha);
         into.cache
             .commit_rebuild(&self.poses, &self.instances, revision, stamp);
         Ok(())
@@ -427,7 +426,6 @@ impl<S: DomainSpace> TypedDomain<S> {
         spec: &ViewEntry<S>,
         library: Library<'_>,
         into: &mut ViewRecords,
-        stamp: Stamp,
         alpha: f32,
     ) {
         let ViewRecords {
@@ -450,7 +448,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         let eye = match self.drawn(spec.eye, alpha) {
             Some(eye) if spec.style.enabled => eye,
             _ => {
-                instances.replace(std::iter::empty(), stamp);
+                instances.replace(std::iter::empty());
                 return;
             }
         };
@@ -519,7 +517,7 @@ impl<S: DomainSpace> TypedDomain<S> {
                 }
                 record.map(|record| (entity, record))
             });
-        instances.replace(records, stamp);
+        instances.replace(records);
     }
 
     fn patch_view(
@@ -623,7 +621,6 @@ impl<S: DomainSpace> TypedDomain<S> {
             }
             patched = true;
         }
-        instances.restamp(stamp);
         cache.commit_patch(cursors, stamp, patched);
         true
     }

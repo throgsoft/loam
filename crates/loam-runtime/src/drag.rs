@@ -55,10 +55,6 @@ const SAMPLE_SPACING_SECONDS: f64 = 0.01;
 const RELEASE_STALE_SECONDS: f64 = 0.12;
 
 impl Drag {
-    pub fn image_point(&self) -> [f32; 3] {
-        self.at
-    }
-
     pub(crate) fn plane_at(&self, eye: [f32; 3], forward: [f32; 3]) -> [f32; 3] {
         (Vec3::from(eye) + Vec3::from(forward) * self.depth).to_array()
     }

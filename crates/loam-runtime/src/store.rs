@@ -4,7 +4,6 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::entity::{Entities, Entity, EntityKey, SceneId};
-use crate::publication::Stamp;
 use crate::relation::LinkId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,12 +65,6 @@ pub struct Cursor {
     removed: u64,
     boundary: u64,
     synced: bool,
-}
-
-impl Cursor {
-    pub fn position(self) -> u64 {
-        self.position
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,16 +205,11 @@ pub struct RecordBuffer<R> {
     rows: Vec<R>,
     entities: Vec<Entity>,
     positions: Vec<u32>,
-    stamp: Stamp,
 }
 
 impl<R> RecordBuffer<R> {
     pub fn rows(&self) -> &[R] {
         &self.rows
-    }
-
-    pub fn stamp(&self) -> Stamp {
-        self.stamp
     }
 
     fn position(&self, entity: Entity) -> Option<usize> {
@@ -250,10 +238,6 @@ impl<R> RecordBuffer<R> {
         self.positions.fill(NO_RECORD);
     }
 
-    pub(crate) fn restamp(&mut self, stamp: Stamp) {
-        self.stamp = stamp;
-    }
-
     pub(crate) fn update(&mut self, entity: Entity, record: R) -> bool {
         let Some(position) = self.position(entity) else {
             return false;
@@ -262,12 +246,11 @@ impl<R> RecordBuffer<R> {
         true
     }
 
-    pub(crate) fn replace(&mut self, records: impl Iterator<Item = (Entity, R)>, stamp: Stamp) {
+    pub(crate) fn replace(&mut self, records: impl Iterator<Item = (Entity, R)>) {
         self.clear();
         for (entity, record) in records {
             self.upsert(entity, record);
         }
-        self.stamp = stamp;
     }
 }
 
@@ -277,7 +260,6 @@ impl<R> Default for RecordBuffer<R> {
             rows: Vec::new(),
             entities: Vec::new(),
             positions: Vec::new(),
-            stamp: Stamp::default(),
         }
     }
 }
@@ -388,7 +370,6 @@ impl<E: Copy> Ring<E> {
 }
 
 struct Tracking {
-    capacity: LogCapacity,
     versions: Vec<Version>,
     logged: Vec<u64>,
     dirty: Ring<EntityKey>,
@@ -400,7 +381,6 @@ struct Tracking {
 impl Tracking {
     fn new(capacity: LogCapacity) -> Self {
         Self {
-            capacity,
             versions: Vec::new(),
             logged: Vec::new(),
             dirty: Ring::new(capacity.dirty),
@@ -497,10 +477,6 @@ impl<T> Store<T> {
 
     pub fn is_tracked(&self) -> bool {
         self.tracking.is_some()
-    }
-
-    pub fn log_capacity(&self) -> Option<LogCapacity> {
-        self.tracking.as_ref().map(|tracking| tracking.capacity)
     }
 
     pub fn scene(&self) -> SceneId {

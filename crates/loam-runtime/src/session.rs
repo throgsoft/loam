@@ -74,12 +74,10 @@ impl Default for SimConfig {
     }
 }
 
-/// What one boundary applied; the session grows its tables here and nowhere else.
+/// What one boundary applied.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Growth {
     pub commands: usize,
-    pub spawned: usize,
-    pub despawned: usize,
 }
 
 pub struct SessionSnapshot<A: Stores> {
@@ -645,7 +643,6 @@ impl<A: Stores> Session<A> {
         let mut batch = std::mem::take(&mut self.batch);
         self.commands.drain_into(&mut batch);
         for request in batch.drain(..) {
-            let despawn = matches!(request.command, Command::Despawn(_));
             let name = request.command.name();
             let outcome = match request.command {
                 Command::Reset if self.restored => Ok(Outcome::Done),
@@ -665,11 +662,6 @@ impl<A: Stores> Session<A> {
                 command => self.dispatch(|dispatch| dispatch.apply(command)),
             };
             growth.commands += 1;
-            match outcome {
-                Ok(Outcome::Spawned(_)) => growth.spawned += 1,
-                Ok(Outcome::Done) if despawn => growth.despawned += 1,
-                _ => {}
-            }
             self.results.push(CommandResult {
                 request: request.id,
                 name,

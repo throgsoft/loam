@@ -154,10 +154,7 @@ fn reset_with_pending_requests() {
     assert!(fresh > cancelled, "a cancelled request id was reused");
     assert_eq!(
         session.boundary(Input::default()).unwrap(),
-        Growth {
-            commands: 1,
-            ..Growth::default()
-        }
+        Growth { commands: 1 }
     );
     assert_eq!(*session.app.log.get(), [2]);
     assert!(session.app.tags.is_empty());

@@ -213,8 +213,6 @@ pub trait Domain: Send + 'static {
 
     fn name(&self) -> &'static str;
 
-    fn tracks_changes(&self) -> bool;
-
     fn views(&self) -> &[ViewTarget];
 
     fn view(&self, id: ViewId) -> Option<ViewSummary>;
@@ -487,10 +485,6 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
 
     fn name(&self) -> &'static str {
         self.name
-    }
-
-    fn tracks_changes(&self) -> bool {
-        self.poses.is_tracked()
     }
 
     fn views(&self) -> &[ViewTarget] {
