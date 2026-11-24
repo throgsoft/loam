@@ -157,7 +157,7 @@ impl Default for Hyperslice4DUniforms {
     }
 }
 
-/// Prefixed with [`crate::sky_ground::SKY_GROUND_WGSL`] and the shared `loam_projective_depth`; a `Scene4` emit or [`hyperslice_ground_wgsl`] supplies `loam_scene_sdf`.
+/// Prefixed with [`crate::sky_ground::SKY_GROUND_WGSL`] and the shared `loam_projective_depth`; [`hyperslice_ground_wgsl`] supplies `loam_scene_sdf`.
 pub const HYPERSLICE_KERNEL_WGSL: &str = concat!(
     include_str!("../sky_ground.wgsl"),
     include_str!("../shader/projective_depth.wgsl"),
@@ -534,6 +534,7 @@ fn fs_depth(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
 
 // The backdrop's ground plane gated by `u.params.x`; it bounds the march and its hits are discarded for the backdrop to draw.
 const GROUND_SCENE_WGSL: &str = r#"
+const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
 struct LoamSceneHit { dist: f32, kind: u32 }
 fn loam_scene_at(p: vec3<f32>) -> LoamSceneHit {
     let d = select(1.0e9, dot(p, u.ground_plane.xyz) - u.ground_plane.w, u.params.x >= 0.5);
@@ -557,15 +558,9 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
 
 /// The kernel, the polytope SDFs and a scene of the uniforms' ground plane.
 pub fn hyperslice_ground_wgsl() -> String {
-    use super::scene::scene4::{PRIM_KIND_HALFSPACE4D, PRIM_KIND_HYPERSPHERE4D, PRIM_KIND_OTHER};
     format!(
-        "{HYPERSLICE_KERNEL_WGSL}
-{polytope}
-         const LOAM_PRIM_HYPERSPHERE4D: u32 = {PRIM_KIND_HYPERSPHERE4D}u;
-         const LOAM_PRIM_HALFSPACE4D: u32 = {PRIM_KIND_HALFSPACE4D}u;
-         const LOAM_PRIM_OTHER: u32 = {PRIM_KIND_OTHER}u;
-         {GROUND_SCENE_WGSL}",
-        polytope = super::polytope_extended_sdfs_wgsl(),
+        "{HYPERSLICE_KERNEL_WGSL}\n{}\n{GROUND_SCENE_WGSL}",
+        super::polytope_extended_sdfs_wgsl()
     )
 }
 
@@ -1014,29 +1009,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kernel_validates_with_a_scene4_emit_and_its_uniforms_match_the_host_layout() {
-        use crate::raymarch::scene::{Scene4, SceneNode4};
-        use glam::Vec4;
-
-        let scene = Scene4::new(
-            SceneNode4::hypersphere(Vec4::new(-0.6, 0.7, -1.5, 0.0), 0.7)
-                .union(SceneNode4::hypersphere(Vec4::new(0.6, 0.7, -1.5, 0.0), 0.7))
-                .union(SceneNode4::hypersphere(Vec4::new(0.0, 1.0, 1.5, 0.0), 1.0))
-                .union(SceneNode4::halfspace(Vec4::Y, 0.0)),
-        );
-        let polytope = super::super::polytope_data::polytope_extended_sdfs_wgsl();
-        for (emit, scene_wgsl) in [
-            ("plain", scene.to_hyperslice_wgsl("u.w_slice")),
-            (
-                "gated",
-                scene.to_hyperslice_wgsl_gated("u.w_slice", "u.params.x"),
-            ),
-        ] {
-            let source = format!("{HYPERSLICE_KERNEL_WGSL}\n{polytope}\n{scene_wgsl}");
-            crate::shader::validate_wgsl(&source)
-                .unwrap_or_else(|error| panic!("{emit} Scene4 emit under the kernel: {error}"));
-        }
-
+    fn kernel_uniforms_match_the_host_layout() {
         let source = format!(
             "{HYPERSLICE_KERNEL_WGSL}\n{}\n{EMPTY_SCENE_STUB}",
             super::super::polytope_data::polytope_stub_sdfs_wgsl()

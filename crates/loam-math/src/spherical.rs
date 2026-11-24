@@ -1,12 +1,10 @@
 //! Upper-hemisphere chart `(p, sqrt(1 - |p|²))` with Vec3 points.
 //! Crossing the equator loses the hemisphere sign; use SphericalS3Embedded for full coverage.
 
-use std::borrow::Cow;
-
 use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace};
+use crate::space::{IsometryGroup, Space};
 
 const SPHERE_R2_MAX: f32 = 1.0 - 1e-6;
 
@@ -204,92 +202,3 @@ impl IsometryGroup for SphericalS3 {
         self.log(m_at, m_target)
     }
 }
-
-impl WgslSpace for SphericalS3 {
-    fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Owned(format!(
-            r#"
-
-const LOAM_MAX_ARC: f32 = 1.5;
-const LOAM_S3_R2_MAX: f32 = {SPHERE_R2_MAX};
-const LOAM_S3_EXP_TANGENT_MIN_SQ: f32 = {EXP_TANGENT_MIN_SQ:e};
-const LOAM_S3_LOG_PERP_MIN: f32 = {LOG_PERP_MIN:e};
-{WGSL_FUNCTIONS}"#
-        ))
-    }
-
-    fn wgsl_accuracy(&self) -> WgslAccuracy {
-        WgslAccuracy::Exact
-    }
-}
-
-const WGSL_FUNCTIONS: &str = r#"
-fn loam_s3_clamp(p: vec3<f32>) -> vec3<f32> {
-    let r2 = dot(p, p);
-    if (r2 <= LOAM_S3_R2_MAX) { return p; }
-    return p * (sqrt(LOAM_S3_R2_MAX) / sqrt(r2));
-}
-
-fn loam_s3_lift(p: vec3<f32>) -> vec4<f32> {
-    let r2 = min(dot(p, p), LOAM_S3_R2_MAX);
-    return vec4<f32>(p.x, p.y, p.z, sqrt(1.0 - r2));
-}
-
-fn loam_origin_distance(p: vec3<f32>) -> f32 {
-
-    let r2 = min(dot(p, p), LOAM_S3_R2_MAX);
-    return asin(sqrt(r2));
-}
-
-fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {
-    let qa = loam_s3_lift(loam_s3_clamp(a));
-    let qb = loam_s3_lift(loam_s3_clamp(b));
-    let half_chord = length(qa - qb) * 0.5;
-    return 2.0 * asin(clamp(half_chord, 0.0, 1.0));
-}
-
-fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    let p = loam_s3_clamp(at);
-    let n2 = dot(v, v);
-    if (n2 < LOAM_S3_EXP_TANGENT_MIN_SQ) { return p; }
-    let q = loam_s3_lift(p);
-    let vw = -dot(v, p) / q.w;
-    let v4 = vec4<f32>(v.x, v.y, v.z, vw);
-    let mag = length(v4);
-    let result4 = normalize(q * cos(mag) + v4 * (sin(mag) / mag));
-    return loam_s3_clamp(result4.xyz);
-}
-
-fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {
-    let qf = loam_s3_lift(loam_s3_clamp(p_from));
-    let qt = loam_s3_lift(loam_s3_clamp(p_to));
-    let d_dot = clamp(dot(qf, qt), -1.0, 1.0);
-    let perp4 = qt - d_dot * qf;
-    let n = length(perp4);
-    if (n < LOAM_S3_LOG_PERP_MIN) { return vec3<f32>(0.0, 0.0, 0.0); }
-    let half_chord = length(qt - qf) * 0.5;
-    let d = 2.0 * asin(clamp(half_chord, 0.0, 1.0));
-    return perp4.xyz * (d / n);
-}
-
-fn loam_s3_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    let pf = loam_s3_clamp(p_from);
-    let pt = loam_s3_clamp(p_to);
-    let qf = loam_s3_lift(pf);
-    let qt = loam_s3_lift(pt);
-    let vw = -dot(v, pf) / qf.w;
-    let v4 = vec4<f32>(v.x, v.y, v.z, vw);
-
-    let sum = qf + qt;
-    let denom = dot(sum, sum) * 0.5;
-    let v4t = v4 - (dot(v4, qt) / denom) * sum;
-    return v4t.xyz;
-}
-
-struct LoamGeodesicStep { p: vec3<f32>, v: vec3<f32> }
-
-fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {
-    let next = loam_exp(p, v * s);
-    return LoamGeodesicStep(next, loam_s3_transport(p, next, v));
-}
-"#;

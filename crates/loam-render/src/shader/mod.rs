@@ -1,5 +1,3 @@
-//! Callers pass WGSL modules in dependency order.
-
 #[derive(Debug, thiserror::Error)]
 pub enum WgslValidationError {
     #[error("WGSL parse error: {0}")]
@@ -31,27 +29,6 @@ const HYPERSLICE_BINDINGS: &[(u32, u32, naga::AddressSpace)] = &[
         },
     ),
 ];
-
-/// Assemble after the space and scene modules.
-pub const GEODESIC_MARCH_KERNEL: &str = concat!(
-    include_str!("projective_depth.wgsl"),
-    include_str!("kernel.wgsl")
-);
-
-pub fn assemble_wgsl(modules: &[&str]) -> String {
-    let capacity = modules
-        .iter()
-        .map(|module| module.len() + usize::from(!module.ends_with('\n')))
-        .sum();
-    let mut source = String::with_capacity(capacity);
-    for module in modules {
-        source.push_str(module);
-        if !module.ends_with('\n') {
-            source.push('\n');
-        }
-    }
-    source
-}
 
 pub fn validate_wgsl(source: &str) -> Result<(), WgslValidationError> {
     parse_and_validate(source).map(|_| ())

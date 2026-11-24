@@ -1,15 +1,11 @@
 //! Poincaré-ball points satisfy `|p| < 1`; isometries act on the Lorentz embedding.
 
-use std::borrow::Cow;
-
 use glam::{Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace};
+use crate::space::{IsometryGroup, Space};
 
 pub const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
-
-pub const H3_MAX_ARC: f32 = 17.5;
 
 /// H³ hits at least `H3_DEPTH_SEPARATION` apart stay ordered within this hyperbolic distance of an eye at most `H3_EYE_CHART_REACH` from the chart origin, and `valid_point` refuses points farther than this from the origin.
 pub const H3_DEPTH_ENVELOPE: f32 = 6.0;
@@ -187,127 +183,6 @@ impl IsometryGroup for HyperbolicH3 {
         hyperboloid_to_poincare_tangent(iso.matrix * h, iso.matrix * dh)
     }
 }
-
-impl WgslSpace for HyperbolicH3 {
-    fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Owned(format!(
-            "const LOAM_MAX_ARC: f32 = {H3_MAX_ARC:?};{WGSL_IMPL}"
-        ))
-    }
-
-    fn wgsl_accuracy(&self) -> WgslAccuracy {
-        WgslAccuracy::Exact
-    }
-}
-
-const WGSL_IMPL: &str = r#"
-// loam-math :: HyperbolicH3 (v0 Space WGSL ABI)
-const LOAM_H3_R2_MAX: f32 = 0.9999999;
-const LOAM_H3_GYR_N2_MIN: f32 = 1e-20;
-
-fn loam_artanh(x: f32) -> f32 {
-    return 0.5 * log((1.0 + x) / (1.0 - x));
-}
-
-fn loam_clamp_to_ball(p: vec3<f32>) -> vec3<f32> {
-    let r2 = dot(p, p);
-    if (r2 <= LOAM_H3_R2_MAX) {
-        return p;
-    }
-    var q = p * (sqrt(LOAM_H3_R2_MAX) / sqrt(r2));
-    // Normalization can round back onto the singular unit sphere.
-    while (dot(q, q) > LOAM_H3_R2_MAX) {
-        q *= 1.0 - 1.1920929e-7;
-    }
-    return q;
-}
-
-fn loam_mobius_add(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
-    let ab = dot(a, b);
-    let aa = dot(a, a);
-    let bb = dot(b, b);
-    let num = (1.0 + 2.0 * ab + bb) * a + (1.0 - aa) * b;
-    let den = 1.0 + 2.0 * ab + aa * bb;
-    if (abs(den) < 1e-12) {
-        return vec3<f32>(0.0, 0.0, 0.0);
-    }
-    return num / den;
-}
-
-fn loam_gyr_apply(a: vec3<f32>, b: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    // Ungar, From Möbius to Gyrogroups, 2008, §4, Def. 4.
-    let scalar = 1.0 + dot(a, b);
-    let axis = -cross(a, b);
-    let norm2 = scalar * scalar + dot(axis, axis);
-
-    if (norm2 < LOAM_H3_GYR_N2_MIN) {
-        return v;
-    }
-    return v + (2.0 / norm2) * (scalar * cross(axis, v) + cross(axis, cross(axis, v)));
-}
-
-fn loam_origin_distance(p: vec3<f32>) -> f32 {
-    let r = min(length(p), sqrt(LOAM_H3_R2_MAX));
-    return 2.0 * loam_artanh(r);
-}
-
-fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {
-
-    let aa = loam_clamp_to_ball(a);
-    let bb = loam_clamp_to_ball(b);
-    let d = loam_mobius_add(-aa, bb);
-    let n = min(length(d), sqrt(LOAM_H3_R2_MAX));
-    return 2.0 * loam_artanh(n);
-}
-
-fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    let n = length(v);
-    if (n < 1e-7) { return at; }
-    let p_at = loam_clamp_to_ball(at);
-    let aa = dot(p_at, p_at);
-    let lambda = 2.0 / (1.0 - aa);
-    let dir = v / n;
-    let scale = tanh(lambda * n * 0.5);
-    return loam_clamp_to_ball(loam_mobius_add(p_at, scale * dir));
-}
-
-fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {
-    let p_from_clamped = loam_clamp_to_ball(p_from);
-    let p_to_clamped = loam_clamp_to_ball(p_to);
-    let d = loam_mobius_add(-p_from_clamped, p_to_clamped);
-    let n = length(d);
-    if (n < 1e-7) { return vec3<f32>(0.0, 0.0, 0.0); }
-    let aa = dot(p_from_clamped, p_from_clamped);
-    let lambda = 2.0 / (1.0 - aa);
-    let mag = (2.0 / lambda) * loam_artanh(min(n, sqrt(LOAM_H3_R2_MAX)));
-    return mag * d / n;
-}
-
-fn loam_h3_transport(p_from: vec3<f32>, p_to: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    let p_from_clamped = loam_clamp_to_ball(p_from);
-    let p_to_clamped = loam_clamp_to_ball(p_to);
-    let conformal = (1.0 - dot(p_to_clamped, p_to_clamped)) / (1.0 - dot(p_from_clamped, p_from_clamped));
-    return conformal * loam_gyr_apply(p_to_clamped, -p_from_clamped, v);
-}
-
-struct LoamGeodesicStep { p: vec3<f32>, v: vec3<f32> }
-
-fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {
-    let next = loam_exp(p, v * s);
-    return LoamGeodesicStep(next, loam_h3_transport(p, next, v));
-}
-
-// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7.
-fn loam_poincare_to_hyperboloid(p: vec3<f32>) -> vec4<f32> {
-    let r2 = min(dot(p, p), LOAM_H3_R2_MAX);
-    let den = 1.0 - r2;
-    return vec4<f32>(2.0 * p / den, (1.0 + r2) / den);
-}
-
-fn loam_hyperboloid_to_klein(h: vec4<f32>) -> vec3<f32> {
-    return h.xyz / max(h.w, 1.0);
-}
-"#;
 
 fn artanh(x: f32) -> f32 {
     0.5 * ((1.0 + x) / (1.0 - x)).ln()

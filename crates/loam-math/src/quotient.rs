@@ -1,13 +1,12 @@
 //! Isometries act on the cover; wrap_to_domain returns a representative and its deck element.
 //! LensSpace uses the z1 wedge, which does not select a unique representative on z1 = 0.
 
-use std::borrow::Cow;
 use std::f32::consts::{PI, TAU};
 
 use glam::{BVec3, Mat4, Quat, Vec3, Vec4};
 
 use crate::euclidean::Iso3;
-use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
+use crate::space::{IsometryGroup, Space};
 use crate::spherical::Iso4;
 use crate::spherical_embedded::SphericalS3Embedded;
 
@@ -175,47 +174,6 @@ impl QuotientSpace for FlatTorus3 {
     }
 }
 
-impl WgslSpace for FlatTorus3 {
-    fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Owned(flat_torus3_wgsl(self.cell))
-    }
-
-    fn wgsl_accuracy(&self) -> WgslAccuracy {
-        WgslAccuracy::Exact
-    }
-}
-
-fn flat_torus3_wgsl(cell: Vec3) -> String {
-    let (cx, cy, cz) = (cell.x, cell.y, cell.z);
-    let (hx, hy, hz) = (0.5 * cell.x, 0.5 * cell.y, 0.5 * cell.z);
-    format!(
-        r#"
-
-const LOAM_MAX_ARC: f32 = {max_arc:?};
-const LOAM_TORUS_CELL: vec3<f32> = vec3<f32>({cx:?}, {cy:?}, {cz:?});
-const LOAM_TORUS_HALF: vec3<f32> = vec3<f32>({hx:?}, {hy:?}, {hz:?});
-
-fn loam_torus_wrap(p: vec3<f32>) -> vec3<f32> {{
-    let index = floor(p / LOAM_TORUS_CELL + vec3<f32>(0.5));
-    let residual = p - LOAM_TORUS_CELL * index;
-    let below = select(vec3<f32>(0.0), LOAM_TORUS_CELL, residual < -LOAM_TORUS_HALF);
-    let above = select(vec3<f32>(0.0), LOAM_TORUS_CELL, residual >= LOAM_TORUS_HALF);
-    return residual + below - above;
-}}
-
-fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 {{ return length(loam_torus_wrap(a - b)); }}
-fn loam_origin_distance(p: vec3<f32>) -> f32 {{ return length(loam_torus_wrap(p)); }}
-fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> {{ return loam_torus_wrap(at + v); }}
-fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> {{ return loam_torus_wrap(p_to - p_from); }}
-struct LoamGeodesicStep {{ p: vec3<f32>, v: vec3<f32> }}
-fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {{
-    return LoamGeodesicStep(loam_exp(p, v * s), v);
-}}
-"#,
-        max_arc = FLAT_CHART_MAX_ARC
-    )
-}
-
 const COVER: SphericalS3Embedded = SphericalS3Embedded;
 
 // Rolfsen, Knots and Links, 1976, §9.B.
@@ -299,79 +257,6 @@ impl LensSpace {
             }
         }
         (best_power, best_lift, best_distance)
-    }
-
-    /// Emits an ambient `vec4<f32>` prelude, outside the [`WgslSpace`] ABI.
-    pub fn wgsl_prelude(&self) -> String {
-        let p = self.p;
-        let wedges_per_turn = self.p as f32 / TAU;
-        let table = (0..self.p as i32)
-            .map(|power| {
-                let m = self.deck(power).matrix;
-                format!(
-                    "vec4<f32>({:?}, {:?}, {:?}, {:?})",
-                    m.x_axis.x, m.x_axis.y, m.z_axis.z, m.z_axis.w
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",\n    ");
-        format!(
-            r#"
-
-const LOAM_LENS_P: i32 = {p};
-const LOAM_LENS_WEDGES_PER_TURN: f32 = {wedges_per_turn:?};
-const LOAM_LENS_DECK = array<vec4<f32>, {p}>(
-    {table}
-);
-
-fn loam_lens_apply(x: vec4<f32>, power: i32) -> vec4<f32> {{
-    let k = ((power % LOAM_LENS_P) + LOAM_LENS_P) % LOAM_LENS_P;
-    let d = LOAM_LENS_DECK[k];
-    return normalize(vec4<f32>(
-        x.x * d.x - x.y * d.y,
-        x.x * d.y + x.y * d.x,
-        x.z * d.z - x.w * d.w,
-        x.z * d.w + x.w * d.z,
-    ));
-}}
-
-fn loam_lens_wedge_offset(x: vec4<f32>) -> i32 {{
-    return -i32(floor(atan2(x.y, x.x) * LOAM_LENS_WEDGES_PER_TURN + 0.5));
-}}
-
-fn loam_lens_wrap(x: vec4<f32>) -> vec4<f32> {{
-    var power = loam_lens_wedge_offset(x);
-    var wrapped = loam_lens_apply(x, power);
-    let correction = loam_lens_wedge_offset(wrapped);
-    if correction != 0 {{
-        power += correction;
-        wrapped = loam_lens_apply(x, power);
-    }}
-    return wrapped;
-}}
-
-fn loam_lens_distance(a: vec4<f32>, b: vec4<f32>) -> f32 {{
-    var best = 2.0;
-    for (var k = 0; k < LOAM_LENS_P; k = k + 1) {{
-        best = min(best, length(a - loam_lens_apply(b, k)) * 0.5);
-    }}
-    return 2.0 * asin(clamp(best, 0.0, 1.0));
-}}
-
-fn loam_lens_nearest_power(a: vec4<f32>, b: vec4<f32>) -> i32 {{
-    var best = 2.0;
-    var power = 0;
-    for (var k = 0; k < LOAM_LENS_P; k = k + 1) {{
-        let half_chord = length(a - loam_lens_apply(b, k)) * 0.5;
-        if half_chord < best {{
-            best = half_chord;
-            power = k;
-        }}
-    }}
-    return power;
-}}
-"#
-        )
     }
 }
 
