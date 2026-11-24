@@ -547,6 +547,7 @@ impl<Ctx: 'static> Console<Ctx> {
         std::mem::take(&mut self.pending)
     }
 
+    /// Builtins run in `execute` and never reach this, so `name` is a registered command.
     pub fn dispatch(&mut self, name: &str, args: &[&str], ctx: &mut Ctx) {
         self.push_history(HistoryLine::input(format!("> {}", render_line(name, args))));
 

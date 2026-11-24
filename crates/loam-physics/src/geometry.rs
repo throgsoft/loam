@@ -6,8 +6,8 @@ use loam_shape::{Shape, ShapeKind};
 
 use crate::edit::EditError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct GeometryId(u32);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct GeometryId(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GeometryRef {

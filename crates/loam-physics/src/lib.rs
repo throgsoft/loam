@@ -22,7 +22,7 @@ pub use body::{BodyArena, BodyDef, BodyId, RigidBody};
 pub use dirty::DirtyDrain;
 pub use edit::EditError;
 pub use field_contact::{FieldContact, FieldContactFn, FieldNarrowphase, FieldRefusal};
-pub use geometry::{ColliderRef, GeometryId, GeometryRef, GeometryStore};
+pub use geometry::{ColliderRef, GeometryRef, GeometryStore};
 pub use integrator::{integrate_body, PhysicsSpace};
 pub use manifold::{ContactPoint, Manifold};
 pub use narrowphase::{Narrowphase, NarrowphaseFn};
