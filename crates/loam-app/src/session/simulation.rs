@@ -212,7 +212,7 @@ impl<A: Stores> Simulation<A> {
 }
 
 enum Run<A: Stores> {
-    Local(Simulation<A>),
+    Local(Box<Simulation<A>>),
     #[cfg(not(target_arch = "wasm32"))]
     Thread(SimulationThread<A>),
 }
@@ -247,7 +247,7 @@ pub(crate) struct Simulator<A: Stores> {
 
 impl<A: Stores> Simulator<A> {
     pub(crate) fn local(simulation: Simulation<A>) -> Self {
-        Self::new(Run::Local(simulation))
+        Self::new(Run::Local(Box::new(simulation)))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
