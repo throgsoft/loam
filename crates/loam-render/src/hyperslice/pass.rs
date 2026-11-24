@@ -105,6 +105,7 @@ impl FramePass for HyperslicePass {
         uniforms.camera_right = eye.right;
         uniforms.camera_up = eye.up;
         uniforms.fov_y_tan = (eye.fov_y * 0.5).tan();
+        uniforms.aspect = eye.aspect;
         uniforms.near = eye.near;
         bodies.clear();
         if let Some((view, cut)) = drawn {

@@ -142,7 +142,9 @@ pub struct Hyperslice4DUniforms {
     pub params: [f32; 4],
     pub near: f32,
     pub body_offset: f32,
-    pub _pad3: [f32; 2],
+    /// Width over height of the projection, which for the full frame is the eye's and may differ from the target's.
+    pub aspect: f32,
+    pub _pad3: f32,
     pub sky_below: [f32; 3],
     pub _pad4: f32,
     pub sky_above: [f32; 3],
@@ -171,7 +173,8 @@ impl Default for Hyperslice4DUniforms {
             params: [0.0; 4],
             near: 0.05,
             body_offset: 0.0,
-            _pad3: [0.0; 2],
+            aspect: 1.0,
+            _pad3: 0.0,
             sky_below: crate::sky_ground::DEFAULT_SKY.below,
             _pad4: 0.0,
             sky_above: crate::sky_ground::DEFAULT_SKY.above,
@@ -230,6 +233,7 @@ struct Uniforms {
     params: vec4<f32>,
     near: f32,
     body_offset: f32,
+    aspect: f32,
     sky_below: vec3<f32>,
     sky_above: vec3<f32>,
     ground_plane: vec4<f32>,
@@ -470,8 +474,7 @@ struct Fragment {
 
 fn shade(frag_pos: vec4<f32>) -> Shaded {
     let uv = ((frag_pos.xy - u.viewport_origin) / u.resolution) * 2.0 - vec2<f32>(1.0, 1.0);
-    let aspect = u.resolution.x / u.resolution.y;
-    let ndc = vec2<f32>(uv.x * aspect, -uv.y);
+    let ndc = vec2<f32>(uv.x * u.aspect, -uv.y);
     let rd = normalize(
         u.camera_forward
         + u.camera_right * (ndc.x * u.fov_y_tan)
@@ -568,6 +571,7 @@ fn strip_cell_uniforms(
     cell.body_offset = slot as f32;
     cell.w_slice = w_slice;
     cell.resolution = viewport.resolution_f32();
+    cell.aspect = cell.resolution[0] / cell.resolution[1];
     cell.viewport_origin = [viewport.x as f32, viewport.y as f32];
     cell
 }
@@ -1053,6 +1057,7 @@ mod tests {
                 "body_offset",
                 std::mem::offset_of!(Hyperslice4DUniforms, body_offset),
             ),
+            ("aspect", std::mem::offset_of!(Hyperslice4DUniforms, aspect)),
             (
                 "sky_below",
                 std::mem::offset_of!(Hyperslice4DUniforms, sky_below),
