@@ -1,4 +1,3 @@
-#[cfg(not(target_arch = "wasm32"))]
 use std::num::NonZeroU32;
 
 use loam_console::ConsoleWriter;
@@ -351,6 +350,21 @@ impl<A: Stores> SessionApp<A> {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn record_every(mut self, stride: NonZeroU32) -> Self {
         self.record_stride = stride;
+        self
+    }
+
+    /// Does nothing on wasm32, which has no headless run.
+    #[cfg(target_arch = "wasm32")]
+    pub fn on_record(
+        self,
+        _hook: impl FnMut(&Session<A>, &mut String) -> std::fmt::Result + 'static,
+    ) -> Self {
+        self
+    }
+
+    /// Does nothing on wasm32, which has no headless run.
+    #[cfg(target_arch = "wasm32")]
+    pub fn record_every(self, _stride: NonZeroU32) -> Self {
         self
     }
 
