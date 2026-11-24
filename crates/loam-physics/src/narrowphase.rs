@@ -54,10 +54,7 @@ impl<S: PhysicsSpace> Narrowphase<S> {
         b: &RigidBody<S>,
         geometry: &GeometryStore,
         space: &S,
-    ) -> Option<Contact<S>>
-    where
-        S::Vector: std::ops::Mul<f32, Output = S::Vector>,
-    {
+    ) -> Option<Contact<S>> {
         let key = (a.collider().kind(), b.collider().kind());
         if let Some(&f) = self.dispatch.get(&key) {
             return f(a, b, geometry, space);

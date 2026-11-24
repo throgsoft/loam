@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashMap};
-use std::ops::{Add, Mul};
 
 use loam_math::Bivector;
 use loam_time::par::{self, Executor, Sequential};
@@ -7,12 +6,11 @@ use loam_time::StateHash;
 
 use crate::body::{BodyArena, BodyDef, BodyId, RigidBody};
 use crate::collider::Collider;
-use crate::collision::VectorOps;
 use crate::dirty::{DirtyBodies, DirtyDrain};
 use crate::edit::EditError;
 use crate::field_contact::FieldNarrowphase;
 use crate::geometry::GeometryStore;
-use crate::integrator::{integrate_body, BroadphaseBound, PhysicsSpace};
+use crate::integrator::{integrate_body, BroadphaseBound, PhysicsSpace, VectorOps};
 use crate::manifold::{
     ContactPoint, Manifold, BAUMGARTE_BETA, DEFAULT_PGS_ITERS, MAX_LINEAR_CORRECTION,
     PENETRATION_SLOP, RESTITUTION_THRESHOLD,
@@ -456,10 +454,7 @@ impl<S: PhysicsSpace> World<S> {
         Ok(())
     }
 
-    pub fn apply_impulse(&mut self, id: BodyId, impulse: S::Vector) -> Result<(), EditError>
-    where
-        S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
-    {
+    pub fn apply_impulse(&mut self, id: BodyId, impulse: S::Vector) -> Result<(), EditError> {
         if self.bodies.get(id).is_none() {
             return Err(EditError::StaleHandle);
         }
@@ -476,10 +471,7 @@ impl<S: PhysicsSpace> World<S> {
         id: BodyId,
         impulse: S::Vector,
         point: S::Point,
-    ) -> Result<(), EditError>
-    where
-        S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
-    {
+    ) -> Result<(), EditError> {
         if self.bodies.get(id).is_none() {
             return Err(EditError::StaleHandle);
         }
@@ -492,10 +484,7 @@ impl<S: PhysicsSpace> World<S> {
         Ok(())
     }
 
-    pub fn sleep_body(&mut self, id: BodyId) -> Result<(), EditError>
-    where
-        S::Vector: Default,
-    {
+    pub fn sleep_body(&mut self, id: BodyId) -> Result<(), EditError> {
         let Some(body) = self.bodies.get_mut(id) else {
             return Err(EditError::StaleHandle);
         };
@@ -553,7 +542,6 @@ impl<S: PhysicsSpace> World<S> {
 
     pub fn check_restore(&self, state: &WorldState<S>) -> Result<(), EditError>
     where
-        S::Vector: VectorOps,
         S::AngVel: PartialEq,
     {
         if self
@@ -645,7 +633,6 @@ impl<S: PhysicsSpace> World<S> {
     /// Refuses, unchanged, whatever `check_restore` refuses.
     pub fn restore(&mut self, state: &WorldState<S>) -> Result<(), EditError>
     where
-        S::Vector: VectorOps,
         S::AngVel: PartialEq,
     {
         self.check_restore(state)?;
@@ -691,18 +678,12 @@ impl<S: PhysicsSpace> World<S> {
     }
 
     /// `dt` is in seconds.
-    pub fn step(&mut self, dt: f32) -> Result<(), EditError>
-    where
-        S::Vector: VectorOps,
-    {
+    pub fn step(&mut self, dt: f32) -> Result<(), EditError> {
         self.step_with(dt, &Sequential)
     }
 
     /// `dt` is in seconds, and the result is the same for any `executor`.
-    pub fn step_with(&mut self, dt: f32, executor: &dyn Executor) -> Result<(), EditError>
-    where
-        S::Vector: VectorOps,
-    {
+    pub fn step_with(&mut self, dt: f32, executor: &dyn Executor) -> Result<(), EditError> {
         if !dt.is_finite() || dt < 0.0 {
             return Err(EditError::InvalidTimeStep);
         }
@@ -725,10 +706,7 @@ impl<S: PhysicsSpace> World<S> {
         Ok(())
     }
 
-    fn apply_forces(&mut self, dt: f32)
-    where
-        S::Vector: VectorOps,
-    {
+    fn apply_forces(&mut self, dt: f32) {
         let Some(acceleration) = self.gravity else {
             return;
         };
@@ -739,10 +717,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn integrate(&mut self, dt: f32)
-    where
-        S::Vector: VectorOps,
-    {
+    fn integrate(&mut self, dt: f32) {
         for i in 0..self.bodies.len() {
             if self.bodies[i].inv_mass() == 0.0 {
                 continue;
@@ -753,10 +728,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn update_manifolds(&mut self, executor: &dyn Executor)
-    where
-        S::Vector: VectorOps,
-    {
+    fn update_manifolds(&mut self, executor: &dyn Executor) {
         let mut pairs = std::mem::take(&mut self.pair_order);
         Self::fill_broadphase(
             &self.bodies,
@@ -830,10 +802,7 @@ impl<S: PhysicsSpace> World<S> {
     }
 
     // Each pair writes only its own slot, so the merge that follows sees pair order for any thread count.
-    fn test_pairs(&self, slots: &mut [(PairKey, Option<Contact<S>>)], executor: &dyn Executor)
-    where
-        S::Vector: VectorOps,
-    {
+    fn test_pairs(&self, slots: &mut [(PairKey, Option<Contact<S>>)], executor: &dyn Executor) {
         let test = |chunk: &mut [(PairKey, Option<Contact<S>>)]| {
             for (key, contact) in chunk {
                 let a = self
@@ -856,10 +825,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn ensure_manifold(&mut self, key: PairKey, restitution: f32)
-    where
-        S::Vector: VectorOps,
-    {
+    fn ensure_manifold(&mut self, key: PairKey, restitution: f32) {
         if self.manifolds.contains_key(&key) {
             return;
         }
@@ -889,10 +855,7 @@ impl<S: PhysicsSpace> World<S> {
         self.manifold_order.extend_from_slice(touched);
     }
 
-    fn wake_approaching_contacts(&mut self)
-    where
-        S::Vector: VectorOps,
-    {
+    fn wake_approaching_contacts(&mut self) {
         for key in &self.manifold_order {
             let manifold = &self.manifolds[key];
             let (Some(a), Some(b)) = (
@@ -922,10 +885,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn field_manifolds(&mut self, pending: &mut Vec<(PairKey, Contact<S>)>)
-    where
-        S::Vector: VectorOps,
-    {
+    fn field_manifolds(&mut self, pending: &mut Vec<(PairKey, Contact<S>)>) {
         for index in 0..self.field_bindings.len() {
             let (body, field) = self.field_bindings[index];
             let Some(entry) = self.fields.get(field.0 as usize) else {
@@ -1001,10 +961,7 @@ impl<S: PhysicsSpace> World<S> {
     }
 
     // Restitution uses velocities from before the warm-start impulse.
-    fn prepare_solve(&mut self)
-    where
-        S::Vector: VectorOps,
-    {
+    fn prepare_solve(&mut self) {
         for unit in &self.constraints {
             debug_assert_eq!(unit.dense, self.dense_pair(unit.key));
             let (i, j) = unit.dense;
@@ -1030,10 +987,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn warm_start(&mut self)
-    where
-        S::Vector: VectorOps,
-    {
+    fn warm_start(&mut self) {
         for unit in &self.constraints {
             debug_assert_eq!(unit.dense, self.dense_pair(unit.key));
             let (i, j) = unit.dense;
@@ -1056,10 +1010,7 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    fn solve(&mut self, dt: f32, executor: &dyn Executor)
-    where
-        S::Vector: VectorOps,
-    {
+    fn solve(&mut self, dt: f32, executor: &dyn Executor) {
         self.gather_islands();
         let Self {
             space,
@@ -1435,7 +1386,6 @@ fn gather_body<S: PhysicsSpace>(
 fn solve_island<S>(space: &S, iterations: usize, dt: f32, island: &mut IslandSolve<S>)
 where
     S: PhysicsSpace,
-    S::Vector: VectorOps,
 {
     let IslandSolve {
         bodies,
@@ -1504,7 +1454,6 @@ fn solve_normal_then_tangent<S>(
     cp: &mut ContactPoint<S>,
 ) where
     S: PhysicsSpace,
-    S::Vector: VectorOps,
 {
     debug_assert!(
         VectorOps::is_finite(cp.normal) && cp.penetration.is_finite(),

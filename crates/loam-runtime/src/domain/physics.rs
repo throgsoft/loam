@@ -11,7 +11,6 @@ use crate::store::StoreError;
 impl<S> TypedDomain<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
 {
     pub fn physics(&self) -> Option<&Physics<S>> {
         self.facilities

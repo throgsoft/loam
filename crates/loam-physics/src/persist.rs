@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::collider::ColliderKind;
-use crate::collision::VectorOps;
 use crate::edit::EditError;
 use crate::integrator::PhysicsSpace;
 use crate::state::WorldState;
@@ -54,7 +53,7 @@ impl<S> World<S>
 where
     S: PhysicsSpace,
     S::Point: Serialize + DeserializeOwned,
-    S::Vector: Serialize + DeserializeOwned + VectorOps,
+    S::Vector: Serialize + DeserializeOwned,
     S::Iso: Serialize + DeserializeOwned,
     S::AngVel: Serialize + DeserializeOwned + PartialEq,
     S::Inertia: Serialize + DeserializeOwned,

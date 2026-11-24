@@ -1,12 +1,11 @@
-use std::ops::{Add, Deref, Index, IndexMut, Mul};
+use std::ops::{Deref, Index, IndexMut};
 
 use loam_math::Bivector;
 
 use crate::collider::{Collider, ColliderKind};
-use crate::collision::VectorOps;
 use crate::edit::EditError;
 use crate::geometry::{ColliderRef, GeometryStore};
-use crate::integrator::PhysicsSpace;
+use crate::integrator::{PhysicsSpace, VectorOps};
 
 #[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
@@ -90,18 +89,8 @@ impl<S: PhysicsSpace> BodyDef<S> {
         collider: Collider,
         inertia: S::Inertia,
         space: &S,
-    ) -> Option<Self>
-    where
-        S::Vector: Default,
-    {
-        Self::new(
-            position,
-            S::Vector::default(),
-            collider,
-            0.0,
-            inertia,
-            space,
-        )
+    ) -> Option<Self> {
+        Self::new(position, VectorOps::zero(), collider, 0.0, inertia, space)
     }
 
     pub fn mass(&self) -> f32 {
@@ -143,11 +132,8 @@ impl<S: PhysicsSpace> BodyDef<S> {
     }
 
     /// A dynamic body spawns asleep and at rest whatever velocity the definition is given.
-    pub fn asleep(mut self) -> Self
-    where
-        S::Vector: Default,
-    {
-        self.velocity = S::Vector::default();
+    pub fn asleep(mut self) -> Self {
+        self.velocity = VectorOps::zero();
         self.angular_velocity = <S::AngVel as Bivector>::zero();
         self.asleep = true;
         self
@@ -202,12 +188,9 @@ impl<S: PhysicsSpace> RigidBody<S> {
         self.sleeping
     }
 
-    pub fn sleep(&mut self)
-    where
-        S::Vector: Default,
-    {
+    pub fn sleep(&mut self) {
         if !self.is_static() {
-            self.velocity = S::Vector::default();
+            self.velocity = VectorOps::zero();
             self.angular_velocity = S::AngVel::zero();
             self.sleeping = true;
         }
@@ -268,10 +251,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
     }
 
     // Baraff 1997, "Physically Based Modeling: Rigid Body Simulation", colliding contact.
-    pub fn apply_impulse(&mut self, impulse: S::Vector)
-    where
-        S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
-    {
+    pub fn apply_impulse(&mut self, impulse: S::Vector) {
         if self.is_static() {
             return;
         }
@@ -280,10 +260,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
     }
 
     // Baraff 1997, "Physically Based Modeling: Rigid Body Simulation", colliding contact.
-    pub fn apply_impulse_at_point(&mut self, space: &S, impulse: S::Vector, point: S::Point)
-    where
-        S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
-    {
+    pub fn apply_impulse_at_point(&mut self, space: &S, impulse: S::Vector, point: S::Point) {
         if self.is_static() {
             return;
         }
@@ -468,7 +445,6 @@ impl<S: PhysicsSpace> BodyArena<S> {
 
     pub(crate) fn validate(&self, space: &S, geometry: &GeometryStore) -> Result<(), EditError>
     where
-        S::Vector: VectorOps,
         S::AngVel: PartialEq,
     {
         if self.dense.len() != self.ids.len() {

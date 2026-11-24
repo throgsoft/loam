@@ -1,5 +1,6 @@
-use std::ops::Mul;
+use std::ops::{Add, Mul, Neg, Sub};
 
+use glam::{Vec2, Vec3, Vec4};
 use loam_math::{Bivector, IsometryGroup, Space};
 
 use crate::body::RigidBody;
@@ -12,7 +13,73 @@ pub enum BroadphaseBound {
     Unknown,
 }
 
-pub trait PhysicsSpace: Space + IsometryGroup + Send + Sync {
+pub trait VectorOps:
+    Copy
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Neg<Output = Self>
+    + Mul<f32, Output = Self>
+    + PartialEq
+{
+    fn zero() -> Self;
+    fn dot(self, rhs: Self) -> f32;
+    fn is_finite(self) -> bool;
+
+    fn length_squared(self) -> f32 {
+        self.dot(self)
+    }
+
+    fn length(self) -> f32 {
+        self.length_squared().sqrt()
+    }
+
+    fn normalize_or(self, fallback: Self) -> Self {
+        let l2 = self.length_squared();
+        if l2 > 1e-12 {
+            self * (1.0 / l2.sqrt())
+        } else {
+            fallback
+        }
+    }
+}
+
+impl VectorOps for Vec2 {
+    fn zero() -> Self {
+        Vec2::ZERO
+    }
+    fn dot(self, rhs: Self) -> f32 {
+        Vec2::dot(self, rhs)
+    }
+    fn is_finite(self) -> bool {
+        Vec2::is_finite(self)
+    }
+}
+
+impl VectorOps for Vec3 {
+    fn zero() -> Self {
+        Vec3::ZERO
+    }
+    fn dot(self, rhs: Self) -> f32 {
+        Vec3::dot(self, rhs)
+    }
+    fn is_finite(self) -> bool {
+        Vec3::is_finite(self)
+    }
+}
+
+impl VectorOps for Vec4 {
+    fn zero() -> Self {
+        Vec4::ZERO
+    }
+    fn dot(self, rhs: Self) -> f32 {
+        Vec4::dot(self, rhs)
+    }
+    fn is_finite(self) -> bool {
+        Vec4::is_finite(self)
+    }
+}
+
+pub trait PhysicsSpace: Space<Vector: VectorOps> + IsometryGroup + Send + Sync {
     type AngVel: Bivector + Send + Sync;
 
     type Inertia: Copy + Send + Sync;
@@ -72,11 +139,7 @@ pub trait PhysicsSpace: Space + IsometryGroup + Send + Sync {
 }
 
 /// Velocity is transported to the new position before orientation advances.
-pub fn integrate_body<S>(space: &S, body: &mut RigidBody<S>, dt: f32)
-where
-    S: PhysicsSpace,
-    S::Vector: Mul<f32, Output = S::Vector>,
-{
+pub fn integrate_body<S: PhysicsSpace>(space: &S, body: &mut RigidBody<S>, dt: f32) {
     if body.inv_mass() == 0.0 {
         return;
     }

@@ -369,7 +369,6 @@ impl<A: Stores> SpawnBundle<A> {
     pub fn body<S>(mut self, body: loam_physics::BodyDef<S>) -> Self
     where
         S: crate::domain::Homogeneous + loam_physics::PhysicsSpace + Copy,
-        S::Vector: loam_physics::collision::VectorOps + Default,
     {
         self.body = Some(Box::new(body));
         self

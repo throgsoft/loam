@@ -133,7 +133,6 @@ pub struct PhysicsConfig<S: PhysicsSpace> {
 fn linear_speed<S>(body: &RigidBody<S>) -> f32
 where
     S: PhysicsSpace,
-    S::Vector: VectorOps,
 {
     body.velocity.length()
 }
@@ -141,7 +140,6 @@ where
 impl<S> PhysicsConfig<S>
 where
     S: PhysicsSpace,
-    S::Vector: VectorOps,
 {
     pub fn new(register: fn(&mut Narrowphase<S>)) -> Self {
         Self {
@@ -349,7 +347,6 @@ fn domain_rejection(entity: Entity, rejection: Rejection) -> DomainError {
 impl<S> Physics<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
 {
     pub fn world(&self) -> &World<S> {
         &self.world
@@ -658,7 +655,7 @@ where
             return Err(Rejection::Edit(EditError::NotFinite));
         }
         self.world
-            .set_velocity(id, S::Vector::default(), S::AngVel::zero())
+            .set_velocity(id, VectorOps::zero(), S::AngVel::zero())
             .map_err(Rejection::Edit)?;
         self.released = None;
         self.held = Some(Held {
@@ -824,7 +821,6 @@ where
 impl<S> Physics<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
     S::AngVel: PartialEq,
 {
     fn settle(&mut self, dt: f32) -> Result<(), DomainError> {
@@ -889,7 +885,6 @@ where
 impl<S> Facility<S> for Physics<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
     S::AngVel: PartialEq,
 {
     fn name(&self) -> &'static str {
@@ -1046,7 +1041,6 @@ where
 impl<S> DomainBuilder<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
     S::AngVel: PartialEq,
 {
     pub fn physics(self, config: PhysicsConfig<S>) -> Result<Self, EditError> {
@@ -1077,7 +1071,6 @@ impl Domains {
     pub fn physics<S>(&mut self, handle: DomainHandle<S>) -> Result<&mut Physics<S>, DomainError>
     where
         S: Homogeneous + PhysicsSpace + Copy,
-        S::Vector: VectorOps + Default,
     {
         self.typed(handle)?
             .physics_mut()
@@ -1097,7 +1090,6 @@ pub(crate) trait SpawnBody: Send {
 impl<S> SpawnBody for BodyDef<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
 {
     fn spawn(
         self: Box<Self>,

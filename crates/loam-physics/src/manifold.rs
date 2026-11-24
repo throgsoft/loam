@@ -1,8 +1,7 @@
 //! Contact anchors and impulses persist across steps; manifold keys use generational handles.
 
 use crate::body::{BodyId, RigidBody};
-use crate::collision::VectorOps;
-use crate::integrator::PhysicsSpace;
+use crate::integrator::{PhysicsSpace, VectorOps};
 use crate::response::Contact;
 use crate::response::FRICTION_COEFF;
 
@@ -84,10 +83,7 @@ impl<S: PhysicsSpace> Clone for Manifold<S> {
     }
 }
 
-impl<S: PhysicsSpace> Manifold<S>
-where
-    S::Vector: VectorOps,
-{
+impl<S: PhysicsSpace> Manifold<S> {
     pub fn new(body_a: BodyId, body_b: BodyId, restitution: f32) -> Self {
         debug_assert!(body_a < body_b);
         Self {
