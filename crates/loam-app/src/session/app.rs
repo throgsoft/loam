@@ -4,7 +4,9 @@ use loam_egui::egui;
 use loam_render::pass::{FramePass, Section};
 use loam_runtime::host::HostConfig;
 use loam_runtime::host::HostError;
-use loam_runtime::{ActionId, CursorPolicy, Growth, Input, Publication, Session, Setting, Stores};
+use loam_runtime::{
+    ActionId, CursorPolicy, Eye, Growth, Input, Publication, Session, Setting, Stores,
+};
 
 use super::commands::{CommandInbox, CommandSender};
 use super::console::{SessionConsole, Submit};
@@ -71,6 +73,8 @@ impl<A: Stores> FrameHook<'_, A> {
 /// Runs between publication and presentation, reading only what the session published.
 pub struct PublishedHook<'a, A: Stores> {
     pub published: &'a Publication<A::Published>,
+    /// The root image's eye this frame is presented with.
+    pub eye: Eye,
     pub sections: &'a [Section],
     #[cfg(feature = "egui")]
     pub ui: Option<&'a egui::Context>,

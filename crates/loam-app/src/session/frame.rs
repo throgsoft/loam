@@ -580,6 +580,7 @@ impl<A: Stores> Inner<A> {
                         }),
                         Some(FrameFn::Published(hook)) => hook(&mut PublishedHook {
                             published: &records,
+                            eye,
                             sections: presenter.sections(),
                             #[cfg(feature = "egui")]
                             ui: context.as_ref(),

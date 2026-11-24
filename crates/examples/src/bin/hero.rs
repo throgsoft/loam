@@ -165,9 +165,16 @@ stores! {
         drops: Store<Drop>,
         stage: Value<Stage>,
         held: Value<Vec<Held>>,
-        environment: Value<Environment>,
         mesh: Value<TriangleMesh<3>>,
     }
+    publishes Shown;
+}
+
+#[derive(Default)]
+pub struct Shown {
+    mesh: TriangleMesh<3>,
+    version: Option<Version>,
+    frame: u32,
 }
 
 fn unit(draw: u64) -> f32 {
@@ -711,6 +718,19 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
             Ok(())
         },
     );
+    session.publish_value("shown", |ctx, shown| {
+        let version = ctx.app.mesh.version();
+        if shown.version != Some(version) {
+            let mesh = ctx.app.mesh.get();
+            shown.mesh.vertices.clone_from(&mesh.vertices);
+            shown.mesh.colors.clone_from(&mesh.colors);
+            shown.mesh.indices.clone_from(&mesh.indices);
+            shown.version = Some(version);
+        }
+        shown.frame = ctx.app.stage.frame();
+        Ok(())
+    });
+    session.views_mut().root_mut().backdrop = Some(Environment::default().backdrop(FLOOR_Y));
 
     // Taken here so a reset straight after build has a state to return to.
     session.set_initial()?;
@@ -719,34 +739,25 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
 
 fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
     let feed = TriangleFeed::default();
-    let sky = SkyGroundPass::new(Environment::default().ground(FLOOR_Y, true));
     let mut start = record;
     let mut recording = start.is_some();
     SessionApp::with_args(HostConfig::new("loam", bindings()), args)
         .recover_on_fault(RESEED)
-        .pass(Box::new(sky.clone()))
         .pass(feed.pass(FragmentShading::FaceNormalLambert))
         .target_fps(TICK_HZ as f32)
-        .on_frame(move |hook: &mut FrameHook<'_, HeroStores>| {
-            let environment = *hook.session.app.environment.get();
-            let root = hook.session.views().root();
-            if let Some(image) = hook.session.views().get(root) {
-                feed.set_view(&image.eye, Rigid::IDENTITY);
-                sky.publish(
-                    &image.eye,
-                    environment.sky,
-                    environment.ground(FLOOR_Y, environment.floor_visible),
-                );
+        .on_published(move |hook: &mut PublishedHook<'_, HeroStores>| {
+            let shown = &hook.published.value;
+            feed.set_view(&hook.eye, Rigid::IDENTITY);
+            if let Some(version) = shown.version {
+                feed.set_mesh(version, &shown.mesh);
             }
-            let version = hook.session.app.mesh.version();
-            feed.set_mesh(version, hook.session.app.mesh.get());
             if let Some(request) = start.take() {
                 if let Err(error) = hook.capture.start(request) {
                     tracing::error!("hero capture start refused: {error}");
                     recording = false;
                 }
             }
-            if recording && hook.session.app.stage.get().frame() >= SEQUENCE_FRAMES {
+            if recording && shown.frame >= SEQUENCE_FRAMES {
                 if let Err(error) = hook.capture.stop() {
                     tracing::error!("hero capture stop refused: {error}");
                 }
@@ -761,8 +772,15 @@ fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
                 let owned: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
                 submit.app_fn("ground", move |d: &mut Dispatch<'_, HeroStores>| {
                     let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
-                    match d.app.environment.get_mut().apply(&refs) {
-                        Ok(line) => tracing::info!("{line}"),
+                    let root = d.views.root_mut();
+                    let mut environment = root
+                        .backdrop
+                        .map_or_else(Environment::default, |backdrop| Environment::of(&backdrop));
+                    match environment.apply(&refs) {
+                        Ok(line) => {
+                            root.backdrop = Some(environment.backdrop(FLOOR_Y));
+                            tracing::info!("{line}");
+                        }
                         Err(error) => tracing::error!("{error}"),
                     }
                 });
@@ -783,11 +801,12 @@ fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
                         return Ok(());
                     }
                 };
-                let floor: Setting<HeroStores> = |app| &mut app.environment.get_mut().floor_visible;
-                match next {
-                    None => submit.toggle("floor", floor),
-                    Some(on) => submit.set("floor", floor, on),
-                }
+                submit.app_fn("floor", move |d: &mut Dispatch<'_, HeroStores>| {
+                    if let Some(backdrop) = d.views.root_mut().backdrop.as_mut() {
+                        let ground = &mut backdrop.ground;
+                        ground.visible = next.unwrap_or(!ground.visible);
+                    }
+                });
                 out.line("floor: applied at the next boundary");
                 Ok(())
             },
