@@ -3,6 +3,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
 
+use std::time::Duration;
+
 use web_time::Instant;
 
 use loam_runtime::host::HostError;
@@ -38,6 +40,29 @@ pub(crate) struct Reply<P> {
     pub(crate) input: Input,
     pub(crate) recovered: Option<PhaseError>,
     pub(crate) outcome: Result<Prepared<P>, Failure>,
+    spent: Spent,
+}
+
+#[derive(Default)]
+struct Spent {
+    dispatch: Option<Duration>,
+    simulation: Option<Duration>,
+    publication: Option<Duration>,
+}
+
+impl Spent {
+    fn record(&self, [dispatch, simulation, publication]: [&'static str; 3]) {
+        let sections = [
+            (dispatch, self.dispatch),
+            (simulation, self.simulation),
+            (publication, self.publication),
+        ];
+        for (name, elapsed) in sections {
+            if let Some(elapsed) = elapsed {
+                frame_trace::record_external(name, elapsed);
+            }
+        }
+    }
 }
 
 pub(crate) struct Simulation<A: Stores> {
@@ -90,9 +115,10 @@ impl<A: Stores> Simulation<A> {
         }
         let faulted_before = self.session.faulted_phase();
         let scene_before = self.session.scene();
-        let (recovered, advanced) = self.advance(now, aspect, input, before);
+        let mut spent = Spent::default();
+        let (recovered, advanced) = self.advance(now, aspect, input, before, &mut spent);
         let input = self.session.take_input();
-        let outcome = match advanced.and_then(|()| self.publish(aspect)) {
+        let outcome = match advanced.and_then(|()| self.publish(aspect, &mut spent)) {
             Ok(prepared) => Ok(prepared),
             Err(error) if self.session.faulted_phase().is_some() => {
                 if let Some(timestep) = self.timestep.as_mut() {
@@ -107,6 +133,7 @@ impl<A: Stores> Simulation<A> {
             input,
             recovered,
             outcome,
+            spent,
         }
     }
 
@@ -116,6 +143,7 @@ impl<A: Stores> Simulation<A> {
         aspect: f32,
         gathered: Input,
         before: impl FnOnce(&Session<A>, &Input),
+        spent: &mut Spent,
     ) -> (Option<PhaseError>, Result<(), HostError>) {
         let Simulation {
             session,
@@ -131,20 +159,21 @@ impl<A: Stores> Simulation<A> {
             inbox.sender().reset();
         }
         before(session, &gathered);
-        let (recovered, dispatched) = {
-            let _dispatch = frame_trace::scope("dispatch");
-            inbox.boundary(session, gathered)
-        };
+        let started = Instant::now();
+        let (recovered, dispatched) = inbox.boundary(session, gathered);
+        spent.dispatch = Some(started.elapsed());
         let result = dispatched.and_then(|_| {
             session.views_mut().root_mut().eye.aspect = aspect;
             if let Some(timestep) = timestep.as_mut() {
                 if was_faulted && session.faulted_phase().is_none() {
                     timestep.reset_clock(now);
                 }
-                let _simulation = frame_trace::scope("simulation");
-                for _ in timestep.advance(now) {
-                    session.tick_with(executor.as_ref())?;
-                }
+                let started = Instant::now();
+                let ticked = timestep
+                    .advance(now)
+                    .try_for_each(|_| session.tick_with(executor.as_ref()));
+                spent.simulation = Some(started.elapsed());
+                ticked?;
             }
             session.views_mut().root_mut().eye.aspect = aspect;
             Ok(())
@@ -152,14 +181,18 @@ impl<A: Stores> Simulation<A> {
         (recovered, result)
     }
 
-    fn publish(&mut self, aspect: f32) -> Result<Prepared<A::Published>, HostError> {
+    fn publish(
+        &mut self,
+        aspect: f32,
+        spent: &mut Spent,
+    ) -> Result<Prepared<A::Published>, HostError> {
         let mut publication = self.idle.take().unwrap_or_default();
         let alpha = self.timestep.as_ref().map_or(1.0, FixedTimestep::alpha);
-        let published = {
-            let _publication = frame_trace::scope("publication");
-            self.session
-                .publish_with(&mut publication, alpha, self.executor.as_ref())
-        };
+        let started = Instant::now();
+        let published = self
+            .session
+            .publish_with(&mut publication, alpha, self.executor.as_ref());
+        spent.publication = Some(started.elapsed());
         if let Err(error) = published {
             self.idle = Some(publication);
             return Err(HostError::Phase(error));
@@ -189,13 +222,17 @@ struct Outgoing<P> {
     restart: Option<Instant>,
 }
 
+fn aspect(input: &InputMap, size: (u32, u32)) -> f32 {
+    input
+        .display_aspect()
+        .unwrap_or(size.0 as f32 / size.1 as f32)
+}
+
 impl<P> Outgoing<P> {
     fn request(&mut self, input: &mut InputMap, now: Instant, size: (u32, u32)) -> Request<P> {
         Request {
             now,
-            aspect: input
-                .display_aspect()
-                .unwrap_or(size.0 as f32 / size.1 as f32),
+            aspect: aspect(input, size),
             input: input.take(),
             returned: self.returned.take(),
             restart: self.restart.take(),
@@ -260,14 +297,25 @@ impl<A: Stores> Simulator<A> {
         let Simulator { run, outgoing } = self;
         match run {
             Run::Local(simulation) => {
-                Ok(simulation.prepare(outgoing.request(input, now, size), before))
+                let reply = simulation.prepare(outgoing.request(input, now, size), before);
+                reply
+                    .spent
+                    .record(["dispatch", "simulation", "publication"]);
+                Ok(reply)
             }
             #[cfg(not(target_arch = "wasm32"))]
             Run::Thread(thread) => {
                 if !thread.in_flight {
                     thread.send(outgoing.request(input, now, size))?;
                 }
-                thread.receive()
+                let reply = {
+                    let _wait = frame_trace::scope("simulation wait");
+                    thread.receive()?
+                };
+                reply
+                    .spent
+                    .record(["thread dispatch", "thread simulation", "thread publication"]);
+                Ok(reply)
             }
         }
     }
@@ -305,9 +353,7 @@ impl<A: Stores> SimulationThread<A> {
             .name("loam-simulation".into())
             .spawn(move || {
                 for request in inbound {
-                    frame_trace::begin_frame();
                     let reply = simulation.prepare(request, |_, _| {});
-                    frame_trace::end_frame();
                     let fatal = matches!(reply.outcome, Err(Failure::Fatal(_)));
                     if outbound.send(reply).is_err() || fatal {
                         break;
