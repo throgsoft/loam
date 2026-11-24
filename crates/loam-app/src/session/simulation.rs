@@ -286,7 +286,7 @@ impl<A: Stores> Simulator<A> {
         self.outgoing.returned.as_ref()
     }
 
-    // On a thread the reply answers the request sent at the end of the last frame, and `before` never runs.
+    // On a thread the reply answers the request sent at the end of the last frame, its eye takes this frame's aspect, and `before` never runs.
     pub(crate) fn exchange(
         &mut self,
         input: &mut InputMap,
@@ -308,13 +308,16 @@ impl<A: Stores> Simulator<A> {
                 if !thread.in_flight {
                     thread.send(outgoing.request(input, now, size))?;
                 }
-                let reply = {
+                let mut reply = {
                     let _wait = frame_trace::scope("simulation wait");
                     thread.receive()?
                 };
                 reply
                     .spent
                     .record(["thread dispatch", "thread simulation", "thread publication"]);
+                if let Ok(prepared) = reply.outcome.as_mut() {
+                    prepared.eye.aspect = aspect(input, size);
+                }
                 Ok(reply)
             }
         }
