@@ -314,7 +314,7 @@ impl Facility<EuclideanR4> for RejectStep {
         _executor: &dyn Executor,
         _owner: Owner,
     ) -> Result<(), DomainError> {
-        Err(DomainError::ChartBoundary)
+        Err(DomainError::Unsupported("injected"))
     }
 
     fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
@@ -346,7 +346,7 @@ fn a_failed_cpu_phase_cannot_advance_or_publish_until_recovery() {
     let failure = PhaseError {
         phase: Phase::Simulation,
         system: Some(DOMAIN_STEP),
-        cause: DomainError::ChartBoundary,
+        cause: DomainError::Unsupported("injected"),
     };
     assert_eq!(session.tick(&Sequential), Err(failure));
     assert_eq!(session.current_tick(), Tick(0));

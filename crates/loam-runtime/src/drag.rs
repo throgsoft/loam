@@ -163,19 +163,13 @@ impl Manipulation {
         let domain = domains
             .get(pick.domain)
             .ok_or(DomainError::UnknownDomain(pick.domain))?;
-        let into = views
-            .to_root(pick.image)
-            .and_then(|to| to.rigid())
-            .ok_or(DomainError::Unsupported("image space"))?
-            .inverse();
         let center = domain
             .image_of(pick.view, pick.entity)
             .ok_or(DomainError::Stale(pick.entity))?;
         let eye = views.root().eye;
-        let plane = into.apply(pick.image_point);
-        let normal = into.direction(eye.forward);
-        let depth =
-            (Vec3::from(plane) - Vec3::from(into.apply(eye.position))).dot(Vec3::from(normal));
+        let plane = pick.image_point;
+        let normal = eye.forward;
+        let depth = (Vec3::from(plane) - Vec3::from(eye.position)).dot(Vec3::from(normal));
         let hit = pick.hit.ok_or(DomainError::Unsupported("view ray lift"))?;
         if let Some(held) = self.drag.take() {
             commands.submit(Command::Chart(
@@ -229,13 +223,8 @@ impl Manipulation {
             .ray(drag.image, ndc)
             .ok_or(DomainError::Unsupported("image space"))?;
         let eye = views.root().eye;
-        let into = views
-            .to_root(drag.image)
-            .and_then(|to| to.rigid())
-            .ok_or(DomainError::Unsupported("image space"))?
-            .inverse();
-        let forward = into.direction(eye.forward);
-        let plane = drag.plane_at(into.apply(eye.position), forward);
+        let forward = eye.forward;
+        let plane = drag.plane_at(eye.position, forward);
         let at = Drag::meet(&ray, plane, forward).ok_or(DragError::Ambiguous(name))?;
         let point = domain.lift_origin(
             drag.view,

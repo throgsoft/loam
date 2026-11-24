@@ -1,13 +1,13 @@
-use glam::{Vec2, Vec3, Vec4};
-use loam_math::{EuclideanR4, HyperbolicH3, Iso3};
+use glam::{Vec2, Vec4};
+use loam_math::EuclideanR4;
 use loam_render::device::{FeatureRequest, GpuContext};
 use loam_render::pass::{ColorLoad, FramePass, PublishedFrame};
 use loam_render::present::Presenter;
 use loam_render::SkyGroundPass;
 use loam_runtime::{
-    Backdrop, BridgeSpec, DomainBuilder, Entity, Eye, Ground, Instance, Klein, LogCapacity,
-    Material, Overlay, Phase, Placement, PointRecord, Pose, PreparedGeometry, Projection4,
-    Publication, Rigid, Section4, SegmentRecord, Session, SimConfig, Sky, SpawnBundle, ViewSpec,
+    Backdrop, DomainBuilder, Entity, Eye, Ground, Instance, LogCapacity, Material, Overlay, Phase,
+    PointRecord, Pose, PreparedGeometry, Projection4, Publication, SegmentRecord, Session,
+    SimConfig, Sky, SpawnBundle, ViewSpec,
 };
 use wgpu::*;
 
@@ -24,13 +24,7 @@ const BACKGROUND_MAX: u8 = 60;
 const FOCAL: f32 = 2.0;
 const REACH: f32 = 0.3;
 const LANDMARK_R4: Vec4 = Vec4::new(1.5, 0.0, -4.0, 0.0);
-const LANDMARK_H3: Vec3 = Vec3::new(-0.12, 0.0, -0.55);
 const EMPTY: (u32, u32) = (10, 118);
-const BRIDGE_SCALE: f32 = 0.25;
-const BRIDGE_SHIFT: f32 = 0.3;
-const SECTION_AT: Vec4 = Vec4::new(0.0, 0.0, -4.0, 0.0);
-const PLACED_NDC: f32 = 0.519_615_25;
-const TIP_NDC: f32 = 0.649_519;
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -53,28 +47,11 @@ fn cross4(reach: f32) -> PreparedGeometry {
     }
 }
 
-fn cross3(reach: f32) -> PreparedGeometry {
-    PreparedGeometry::Lines3 {
-        segments: (0..3)
-            .map(|axis| {
-                let mut arm = [0.0; 3];
-                arm[axis] = reach;
-                let mut back = [0.0; 3];
-                back[axis] = -reach;
-                [back, arm]
-            })
-            .collect(),
-    }
-}
-
-fn twospace() -> (Session<Landmarks>, [Entity; 2]) {
+fn landmark_scene() -> (Session<Landmarks>, [Entity; 1]) {
     let mut session = Session::new(Landmarks::default(), SimConfig::default());
     let r4 = session
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
-    let h3 = session
-        .register_domain(DomainBuilder::new("h3", HyperbolicH3).tracked(LogCapacity::default()));
     let edges4 = session.prepare(cross4(REACH));
-    let edges3 = session.prepare(cross3(REACH * 0.5));
     let white = session.add_material(Material::lines([1.0, 1.0, 1.0, 1.0], 3.0));
     let root = session.views().root_id();
     let landmarks = session.dispatch(|d| {
@@ -85,30 +62,15 @@ fn twospace() -> (Session<Landmarks>, [Entity; 2]) {
                     .instance(Instance::new(edges4, white)),
             )
             .unwrap();
-        let landmark3 = d
-            .spawn(
-                SpawnBundle::new()
-                    .at(h3, Pose::at(LANDMARK_H3))
-                    .instance(Instance::new(edges3, white)),
-            )
-            .unwrap();
         let walker4 = d
             .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
-            .unwrap();
-        let walker3 = d
-            .spawn(SpawnBundle::new().at(h3, Pose::at(Vec3::ZERO)))
             .unwrap();
         d.domains
             .typed(r4)
             .unwrap()
             .add_view(ViewSpec::new(root, walker4, Projection4 { focal: FOCAL }))
             .unwrap();
-        d.domains
-            .typed(h3)
-            .unwrap()
-            .add_view(ViewSpec::new(root, walker3, Klein))
-            .unwrap();
-        [landmark4, landmark3]
+        [landmark4]
     });
     (session, landmarks)
 }
@@ -217,7 +179,7 @@ fn texel(pixels: &[u8], (x, y): (u32, u32)) -> [u8; 4] {
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
 fn published_landmarks_are_absent_from_their_own_ndc_positions_gpu_probe() {
-    let (mut session, landmarks) = twospace();
+    let (mut session, landmarks) = landmark_scene();
     let mut publication = Publication::default();
     session.publish(&mut publication, 1.0).unwrap();
 
@@ -245,71 +207,6 @@ fn published_landmarks_are_absent_from_their_own_ndc_positions_gpu_probe() {
     assert!(
         empty[0] <= BACKGROUND_MAX,
         "the pixel at {EMPTY:?} shows {empty:?}, not the background"
-    );
-}
-
-fn bridged() -> Session<Landmarks> {
-    let mut session = Session::new(Landmarks::default(), SimConfig::default());
-    let r4 = session
-        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
-    let edges = session.prepare(cross4(REACH));
-    let white = session.add_material(Material::lines([1.0, 1.0, 1.0, 1.0], 3.0));
-    let root = session.views().root_id();
-    let (section, anchor) = session.dispatch(|d| {
-        let eye = d
-            .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))
-            .unwrap();
-        let anchor = d
-            .spawn(
-                SpawnBundle::new()
-                    .at(r4, Pose::at(SECTION_AT))
-                    .instance(Instance::new(edges, white)),
-            )
-            .unwrap();
-        let section = d
-            .domains
-            .typed(r4)
-            .unwrap()
-            .add_view(ViewSpec::new(root, eye, Section4 { w: 0.0 }))
-            .unwrap();
-        (section, anchor)
-    });
-    session
-        .bridge(BridgeSpec {
-            anchor,
-            into: root,
-            source: r4.id(),
-            view: section,
-            placement: Placement::Rigid(Rigid {
-                pose: Iso3::from_translation(Vec3::new(BRIDGE_SHIFT, 0.0, 0.0)),
-                scale: BRIDGE_SCALE,
-            }),
-        })
-        .unwrap();
-    session
-}
-
-#[test]
-#[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn a_bridged_view_rasterizes_where_its_placement_did_not_put_it_gpu_probe() {
-    let mut session = bridged();
-    let mut publication = Publication::default();
-    session.publish(&mut publication, 1.0).unwrap();
-    let pixels = render(&publication);
-
-    for (name, ndc) in [("center", PLACED_NDC), ("tip", TIP_NDC)] {
-        let at = pixel([ndc, 0.0]);
-        let drawn = texel(&pixels, at);
-        assert!(
-            drawn[0] >= INK_MIN,
-            "the placed {name} at {at:?} shows {drawn:?}, not its lines"
-        );
-    }
-    let unplaced = pixel([0.0, 0.0]);
-    let drawn = texel(&pixels, unplaced);
-    assert!(
-        drawn[0] <= BACKGROUND_MAX,
-        "the unplaced center at {unplaced:?} shows {drawn:?}, so the placement was dropped"
     );
 }
 

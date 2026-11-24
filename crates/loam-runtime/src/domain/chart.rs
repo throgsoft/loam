@@ -4,7 +4,7 @@ use super::{put_row, DomainError, DomainSpace, Instance, TypedDomain};
 use crate::command::{Outcome, Rejection};
 use crate::entity::Entity;
 use crate::store::{Owner, StoreError};
-use crate::view::{Vec3, ViewId};
+use crate::view::ViewId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChartId(pub u16);
@@ -78,8 +78,6 @@ impl ChartCommand {
     }
 }
 
-const FRAME_TOLERANCE: f32 = 1e-3;
-
 pub(super) fn single_chart(chart: ChartId) -> Result<(), DomainError> {
     (chart == ChartId(0))
         .then_some(())
@@ -93,28 +91,6 @@ pub(super) fn finite(values: [f32; 4]) -> Result<(), DomainError> {
         }
     }
     Ok(())
-}
-
-pub(super) fn frame_columns(frame: &[[f32; 4]; 4]) -> Result<[Vec3; 3], DomainError> {
-    let columns = [0, 1, 2].map(|i| Vec3::new(frame[i][0], frame[i][1], frame[i][2]));
-    let [x, y, z] = columns;
-    let unit = |v: Vec3| v.is_finite() && (v.length_squared() - 1.0).abs() <= FRAME_TOLERANCE;
-    let orthogonal = |a: Vec3, b: Vec3| a.dot(b).abs() <= FRAME_TOLERANCE;
-    let valid = columns.iter().all(|column| unit(*column))
-        && orthogonal(x, y)
-        && orthogonal(y, z)
-        && orthogonal(z, x)
-        && x.cross(y).dot(z) > 0.0;
-    valid.then_some(columns).ok_or(DomainError::InvalidFrame)
-}
-
-pub(super) fn frame_of(columns: [Vec3; 3]) -> [[f32; 4]; 4] {
-    let mut frame = [[0.0; 4]; 4];
-    for (slot, column) in frame.iter_mut().zip(columns) {
-        *slot = column.extend(0.0).to_array();
-    }
-    frame[3] = [0.0, 0.0, 0.0, 1.0];
-    frame
 }
 
 impl<S: DomainSpace> TypedDomain<S> {

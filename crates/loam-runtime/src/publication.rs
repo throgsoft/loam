@@ -2,7 +2,7 @@ use crate::assets::Library;
 use crate::domain::{DomainError, DomainId, Domains};
 use crate::entity::SceneId;
 use crate::phase::Tick;
-use crate::view::{Backdrop, Overlay, Rigid, ViewRecords, ViewTarget, Views};
+use crate::view::{Backdrop, Overlay, ViewRecords, ViewTarget, Views};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stamp {
@@ -13,7 +13,6 @@ pub struct Stamp {
 pub struct PublishedView {
     pub domain: DomainId,
     pub target: ViewTarget,
-    pub placement: Rigid,
     pub records: ViewRecords,
 }
 
@@ -78,9 +77,9 @@ impl<V> Publication<V> {
         let mut count = 0;
         for domain in domains.owned() {
             for &target in domain.views() {
-                let Some(placement) = views.to_root(target.image).and_then(|to| to.rigid()) else {
+                if target.image != views.root_id() {
                     continue;
-                };
+                }
                 let held = self
                     .views
                     .iter()
@@ -97,16 +96,12 @@ impl<V> Publication<V> {
                             PublishedView {
                                 domain: domain.id(),
                                 target,
-                                placement,
                                 records: ViewRecords::default(),
                             },
                         );
                         changed = true;
                     }
                 }
-                let view = &mut self.views[count];
-                changed |= view.placement != placement;
-                view.placement = placement;
                 count += 1;
             }
         }

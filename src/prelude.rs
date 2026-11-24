@@ -1,9 +1,8 @@
 pub use loam_math::{
     Bivector, Bivector2, Bivector3, Bivector4, BlendedSpace, BlendingField, ConformallyFlat,
-    CoveringSpace, EuclideanR2, EuclideanR3, EuclideanR4, FlatTorus3, HyperbolicH3, Iso2, Iso3,
-    Iso3H, Iso4, Iso4Flat, IsometryGroup, LensSpace, LinearBlendX, Mat3, Plane4, Projection,
-    QuotientSpace, RasterizableSpace, Rotor, Rotor2, Rotor3, Rotor4, Space, SphericalS3,
-    SphericalS3Embedded, Vec2, Vec3, Vec4, WPlane,
+    EuclideanR2, EuclideanR3, EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat,
+    IsometryGroup, LinearBlendX, Mat3, Plane4, Projection, RasterizableSpace, Rotor, Rotor2,
+    Rotor3, Rotor4, Space, SphericalS3, SphericalS3Embedded, Vec2, Vec3, Vec4, WPlane,
 };
 pub use loam_runtime::*;
 pub use loam_shape::polytope::Polytope4;

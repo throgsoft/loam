@@ -16,19 +16,15 @@ use crate::publication::Stamp;
 use crate::session::RestoreError;
 use crate::store::{Owner, Store, StoreError, StoreField, StoreSnapshot};
 use crate::view::{
-    ImageRay, ImageSpaceId, Pick, Rigid, ViewId, ViewRecords, ViewSpec, ViewStyle, ViewSummary,
-    ViewTarget, Views,
+    ImageRay, Pick, ViewId, ViewRecords, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views,
 };
 
 mod blend;
-mod blended;
 mod builder;
 mod chart;
-mod euclidean_r3;
 mod euclidean_r4;
 mod facility;
 mod fields;
-mod hyperbolic_h3;
 mod instance;
 #[cfg(feature = "physics")]
 mod physics;
@@ -115,9 +111,6 @@ pub enum DomainError {
     Store(StoreError),
     InvalidCoordinate(&'static str),
     InvalidFrame,
-    ChartBoundary,
-    NoConvergence,
-    ErrorBudget,
     #[cfg(feature = "physics")]
     Physics(loam_physics::EditError),
     Unsupported(&'static str),
@@ -141,9 +134,6 @@ impl fmt::Display for DomainError {
             Self::Store(error) => fmt::Display::fmt(error, f),
             Self::InvalidCoordinate(coordinate) => write!(f, "invalid {coordinate}"),
             Self::InvalidFrame => f.write_str("the frame is not orthonormal"),
-            Self::ChartBoundary => f.write_str("the step left the chart"),
-            Self::NoConvergence => f.write_str("the transport did not converge"),
-            Self::ErrorBudget => f.write_str("the metric error budget was exceeded"),
             #[cfg(feature = "physics")]
             Self::Physics(error) => fmt::Display::fmt(error, f),
             Self::Unsupported(what) => write!(f, "unsupported: {what}"),
@@ -233,7 +223,6 @@ pub trait Domain: Send + 'static {
         &self,
         view: ViewId,
         ray: &ImageRay,
-        placement: Rigid,
         views: &Views,
         prepared: &[PreparedGeometry],
     ) -> Option<Pick>;
@@ -259,8 +248,6 @@ pub trait Domain: Send + 'static {
 }
 
 pub(crate) trait DomainOwner: Domain {
-    fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError>;
-
     fn publish(
         &self,
         view: ViewId,
@@ -525,11 +512,10 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         &self,
         view: ViewId,
         ray: &ImageRay,
-        placement: Rigid,
         views: &Views,
         prepared: &[PreparedGeometry],
     ) -> Option<Pick> {
-        self.pick_view(view, ray, placement, views, prepared)
+        self.pick_view(view, ray, views, prepared)
     }
 
     fn image_of(&self, view: ViewId, entity: Entity) -> Option<[f32; 3]> {
@@ -567,10 +553,6 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
 }
 
 impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
-    fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError> {
-        self.views.retarget(view, image)
-    }
-
     fn publish(
         &self,
         view: ViewId,

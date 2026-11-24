@@ -75,7 +75,6 @@ impl Shaft {
     pub fn drag_translation(&self, grab: f32, cursor: f32) -> Vec4 {
         self.axis.unit() * (cursor - grab)
     }
-
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

@@ -3,13 +3,13 @@ use std::rc::Rc;
 
 use glam::Mat4;
 use loam_math::{EuclideanR3, Projection};
-use loam_runtime::{Eye, Rigid, Version};
+use loam_runtime::{Eye, Version};
 use loam_shape::TriangleMesh;
 use wgpu::{CommandEncoder, Device, Queue, RenderPass};
 
 use crate::device::GpuContext;
 use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
-use crate::view::placed_view_projection;
+use crate::view::root_view_projection;
 use crate::{DepthConvention, DepthMode, FragmentShading, TriangleRasterNode};
 
 #[derive(Default)]
@@ -35,8 +35,8 @@ impl TriangleFeed {
         })
     }
 
-    pub fn set_view(&self, eye: &Eye, placement: Rigid) {
-        self.input.borrow_mut().view_projection = placed_view_projection(eye, placement);
+    pub fn set_view(&self, eye: &Eye) {
+        self.input.borrow_mut().view_projection = root_view_projection(eye);
     }
 
     pub fn edit(&self, build: impl FnOnce(&mut TriangleMesh<3>)) {
@@ -339,7 +339,7 @@ mod tests {
             aspect: SIZE.0 as f32 / SIZE.1 as f32,
             ..Eye::default()
         };
-        feed.set_view(&eye, Rigid::IDENTITY);
+        feed.set_view(&eye);
 
         let mut pass = feed.pass(FragmentShading::FaceNormalLambert);
         pass.attach(&gpu, frame_format()).expect("attach");

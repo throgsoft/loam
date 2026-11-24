@@ -628,13 +628,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use glam::Vec3;
-    use loam_math::EuclideanR3;
+    use glam::Vec4;
+    use loam_math::EuclideanR4;
     use loam_render::device::FeatureRequest;
     use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
     use loam_runtime::{
-        ActionId, Command, DomainBuilder, FreeCamera, Identity3, LogCapacity, Material, Phase,
-        Pose, PreparedGeometry, Rig, SimConfig, SpawnBundle, Tick, ViewSpec,
+        ActionId, Command, DomainBuilder, FreeCamera, LogCapacity, Material, Phase, Pose,
+        PreparedGeometry, Rig, Section4, SimConfig, SpawnBundle, Tick, ViewSpec,
     };
     use wgpu::{
         BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
@@ -756,23 +756,24 @@ mod tests {
 
     fn world(moves: bool) -> Session<Bare> {
         let mut session = Session::new(Bare::default(), SimConfig::default());
-        let r3 = session
-            .register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity::default()));
-        let geometry = session.prepare(PreparedGeometry::Lines3 {
-            segments: vec![[[0.0; 3], [1.0, 0.0, 0.0]]],
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Lines4 {
+            segments: vec![[[0.0; 4], [1.0, 0.0, 0.0, 0.0]]],
         });
         let material = session.add_material(Material::lines([1.0; 4], 1.0));
         let root = session.views().root_id();
         let body = session
             .dispatch(|dispatch| {
-                let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::Z * 4.0)))?;
-                dispatch
-                    .domains
-                    .typed(r3)?
-                    .add_view(ViewSpec::new(root, eye, Identity3))?;
+                let eye = dispatch.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::Z * 4.0)))?;
+                dispatch.domains.typed(r4)?.add_view(ViewSpec::new(
+                    root,
+                    eye,
+                    Section4 { w: 0.0 },
+                ))?;
                 dispatch.spawn(
                     SpawnBundle::new()
-                        .at(r3, Pose::at(Vec3::ZERO))
+                        .at(r4, Pose::at(Vec4::ZERO))
                         .instance(loam_runtime::Instance::new(geometry, material)),
                 )
             })
@@ -784,8 +785,8 @@ mod tests {
                 if moves {
                     let x = (ctx.step.tick.0 + 1) as f32;
                     ctx.domains
-                        .typed(r3)?
-                        .set_pose(body, Pose::at(Vec3::X * x))?;
+                        .typed(r4)?
+                        .set_pose(body, Pose::at(Vec4::X * x))?;
                 }
                 Ok(())
             },
@@ -950,23 +951,24 @@ mod tests {
         let gpu = noop_gpu();
         let texture = offscreen(&gpu);
         let mut session = Session::new(Bare::default(), SimConfig::default());
-        let r3 = session
-            .register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity::default()));
-        let geometry = session.prepare(PreparedGeometry::Lines3 {
-            segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+        let geometry = session.prepare(PreparedGeometry::Lines4 {
+            segments: vec![[[0.1, 0.0, 0.0, 0.0], [-0.1, 0.0, 0.0, 0.0]]],
         });
         let material = session.add_material(Material::flat([1.0; 4]));
         let root = session.views().root_id();
         let body = session
             .dispatch(|dispatch| {
-                let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::Z * 4.0)))?;
-                dispatch
-                    .domains
-                    .typed(r3)?
-                    .add_view(ViewSpec::new(root, eye, Identity3))?;
+                let eye = dispatch.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::Z * 4.0)))?;
+                dispatch.domains.typed(r4)?.add_view(ViewSpec::new(
+                    root,
+                    eye,
+                    Section4 { w: 0.0 },
+                ))?;
                 dispatch.spawn(
                     SpawnBundle::new()
-                        .at(r3, Pose::at(Vec3::ZERO))
+                        .at(r4, Pose::at(Vec4::ZERO))
                         .instance(loam_runtime::Instance::new(geometry, material)),
                 )
             })
@@ -976,7 +978,7 @@ mod tests {
             "move",
             move |ctx: loam_runtime::Ctx<'_, Bare>| {
                 if ctx.step.tick == Tick(0) {
-                    ctx.domains.typed(r3)?.set_pose(body, Pose::at(Vec3::X))?;
+                    ctx.domains.typed(r4)?.set_pose(body, Pose::at(Vec4::X))?;
                 }
                 Ok(())
             },
@@ -1004,7 +1006,7 @@ mod tests {
         let texture = offscreen(&gpu);
         let app = host::<Bare>("aspect");
         let mut session = Session::new(Bare::default(), SimConfig::default());
-        session.register_domain(DomainBuilder::new("r3", EuclideanR3).untracked());
+        session.register_domain(DomainBuilder::new("r4", EuclideanR4).untracked());
         session.system(
             Phase::Publication,
             "camera",
@@ -1054,16 +1056,17 @@ mod tests {
             hook.capture_cursor(true, CursorPolicy::Toggle);
         });
         let mut session = Session::new(Bare::default(), SimConfig::default());
-        let r3 = session
-            .register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity::default()));
+        let r4 = session
+            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
         let root = session.views().root_id();
         session
             .dispatch(|dispatch| {
-                let eye = dispatch.spawn(SpawnBundle::new().at(r3, Pose::at(Vec3::ZERO)))?;
-                dispatch
-                    .domains
-                    .typed(r3)?
-                    .add_view(ViewSpec::new(root, eye, Identity3))?;
+                let eye = dispatch.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
+                dispatch.domains.typed(r4)?.add_view(ViewSpec::new(
+                    root,
+                    eye,
+                    Section4 { w: 0.0 },
+                ))?;
                 Ok::<_, loam_runtime::Rejection>(())
             })
             .expect("view");
@@ -1074,7 +1077,7 @@ mod tests {
             "trip",
             move |_ctx: loam_runtime::Ctx<'_, Bare>| {
                 if trip.swap(false, Ordering::Relaxed) {
-                    return Err(loam_runtime::DomainError::ChartBoundary);
+                    return Err(loam_runtime::DomainError::Unsupported("injected"));
                 }
                 Ok(())
             },
@@ -1178,7 +1181,7 @@ mod tests {
             "trip",
             move |_ctx: loam_runtime::Ctx<'_, Bare>| {
                 if trip.swap(false, Ordering::Relaxed) {
-                    return Err(loam_runtime::DomainError::ChartBoundary);
+                    return Err(loam_runtime::DomainError::Unsupported("injected"));
                 }
                 Ok(())
             },

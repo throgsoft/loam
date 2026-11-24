@@ -3,8 +3,8 @@
 use glam::{Quat, Vec2, Vec3, Vec4};
 use loam_math::{
     Bivector, Bivector2, Bivector4, BlendedSpace, ConformallyFlat, EuclideanR2, EuclideanR3,
-    EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat, IsometryGroup, LensSpace,
-    LinearBlendX, Space, SphericalS3, SphericalS3Embedded,
+    EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat, IsometryGroup, LinearBlendX,
+    Space, SphericalS3, SphericalS3Embedded,
 };
 
 #[derive(Clone, Copy)]
@@ -1350,95 +1350,6 @@ impl SpaceFixture for BlendedSpaceFixture {
     }
 }
 
-struct LensSpaceFixture(LensSpace);
-
-impl SpaceFixture for LensSpaceFixture {
-    type Point = Vec4;
-    type Vector = Vec4;
-    type S = LensSpace;
-
-    fn space(&self) -> LensSpace {
-        self.0
-    }
-
-    fn points(&self) -> Vec<Vec4> {
-        let mut rng = Xorshift32::new(0x004C_0F1A);
-        let spread = 0.25 * self.0.injectivity_radius();
-        (0..5)
-            .map(|_| {
-                (Vec4::X
-                    + Vec4::new(
-                        rng.signed_unit(),
-                        rng.signed_unit(),
-                        rng.signed_unit(),
-                        rng.signed_unit(),
-                    ) * spread)
-                    .normalize()
-            })
-            .collect()
-    }
-
-    fn tangents(&self, at: Vec4) -> Vec<Vec4> {
-        let mut rng = Xorshift32::new(0x004C_7A46);
-        let reach = 0.4 * self.0.injectivity_radius();
-        (0..3)
-            .map(|_| {
-                let raw = Vec4::new(
-                    rng.signed_unit(),
-                    rng.signed_unit(),
-                    rng.signed_unit(),
-                    rng.signed_unit(),
-                );
-
-                (raw - raw.dot(at) * at) * reach
-            })
-            .collect()
-    }
-
-    fn inner(&self, _at: Vec4, u: Vec4, v: Vec4) -> f32 {
-        u.dot(v)
-    }
-
-    fn combine(&self, u: Vec4, s: f32, v: Vec4, t: f32) -> Vec4 {
-        u * s + v * t
-    }
-
-    fn degenerate_pairs(&self) -> Vec<(Vec4, Vec4)> {
-        let p = self.0.p() as f32;
-        let a = Vec4::new(0.1, -0.2, 0.3, 0.9).normalize();
-
-        let (sin, cos) = (std::f32::consts::PI / p).sin_cos();
-        let cut = Vec4::new(cos, sin, 0.0, 0.0);
-        vec![
-            (a, a),
-            (Vec4::X, -Vec4::X),
-            (Vec4::X, cut),
-            (Vec4::X, Vec4::Z),
-        ]
-    }
-
-    fn curvature(&self) -> Option<f32> {
-        Some(1.0)
-    }
-
-    fn tol(&self) -> Tol {
-        Tol {
-            point: 1e-5,
-            vector: 1e-5,
-            scalar: 1e-5,
-            degenerate: 1e-3,
-        }
-    }
-
-    fn point_components(&self, p: Vec4) -> [f32; 4] {
-        p.to_array()
-    }
-
-    fn vector_components(&self, v: Vec4) -> [f32; 4] {
-        v.to_array()
-    }
-}
-
 conformance_suite!(euclidean_r2, EuclideanR2Fixture);
 conformance_suite!(euclidean_r3, EuclideanR3Fixture);
 conformance_suite!(euclidean_r4, EuclideanR4Fixture);
@@ -1449,9 +1360,6 @@ conformance_suite!(blended_space, BlendedSpaceFixture;
     log_magnitude_equals_geodesic_distance,
     parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic,
 );
-
-conformance_suite!(lens_space_l5_2, LensSpaceFixture(LensSpace::new(5, 2)));
-conformance_suite!(lens_space_rp3, LensSpaceFixture(LensSpace::new(2, 1)));
 
 isometry_conformance_suite!(euclidean_r2_isometries, EuclideanR2Fixture);
 isometry_conformance_suite!(euclidean_r3_isometries, EuclideanR3Fixture);

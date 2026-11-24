@@ -1,13 +1,12 @@
 use std::fmt::Debug;
 use std::ops::Mul;
 
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Space};
+use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
-    DomainBuilder, DomainSpace, Identity3, Instance, Klein, Material, Pose, PreparedGeometry,
-    Projection4, Publication, Session, SimConfig, SpawnBundle, ViewMapping, ViewSpec,
+    DomainBuilder, DomainSpace, Instance, Material, Pose, PreparedGeometry, Projection4,
+    Publication, Session, SimConfig, SpawnBundle, ViewMapping, ViewSpec,
 };
 
-type Vec3 = <EuclideanR3 as Space>::Point;
 type Vec4 = <EuclideanR4 as Space>::Point;
 
 loam_runtime::stores! {
@@ -122,32 +121,6 @@ where
 
 #[test]
 fn every_adapter_walks_moves_publishes_picks_and_restores_the_same_way() {
-    trace(
-        EuclideanR3,
-        "r3",
-        PreparedGeometry::Lines3 {
-            segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
-        },
-        Identity3,
-        Trace {
-            tangent: Vec3::new(0.2, 0.1, 0.0),
-            target: Vec3::new(0.3, -0.2, -1.5),
-            eye: Vec3::new(0.1, 0.0, 0.5),
-        },
-    );
-    trace(
-        HyperbolicH3,
-        "h3",
-        PreparedGeometry::Lines3 {
-            segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
-        },
-        Klein,
-        Trace {
-            tangent: Vec3::new(0.1, 0.05, 0.0),
-            target: Vec3::new(0.1, 0.2, -0.3),
-            eye: Vec3::new(0.2, 0.0, 0.1),
-        },
-    );
     trace(
         EuclideanR4,
         "r4",

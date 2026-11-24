@@ -3,7 +3,7 @@ use loam_shape::polytope::{polytope_section_faces_append, polytope_section_perim
 use loam_shape::FieldShape;
 
 use super::views::ViewEntry;
-use super::{blend, DomainError, DomainSpace, EdgeShading, Instance, Pose, TypedDomain};
+use super::{DomainError, DomainSpace, EdgeShading, Instance, Pose, TypedDomain};
 use crate::assets::{Library, PreparedGeometry};
 use crate::entity::Entity;
 use crate::publication::Stamp;
@@ -392,7 +392,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             .views
             .revision(view)
             .ok_or(DomainError::UnknownView(view))?;
-        let motion = blend::interpolates(&self.poses).then(|| Motion {
+        let motion = self.poses.is_tracked().then(|| Motion {
             generation: self.blend.generation(),
             moving: self.blend.moving(),
         });
@@ -775,7 +775,6 @@ mod tests {
                 for (cached, fresh) in publication.views.iter().zip(&fresh.views) {
                     assert_eq!(cached.domain, fresh.domain);
                     assert_eq!(cached.target, fresh.target);
-                    assert_eq!(cached.placement, fresh.placement);
                     assert_eq!(
                         cached.records.instances.rows(),
                         fresh.records.instances.rows()

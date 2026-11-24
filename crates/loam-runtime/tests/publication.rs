@@ -22,7 +22,7 @@ fn the_published_value_is_what_the_latest_value_system_wrote_after_the_publicati
     session.publish_value("frames", |ctx, value: &mut Vec<u32>| {
         let frames = *ctx.app.frames.get();
         if frames == 3 {
-            return Err(DomainError::ChartBoundary);
+            return Err(DomainError::Unsupported("injected"));
         }
         value.clear();
         value.push(frames);
@@ -42,7 +42,7 @@ fn the_published_value_is_what_the_latest_value_system_wrote_after_the_publicati
     let failure = PhaseError {
         phase: Phase::Publication,
         system: Some("frames"),
-        cause: DomainError::ChartBoundary,
+        cause: DomainError::Unsupported("injected"),
     };
     assert_eq!(session.publish(&mut publication, 1.0), Err(failure));
     assert_eq!(

@@ -113,8 +113,7 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
 
             Projection::Identity
             | Projection::Orthographic { .. }
-            | Projection::Perspective4D { .. }
-            | Projection::Schlegel { .. } => {
+            | Projection::Perspective4D { .. } => {
                 <EuclideanR4 as RasterizableSpace<4>>::project_point(point, projection)
             }
         }

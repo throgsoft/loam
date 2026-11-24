@@ -1,7 +1,7 @@
 use super::{DomainError, DomainSpace, Pose};
 use crate::entity::{Entity, SceneId};
 use crate::store::Store;
-use crate::view::{ImageSpaceId, ViewId, ViewSpec, ViewStyle, ViewTarget};
+use crate::view::{ViewId, ViewSpec, ViewStyle, ViewTarget};
 
 pub(super) struct ViewEntry<S: DomainSpace> {
     pub(super) eye: Entity,
@@ -156,19 +156,6 @@ impl<S: DomainSpace> ViewTable<S> {
         }
         self.entries[index].subject = subject;
         self.revisions[index] = self.revisions[index].wrapping_add(1);
-        Ok(())
-    }
-
-    pub(super) fn retarget(
-        &mut self,
-        view: ViewId,
-        image: ImageSpaceId,
-    ) -> Result<(), DomainError> {
-        self.entries
-            .get(view.index())
-            .ok_or(DomainError::UnknownView(view))?;
-        self.targets[view.index()].image = image;
-        self.revisions[view.index()] = self.revisions[view.index()].wrapping_add(1);
         Ok(())
     }
 

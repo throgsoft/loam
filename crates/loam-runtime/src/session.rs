@@ -3,7 +3,6 @@ use std::sync::Arc;
 use loam_time::par::{Executor, Sequential};
 
 use crate::assets::{Assets, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId};
-use crate::bridge::{Bridge, BridgeError, BridgeSpec};
 use crate::camera::{self, Rig, CAMERA_RIG, CAMERA_TRAVEL};
 use crate::command::{
     Command, CommandResult, Commands, Dispatch, Outcome, Rejection, Request, RequestId,
@@ -17,8 +16,7 @@ use crate::entity::{Entities, EntitiesSnapshot, Epoch, RuntimeId, SceneId};
 use crate::input::{ActionId, Input};
 use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, SystemEntry, Tick};
 use crate::publication::{Publication, Stamp};
-use crate::relation::{LinkId, Relation, RelationSnapshot};
-use crate::store::{Owner, SchemaId, StoreField};
+use crate::store::{Owner, SchemaId};
 use crate::stores::Stores;
 use crate::value::Setting;
 use crate::view::{Overlay, Pick, Views, ViewsSnapshot};
@@ -90,7 +88,6 @@ pub struct SessionSnapshot<A: Stores> {
     entities: EntitiesSnapshot,
     domains: Vec<DomainSnapshot>,
     views: ViewsSnapshot,
-    bridges: RelationSnapshot<Bridge>,
     tick: Tick,
     config: SimConfig,
     next_request: RequestId,
@@ -140,7 +137,6 @@ pub struct Session<A: Stores> {
     pub app: A,
     domains: Domains,
     views: Views,
-    bridges: Relation<Bridge>,
     manipulation: Manipulation,
     phases: Phases<A>,
     value: Option<ValueEntry<A>>,
@@ -190,13 +186,10 @@ impl<A: Stores> Session<A> {
                 Ok(())
             }),
         );
-        let mut bridges = Relation::new();
-        StoreField::bind(&mut bridges, scene, Owner::new());
         Self {
             app,
             domains: Domains::new(scene.runtime),
             views: Views::new(),
-            bridges,
             manipulation: Manipulation::default(),
             phases,
             value: None,
@@ -388,65 +381,12 @@ impl<A: Stores> Session<A> {
                 &mut self.domains,
                 &mut self.views,
                 self.commands.entities_mut(),
-                &mut self.bridges,
                 &mut self.assets,
             );
             f(&mut dispatch)
         };
         self.domains.synchronize();
         result
-    }
-
-    pub fn bridges(&self) -> &Relation<Bridge> {
-        &self.bridges
-    }
-
-    pub fn bridge(&mut self, spec: BridgeSpec) -> Result<LinkId, BridgeError> {
-        if self.entities().resolve(spec.anchor).is_none() {
-            return Err(BridgeError::Domain(DomainError::Stale(spec.anchor)));
-        }
-        let summary = {
-            let source = self
-                .domains
-                .get(spec.source)
-                .ok_or(BridgeError::UnknownDomain(spec.source))?;
-            source
-                .view(spec.view)
-                .ok_or(BridgeError::UnknownView(spec.view))?
-        };
-        if spec.placement.rigid().is_none() {
-            return Err(BridgeError::Nonlinear(summary.name));
-        }
-        if self.entities().resolve(summary.eye).is_none() {
-            return Err(BridgeError::Domain(DomainError::Stale(summary.eye)));
-        }
-        let image = self
-            .views
-            .place(spec.into, spec.placement)
-            .ok_or(BridgeError::UnknownImage(spec.into))?;
-        let link = self.bridges.link(
-            self.commands.entities(),
-            spec.anchor,
-            summary.eye,
-            Bridge {
-                source: spec.source,
-                view: spec.view,
-                image,
-            },
-        );
-        let link = match link {
-            Ok(link) => link,
-            Err(error) => {
-                self.views.unplace(image);
-                return Err(BridgeError::Link(error));
-            }
-        };
-        let source = self
-            .domains
-            .facade(spec.source)
-            .ok_or(BridgeError::UnknownDomain(spec.source))?;
-        source.retarget(spec.view, image)?;
-        Ok(link)
     }
 
     pub fn dragging(&self) -> Option<Drag> {
@@ -637,7 +577,6 @@ impl<A: Stores> Session<A> {
                 .map(|domain| domain.snapshot())
                 .collect(),
             views: self.views.snapshot(),
-            bridges: StoreField::snapshot(&self.bridges),
             tick: self.tick,
             config: self.config,
             next_request: self.commands.next_request(),
@@ -672,7 +611,6 @@ impl<A: Stores> Session<A> {
         }
         self.app.restore(&from.app, scene, Owner::new());
         self.views.restore(&from.views);
-        StoreField::restore(&mut self.bridges, &from.bridges, scene, Owner::new());
         self.manipulation.clear();
         self.tick = from.tick;
         self.config = from.config;

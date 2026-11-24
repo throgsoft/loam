@@ -197,16 +197,10 @@ pub fn write_records<V>(
         publication.stamp.tick.0, publication.alpha
     )?;
     for view in &publication.views {
-        let placement = view.placement;
         writeln!(
             out,
-            "view {} {} {} rotation {:?} translation {:?} scale {:?}",
-            view.domain,
-            view.target.view,
-            view.target.image,
-            placement.pose.rotation.to_array(),
-            placement.pose.translation.to_array(),
-            placement.scale
+            "view {} {} {}",
+            view.domain, view.target.view, view.target.image
         )?;
         for instance in view.records.instances.rows() {
             writeln!(

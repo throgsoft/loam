@@ -1,13 +1,11 @@
 use std::fmt;
 
 use crate::assets::{Assets, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId};
-use crate::bridge::Bridge;
 use crate::domain::{
     ChartCommand, ChartPose, DomainError, DomainHandle, DomainId, DomainSpace, Domains, Field,
     Instance, Pose,
 };
 use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
-use crate::relation::Relation;
 use crate::session::RestoreError;
 use crate::store::{Owner, StoreError};
 use crate::stores::{HasRelation, HasStore, Stores};
@@ -389,7 +387,6 @@ pub struct Dispatch<'a, A> {
     pub domains: &'a mut Domains,
     pub views: &'a mut Views,
     entities: &'a mut Entities,
-    bridges: &'a mut Relation<Bridge>,
     assets: &'a mut Assets,
 }
 
@@ -399,7 +396,6 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         domains: &'a mut Domains,
         views: &'a mut Views,
         entities: &'a mut Entities,
-        bridges: &'a mut Relation<Bridge>,
         assets: &'a mut Assets,
     ) -> Self {
         Self {
@@ -407,7 +403,6 @@ impl<'a, A: Stores> Dispatch<'a, A> {
             domains,
             views,
             entities,
-            bridges,
             assets,
         }
     }
@@ -528,17 +523,6 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         self.app.release(entity, Owner::new());
         for domain in self.domains.iter_mut() {
             domain.release(entity);
-        }
-        while let Some(id) = self
-            .bridges
-            .outgoing(entity)
-            .next()
-            .or_else(|| self.bridges.incoming(entity).next())
-        {
-            let Ok(link) = self.bridges.unlink(id) else {
-                break;
-            };
-            self.views.unplace(link.data.image);
         }
     }
 

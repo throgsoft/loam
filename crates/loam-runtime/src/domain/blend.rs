@@ -11,10 +11,6 @@ pub(crate) fn presented_alpha(alpha: f32) -> f32 {
     alpha.clamp(0.0, 1.0)
 }
 
-pub(super) fn interpolates<S: DomainSpace>(poses: &Store<Pose<S>>) -> bool {
-    S::BLENDS && poses.is_tracked()
-}
-
 struct TickPose<S: Space> {
     entity: Entity,
     pose: Pose<S>,
@@ -89,7 +85,7 @@ impl<S: DomainSpace> Blend<S> {
     ) -> Option<Pose<S>> {
         let dense = poses.dense_index(entity)?;
         let pose = *poses.rows().get(dense)?;
-        if alpha >= 1.0 || !interpolates(poses) {
+        if alpha >= 1.0 || !poses.is_tracked() {
             return Some(pose);
         }
         Some(self.blended(space, poses, entity, dense, pose, alpha))
@@ -122,7 +118,7 @@ impl<S: DomainSpace> Blend<S> {
 
     pub(super) fn begin(&mut self, poses: &Store<Pose<S>>) {
         self.before_tick.clear();
-        if !interpolates(poses) {
+        if !poses.is_tracked() {
             return;
         }
         let Some((_, versions)) = poses.dense_versions() else {

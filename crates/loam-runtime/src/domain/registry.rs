@@ -158,13 +158,10 @@ impl Domains {
                 {
                     continue;
                 }
-                let Some(placement) = views.to_root(target.image).and_then(|to| to.rigid()) else {
-                    continue;
-                };
                 let Some(ray) = views.ray(target.image, ndc) else {
                     continue;
                 };
-                let Some(pick) = domain.pick(target.view, &ray, placement, views, prepared) else {
+                let Some(pick) = domain.pick(target.view, &ray, views, prepared) else {
                     continue;
                 };
                 if nearest.is_none_or(|best| pick.depth > best.depth) {

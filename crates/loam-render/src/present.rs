@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use glam::Vec2;
-use loam_runtime::{DomainId, Rigid, SegmentRecord, Stamp, ViewTarget};
+use loam_runtime::{DomainId, SegmentRecord, Stamp, ViewTarget};
 use wgpu::{Color, CommandEncoder, Device, Queue, RenderPass, TextureFormat, TextureView};
 
 use crate::depth::DepthBuffer;
@@ -207,7 +207,7 @@ impl Presenter {
         line_views.truncate(views.len());
         let mut rebuilt = false;
         for (slot, view) in line_views.iter_mut().zip(views) {
-            let camera = crate::view::placed_view_projection(eye, view.placement);
+            let camera = crate::view::root_view_projection(eye);
             slot.set_camera(queue, camera, frame.viewport_px);
             let published = (view.domain, view.target, view.records.built());
             if slot.uploaded == Some(published) {
@@ -219,7 +219,7 @@ impl Presenter {
             slot.upload_segments(device, queue, view.records.segments());
         }
         drop(line_views);
-        self.fills.set_view(eye, Rigid::IDENTITY);
+        self.fills.set_view(eye);
         let listed = self.filled.len() == views.len()
             && (self.filled.iter().zip(views))
                 .all(|(held, view)| *held == (view.domain, view.target));
@@ -235,7 +235,7 @@ impl Presenter {
                     for triangle in view.records.triangles() {
                         let base = mesh.vertices.len() as u32;
                         for corner in triangle.vertices {
-                            mesh.vertices.push(view.placement.apply(corner));
+                            mesh.vertices.push(corner);
                             mesh.colors.push(triangle.color);
                         }
                         mesh.indices.push([base, base + 1, base + 2]);
@@ -695,8 +695,8 @@ mod tests {
             .expect("registered");
         presenter.attach(&gpu).expect("attached");
         let eye = Eye::default();
-        let camera = crate::view::placed_view_projection(&eye, Rigid::IDENTITY);
-        presenter.fills.set_view(&eye, Rigid::IDENTITY);
+        let camera = crate::view::root_view_projection(&eye);
+        presenter.fills.set_view(&eye);
         presenter.fills.edit(|mesh| {
             mesh.vertices
                 .extend([[-2.0, -1.5, -4.0], [2.0, -1.5, -4.0], [0.0, 2.0, -4.0]]);

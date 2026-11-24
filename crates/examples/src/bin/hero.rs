@@ -756,7 +756,7 @@ fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
         .target_fps(TICK_HZ as f32)
         .on_published(move |hook: &mut PublishedHook<'_, HeroStores>| {
             let shown = &hook.published.value;
-            feed.set_view(&hook.eye, Rigid::IDENTITY);
+            feed.set_view(&hook.eye);
             if let Some(version) = shown.version {
                 feed.set_mesh(version, &shown.mesh);
             }

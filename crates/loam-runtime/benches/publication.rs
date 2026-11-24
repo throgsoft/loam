@@ -3,12 +3,11 @@ use std::hint::black_box;
 use std::mem::size_of_val;
 use std::time::Instant;
 
-use loam_math::{BlendedSpace, EuclideanR3, EuclideanR4, HyperbolicH3, LinearBlendX, Mat3, Space};
+use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
-    Command, Ctx, DepthEnvelope, DomainBuilder, DomainError, DomainHandle, DomainRay, DomainSpace,
-    Entity, Identity3, ImageRay, Input, Instance, LogCapacity, Material, Outcome, Phase, Pose,
-    PreparedGeometry, Projection4, Publication, Section4, Session, SimConfig, SpawnBundle,
-    ViewMapping, ViewSpec,
+    Command, Ctx, DomainBuilder, DomainError, DomainHandle, Entity, Input, Instance, LogCapacity,
+    Material, Outcome, Phase, Pose, PreparedGeometry, Projection4, Publication, Section4, Session,
+    SimConfig, SpawnBundle, ViewSpec,
 };
 use loam_shape::polytope::Polytope4;
 use loam_time::alloc::{current_snapshot, delta, AllocDelta, CountingAllocator};
@@ -21,23 +20,12 @@ const BATCHES: usize = 7;
 const CHURN_RING: usize = 1024;
 const CHURN_SOAK: usize = 4096;
 const WARM_REPS: usize = 4;
-const BLEND_REPS: usize = 64;
-const BLEND_START: f32 = -0.5;
-const BLEND_END: f32 = 0.5;
-const BLEND_TURN: f32 = 0.3;
-const BLEND_SPAN: f32 = 0.05;
-const BLEND_FOCAL: f32 = 2.0;
-const BLEND_EYE: Point3 = Point3::new(-0.7, 0.0, 0.0);
-const BLEND_IMAGE: Point3 = Point3::new(0.0, -0.0866, -0.25);
-const BLEND_LANDMARK: Point4 = Point4::new(1.5, 0.0, -4.0, 0.0);
-const BLEND_LANDMARK_SCALE: f32 = 1.0;
 
 loam_runtime::stores! {
     #[derive(Default)]
     pub struct Empty {}
 }
 
-type Point3 = <EuclideanR3 as Space>::Point;
 type Point4 = <EuclideanR4 as Space>::Point;
 
 #[derive(Clone, Copy)]
@@ -56,7 +44,7 @@ struct Allocation {
 
 struct LinesFixture {
     session: Session<Empty>,
-    domain: DomainHandle<EuclideanR3>,
+    domain: DomainHandle<EuclideanR4>,
     eye: Entity,
     entities: Vec<Entity>,
     geometry: loam_runtime::PreparedId,
@@ -69,36 +57,36 @@ impl LinesFixture {
     fn new(population: usize) -> Self {
         let mut session = Session::new(Empty::default(), SimConfig::default());
         let domain =
-            session.register_domain(DomainBuilder::new("r3", EuclideanR3).tracked(LogCapacity {
+            session.register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity {
                 dirty: population + 64,
                 removals: CHURN_RING,
             }));
-        let geometry = session.prepare(PreparedGeometry::Lines3 {
+        let geometry = session.prepare(PreparedGeometry::Lines4 {
             segments: cube_lines(),
         });
         let material = session.add_material(Material::lines([0.4, 0.7, 1.0, 1.0], 1.0));
         let root = session.views().root_id();
         let (eye, entities) = session.dispatch(|dispatch| {
             let eye = dispatch
-                .spawn(SpawnBundle::new().at(domain, Pose::at(Point3::ZERO)))
-                .expect("R3 eye");
+                .spawn(SpawnBundle::new().at(domain, Pose::at(Point4::ZERO)))
+                .expect("lines eye");
             let entities = (0..population)
                 .map(|index| {
                     dispatch
                         .spawn(
                             SpawnBundle::new()
-                                .at(domain, Pose::at(point3(index, 0.0)))
+                                .at(domain, Pose::at(point4(index, 0.0)))
                                 .instance(Instance::new(geometry, material)),
                         )
-                        .expect("R3 instance")
+                        .expect("lines instance")
                 })
                 .collect();
             dispatch
                 .domains
                 .typed(domain)
-                .expect("R3 domain")
-                .add_view(ViewSpec::new(root, eye, Identity3))
-                .expect("R3 view");
+                .expect("lines domain")
+                .add_view(ViewSpec::new(root, eye, Projection4 { focal: 2.0 }))
+                .expect("lines view");
             (eye, entities)
         });
         Self {
@@ -121,9 +109,9 @@ impl LinesFixture {
         self.session
             .domains_mut()
             .typed(self.domain)
-            .expect("R3 domain")
-            .set_point(self.entities[0], point3(0, shift))
-            .expect("R3 pose edit");
+            .expect("lines domain")
+            .set_point(self.entities[0], point4(0, shift))
+            .expect("lines pose edit");
     }
 
     fn edit_all(&mut self) {
@@ -133,11 +121,11 @@ impl LinesFixture {
             .session
             .domains_mut()
             .typed(self.domain)
-            .expect("R3 domain");
+            .expect("lines domain");
         for (index, &entity) in self.entities.iter().enumerate() {
             domain
-                .set_point(entity, point3(index, shift))
-                .expect("R3 pose edit");
+                .set_point(entity, point4(index, shift))
+                .expect("lines pose edit");
         }
     }
 
@@ -147,9 +135,9 @@ impl LinesFixture {
         self.session
             .domains_mut()
             .typed(self.domain)
-            .expect("R3 domain")
-            .set_point(self.eye, Point3::new(shift, 0.0, 0.0))
-            .expect("R3 eye edit");
+            .expect("lines domain")
+            .set_point(self.eye, Point4::new(shift, 0.0, 0.0, 0.0))
+            .expect("lines eye edit");
     }
 
     fn churn(&mut self) {
@@ -159,12 +147,12 @@ impl LinesFixture {
         self.session.submit(Command::Despawn(retired));
         let spawned = self.session.submit(Command::Spawn(
             SpawnBundle::new()
-                .at(self.domain, Pose::at(point3(0, shift)))
+                .at(self.domain, Pose::at(point4(0, shift)))
                 .instance(Instance::new(self.geometry, self.material)),
         ));
         self.session
             .boundary(Input::default())
-            .expect("R3 churn boundary");
+            .expect("lines churn boundary");
         let entity = self
             .session
             .results()
@@ -174,14 +162,14 @@ impl LinesFixture {
                 Ok(Outcome::Spawned(entity)) => Some(entity),
                 _ => None,
             })
-            .expect("R3 replacement");
+            .expect("lines replacement");
         self.entities.push(entity);
     }
 
     fn publish(&mut self) {
         self.session
             .publish(&mut self.publication, 1.0)
-            .expect("R3 publication");
+            .expect("lines publication");
         black_box(self.publication.stamp);
     }
 
@@ -345,191 +333,16 @@ impl SectionFixture {
     }
 }
 
-type Blend = BlendedSpace<EuclideanR3, HyperbolicH3, LinearBlendX>;
-
-struct ChartIdentity;
-
-impl<S: DomainSpace<Point = Point3, Frame = Mat3>> ViewMapping<S> for ChartIdentity {
-    fn name(&self) -> &'static str {
-        "chart-identity"
-    }
-
-    fn image_point(&self, eye: &Pose<S>, point: Point3) -> Option<[f32; 3]> {
-        let inverse = eye.frame.inverse();
-        inverse
-            .is_finite()
-            .then(|| (inverse * (point - eye.point)).to_array())
-    }
-
-    fn lift(&self, _eye: &Pose<S>, _ray: &ImageRay) -> Option<DomainRay<S>> {
-        None
-    }
-
-    fn ray_lift(&self) -> bool {
-        false
-    }
-
-    fn depth_envelope(&self) -> DepthEnvelope {
-        DepthEnvelope {
-            near: 0.0,
-            far: f32::INFINITY,
-        }
-    }
-}
-
-fn blend_space() -> Blend {
-    BlendedSpace::new(
-        EuclideanR3,
-        HyperbolicH3,
-        LinearBlendX::new(BLEND_START, BLEND_END).expect("blend zone width"),
-    )
-}
-
-struct BlendFixture {
-    session: Session<Empty>,
-    blend: DomainHandle<Blend>,
-    r4: DomainHandle<EuclideanR4>,
-    mark: Entity,
-    mark_pose: Pose<Blend>,
-    landmark: Entity,
-    landmark_pose: Pose<EuclideanR4>,
-    publication: Publication<()>,
-}
-
-impl BlendFixture {
-    fn new() -> Self {
-        let mut session = Session::new(Empty::default(), SimConfig::default());
-        let blend = session.register_domain(
-            DomainBuilder::new("blend", blend_space())
-                .tracked(LogCapacity::default())
-                .fields(),
-        );
-        let r4 = session
-            .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
-        let space = blend_space();
-        let mark_edges = session.prepare(PreparedGeometry::Lines3 {
-            segments: vec![[[BLEND_SPAN, 0.0, 0.0], [-BLEND_SPAN, 0.0, 0.0]]],
-        });
-        let edges4 = session.prepare(PreparedGeometry::edges_of(
-            Polytope4::Tesseract.topology(),
-            BLEND_LANDMARK_SCALE,
-        ));
-        let material = session.add_material(Material::lines([1.0, 1.0, 1.0, 0.95], 1.6));
-        let root = session.views().root_id();
-        let turn = Mat3::from_rotation_y(BLEND_TURN);
-        let (mark, landmark) = session.dispatch(|dispatch| {
-            let eye = dispatch
-                .spawn(SpawnBundle::new().at(
-                    blend,
-                    Pose {
-                        point: BLEND_EYE,
-                        frame: turn,
-                    },
-                ))
-                .expect("blend eye");
-            let mark = dispatch
-                .spawn(
-                    SpawnBundle::new()
-                        .at(blend, Pose::new(&space, BLEND_EYE + turn * BLEND_IMAGE))
-                        .instance(Instance::new(mark_edges, material)),
-                )
-                .expect("blend mark");
-            dispatch
-                .domains
-                .typed(blend)
-                .expect("blend domain")
-                .add_view(ViewSpec::new(root, eye, ChartIdentity))
-                .expect("blend view");
-            let walker = dispatch
-                .spawn(SpawnBundle::new().at(r4, Pose::at(Point4::ZERO)))
-                .expect("R4 eye");
-            let landmark = dispatch
-                .spawn(
-                    SpawnBundle::new()
-                        .at(r4, Pose::at(BLEND_LANDMARK))
-                        .instance(Instance::new(edges4, material)),
-                )
-                .expect("R4 landmark");
-            dispatch
-                .domains
-                .typed(r4)
-                .expect("R4 domain")
-                .add_view(ViewSpec::new(
-                    root,
-                    walker,
-                    Projection4 { focal: BLEND_FOCAL },
-                ))
-                .expect("R4 view");
-            (mark, landmark)
-        });
-        let mark_pose = *session
-            .domains()
-            .read(blend)
-            .expect("blend domain")
-            .poses()
-            .get(mark)
-            .expect("blend mark pose");
-        let landmark_pose = *session
-            .domains()
-            .read(r4)
-            .expect("R4 domain")
-            .poses()
-            .get(landmark)
-            .expect("R4 landmark pose");
-        Self {
-            session,
-            blend,
-            r4,
-            mark,
-            mark_pose,
-            landmark,
-            landmark_pose,
-            publication: Publication::default(),
-        }
-    }
-
-    fn idle(&mut self) {}
-
-    fn move_blend(&mut self) {
-        self.session
-            .domains_mut()
-            .typed(self.blend)
-            .expect("blend domain")
-            .set_pose(self.mark, self.mark_pose)
-            .expect("blend pose edit");
-    }
-
-    fn move_r4(&mut self) {
-        self.session
-            .domains_mut()
-            .typed(self.r4)
-            .expect("R4 domain")
-            .set_pose(self.landmark, self.landmark_pose)
-            .expect("R4 pose edit");
-    }
-
-    fn publish(&mut self) {
-        self.session
-            .publish(&mut self.publication, 1.0)
-            .expect("blend publication");
-        black_box(self.publication.stamp);
-    }
-
-    fn counts(&self) -> Counts {
-        counts(&self.publication)
-    }
-}
-
-fn cube_lines() -> Vec<[[f32; 3]; 2]> {
+fn cube_lines() -> Vec<[[f32; 4]; 2]> {
     let vertices = [
-        [-0.04, -0.04, -0.04],
-        [0.04, -0.04, -0.04],
-        [-0.04, 0.04, -0.04],
-        [0.04, 0.04, -0.04],
-        [-0.04, -0.04, 0.04],
-        [0.04, -0.04, 0.04],
-        [-0.04, 0.04, 0.04],
-        [0.04, 0.04, 0.04],
+        [-0.04, -0.04, -0.04, 0.0],
+        [0.04, -0.04, -0.04, 0.0],
+        [-0.04, 0.04, -0.04, 0.0],
+        [0.04, 0.04, -0.04, 0.0],
+        [-0.04, -0.04, 0.04, 0.0],
+        [0.04, -0.04, 0.04, 0.0],
+        [-0.04, 0.04, 0.04, 0.0],
+        [0.04, 0.04, 0.04, 0.0],
     ];
     [
         [0, 1],
@@ -547,12 +360,6 @@ fn cube_lines() -> Vec<[[f32; 3]; 2]> {
     ]
     .map(|[a, b]| [vertices[a], vertices[b]])
     .to_vec()
-}
-
-fn point3(index: usize, shift: f32) -> Point3 {
-    let x = (index % 100) as f32 * 0.02 - 1.0 + shift;
-    let y = ((index / 100) % 100) as f32 * 0.02 - 1.0;
-    Point3::new(x, y, -3.0)
 }
 
 fn point4(index: usize, shift: f32) -> Point4 {
@@ -662,7 +469,6 @@ fn run_case<T>(
 
 fn reps(population: usize) -> usize {
     match population {
-        1 => BLEND_REPS,
         1_000 => 10,
         _ => 2,
     }
@@ -741,7 +547,7 @@ fn main() {
     for population in [1_000, 10_000] {
         run_case(
             &filters,
-            "r3_lines_idle",
+            "r4_lines_idle",
             population,
             || LinesFixture::new(population),
             LinesFixture::idle,
@@ -750,7 +556,7 @@ fn main() {
         );
         run_case(
             &filters,
-            "r3_lines_one",
+            "r4_lines_one",
             population,
             || LinesFixture::new(population),
             LinesFixture::edit_one,
@@ -759,7 +565,7 @@ fn main() {
         );
         run_case(
             &filters,
-            "r3_lines_all",
+            "r4_lines_all",
             population,
             || LinesFixture::new(population),
             LinesFixture::edit_all,
@@ -768,7 +574,7 @@ fn main() {
         );
         run_case(
             &filters,
-            "r3_lines_eye",
+            "r4_lines_eye",
             population,
             || LinesFixture::new(population),
             LinesFixture::edit_eye,
@@ -832,34 +638,7 @@ fn main() {
     );
     run_case(
         &filters,
-        "blend_publish_blend_moved",
-        1,
-        BlendFixture::new,
-        BlendFixture::move_blend,
-        BlendFixture::publish,
-        BlendFixture::counts,
-    );
-    run_case(
-        &filters,
-        "blend_publish_r4_moved",
-        1,
-        BlendFixture::new,
-        BlendFixture::move_r4,
-        BlendFixture::publish,
-        BlendFixture::counts,
-    );
-    run_case(
-        &filters,
-        "blend_publish_idle",
-        1,
-        BlendFixture::new,
-        BlendFixture::idle,
-        BlendFixture::publish,
-        BlendFixture::counts,
-    );
-    run_case(
-        &filters,
-        "r3_churn",
+        "r4_churn",
         10_000,
         || {
             let mut churn = LinesFixture::new(10_000);

@@ -13,9 +13,6 @@ pub trait DomainSpace:
 
     type Relative: Copy + Send + 'static;
 
-    /// False when `blend` returns `to`, so publication draws tick poses and skips the blend bookkeeping.
-    const BLENDS: bool = true;
-
     fn origin(&self) -> Self::Point;
 
     fn check(&self, point: Self::Point) -> Result<(), DomainError>;

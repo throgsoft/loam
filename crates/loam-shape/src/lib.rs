@@ -8,7 +8,6 @@ pub mod isovolume;
 pub mod polytope;
 pub mod polytope_geom;
 pub mod projected_edges;
-pub mod projection;
 pub mod shape;
 pub mod visualizable;
 

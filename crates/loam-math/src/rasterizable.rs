@@ -69,42 +69,12 @@ pub enum Projection<const N: usize> {
     /// Pinhole at `(0, 0, 0, focal_distance)`; a vertex at or beyond the eye in w is refused with `None`.
     Perspective4D { focal_distance: f32 },
 
-    // Coxeter, Regular Polytopes, 3rd ed., ch. 13.
-    /// Projects onto the cell plane; the normal must be outward and unit, and the eye outside the polytope.
-    Schlegel {
-        cell_normal: Vec4,
-        cell_offset: f32,
-        viewpoint_distance: f32,
-        basis: [Vec4; 3],
-    },
-
     // Wikipedia, Stereographic projection.
     /// Projects unit S³ from a unit pole into its perpendicular 3-flat.
     Stereographic {
         /// Unit pole; `Vec4::W` gives the usual xyz readout.
         pole: Vec4,
     },
-}
-
-impl Projection<4> {
-    pub fn schlegel(cell_normal: Vec4, cell_offset: f32, viewpoint_distance: f32) -> Projection<4> {
-        let (e1, e2, e3) = perp_frame(cell_normal);
-        Self::schlegel_with_basis(cell_normal, cell_offset, viewpoint_distance, [e1, e2, e3])
-    }
-
-    pub fn schlegel_with_basis(
-        cell_normal: Vec4,
-        cell_offset: f32,
-        viewpoint_distance: f32,
-        basis: [Vec4; 3],
-    ) -> Projection<4> {
-        Projection::Schlegel {
-            cell_normal,
-            cell_offset,
-            viewpoint_distance,
-            basis,
-        }
-    }
 }
 
 pub trait RasterizableSpace<const N: usize>: Space {
@@ -141,9 +111,7 @@ impl RasterizableSpace<3> for EuclideanR3 {
                 2 => Some(Vec3::new(point.x, point.y, 0.0)),
                 _ => None,
             },
-            Projection::Perspective4D { .. }
-            | Projection::Schlegel { .. }
-            | Projection::Stereographic { .. } => None,
+            Projection::Perspective4D { .. } | Projection::Stereographic { .. } => None,
         }
     }
 
@@ -183,26 +151,6 @@ impl RasterizableSpace<4> for EuclideanR4 {
                 }
                 let scale = focal_distance / denom;
                 Some(Vec3::new(point.x, point.y, point.z) * scale)
-            }
-            Projection::Schlegel {
-                cell_normal,
-                cell_offset,
-                viewpoint_distance,
-                basis,
-            } => {
-                // Coxeter, Regular Polytopes, 3rd ed., ch. 13.
-                let n = *cell_normal;
-                let eye = *viewpoint_distance * n;
-                let n_dot_eye = n.dot(eye);
-
-                let denom = n.dot(point) - n_dot_eye;
-                if denom.abs() < PROJECTION_DENOM_EPSILON {
-                    return None;
-                }
-                let t = (*cell_offset - n_dot_eye) / denom;
-                let result = eye + t * (point - eye);
-                let [e1, e2, e3] = *basis;
-                Some(Vec3::new(result.dot(e1), result.dot(e2), result.dot(e3)))
             }
             Projection::Stereographic { pole } => {
                 Some(stereographic_to_r3(point.normalize(), *pole))

@@ -1,5 +1,4 @@
 pub mod assets;
-pub mod bridge;
 pub mod camera;
 pub mod command;
 pub mod domain;
@@ -19,7 +18,6 @@ pub mod value;
 pub mod view;
 
 pub use assets::{Library, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId};
-pub use bridge::{Bridge, BridgeError, BridgeSpec};
 pub use camera::{
     CameraPair, CursorPolicy, FreeCamera, Orbit, Rig, CAMERA_RIG, CAMERA_TRAVEL, MOVE_BACKWARD,
     MOVE_DOWN, MOVE_FORWARD, MOVE_LEFT, MOVE_RIGHT, MOVE_UP,
@@ -53,9 +51,8 @@ pub use store::{
 pub use stores::{HasRelation, HasStore, Stores};
 pub use value::{Setting, Value};
 pub use view::{
-    Backdrop, DepthEnvelope, DomainRay, Eye, FieldRecord, Ground, Identity3, ImageRay, ImageSpace,
-    ImageSpaceId, InstanceRecord, Klein, Overlay, Pick, Placement, PointRecord, Projection4,
-    RefusalSource, Rigid, Section4, SectionCut, SegmentRecord, Sky, TextRecord, TriangleRecord,
-    ViewId, ViewMapping, ViewRecords, ViewRefusal, ViewRefusals, ViewSpec, ViewStyle, ViewSummary,
-    ViewTarget, Views, ViewsSnapshot,
+    Backdrop, DepthEnvelope, DomainRay, Eye, FieldRecord, Ground, ImageRay, ImageSpace,
+    ImageSpaceId, InstanceRecord, Overlay, Pick, PointRecord, Projection4, RefusalSource, Section4,
+    SectionCut, SegmentRecord, Sky, TextRecord, TriangleRecord, ViewId, ViewMapping, ViewRecords,
+    ViewRefusal, ViewRefusals, ViewSpec, ViewStyle, ViewSummary, ViewTarget, Views, ViewsSnapshot,
 };

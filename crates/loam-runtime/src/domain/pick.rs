@@ -3,14 +3,13 @@ use loam_shape::polytope::Polytope4;
 use super::{ChartPoint, ChartTangent, DomainError, DomainSpace, Pose, TypedDomain};
 use crate::assets::PreparedGeometry;
 use crate::entity::Entity;
-use crate::view::{self, DomainRay, ImageRay, Pick, Rigid, Vec4, ViewId, Views};
+use crate::view::{self, DomainRay, ImageRay, Pick, Vec4, ViewId, Views};
 
 impl<S: DomainSpace> TypedDomain<S> {
     pub(super) fn pick_view(
         &self,
         view: ViewId,
         ray: &ImageRay,
-        placement: Rigid,
         views: &Views,
         prepared: &[PreparedGeometry],
     ) -> Option<Pick> {
@@ -68,7 +67,6 @@ impl<S: DomainSpace> TypedDomain<S> {
             let Some((image_point, hit)) = hit else {
                 continue;
             };
-            let image_point = placement.apply(image_point);
             let Some(depth) = views.depth(image_point) else {
                 continue;
             };

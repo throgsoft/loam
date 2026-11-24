@@ -3,7 +3,7 @@
 //! `GreaterEqual`; every pass here writes that quantity, and `StandardZ` nodes serve the old paths only.
 
 use glam::{Mat4, Vec3};
-use loam_runtime::{Eye, Rigid};
+use loam_runtime::Eye;
 use wgpu::{CompareFunction, TextureFormat};
 
 pub const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
@@ -26,16 +26,4 @@ pub fn root_view_projection(eye: &Eye) -> Mat4 {
         Vec3::from(eye.position).extend(1.0),
     );
     root_projection(eye.fov_y, eye.aspect, eye.near) * basis.inverse()
-}
-
-pub fn placement_matrix(placement: Rigid) -> Mat4 {
-    Mat4::from_scale_rotation_translation(
-        Vec3::splat(placement.scale),
-        placement.pose.rotation,
-        placement.pose.translation,
-    )
-}
-
-pub fn placed_view_projection(eye: &Eye, placement: Rigid) -> Mat4 {
-    root_view_projection(eye) * placement_matrix(placement)
 }

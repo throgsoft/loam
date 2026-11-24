@@ -37,15 +37,13 @@ pub(crate) fn draw(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
         return;
     };
     if *ctx.app.toybox_debug.get() {
-        let placement = ctx.views.to_root(drag.image).and_then(|to| to.rigid());
         let anchor = r4
             .physics()
             .and_then(|physics| physics.held_anchor(drag.entity));
-        if let (Some(anchor), Some(tick), Some(drawn), Some(placement), Some(view), Some(eye)) = (
+        if let (Some(anchor), Some(tick), Some(drawn), Some(view), Some(eye)) = (
             anchor,
             r4.poses().get(drag.entity),
             r4.drawn_pose(drag.entity, alpha),
-            placement,
             r4.view(drag.view),
             r4.view_eye(drag.view)
                 .and_then(|eye| r4.drawn_pose(eye, alpha)),
@@ -56,7 +54,7 @@ pub(crate) fn draw(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
                     .apply(tick.frame.inverse().apply(anchor - tick.point));
             if let Some(point) = view.mapping().image_point(&eye, anchor) {
                 overlay.points.push(PointRecord {
-                    position: placement.apply(point),
+                    position: point,
                     radius_px: 6.0,
                     color: HANDLE_COLOR,
                 });
