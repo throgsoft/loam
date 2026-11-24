@@ -1,8 +1,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use loam_app::args::Args;
+use loam_app::host::{Bindings, HostConfig};
 use loam_app::session::SessionApp;
-use loam_runtime::{ActionEvent, ActionId, Bindings, HostConfig, Input, Session, SimConfig};
+use loam_runtime::{ActionEvent, ActionId, Input, Session, SimConfig};
 
 loam_runtime::stores! {
     #[derive(Default)]

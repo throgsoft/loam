@@ -1,11 +1,11 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use loam_app::args::Args;
+use loam_app::host::{Bindings, HostConfig};
 use loam_app::script::{Script, ScriptDriver};
 use loam_app::session::{run_script, SessionApp};
 use loam_runtime::{
-    Backdrop, Bindings, CameraPair, CursorPolicy, FreeCamera, Ground, HostConfig, Orbit, Rig,
-    Session, SimConfig, Sky,
+    Backdrop, CameraPair, CursorPolicy, FreeCamera, Ground, Orbit, Rig, Session, SimConfig, Sky,
 };
 
 loam_runtime::stores! {

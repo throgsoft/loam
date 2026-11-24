@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use loam_render::device::{FeatureRequest, GpuContext, RenderDevice};
-use loam_runtime::host::HostError;
 use loam_runtime::Stores;
 use web_time::Instant;
 use wgpu::{
@@ -11,6 +10,7 @@ use wgpu::{
 
 use super::app::Redraw;
 use super::frame::{failed, Frame, Target};
+use crate::host::HostError;
 
 pub(crate) enum Attempt {
     Presented,

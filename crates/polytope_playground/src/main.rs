@@ -2,11 +2,11 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use loam::app::environment::Environment;
+use loam::app::host::{run_headless, write_headless, write_stride};
 use loam::app::script::driver_from_args;
 use loam::app::session::{launch_or_headless, run_script};
 use loam::prelude::*;
 use loam::render::raymarch::{shape_id, BodyUniform};
-use loam::runtime::host::{run_headless, write_headless, write_stride};
 
 mod catalog;
 mod color;
@@ -225,7 +225,9 @@ pub(crate) fn boot(row: &[ShapeEntry]) -> Result<Boot, HostError> {
         SimConfig::default(),
     );
     let domain = session.register_domain(
-        DomainBuilder::new(DOMAIN_NAME, EuclideanR4).physics(toy::physics_config())?,
+        DomainBuilder::new(DOMAIN_NAME, EuclideanR4)
+            .physics(toy::physics_config())
+            .map_err(Rejection::from)?,
     );
     let root = session.views().root();
 

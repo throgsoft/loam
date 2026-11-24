@@ -2,15 +2,42 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::ops::Range;
 
+use loam_runtime::{
+    ActionEvent, ActionId, DomainError, Input, PhaseError, Publication, Rejection, RestoreError,
+    Session, Stores,
+};
 use loam_time::par::Sequential;
 
-use crate::command::Rejection;
-use crate::domain::DomainError;
-use crate::input::{ActionEvent, ActionId, Bindings, Input, Key};
-use crate::phase::PhaseError;
-use crate::publication::Publication;
-use crate::session::{RestoreError, Session};
-use crate::stores::Stores;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Key {
+    Space,
+    Escape,
+    Letter(char),
+    Digit(u8),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Bindings {
+    keys: Vec<(Key, ActionId)>,
+}
+
+impl Bindings {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn key(mut self, key: Key, action: ActionId) -> Self {
+        self.keys.push((key, action));
+        self
+    }
+
+    pub fn action(&self, key: Key) -> Option<ActionId> {
+        self.keys
+            .iter()
+            .find(|(bound, _)| *bound == key)
+            .map(|(_, action)| *action)
+    }
+}
 
 pub struct HostConfig {
     pub title: &'static str,
@@ -57,13 +84,6 @@ impl From<DomainError> for HostError {
 impl From<RestoreError> for HostError {
     fn from(error: RestoreError) -> Self {
         Self::Setup(Rejection::Restore(error))
-    }
-}
-
-#[cfg(feature = "physics")]
-impl From<loam_physics::EditError> for HostError {
-    fn from(error: loam_physics::EditError) -> Self {
-        Self::Setup(Rejection::Edit(error))
     }
 }
 

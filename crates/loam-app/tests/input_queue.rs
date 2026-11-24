@@ -62,7 +62,7 @@ fn overflow_releases_held_input_keeps_controls_and_drops_stale_pointer_bursts() 
     drain_messages_into(&mut batch);
     assert!(batch.is_empty());
 
-    let bindings = loam_runtime::Bindings::new();
+    let bindings = loam_app::host::Bindings::new();
     let mut map = InputMap::default();
     let mut batch = VecDeque::new();
     apply(

@@ -10,7 +10,6 @@ use web_sys::{HtmlCanvasElement, MessageEvent, OffscreenCanvas};
 #[cfg(feature = "egui")]
 use loam_egui::egui;
 use loam_render::device::{FeatureRequest, RenderDevice};
-use loam_runtime::host::HostError;
 use loam_runtime::{Session, Stores};
 use loam_time::par::Sequential;
 use web_time::Instant;
@@ -22,6 +21,7 @@ use super::frame::{failed, Frame};
 use super::input::TouchCapture;
 use super::pacing::Pace;
 use super::surface::{Attempt, SurfaceHost};
+use crate::host::HostError;
 use crate::session::input::message::{InputMessage, PointerPhase};
 use crate::session::input::queue;
 use crate::wasm::messages;

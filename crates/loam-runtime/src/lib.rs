@@ -6,7 +6,6 @@ pub mod domain;
 pub mod drag;
 pub mod entity;
 pub mod field;
-pub mod host;
 pub mod input;
 pub mod phase;
 #[cfg(feature = "physics")]
@@ -37,10 +36,7 @@ pub use domain::{
 pub use drag::{Drag, DragError, DragRelease};
 pub use entity::{Entities, EntitiesSnapshot, Entity, EntityKey, Epoch, RuntimeId, SceneId};
 pub use field::{FieldCost, FieldError, FieldOp, FIELD_FAR, FIELD_PROGRAM_ERROR};
-pub use host::{HostConfig, HostError};
-pub use input::{
-    ActionEvent, ActionId, Bindings, HostMessages, Input, Key, Pointer, PointerButton, PointerPhase,
-};
+pub use input::{ActionEvent, ActionId, HostMessages, Input, Pointer, PointerButton, PointerPhase};
 pub use phase::{Ctx, Order, Phase, PhaseError, Step, SystemEntry, Tick};
 #[cfg(feature = "physics")]
 pub use physics::{GrabConfig, GrabHold, Physics, PhysicsConfig, RestConfig, ThrowConfig};

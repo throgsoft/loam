@@ -491,12 +491,12 @@ fn cursor_name(policy: CursorPolicy) -> &'static str {
 #[cfg(test)]
 mod tests {
     use loam_runtime::{
-        Bindings, Ctx, DomainError, HostConfig, Input, Phase, Rejection, Session, SimConfig,
-        SpawnBundle,
+        Ctx, DomainError, Input, Phase, Rejection, Session, SimConfig, SpawnBundle,
     };
 
     use super::*;
     use crate::args::Args;
+    use crate::host::{Bindings, HostConfig};
     use crate::session::SessionApp;
 
     loam_runtime::stores! {

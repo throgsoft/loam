@@ -1,8 +1,10 @@
 use web_time::Instant;
 
 use loam_runtime::{
-    ActionEvent, Bindings, Input, Key, Pointer, PointerButton, PointerPhase as RuntimePointerPhase,
+    ActionEvent, Input, Pointer, PointerButton, PointerPhase as RuntimePointerPhase,
 };
+
+use crate::host::{Bindings, Key};
 
 pub mod message;
 pub mod queue;

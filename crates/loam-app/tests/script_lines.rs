@@ -1,11 +1,10 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use loam_app::args::Args;
+use loam_app::host::{Bindings, HostConfig};
 use loam_app::script::{Script, ScriptDriver};
 use loam_app::session::{run_script, SessionApp};
-use loam_runtime::{
-    AppCommand, Bindings, Dispatch, HostConfig, Outcome, Rejection, Session, SimConfig,
-};
+use loam_runtime::{AppCommand, Dispatch, Outcome, Rejection, Session, SimConfig};
 
 loam_runtime::stores! {
     #[derive(Default)]

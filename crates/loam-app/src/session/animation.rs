@@ -1,4 +1,4 @@
-use loam_runtime::host::HostError;
+use crate::host::HostError;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Next {

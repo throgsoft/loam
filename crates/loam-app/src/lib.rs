@@ -14,6 +14,7 @@ mod capture_off;
 mod capture_types;
 
 pub mod environment;
+pub mod host;
 #[cfg(feature = "egui")]
 pub mod keymap;
 #[cfg(not(target_arch = "wasm32"))]

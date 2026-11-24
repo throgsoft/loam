@@ -1,14 +1,13 @@
 use std::any::Any;
 
 use loam_math::{EuclideanR4, Space};
-use loam_runtime::host::run_headless;
 use loam_runtime::{
-    ActionEvent, ActionId, AppCommand, Backdrop, Bindings, Command, Ctx, DepthEnvelope, Dispatch,
+    ActionEvent, ActionId, AppCommand, Backdrop, Command, Ctx, DepthEnvelope, Dispatch,
     DomainBuilder, DomainError, DomainHandle, DomainRay, Entity, Eye, Facility, Ground, Growth,
-    HostConfig, ImageRay, Input, Instance, Key, LogCapacity, Material, Outcome, Owner, Phase,
-    PhaseError, Pose, PreparedGeometry, PreparedId, Projection4, Publication, Rejection,
-    Reservation, RestoreError, SchemaId, Section4, Session, SimConfig, Sky, SpawnBundle, Step,
-    Store, Tick, ViewMapping, ViewSpec, ViewTarget, DOMAIN_STEP,
+    ImageRay, Input, Instance, LogCapacity, Material, Outcome, Owner, Phase, PhaseError, Pose,
+    PreparedGeometry, PreparedId, Projection4, Publication, Rejection, Reservation, RestoreError,
+    SchemaId, Section4, Session, SimConfig, Sky, SpawnBundle, Step, Store, Tick, ViewMapping,
+    ViewSpec, ViewTarget, DOMAIN_STEP,
 };
 use loam_time::par::{Executor, Sequential};
 
@@ -682,56 +681,6 @@ fn a_reset_action_pressed_with_another_handler_ends_the_boundary_in_the_initial_
         .results()
         .iter()
         .any(|result| result.name == "reset" && result.outcome == Ok(Outcome::Done)));
-}
-
-#[test]
-fn a_headless_launch_resets_to_the_setup_state_or_the_first_boundary_or_the_setups_own_snapshot() {
-    const MARK: ActionId = ActionId("mark");
-    let launch_then_reset = |setup: fn(&mut Session<Probe>, DomainHandle<EuclideanR4>)| {
-        let (mut session, r4) = session();
-        session.dispatch(|d| d.spawn(placed(r4, Tag(7)))).unwrap();
-        session.on_action(MARK, |d| {
-            d.app.log.get_mut().push(9);
-            Ok(())
-        });
-        setup(&mut session, r4);
-        let config = HostConfig::new("probe", Bindings::new().key(Key::Space, MARK));
-        let first_frame = [(Key::Space, 0..1)];
-        run_headless(
-            &mut session,
-            &config,
-            2,
-            &first_frame,
-            1.0,
-            |_, _, _| Ok(()),
-        )
-        .expect("a launch does not fail on what its setup left");
-        assert_eq!(session.current_tick(), Tick(2));
-        session.reset().unwrap();
-        assert_eq!(session.current_tick(), Tick(0));
-        let mut tags: Vec<u32> = session.app.tags.iter().map(|(_, tag)| tag.0).collect();
-        tags.sort_unstable();
-        (session.app.log.get().clone(), tags)
-    };
-
-    let (log, tags) = launch_then_reset(|_, _| {});
-    assert!(
-        log.is_empty(),
-        "the reset kept the first frame's input: {log:?}"
-    );
-    assert_eq!(tags, [7]);
-
-    let (log, _) = launch_then_reset(|session, _| {
-        session.submit(Command::App(Box::new(Mark(1))));
-    });
-    assert_eq!(log, [1, 9], "the first boundary is the fallback");
-
-    let (log, tags) = launch_then_reset(|session, r4| {
-        session.set_initial().unwrap();
-        session.dispatch(|d| d.spawn(placed(r4, Tag(8)))).unwrap();
-    });
-    assert!(log.is_empty());
-    assert_eq!(tags, [7], "the launch replaced the setup's own snapshot");
 }
 
 #[test]

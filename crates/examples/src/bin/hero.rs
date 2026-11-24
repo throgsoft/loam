@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
 use loam::app::environment::Environment;
+use loam::app::host;
 use loam::app::script::{driver_from_args, ScriptDriver};
 use loam::app::session::{launch_or_headless, run_script};
 use loam::physics::body::MASK_ALL;
@@ -12,7 +13,6 @@ use loam::physics::euclidean_r4::{polytope_body_r4, register_default_narrowphase
 use loam::physics::{BodyDef, BodyId};
 use loam::prelude::*;
 use loam::render::TriangleFeed;
-use loam::runtime::host;
 use loam::shape::polytope::{polytope_section_faces_append, SectionScratch};
 use loam::text::ab_glyph::FontRef;
 use loam::text::glyph::{
@@ -514,7 +514,11 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
         },
     );
     let physics = PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::Y * GRAVITY);
-    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).physics(physics)?);
+    let r4 = session.register_domain(
+        DomainBuilder::new("r4", EuclideanR4)
+            .physics(physics)
+            .map_err(Rejection::from)?,
+    );
     session.dispatch(|d| -> Result<(), Rejection> {
         for letter in letters {
             let entry = letter.entry;

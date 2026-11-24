@@ -15,6 +15,8 @@ pub use loam_time::FixedTimestep;
 #[cfg(feature = "egui")]
 pub use loam_app::egui;
 #[cfg(feature = "app")]
+pub use loam_app::host::{Bindings, HostConfig, HostError, Key};
+#[cfg(feature = "app")]
 pub use loam_app::session::{
     launch, launch_with, orbit, CaptureControl, CommandSender, FrameHook, InputHook, PublishedHook,
     SessionApp, Target,

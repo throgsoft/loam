@@ -2,6 +2,10 @@
 #[allow(dead_code)]
 mod animation;
 
+mod host {
+    pub use loam_app::host::HostError;
+}
+
 use animation::{Lifecycle, Next};
 
 #[test]
@@ -56,7 +60,7 @@ fn recovery_schedules_once_after_success_and_never_while_paused_or_failed() {
     lifecycle = Lifecycle::Ready;
     assert!(matches!(
         animation::frame(false, &mut lifecycle, false, || Err(
-            loam_runtime::host::HostError::Host("stopped".into())
+            loam_app::host::HostError::Host("stopped".into())
         )),
         Next::Failed(_)
     ));

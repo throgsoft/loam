@@ -8,7 +8,6 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{CursorGrabMode, Window, WindowAttributes, WindowId};
 
 use loam_render::device::{FeatureRequest, RenderDevice};
-use loam_runtime::host::HostError;
 use loam_runtime::{PointerButton, Session, Stores};
 
 use super::app::SessionApp;
@@ -18,6 +17,7 @@ use super::input::{winit_alt, winit_key};
 use super::pacing::Pace;
 use super::surface::{Attempt, SurfaceHost};
 use crate::args::Args;
+use crate::host::HostError;
 use crate::par_native::ScopedThreads;
 use crate::WasmConfig;
 

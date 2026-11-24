@@ -2,8 +2,6 @@ use loam_console::ConsoleWriter;
 #[cfg(feature = "egui")]
 use loam_egui::egui;
 use loam_render::pass::{FramePass, Section};
-use loam_runtime::host::HostConfig;
-use loam_runtime::host::HostError;
 use loam_runtime::{
     ActionId, CursorPolicy, Eye, Growth, Input, Publication, Session, Setting, Stores,
 };
@@ -14,6 +12,7 @@ use super::cursor::CursorCapture;
 use super::pacing::Pacer;
 use crate::args::Args;
 use crate::capture::{CaptureRequest, CaptureUnavailable};
+use crate::host::{HostConfig, HostError};
 use crate::script::{driver_from_args, ScriptDriver};
 
 /// Runs before the frame boundary with read-only session input.

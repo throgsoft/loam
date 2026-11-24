@@ -1,6 +1,5 @@
 use loam_console::{render_line, CommandLine, LineKind};
-use loam_runtime::host::HostError;
-use loam_runtime::{Bindings, Key, PointerButton, Publication, Session, Stores};
+use loam_runtime::{PointerButton, Publication, Session, Stores};
 use loam_time::par::Sequential;
 
 use super::app::SessionApp;
@@ -9,6 +8,7 @@ use super::cursor::CursorCapture;
 use super::debug_layer::LayerSlot;
 use super::frame::advance_session;
 use super::input::{dom_key, InputMap};
+use crate::host::{Bindings, HostError, Key};
 use crate::script::{ScriptDriver, ScriptStatus, ScriptStep};
 
 // A 720p canvas, so pointer deltas and the eye aspect match a common windowed run.

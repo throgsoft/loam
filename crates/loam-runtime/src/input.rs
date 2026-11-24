@@ -116,34 +116,3 @@ impl Input {
             })
     }
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Key {
-    Space,
-    Escape,
-    Letter(char),
-    Digit(u8),
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Bindings {
-    keys: Vec<(Key, ActionId)>,
-}
-
-impl Bindings {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn key(mut self, key: Key, action: ActionId) -> Self {
-        self.keys.push((key, action));
-        self
-    }
-
-    pub fn action(&self, key: Key) -> Option<ActionId> {
-        self.keys
-            .iter()
-            .find(|(bound, _)| *bound == key)
-            .map(|(_, action)| *action)
-    }
-}

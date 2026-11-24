@@ -10,9 +10,6 @@ use winit::window::Window;
 use loam_render::device::GpuContext;
 use loam_render::pass::PublishedFrame;
 use loam_render::present::Presenter;
-#[cfg(not(target_arch = "wasm32"))]
-use loam_runtime::host::HostConfig;
-use loam_runtime::host::HostError;
 use loam_runtime::{Eye, PhaseError, Publication, Session, Stores};
 use loam_time::par::Executor;
 use loam_time::{frame_trace, FixedTimestep};
@@ -29,6 +26,9 @@ use super::input::InputMap;
 #[cfg(feature = "text")]
 use super::text::ScreenText;
 use crate::capture::Capture;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::host::HostConfig;
+use crate::host::{HostError, Key};
 
 pub struct Target<'a> {
     pub view: &'a TextureView,
@@ -228,7 +228,7 @@ impl<A: Stores> Frame<A> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn action(&mut self, key: loam_runtime::Key, pressed: bool, consumed: bool) {
+    pub(crate) fn action(&mut self, key: Key, pressed: bool, consumed: bool) {
         self.state
             .input
             .host_action(&self.state.app.config.bindings, key, pressed, consumed);
@@ -672,9 +672,8 @@ mod tests {
     use loam_render::device::FeatureRequest;
     use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
     use loam_runtime::{
-        ActionId, Bindings, Command, DomainBuilder, FreeCamera, HostConfig, Identity3, Key,
-        LogCapacity, Material, Phase, Pose, PreparedGeometry, Rig, SimConfig, SpawnBundle, Tick,
-        ViewSpec,
+        ActionId, Command, DomainBuilder, FreeCamera, Identity3, LogCapacity, Material, Phase,
+        Pose, PreparedGeometry, Rig, SimConfig, SpawnBundle, Tick, ViewSpec,
     };
     use wgpu::{
         BackendOptions, Backends, Extent3d, Instance, InstanceDescriptor, NoopBackendOptions,
@@ -685,6 +684,7 @@ mod tests {
 
     use super::*;
     use crate::args::Args;
+    use crate::host::Bindings;
     use crate::session::CursorPolicy;
 
     const FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
