@@ -1,9 +1,9 @@
 use glam::Vec4;
 use loam::math::{EuclideanR4, Rotor, Rotor4};
 use loam::physics::euclidean_r4::{
-    halfspace4_body_r4, register_default_narrowphase, regular_polytope_body_r4,
+    flush_halfspace4_body_r4, halfspace4_body_r4, register_default_narrowphase,
+    regular_polytope_body_r4,
 };
-use loam::physics::manifold::PENETRATION_SLOP;
 use loam::physics::{BodyDef, RigidBody};
 use loam::runtime::{
     Dispatch, DomainHandle, Domains, Entity, GrabConfig, Instance, PhysicsConfig, Pose, Rejection,
@@ -23,7 +23,6 @@ const ARENA_TOP: f32 = FLOOR_Y + 2.0 * ARENA_HALF;
 const BODY_MASS: f32 = 1.0;
 const BODY_RESTITUTION: f32 = 0.05;
 const WALL_RESTITUTION: f32 = 0.4;
-const PHYSICS_FLOOR_Y: f32 = FLOOR_Y + 2.0 * PENETRATION_SLOP;
 const SPAWN_SPACING: f32 = 1.4;
 const SPAWN_CLEARANCE: f32 = 0.20;
 const TICK_DT: f32 = 1.0 / 60.0;
@@ -92,9 +91,7 @@ fn clamp_target_to_arena(current: Vec4, target: Vec4) -> Vec4 {
     let reach = ARENA_HALF - BODY_SIZE;
     Vec4::new(
         target.x.clamp(-reach, reach),
-        target
-            .y
-            .clamp(PHYSICS_FLOOR_Y + BODY_SIZE, ARENA_TOP - BODY_SIZE),
+        target.y.clamp(FLOOR_Y + BODY_SIZE, ARENA_TOP - BODY_SIZE),
         target.z.clamp(-reach, reach),
         current.w,
     )
@@ -172,16 +169,16 @@ pub(crate) fn fill_depth_bands(
     out.sort_by_key(|band| band.index);
 }
 
-fn arena() -> [(Vec4, f32, f32); 8] {
+fn arena() -> [(Option<BodyDef<EuclideanR4>>, f32); 8] {
     [
-        (Vec4::Y, PHYSICS_FLOOR_Y, BODY_RESTITUTION),
-        (-Vec4::Y, -ARENA_TOP, WALL_RESTITUTION),
-        (Vec4::X, -ARENA_HALF, WALL_RESTITUTION),
-        (-Vec4::X, -ARENA_HALF, WALL_RESTITUTION),
-        (Vec4::Z, -ARENA_HALF, WALL_RESTITUTION),
-        (-Vec4::Z, -ARENA_HALF, WALL_RESTITUTION),
-        (Vec4::W, -ARENA_HALF, WALL_RESTITUTION),
-        (-Vec4::W, -ARENA_HALF, WALL_RESTITUTION),
+        (flush_halfspace4_body_r4(Vec4::Y, FLOOR_Y), BODY_RESTITUTION),
+        (halfspace4_body_r4(-Vec4::Y, -ARENA_TOP), WALL_RESTITUTION),
+        (halfspace4_body_r4(Vec4::X, -ARENA_HALF), WALL_RESTITUTION),
+        (halfspace4_body_r4(-Vec4::X, -ARENA_HALF), WALL_RESTITUTION),
+        (halfspace4_body_r4(Vec4::Z, -ARENA_HALF), WALL_RESTITUTION),
+        (halfspace4_body_r4(-Vec4::Z, -ARENA_HALF), WALL_RESTITUTION),
+        (halfspace4_body_r4(Vec4::W, -ARENA_HALF), WALL_RESTITUTION),
+        (halfspace4_body_r4(-Vec4::W, -ARENA_HALF), WALL_RESTITUTION),
     ]
 }
 
@@ -251,8 +248,8 @@ fn spawn_walls(
     dispatch: &mut Dispatch<'_, Playground>,
     domain: DomainHandle<EuclideanR4>,
 ) -> Result<(), Rejection> {
-    for (normal, offset, restitution) in arena() {
-        let plane = halfspace4_body_r4(normal, offset)
+    for (plane, restitution) in arena() {
+        let plane = plane
             .ok_or(Rejection::Unsupported("the wall collider"))?
             .restitution(restitution)?;
         dispatch.spawn(

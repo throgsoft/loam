@@ -345,9 +345,7 @@ fn install_systems(
         } else {
             GrabHold::Center
         };
-        if let Some(physics) = ctx.domains.typed(domain)?.physics_mut() {
-            physics.set_grab_hold(hold);
-        }
+        ctx.domains.physics(domain)?.set_grab_hold(hold);
         Ok(())
     });
     session.system(Phase::Dispatch, "pointer", move |mut ctx| {

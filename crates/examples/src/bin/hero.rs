@@ -9,7 +9,6 @@ use loam::physics::body::MASK_ALL;
 use loam::physics::euclidean_r4::{
     halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope_body_r4,
 };
-use loam::physics::BodyId;
 use loam::prelude::*;
 use loam::shape::polytope::{polytope_section_faces_append, SectionScratch};
 use loam::text::ab_glyph::FontRef;
@@ -95,19 +94,11 @@ struct Drop {
 }
 
 #[derive(Clone, Copy)]
-struct Held {
-    body: BodyId,
-    velocity: Vec4,
-    spin: Bivector4,
-}
-
-#[derive(Clone, Copy)]
 struct Stage {
     tick: u32,
     next_spawn: u32,
     rng: u64,
     seed: u64,
-    paused: bool,
     released: bool,
     frozen: bool,
 }
@@ -119,7 +110,6 @@ impl Stage {
             next_spawn: RAIN_START_FRAME,
             rng: (seed ^ 0x9e37_79b9_7f4a_7c15).max(1),
             seed,
-            paused: false,
             released: false,
             frozen: false,
         }
@@ -158,7 +148,6 @@ stores! {
         letters: Store<Letter>,
         drops: Store<Drop>,
         stage: Value<Stage>,
-        held: Value<Vec<Held>>,
         mesh: Value<TriangleMesh<3>>,
     }
     publishes Shown;
@@ -360,42 +349,25 @@ fn bindings() -> Bindings {
         .key(Key::Letter('n'), RESEED)
 }
 
-fn hold(
+fn freeze(
     d: &mut Dispatch<'_, HeroStores>,
     r4: DomainHandle<EuclideanR4>,
-    asleep: bool,
 ) -> Result<(), Rejection> {
     let physics = d.domains.physics(r4)?;
-    if !asleep {
-        for held in d.app.held.get() {
-            if let Some(entity) = physics.entity(held.body) {
-                physics.set_velocity(entity, held.velocity, held.spin)?;
-            }
-        }
-        d.app.held.get_mut().clear();
-        return Ok(());
-    }
-    let mut held = Vec::new();
+    let mut moving = Vec::new();
     for dense in 0..physics.world().bodies().len() {
         let id = physics.world().bodies().id_at(dense);
-        let Some(body) = physics.world().body(id) else {
-            continue;
-        };
-        if body.is_static() {
-            continue;
-        }
-        held.push(Held {
-            body: id,
-            velocity: body.velocity,
-            spin: body.angular_velocity,
-        });
-    }
-    for row in &held {
-        if let Some(entity) = physics.entity(row.body) {
-            physics.sleep_body(entity)?;
+        if physics
+            .world()
+            .body(id)
+            .is_some_and(|body| !body.is_static())
+        {
+            moving.extend(physics.entity(id));
         }
     }
-    d.app.held.set(held);
+    for entity in moving {
+        physics.sleep_body(entity)?;
+    }
     Ok(())
 }
 
@@ -532,12 +504,7 @@ fn build() -> Result<Session<HeroStores>, HostError> {
         ..Orbit::around(centre.to_array(), BOOT_ORBIT_DISTANCE)
     }));
 
-    session.on_action(PAUSE, move |d| {
-        let paused = !d.app.stage.paused;
-        hold(d, r4, paused)?;
-        d.app.stage.get_mut().paused = paused;
-        Ok(())
-    });
+    session.pause_on(PAUSE);
     // The seed is read at the press, because the reset lands before the reseed.
     session.system(Phase::Dispatch, "keys", |ctx| {
         if ctx.input.pressed(RESEED) {
@@ -557,9 +524,6 @@ fn build() -> Result<Session<HeroStores>, HostError> {
         "assemble",
         move |ctx| {
             let stage = *ctx.app.stage;
-            if stage.paused {
-                return Ok(());
-            }
             let domain = ctx.domains.typed(r4)?;
             if !stage.released {
                 for (entity, letter) in ctx.app.letters.iter() {
@@ -598,7 +562,7 @@ fn build() -> Result<Session<HeroStores>, HostError> {
         "settle",
         move |ctx| {
             let mut stage = *ctx.app.stage;
-            if stage.paused || stage.frame() >= SEQUENCE_FRAMES {
+            if stage.frame() >= SEQUENCE_FRAMES {
                 return Ok(());
             }
             {
@@ -608,18 +572,8 @@ fn build() -> Result<Session<HeroStores>, HostError> {
                         continue;
                     };
                     let scenery_only = physics
-                        .world()
-                        .manifolds()
-                        .filter(|(key, manifold)| {
-                            !manifold.points.is_empty() && (key.0 == id || key.1 == id)
-                        })
-                        .all(|(key, _)| {
-                            let other = if key.0 == id { key.1 } else { key.0 };
-                            physics
-                                .world()
-                                .body(other)
-                                .is_some_and(|body| body.inv_mass() == 0.0)
-                        });
+                        .touching(entity)
+                        .all(|(_, body)| body.inv_mass() == 0.0);
                     let Some(body) = physics.world().body(id).copied() else {
                         continue;
                     };
@@ -646,10 +600,7 @@ fn build() -> Result<Session<HeroStores>, HostError> {
                     {
                         continue;
                     }
-                    let touched = physics.world().manifolds().any(|(key, manifold)| {
-                        (key.0 == id || key.1 == id) && !manifold.points.is_empty()
-                    });
-                    if touched {
+                    if physics.touching(entity).next().is_some() {
                         physics.set_collision_filter(entity, GROUP_LANDED, MASK_ALL)?;
                     }
                 }
@@ -662,7 +613,7 @@ fn build() -> Result<Session<HeroStores>, HostError> {
                     ctx.commands
                         .try_app_fn(
                             "freeze",
-                            move |d: &mut Dispatch<'_, HeroStores>| match hold(d, r4, true) {
+                            move |d: &mut Dispatch<'_, HeroStores>| match freeze(d, r4) {
                                 Ok(()) => Ok(Outcome::Done),
                                 Err(error) => {
                                     d.app.stage.get_mut().frozen = false;

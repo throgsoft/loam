@@ -9,7 +9,6 @@ const POLYTOPE_SCALE: f32 = 1.5;
 #[derive(Clone, Copy)]
 struct Spin {
     omega: Bivector4,
-    paused: bool,
 }
 
 stores! {
@@ -29,7 +28,6 @@ fn build(args: Args) -> Result<(Session<TesseractStores>, SessionApp<TesseractSt
     session.dispatch(|d| -> Result<(), Rejection> {
         let spin = Spin {
             omega: Bivector4::basis(2) * SPIN_RATE,
-            paused: false,
         };
         d.spawn(
             SpawnBundle::new()
@@ -45,12 +43,7 @@ fn build(args: Args) -> Result<(Session<TesseractStores>, SessionApp<TesseractSt
         Ok(())
     })?;
 
-    session.on_action(PAUSE, |d| {
-        for (_, spin) in d.app.spin.iter_mut() {
-            spin.paused = !spin.paused;
-        }
-        Ok(())
-    });
+    session.pause_on(PAUSE);
     session.reset_on(RESET);
 
     session.set_rig(Rig::Orbit(Orbit {
@@ -61,9 +54,6 @@ fn build(args: Args) -> Result<(Session<TesseractStores>, SessionApp<TesseractSt
     session.system(Phase::Simulation, "spin", move |ctx| {
         let r4 = ctx.domains.typed(r4)?;
         for (entity, spin) in ctx.app.spin.iter() {
-            if spin.paused {
-                continue;
-            }
             if let Some(pose) = r4.poses().get(entity) {
                 let frame = ((spin.omega * ctx.step.dt).exp() * pose.frame).normalize();
                 r4.set_frame(entity, frame)?;
