@@ -1,6 +1,5 @@
 use std::any::Any;
 
-use loam_physics::collision::VectorOps;
 use loam_physics::{BodyDef, BodyId, PhysicsSpace};
 
 use super::{DomainError, Homogeneous, TypedDomain};
