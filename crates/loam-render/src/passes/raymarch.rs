@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use loam_runtime::{Eye, PublishedView};
 use wgpu::{CommandEncoder, Queue};
 
 use crate::device::GpuContext;
@@ -34,6 +35,10 @@ impl RaymarchPass {
 
     pub fn publish(&self, uniforms: RayMarchUniforms) {
         self.shared.borrow_mut().uniforms = uniforms;
+    }
+
+    pub fn set_params(&self, params: [f32; 4]) {
+        self.shared.borrow_mut().uniforms.params = params;
     }
 }
 
@@ -75,6 +80,16 @@ impl FramePass for RaymarchPass {
             Viewport::full([target.size.0, target.size.1]),
         );
         Ok(())
+    }
+
+    fn read_publication(&mut self, eye: &Eye, _views: &[PublishedView]) {
+        let uniforms = &mut self.shared.borrow_mut().uniforms;
+        *uniforms = RayMarchUniforms {
+            params: uniforms.params,
+            time: uniforms.time,
+            tick: uniforms.tick,
+            ..RayMarchUniforms::from_eye(eye)
+        };
     }
 
     fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
