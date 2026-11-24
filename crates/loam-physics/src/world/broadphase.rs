@@ -136,7 +136,7 @@ mod tests {
     use crate::world::World;
 
     #[test]
-    fn a_group_outside_the_others_mask_never_reaches_the_narrowphase() {
+    fn masked_group() {
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);
         let a = world.push_body(sphere_body_r3(Vec3::ZERO, Vec3::ZERO, 1.0, 1.0).unwrap());

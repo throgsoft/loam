@@ -10,7 +10,7 @@ fn tetrahedron(apex: Vec3) -> Shape {
 }
 
 #[test]
-fn equal_shapes_share_one_entry_and_a_single_moved_vertex_gets_its_own() {
+fn deduplication() {
     let mut store = GeometryStore::default();
 
     let first = store.prepare(tetrahedron(Vec3::Z));

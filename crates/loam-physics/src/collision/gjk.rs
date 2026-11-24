@@ -252,7 +252,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn posed_support_uses_the_inverse_rotation() {
+    fn posed_support() {
         let local = [
             Vec3::new(0.6, 0.1, -0.2),
             Vec3::new(-0.4, 0.7, 0.15),

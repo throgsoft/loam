@@ -316,7 +316,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn epa_r4_contact_is_equivariant_under_uniform_scaling() {
+    fn uniform_scaling() {
         use loam_shape::polytope_geom::{
             cell120_vertices, cell16_vertices, cell24_vertices, cell600_vertices,
             pentatope_vertices, tesseract_vertices,

@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn wall_contact_leaves_through_the_near_face_in_either_pair_order() {
+    fn wall_pair_order() {
         let mut np = Narrowphase::<EuclideanR4>::new();
         register_default_narrowphase(&mut np);
         let mut geometry = crate::geometry::GeometryStore::default();
@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn a_flat_landing_bounces_to_its_restitution_height_at_any_step_size() {
+    fn flat_landing() {
         const HALF: f32 = 0.225;
         const RESTITUTION: f32 = 0.05;
         for dt in [1.0 / 240.0, 1.0 / 960.0, 1.0 / 1920.0] {
@@ -639,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hull_dropped_on_a_corner_settles_without_climbing_its_own_contacts() {
+    fn corner_landing() {
         const LANDING_STEPS: usize = 400;
         const RESTING_STEPS: usize = 800;
         const CLIMB_TOLERANCE: f32 = 5e-4;
@@ -685,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn sphere_sphere_off_plane_contact_resolves_along_line_of_centers() {
+    fn off_plane_spheres() {
         let mut world = World::new(EuclideanR4);
         register_default_narrowphase(&mut world.narrowphase);
         let a_pos = Vec4::new(-0.8, -0.4, 0.3, 0.2);
@@ -708,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn integrated_orientation_follows_the_world_frame_omega_and_stays_a_unit_rotor() {
+    fn orientation_integration() {
         let space = EuclideanR4;
         let start = Iso4Flat {
             rotation: Bivector4::new(0.8, 0.0, 0.0, std::f32::consts::FRAC_PI_2, 0.0, 0.9).exp(),

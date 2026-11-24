@@ -49,7 +49,7 @@ fn torus_world(volume: &Isovolume<3>, x: f32) -> (World<EuclideanR3>, BodyId) {
 }
 
 #[test]
-fn a_body_rests_on_an_sdf_extracted_torus_and_falls_through_its_hole() {
+fn torus_hole() {
     let volume = extract();
     let (mut world, sphere) = torus_world(&volume, MAJOR);
 

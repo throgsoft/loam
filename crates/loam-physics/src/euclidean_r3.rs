@@ -568,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn colliding_spheres_bounce_apart_and_spin_only_when_the_hit_is_off_centre() {
+    fn sphere_collision() {
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn integrated_orientation_follows_the_world_frame_omega_and_stays_a_unit_rotor() {
+    fn orientation_integration() {
         let space = EuclideanR3;
         let start = Iso3 {
             rotation: rotor_to_quat(Bivector3::new(0.8, 1.2, 0.9).exp()),

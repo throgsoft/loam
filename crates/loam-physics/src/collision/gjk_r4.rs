@@ -184,7 +184,7 @@ mod tests {
     use loam_math::{Bivector, Bivector4, Plane4};
 
     #[test]
-    fn a_posed_hull_supports_where_the_world_vertices_would() {
+    fn posed_hull() {
         let local = [
             Vec4::new(0.6, 0.1, -0.2, 0.35),
             Vec4::new(-0.4, 0.7, 0.15, -0.5),
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn gjk_r4_reports_overlap_exactly_when_the_shapes_overlap_down_to_small_gaps() {
+    fn small_gaps() {
         use loam_shape::polytope_geom::tesseract_vertices;
 
         for gap in [1e-5, 1e-4, 5e-4, 1e-3] {

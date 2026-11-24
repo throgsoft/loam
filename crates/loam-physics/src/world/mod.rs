@@ -1099,7 +1099,7 @@ mod tests {
         }
 
         #[test]
-        fn a_perfectly_elastic_rebound_conserves_kinetic_energy_in_r3_and_r4() {
+        fn elastic_rebound() {
             let mut world = World::new(EuclideanR3);
             register_default_narrowphase(&mut world.narrowphase);
             let sphere = world.push_body(
@@ -1174,7 +1174,7 @@ mod tests {
         }
 
         #[test]
-        fn friction_brakes_a_slide_and_spins_it_toward_rolling_in_r3_and_r4() {
+        fn sliding_friction() {
             let mut world = World::new(EuclideanR3);
             register_default_narrowphase(&mut world.narrowphase);
             world
@@ -1265,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unrelated_despawn_or_spawn_leaves_a_surviving_island_bit_identical() {
+    fn unrelated_island_edit() {
         let dt = 1.0 / 240.0;
         let settle_steps = 400;
         let (mut world, _, spheres) = settled_islands(dt, settle_steps);
@@ -1318,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn a_despawn_leaves_no_contact_handle_or_dirty_row_for_the_body_that_takes_its_slot() {
+    fn reused_slot() {
         let dt = 1.0 / 240.0;
         let (mut world, floor, spheres) = settled_islands(dt, 400);
         let doomed = spheres[1];
@@ -1381,7 +1381,7 @@ mod tests {
     const EDIT_SETTLE_STEPS: usize = 400;
 
     #[test]
-    fn a_rejected_edit_gravity_or_time_step_leaves_the_world_untouched() {
+    fn rejected_edit() {
         let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
         let id = spheres[0];
         let before = body_state(&world, id);
@@ -1523,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dirty_drain_publishes_every_pose_change_and_no_sleeping_body_that_stayed_put() {
+    fn dirty_drain() {
         let (mut world, _, spheres) = settled_islands(EDIT_DT, 4);
         let _ = world.drain_dirty().count();
         world.step(EDIT_DT, &Sequential).unwrap();
@@ -1576,7 +1576,7 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_restores_into_a_rebuilt_world_or_rewinds_its_own_with_the_contact_cache() {
+    fn snapshot_restore() {
         let (mut world, floor, spheres) = settled_islands(EDIT_DT, EDIT_SETTLE_STEPS);
         let key = (floor, spheres[0]);
         let settled = normal_impulses(&world, key);
@@ -1671,7 +1671,7 @@ mod tests {
     }
 
     #[test]
-    fn gravity_does_not_wake_a_sleeping_support_until_its_neighbor_is_driven() {
+    fn sleeping_support() {
         let (mut world, lower, upper, distant) = stacked_pair_world(false);
         world.despawn_body(distant).unwrap();
         let dt = 1.0 / 240.0;
@@ -1720,7 +1720,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_order_does_not_reach_a_contacting_pairs_trajectory() {
+    fn storage_order() {
         let dt = 1.0 / 240.0;
         let steps = 120;
         let mut trajectories = Vec::new();
@@ -1812,7 +1812,7 @@ mod tests {
     }
 
     #[test]
-    fn broadphase_culls_only_pairs_the_narrowphase_would_reject() {
+    fn broadphase_culling() {
         for seed in PERMUTATION_SEEDS {
             let mut world = random_scene(seed, 40, 3.0);
             let mut emitted = Vec::new();
@@ -1853,7 +1853,7 @@ mod tests {
     }
 
     #[test]
-    fn a_warmed_world_steps_and_publishes_without_allocating() {
+    fn warm_step_allocation() {
         const DT: f32 = 1.0 / 240.0;
         let mut world = settled_columns(PERMUTATION_SEEDS[0]);
         for _ in 0..2 {

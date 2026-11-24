@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_definition_or_replacement_is_refused_and_the_previous_body_stands() {
+    fn invalid_definition() {
         assert!(BodyDef::new(
             Vec3::ZERO,
             Vec3::ZERO,
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn sleeping_keeps_nominal_mass_and_an_explicit_impulse_wakes_the_body() {
+    fn sleeping_body() {
         let mut body = body_r3(Vec3::ZERO, 2.0, 1.0);
         body.velocity = Vec3::Y;
         body.angular_velocity = Bivector3::new(1.0, 0.0, 0.0);
@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn an_impulse_at_a_point_spins_a_dynamic_body_by_its_lever_arm_and_never_a_static_one() {
+    fn impulse_at_point() {
         let position = Vec3::new(2.0, -1.0, 3.0);
         let impulse = Vec3::new(8.0, -4.0, 2.0);
 

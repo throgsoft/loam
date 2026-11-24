@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn a_certain_field_supports_a_sphere_while_an_uncertain_sign_creates_no_contact() {
+    fn uncertain_sign() {
         let (mut world, anchor, field, ball) = ground_world();
         assert_eq!(
             world.bind_field(anchor, field),
@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restore_rewinds_field_bindings_and_refuses_a_world_whose_field_list_differs() {
+    fn restore_bindings() {
         let (mut world, _, field, ball) = ground_world();
         let saved = world.snapshot();
         world.bind_field(ball, field).expect("binding");
@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn the_field_narrowphase_refuses_what_it_cannot_answer_and_names_why() {
+    fn unanswerable_query() {
         let world = one_body(Shape::sphere_at_origin(0.5), Vec3::new(0.0, 1.0, 0.0));
         let id = world.bodies.id_at(0);
         assert_eq!(

@@ -6,7 +6,7 @@ use loam_physics::{euclidean_r3 as r3, euclidean_r4 as r4, World};
 use loam_shape::polytope_geom::tesseract_vertices;
 
 #[test]
-fn sphere_hull_contacts_have_no_fixed_world_size_limit() {
+fn sphere_hull() {
     for scale in [0.1, 1.0, 100.0] {
         let mut w3 = World::new(EuclideanR3);
         r3::register_default_narrowphase(&mut w3.narrowphase);
