@@ -1,7 +1,11 @@
 use std::time::Duration;
 
-// Pixels in one wheel line when a native pixel scroll delta is converted to lines.
-pub const SCROLL_PIXELS_PER_LINE: f32 = 50.0;
+// A browser reports one wheel notch as 100 pixels and winit as one line, so a notch is one line on both.
+const WHEEL_PIXELS_PER_LINE: f32 = 100.0;
+
+pub(crate) fn wheel_lines(pixels: [f32; 2]) -> [f32; 2] {
+    pixels.map(|p| p / WHEEL_PIXELS_PER_LINE)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerPhase {

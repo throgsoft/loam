@@ -18,8 +18,8 @@ pub use loam_app::egui;
 pub use loam_app::host::{Bindings, HostConfig, HostError, Key};
 #[cfg(feature = "app")]
 pub use loam_app::session::{
-    launch, launch_with, orbit, CaptureControl, CommandSender, InputHook, PublishedHook,
-    SessionApp, Target,
+    launch, launch_with, CaptureControl, CommandSender, InputHook, PublishedHook, SessionApp,
+    Target,
 };
 #[cfg(feature = "app")]
 pub use loam_app::{args::Args, LaunchMode, WasmConfig};

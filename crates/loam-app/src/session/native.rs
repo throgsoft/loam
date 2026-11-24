@@ -12,7 +12,7 @@ use loam_runtime::{PointerButton, Session, Stores};
 
 use super::app::SessionApp;
 use super::frame::{failed, Frame};
-use super::input::message::SCROLL_PIXELS_PER_LINE;
+use super::input::message::wheel_lines;
 use super::input::{winit_alt, winit_key};
 use super::pacing::Pace;
 use super::surface::{Attempt, SurfaceHost};
@@ -340,10 +340,9 @@ impl<A: Stores> ApplicationHandler for Host<A> {
             WindowEvent::MouseWheel { delta, .. } if !consumed => {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(x, y) => [x, y],
-                    MouseScrollDelta::PixelDelta(position) => [
-                        position.x as f32 / SCROLL_PIXELS_PER_LINE,
-                        position.y as f32 / SCROLL_PIXELS_PER_LINE,
-                    ],
+                    MouseScrollDelta::PixelDelta(position) => {
+                        wheel_lines([position.x as f32, position.y as f32])
+                    }
                 };
                 self.frame.input_mut().wheel(delta);
             }

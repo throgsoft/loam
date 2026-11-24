@@ -26,7 +26,7 @@ mod browser;
 mod native;
 
 pub use app::{CaptureControl, InputHook, PublishedHook, Redraw, SessionApp};
-pub use camera::{look, orbit, FreeCamera, Orbit};
+pub use camera::{look, FreeCamera, Orbit};
 pub use commands::CommandSender;
 pub use console::{SessionConsole, Submit};
 #[cfg(feature = "egui")]
