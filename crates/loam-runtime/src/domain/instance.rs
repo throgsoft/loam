@@ -1,4 +1,4 @@
-use crate::session::{MaterialId, PaletteId, PreparedId};
+use crate::assets::{MaterialId, PaletteId, PreparedId};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Instance {

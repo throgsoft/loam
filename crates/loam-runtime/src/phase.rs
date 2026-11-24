@@ -2,12 +2,12 @@ use std::fmt;
 
 use loam_time::par::Executor;
 
-use crate::bridge::{Drag, DragError, DragRelease};
+use crate::assets::PreparedGeometry;
 use crate::command::{CommandResult, Commands};
 use crate::domain::{ChartPoint, DomainError, Domains};
+use crate::drag::{Drag, DragError, DragRelease, Manipulation};
 use crate::entity::{Entity, SceneId};
 use crate::input::{Input, PointerButton};
-use crate::session::{Manipulation, PreparedGeometry, Scene};
 use crate::stores::Stores;
 use crate::view::{Overlay, Pick, Views};
 
@@ -163,14 +163,19 @@ impl<A: Stores> Ctx<'_, A> {
         mut allow: impl FnMut(&A, Entity) -> bool,
     ) -> Option<DragRelease> {
         let app = &*self.app;
-        let scene = Scene {
-            domains: self.domains,
-            views: self.views,
-            prepared: self.prepared,
-        };
+        if self
+            .manipulation
+            .dragging()
+            .is_some_and(|drag| !allow(app, drag.entity))
+        {
+            self.manipulation.cancel(self.commands);
+        }
+        let (domains, views, prepared) = (&*self.domains, &*self.views, self.prepared);
         self.manipulation
-            .carry(scene, self.commands, self.input, button, |entity| {
-                allow(app, entity)
+            .carry(domains, views, self.commands, self.input, button, |ndc| {
+                domains
+                    .pick_lifted(views, prepared, ndc)
+                    .filter(|pick| allow(app, pick.entity))
             })
     }
 }

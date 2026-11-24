@@ -11,10 +11,11 @@ use std::fmt;
 use std::ops::{Deref, DerefMut, Range};
 use std::sync::Arc;
 
+use crate::assets::{MaterialId, PreparedId};
 use crate::camera::Rig;
 use crate::domain::{ChartPoint, ChartPose, DomainError, DomainId, DomainSpace, Pose};
 use crate::entity::Entity;
-use crate::session::{MaterialId, PreparedId, Stamp};
+use crate::publication::Stamp;
 use crate::store::{Cursor, RecordBuffer};
 
 pub(crate) type Vec3 = <EuclideanR3 as Space>::Point;

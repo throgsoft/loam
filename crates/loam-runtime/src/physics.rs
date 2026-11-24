@@ -1123,12 +1123,14 @@ mod tests {
     use loam_time::par::Sequential;
 
     use super::*;
+    use crate::assets::{Material, PreparedGeometry};
     use crate::command::{Command, SpawnBundle};
     use crate::domain::{DomainId, DomainOwner, DomainSpace, Instance};
     use crate::entity::{Entities, Epoch, RuntimeId, SceneId};
     use crate::input::Input;
     use crate::phase::Tick;
-    use crate::session::{Material, PreparedGeometry, Publication, Session, SimConfig};
+    use crate::publication::Publication;
+    use crate::session::{Session, SimConfig};
     use crate::store::DEFAULT_LOG_CAPACITY;
     use crate::view::{Section4, Vec4, ViewSpec};
 

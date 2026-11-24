@@ -182,11 +182,13 @@ impl<S: DomainSpace> Blend<S> {
 mod tests {
     use loam_math::{EuclideanR4, Rotor4};
 
+    use crate::assets::{Material, PreparedGeometry};
     use crate::command::SpawnBundle;
     use crate::domain::{DomainBuilder, DomainError, DomainHandle, DomainSpace, Instance, Pose};
     use crate::entity::Entity;
     use crate::phase::{Ctx, Phase, Tick};
-    use crate::session::{Material, PreparedGeometry, Publication, Session, SimConfig};
+    use crate::publication::Publication;
+    use crate::session::{Session, SimConfig};
     use crate::store::LogCapacity;
     use crate::view::{Section4, Vec4, ViewSpec};
 

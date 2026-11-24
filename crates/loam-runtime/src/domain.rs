@@ -8,11 +8,13 @@ pub use loam_shape::field::FieldKind;
 use loam_math::Space;
 use loam_time::par::Executor;
 
+use crate::assets::{Library, PreparedGeometry};
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
 use crate::field::FieldCost;
 use crate::phase::Step;
-use crate::session::{Library, PreparedGeometry, RestoreError, Stamp};
+use crate::publication::Stamp;
+use crate::session::RestoreError;
 use crate::store::{Change, Owner, Store, StoreError, StoreField, StoreSnapshot};
 use crate::view::{
     self, ImageRay, ImageSpaceId, PendingBuild, Pick, Rigid, ViewId, ViewRecords, ViewSpec,

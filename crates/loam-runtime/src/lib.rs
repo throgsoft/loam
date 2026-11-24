@@ -1,7 +1,9 @@
+pub mod assets;
 pub mod bridge;
 pub mod camera;
 pub mod command;
 pub mod domain;
+pub mod drag;
 pub mod entity;
 pub mod field;
 pub mod host;
@@ -9,6 +11,7 @@ pub mod input;
 pub mod phase;
 #[cfg(feature = "physics")]
 pub mod physics;
+pub mod publication;
 pub mod relation;
 pub mod session;
 pub mod store;
@@ -16,7 +19,8 @@ pub mod stores;
 pub mod value;
 pub mod view;
 
-pub use bridge::{Bridge, BridgeError, BridgeSpec, Drag, DragError, DragRelease};
+pub use assets::{Library, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId};
+pub use bridge::{Bridge, BridgeError, BridgeSpec};
 pub use camera::{
     CameraPair, CursorPolicy, FreeCamera, Orbit, Rig, CAMERA_RIG, CAMERA_TRAVEL, MOVE_BACKWARD,
     MOVE_DOWN, MOVE_FORWARD, MOVE_LEFT, MOVE_RIGHT, MOVE_UP,
@@ -30,6 +34,7 @@ pub use domain::{
     DomainHandle, DomainId, DomainSnapshot, DomainSpace, Domains, EdgeShading, Facility, Field,
     FieldKind, FieldProgram, Homogeneous, Instance, Pose, TypedDomain,
 };
+pub use drag::{Drag, DragError, DragRelease};
 pub use entity::{Entities, EntitiesSnapshot, Entity, EntityKey, Epoch, RuntimeId, SceneId};
 pub use field::{
     evaluate, evaluate_bounded, evaluate_bounded_counted, evaluate_counted, FieldCost, FieldCounts,
@@ -44,11 +49,10 @@ pub use input::{
 pub use phase::{Ctx, Order, Phase, PhaseError, Step, SystemEntry, Tick};
 #[cfg(feature = "physics")]
 pub use physics::{GrabConfig, GrabHold, Physics, PhysicsConfig, RestConfig, ThrowConfig};
+pub use publication::{Publication, PublishError, PublishedView, Records, Stamp};
 pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
-    Growth, Library, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId, Publication,
-    PublishError, PublishedView, Records, RestoreError, Session, SessionSnapshot, SimConfig,
-    SimConfigError, Stamp, DOMAIN_STEP,
+    Growth, RestoreError, Session, SessionSnapshot, SimConfig, SimConfigError, DOMAIN_STEP,
 };
 pub use store::{
     Change, Changes, Cursor, LogCapacity, Owner, Part, Partition, PartitionError, Parts,

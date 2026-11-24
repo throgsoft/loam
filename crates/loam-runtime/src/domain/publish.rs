@@ -4,8 +4,9 @@ use loam_shape::FieldShape;
 
 use super::views::ViewEntry;
 use super::{DomainError, DomainSpace, EdgeShading, Instance, Pose, TypedDomain};
+use crate::assets::{Library, PreparedGeometry};
 use crate::entity::Entity;
-use crate::session::{Library, PreparedGeometry, Stamp};
+use crate::publication::Stamp;
 use crate::view::{
     self, EntityOutput, FieldRecord, InstanceRecord, RefusalSource, SegmentRecord, TriangleRecord,
     Vec4, ViewMapping, ViewRecords, ViewRefusals,
@@ -591,9 +592,11 @@ mod tests {
     use loam_math::EuclideanR4;
     use loam_shape::polytope::Polytope4;
 
+    use crate::assets::{Material, PreparedGeometry};
     use crate::command::SpawnBundle;
     use crate::domain::{DomainBuilder, DomainError, Instance, Pose};
-    use crate::session::{Material, PreparedGeometry, Publication, Session, SimConfig};
+    use crate::publication::Publication;
+    use crate::session::{Session, SimConfig};
     use crate::store::LogCapacity;
     use crate::view::{Projection4, Section4, Vec4, ViewSpec};
 

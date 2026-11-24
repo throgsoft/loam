@@ -4,8 +4,8 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::entity::{Entities, Entity, EntityKey, SceneId};
+use crate::publication::Stamp;
 use crate::relation::LinkId;
-use crate::session::Stamp;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoreError {

@@ -6,7 +6,8 @@ use crate::command::Rejection;
 use crate::domain::DomainError;
 use crate::input::{ActionEvent, ActionId, Bindings, Input, Key};
 use crate::phase::PhaseError;
-use crate::session::{Publication, RestoreError, Session};
+use crate::publication::Publication;
+use crate::session::{RestoreError, Session};
 use crate::stores::Stores;
 
 pub struct HostConfig {
