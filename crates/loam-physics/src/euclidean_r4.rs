@@ -432,9 +432,9 @@ pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<Euclidean
     )
 }
 
-/// A halfspace raised along `normal` so that a body resting on it sits no lower than the plane at `offset`.
+/// A halfspace raised along `normal` so that a body resting on it under 9.8 gravity with substeps of 1/240 s or shorter sits no lower than the plane at `offset`.
 pub fn flush_halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<EuclideanR4>> {
-    // A resting contact settles within twice the slop under the Baumgarte bias.
+    // Baumgarte rest depth is slop + g h^2 / beta, under twice the slop at those bounds.
     halfspace4_body_r4(normal, offset + 2.0 * PENETRATION_SLOP)
 }
 
