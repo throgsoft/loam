@@ -1,7 +1,6 @@
 use std::any::Any;
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 pub use loam_shape::field::FieldKind;
 
@@ -15,15 +14,16 @@ use crate::field::FieldCost;
 use crate::phase::Step;
 use crate::publication::Stamp;
 use crate::session::RestoreError;
-use crate::store::{Change, Owner, Store, StoreError, StoreField, StoreSnapshot};
+use crate::store::{Owner, Store, StoreError, StoreField, StoreSnapshot};
 use crate::view::{
-    self, ImageRay, ImageSpaceId, PendingBuild, Pick, Rigid, ViewId, ViewRecords, ViewSpec,
-    ViewStyle, ViewSummary, ViewTarget, Views,
+    ImageRay, ImageSpaceId, Pick, Rigid, ViewId, ViewRecords, ViewSpec, ViewStyle, ViewSummary,
+    ViewTarget, Views,
 };
 
 mod blend;
 mod blended;
 mod builder;
+mod chart;
 mod euclidean_r3;
 mod euclidean_r4;
 mod facility;
@@ -40,6 +40,7 @@ mod views;
 
 pub(crate) use blend::presented_alpha;
 pub use builder::DomainBuilder;
+pub use chart::{ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent};
 pub use facility::Facility;
 pub use fields::{Field, FieldProgram};
 pub use instance::{EdgeShading, Instance};
@@ -51,7 +52,6 @@ pub use space::{
 
 use blend::Blend;
 use fields::Fields;
-use pick::polytope_entry;
 use views::{ViewEntry, ViewTable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -103,78 +103,6 @@ impl<S> DomainHandle<S> {
 
     pub fn runtime(self) -> RuntimeId {
         self.runtime
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ChartId(pub u16);
-
-/// Coordinates and a frame in one chart of the domain; unused entries are zero.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ChartPose {
-    pub chart: ChartId,
-    pub coordinates: [f32; 4],
-    /// Column-major, matching glam's `Mat4` and WGSL's `mat4x4<f32>`.
-    pub frame: [[f32; 4]; 4],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ChartTangent {
-    pub chart: ChartId,
-    pub vector: [f32; 4],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ChartPoint {
-    pub chart: ChartId,
-    pub coordinates: [f32; 4],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ChartCommand {
-    Place {
-        entity: Entity,
-        pose: ChartPose,
-    },
-    Attach {
-        entity: Entity,
-        instance: Instance,
-    },
-    Walk {
-        entity: Entity,
-        tangent: ChartTangent,
-        dt: f32,
-    },
-    Move {
-        entity: Entity,
-        point: ChartPoint,
-    },
-    Grab {
-        entity: Entity,
-        point: ChartPoint,
-    },
-    Release {
-        entity: Entity,
-    },
-    /// Sets the part of the body's velocity that `view` shows from `velocity` under the grab's throw configuration.
-    Throw {
-        entity: Entity,
-        view: ViewId,
-        velocity: ChartTangent,
-    },
-}
-
-impl ChartCommand {
-    pub(crate) fn entity(&self) -> Entity {
-        match *self {
-            Self::Place { entity, .. }
-            | Self::Attach { entity, .. }
-            | Self::Walk { entity, .. }
-            | Self::Move { entity, .. }
-            | Self::Grab { entity, .. }
-            | Self::Release { entity }
-            | Self::Throw { entity, .. } => entity,
-        }
     }
 }
 
@@ -612,105 +540,15 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         views: &Views,
         prepared: &[PreparedGeometry],
     ) -> Option<Pick> {
-        let spec = self.views.get(view)?;
-        let target = self.views.target(view)?;
-        if !spec.style.enabled {
-            return None;
-        }
-        let presented = self.blend.presented();
-        let eye = &self.drawn(spec.eye, presented)?;
-        let origin = self.space.origin();
-        let lifted = spec.style.mapping.lift(eye, ray);
-        let mut nearest: Option<Pick> = None;
-        for (entity, instance) in self.instances.iter() {
-            if spec.subject.is_some_and(|subject| subject != entity) {
-                continue;
-            }
-            let Some(pose) = self.drawn(entity, presented) else {
-                continue;
-            };
-            let Some(geometry) = prepared.get(instance.geometry.index()) else {
-                continue;
-            };
-            let Ok(center) = self.space.place(&self.space.prepare(&pose), origin) else {
-                continue;
-            };
-            let radius = geometry.bounding_radius();
-            let hit = match &lifted {
-                Some(domain_ray) => {
-                    let reach = self.space.chart_reach(center, radius);
-                    self.space
-                        .hit_ball(domain_ray, center, reach)
-                        .and_then(|entry| match geometry {
-                            PreparedGeometry::Polytope4 { polytope, scale } => {
-                                polytope_entry(&self.space, domain_ray, &pose, *polytope, *scale)
-                            }
-                            _ => Some(entry),
-                        })
-                        .map(|t| self.space.exp(domain_ray.origin, domain_ray.direction * t))
-                        .and_then(|point| {
-                            let image_point = spec.style.mapping.image_point(eye, point)?;
-                            Some((image_point, Some(self.space.chart_point(point))))
-                        })
-                }
-                None => spec
-                    .style
-                    .mapping
-                    .image_point(eye, center)
-                    .and_then(|image_center| {
-                        let image_radius = spec.style.mapping.image_radius(eye, center, radius);
-                        let t = view::image_hit(ray, image_center, image_radius)?;
-                        Some((ray.at(t), None))
-                    }),
-            };
-            let Some((image_point, hit)) = hit else {
-                continue;
-            };
-            let image_point = placement.apply(image_point);
-            let Some(depth) = views.depth(image_point) else {
-                continue;
-            };
-            if nearest.is_some_and(|best| best.depth >= depth) {
-                continue;
-            }
-            nearest = Some(Pick {
-                entity,
-                domain: self.id,
-                view,
-                image: target.image,
-                image_point,
-                depth,
-                hit,
-            });
-        }
-        nearest
+        self.pick_view(view, ray, placement, views, prepared)
     }
 
     fn image_of(&self, view: ViewId, entity: Entity) -> Option<[f32; 3]> {
-        let spec = self.views.get(view)?;
-        if !spec.style.enabled || spec.subject.is_some_and(|subject| subject != entity) {
-            return None;
-        }
-        let eye = self.drawn(spec.eye, self.blend.presented())?;
-        let pose = self.drawn(entity, self.blend.presented())?;
-        let relative = self.space.relative(&eye, &pose).ok()?;
-        spec.style
-            .mapping
-            .image_local(&self.space, &eye, &pose, &relative, self.space.origin())
+        self.image_in_view(view, entity)
     }
 
     fn lift_origin(&self, view: ViewId, ray: &ImageRay) -> Result<ChartPoint, DomainError> {
-        let spec = self.views.get(view).ok_or(DomainError::UnknownView(view))?;
-        let eye = self
-            .drawn(spec.eye, self.blend.presented())
-            .ok_or(DomainError::Stale(spec.eye))?;
-        let lifted = spec
-            .style
-            .mapping
-            .lift(&eye, ray)
-            .ok_or(DomainError::Unsupported(spec.style.mapping.name()))?;
-        self.space.check(lifted.origin)?;
-        Ok(self.space.chart_point(lifted.origin))
+        self.lift_view_origin(view, ray)
     }
 
     fn lift_tangent(
@@ -719,16 +557,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
         at: [f32; 3],
         tangent: [f32; 3],
     ) -> Result<ChartTangent, DomainError> {
-        let spec = self.views.get(view).ok_or(DomainError::UnknownView(view))?;
-        let eye = self
-            .drawn(spec.eye, self.blend.presented())
-            .ok_or(DomainError::Stale(spec.eye))?;
-        let lifted = spec
-            .style
-            .mapping
-            .lift_tangent(&eye, at, tangent)
-            .ok_or(DomainError::Unsupported(spec.style.mapping.name()))?;
-        Ok(self.space.chart_tangent(lifted))
+        self.lift_view_tangent(view, at, tangent)
     }
 
     fn compile_fields(&mut self) -> Result<FieldCost, DomainError> {
@@ -760,69 +589,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         stamp: Stamp,
         alpha: f32,
     ) -> Result<usize, DomainError> {
-        let spec = self.views.get(view).ok_or(DomainError::UnknownView(view))?;
-        let revision = self
-            .views
-            .revision(view)
-            .ok_or(DomainError::UnknownView(view))?;
-        let mut pose_cursor = into.poses;
-        let pose_changes = self.poses.changes(&mut pose_cursor);
-        let pose_resync = pose_changes.is_resync();
-        into.changed.clear();
-        let mut pose_removed = false;
-        for change in pose_changes {
-            match change {
-                Change::Row(entity, _) => into.changed.push(entity),
-                Change::Removed(_) => pose_removed = true,
-            }
-        }
-        if blend::interpolates(&self.poses) {
-            let logged = !into.changed.is_empty();
-            let generation = self.blend.generation();
-            let ticked = into.generation != generation;
-            if ticked {
-                into.changed.extend_from_slice(&into.merged);
-                into.merged.clear();
-                into.merged.extend_from_slice(self.blend.moving());
-                into.generation = generation;
-            }
-            if ticked || alpha != into.alpha {
-                into.changed.extend_from_slice(self.blend.moving());
-                if logged || ticked {
-                    into.changed.sort_unstable();
-                    into.changed.dedup();
-                }
-            }
-        }
-        into.alpha = alpha;
-        let mut attachment_cursor = into.attachments;
-        let mut attachment_changes = self.instances.changes(&mut attachment_cursor);
-        let attachment_resync = attachment_changes.is_resync();
-        let attached = attachment_changes.next().is_some();
-        if !pose_resync
-            && !pose_removed
-            && !attachment_resync
-            && !attached
-            && into.revision == revision
-            && !into.changed.contains(&spec.eye)
-        {
-            if into.changed.is_empty() {
-                into.instances.restamp(stamp);
-                into.poses = pose_cursor;
-                into.attachments = attachment_cursor;
-                into.pending = PendingBuild::Current;
-                return Ok(0);
-            }
-            if spec.style.enabled && into.refusals.count == 0 {
-                into.pending = PendingBuild::Patch {
-                    poses: pose_cursor,
-                    attachments: attachment_cursor,
-                };
-                return Ok(into.changed.len());
-            }
-        }
-        into.pending = PendingBuild::Rebuild;
-        Ok(self.instances.len())
+        self.prepare_view(view, into, stamp, alpha)
     }
 
     fn build(
@@ -833,28 +600,7 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         stamp: Stamp,
         alpha: f32,
     ) {
-        let spec = self
-            .views
-            .get(view)
-            .expect("a prepared view is still registered");
-        match into.pending {
-            PendingBuild::Current => return,
-            PendingBuild::Patch { poses, attachments } => {
-                if self.patch_view(spec, library, into, stamp, alpha) {
-                    into.poses = poses;
-                    into.attachments = attachments;
-                    return;
-                }
-            }
-            PendingBuild::Rebuild => {}
-        }
-        self.poses.catch_up(&mut into.poses);
-        self.instances.catch_up(&mut into.attachments);
-        into.revision = self
-            .views
-            .revision(view)
-            .expect("a prepared view is still registered");
-        self.rebuild_view(spec, library, into, stamp, alpha);
+        self.build_view(view, library, into, stamp, alpha);
     }
 
     fn step(&mut self, step: Step, executor: &dyn Executor) -> Result<(), DomainError> {
@@ -953,75 +699,6 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
     }
 
     fn apply(&mut self, command: &ChartCommand) -> Result<Outcome, Rejection> {
-        let owned = self.poses.contains(command.entity());
-        if !owned && !matches!(command, ChartCommand::Place { .. }) {
-            return Err(StoreError::Missing(command.entity()).into());
-        }
-        match command {
-            ChartCommand::Place { pose, .. } => {
-                self.space.pose_from_chart(pose)?;
-            }
-            ChartCommand::Walk { tangent, .. } => {
-                self.space.tangent_from_chart(tangent)?;
-            }
-            ChartCommand::Move { point, .. } | ChartCommand::Grab { point, .. } => {
-                self.space.point_from_chart(point)?;
-            }
-            _ => {}
-        }
-        if owned {
-            for facility in &mut self.facilities {
-                if let Some(outcome) = facility.apply(command, &mut self.poses, Owner::new()) {
-                    return outcome;
-                }
-            }
-        }
-        match command {
-            ChartCommand::Place { entity, pose } => {
-                let placed = self.space.pose_from_chart(pose)?;
-                put_row(&mut self.poses, *entity, placed)?;
-                Ok(Outcome::Done)
-            }
-            ChartCommand::Attach { entity, instance } => {
-                put_row(&mut self.instances, *entity, *instance)?;
-                Ok(Outcome::Done)
-            }
-            ChartCommand::Walk {
-                entity,
-                tangent,
-                dt,
-            } => {
-                let velocity = self.space.tangent_from_chart(tangent)?;
-                self.walk(*entity, velocity, *dt)?;
-                Ok(Outcome::Done)
-            }
-            ChartCommand::Move { entity, point } => {
-                self.move_to(*entity, *point)?;
-                Ok(Outcome::Done)
-            }
-            ChartCommand::Throw {
-                entity,
-                view,
-                velocity,
-            } => {
-                let velocity = self.space.tangent_from_chart(velocity)?;
-                let spec = self
-                    .views
-                    .get(*view)
-                    .ok_or(DomainError::UnknownView(*view))?;
-                let mapping = Arc::clone(&spec.style.mapping);
-                let eye = self
-                    .drawn(spec.eye, self.blend.presented())
-                    .ok_or(DomainError::Stale(spec.eye))?;
-                for facility in &mut self.facilities {
-                    if let Some(outcome) = facility.throw(*entity, velocity, mapping.as_ref(), &eye)
-                    {
-                        return outcome;
-                    }
-                }
-                Ok(Outcome::Done)
-            }
-            ChartCommand::Grab { .. } | ChartCommand::Release { .. } => Ok(Outcome::Done),
-        }
+        self.apply_command(command)
     }
 }

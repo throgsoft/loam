@@ -5,7 +5,7 @@ use loam_math::blended::{
 };
 use loam_math::{Mat3, Space};
 
-use super::space::{finite, frame_columns, frame_of, single_chart};
+use super::chart::{finite, frame_columns, frame_of, single_chart};
 use super::{ChartId, ChartPoint, ChartPose, ChartTangent, DomainError, DomainSpace, Pose};
 use crate::view::{self, DomainRay, Vec3};
 

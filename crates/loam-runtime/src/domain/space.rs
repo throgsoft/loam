@@ -2,8 +2,9 @@ use std::ops::Mul;
 
 use loam_math::{EuclideanR4, IsometryGroup, Space};
 
-use super::{ChartId, ChartPoint, ChartPose, ChartTangent, DomainError, Pose};
-use crate::view::{DomainRay, Vec3};
+use super::chart::{finite, single_chart};
+use super::{ChartPoint, ChartPose, ChartTangent, DomainError, Pose};
+use crate::view::DomainRay;
 
 pub trait DomainSpace:
     Space<Vector: Mul<f32, Output = <Self as Space>::Vector>> + Send + Sync + Sized + 'static
@@ -227,43 +228,4 @@ pub fn homogeneous_walk<S: Homogeneous>(
     let next = space.pose_of(space.iso_compose(space.iso_of(pose), space.transvection(step)));
     space.check(next.point)?;
     Ok(next)
-}
-
-const FRAME_TOLERANCE: f32 = 1e-3;
-
-pub(super) fn single_chart(chart: ChartId) -> Result<(), DomainError> {
-    (chart == ChartId(0))
-        .then_some(())
-        .ok_or(DomainError::Unsupported("chart id"))
-}
-
-pub(super) fn finite(values: [f32; 4]) -> Result<(), DomainError> {
-    for (value, axis) in values.into_iter().zip(["x", "y", "z", "w"]) {
-        if !value.is_finite() {
-            return Err(DomainError::InvalidCoordinate(axis));
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn frame_columns(frame: &[[f32; 4]; 4]) -> Result<[Vec3; 3], DomainError> {
-    let columns = [0, 1, 2].map(|i| Vec3::new(frame[i][0], frame[i][1], frame[i][2]));
-    let [x, y, z] = columns;
-    let unit = |v: Vec3| v.is_finite() && (v.length_squared() - 1.0).abs() <= FRAME_TOLERANCE;
-    let orthogonal = |a: Vec3, b: Vec3| a.dot(b).abs() <= FRAME_TOLERANCE;
-    let valid = columns.iter().all(|column| unit(*column))
-        && orthogonal(x, y)
-        && orthogonal(y, z)
-        && orthogonal(z, x)
-        && x.cross(y).dot(z) > 0.0;
-    valid.then_some(columns).ok_or(DomainError::InvalidFrame)
-}
-
-pub(super) fn frame_of(columns: [Vec3; 3]) -> [[f32; 4]; 4] {
-    let mut frame = [[0.0; 4]; 4];
-    for (slot, column) in frame.iter_mut().zip(columns) {
-        *slot = column.extend(0.0).to_array();
-    }
-    frame[3] = [0.0, 0.0, 0.0, 1.0];
-    frame
 }

@@ -3,13 +3,14 @@ use loam_shape::polytope::{polytope_section_faces_append, polytope_section_perim
 use loam_shape::FieldShape;
 
 use super::views::ViewEntry;
-use super::{DomainError, DomainSpace, EdgeShading, Instance, Pose, TypedDomain};
+use super::{blend, DomainError, DomainSpace, EdgeShading, Instance, Pose, TypedDomain};
 use crate::assets::{Library, PreparedGeometry};
 use crate::entity::Entity;
 use crate::publication::Stamp;
+use crate::store::Change;
 use crate::view::{
-    self, EntityOutput, FieldRecord, InstanceRecord, RefusalSource, SegmentRecord, TriangleRecord,
-    Vec4, ViewMapping, ViewRecords, ViewRefusals,
+    self, EntityOutput, FieldRecord, InstanceRecord, PendingBuild, RefusalSource, SegmentRecord,
+    TriangleRecord, Vec4, ViewId, ViewMapping, ViewRecords, ViewRefusals,
 };
 
 fn lerp_color(back: [f32; 4], front: [f32; 4], t: f32) -> [f32; 4] {
@@ -378,7 +379,111 @@ impl<'a, S: DomainSpace> ViewProjection<'a, S> {
 }
 
 impl<S: DomainSpace> TypedDomain<S> {
-    pub(super) fn rebuild_view(
+    pub(super) fn prepare_view(
+        &self,
+        view: ViewId,
+        into: &mut ViewRecords,
+        stamp: Stamp,
+        alpha: f32,
+    ) -> Result<usize, DomainError> {
+        let spec = self.views.get(view).ok_or(DomainError::UnknownView(view))?;
+        let revision = self
+            .views
+            .revision(view)
+            .ok_or(DomainError::UnknownView(view))?;
+        let mut pose_cursor = into.poses;
+        let pose_changes = self.poses.changes(&mut pose_cursor);
+        let pose_resync = pose_changes.is_resync();
+        into.changed.clear();
+        let mut pose_removed = false;
+        for change in pose_changes {
+            match change {
+                Change::Row(entity, _) => into.changed.push(entity),
+                Change::Removed(_) => pose_removed = true,
+            }
+        }
+        if blend::interpolates(&self.poses) {
+            let logged = !into.changed.is_empty();
+            let generation = self.blend.generation();
+            let ticked = into.generation != generation;
+            if ticked {
+                into.changed.extend_from_slice(&into.merged);
+                into.merged.clear();
+                into.merged.extend_from_slice(self.blend.moving());
+                into.generation = generation;
+            }
+            if ticked || alpha != into.alpha {
+                into.changed.extend_from_slice(self.blend.moving());
+                if logged || ticked {
+                    into.changed.sort_unstable();
+                    into.changed.dedup();
+                }
+            }
+        }
+        into.alpha = alpha;
+        let mut attachment_cursor = into.attachments;
+        let mut attachment_changes = self.instances.changes(&mut attachment_cursor);
+        let attachment_resync = attachment_changes.is_resync();
+        let attached = attachment_changes.next().is_some();
+        if !pose_resync
+            && !pose_removed
+            && !attachment_resync
+            && !attached
+            && into.revision == revision
+            && !into.changed.contains(&spec.eye)
+        {
+            if into.changed.is_empty() {
+                into.instances.restamp(stamp);
+                into.poses = pose_cursor;
+                into.attachments = attachment_cursor;
+                into.pending = PendingBuild::Current;
+                return Ok(0);
+            }
+            if spec.style.enabled && into.refusals.count == 0 {
+                into.pending = PendingBuild::Patch {
+                    poses: pose_cursor,
+                    attachments: attachment_cursor,
+                };
+                return Ok(into.changed.len());
+            }
+        }
+        into.pending = PendingBuild::Rebuild;
+        Ok(self.instances.len())
+    }
+
+    pub(super) fn build_view(
+        &self,
+        view: ViewId,
+        library: Library<'_>,
+        into: &mut ViewRecords,
+        stamp: Stamp,
+        alpha: f32,
+    ) {
+        let spec = self
+            .views
+            .get(view)
+            .expect("a prepared view is still registered");
+        match into.pending {
+            PendingBuild::Current => return,
+            PendingBuild::Patch { poses, attachments } => {
+                if self.patch_view(spec, library, into, stamp, alpha) {
+                    into.poses = poses;
+                    into.attachments = attachments;
+                    return;
+                }
+            }
+            PendingBuild::Rebuild => {}
+        }
+        self.poses.catch_up(&mut into.poses);
+        self.instances.catch_up(&mut into.attachments);
+        into.revision = self
+            .views
+            .revision(view)
+            .expect("a prepared view is still registered");
+        self.rebuild_view(spec, library, into, stamp, alpha);
+    }
+
+    fn rebuild_view(
         &self,
         spec: &ViewEntry<S>,
         library: Library<'_>,
@@ -481,7 +586,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         *built = stamp;
     }
 
-    pub(super) fn patch_view(
+    fn patch_view(
         &self,
         spec: &ViewEntry<S>,
         library: Library<'_>,
