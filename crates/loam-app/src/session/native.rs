@@ -93,7 +93,7 @@ struct Host<A: Stores> {
 impl<A: Stores> Host<A> {
     fn new(session: Session<A>, app: SessionApp<A>) -> Result<Self, HostError> {
         Ok(Self {
-            frame: Frame::new(session, app, Box::new(ScopedThreads::default()))?,
+            frame: Frame::threaded(session, app, Box::new(ScopedThreads::default()))?,
             window: None,
             surface: None,
             device: None,

@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use loam_runtime::host::HostError;
 use loam_runtime::{
-    AppCommand, Command, Dispatch, Outcome, Rejection, RequestId, RestoreError, Session, Setting,
-    Stores,
+    AppCommand, Command, Dispatch, Growth, Input, Outcome, PhaseError, Rejection, RequestId,
+    RestoreError, Session, Setting, Stores,
 };
 
 pub(crate) const MAX_PENDING_COMMANDS: usize = 1024;
@@ -168,6 +169,14 @@ pub(crate) struct CommandInbox<A: Stores> {
     shared: Shared<A>,
 }
 
+impl<A: Stores> Clone for CommandInbox<A> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+        }
+    }
+}
+
 impl<A: Stores> Default for CommandInbox<A> {
     fn default() -> Self {
         Self {
@@ -182,6 +191,23 @@ impl<A: Stores> CommandInbox<A> {
             shared: self.shared.clone(),
             report: false,
         }
+    }
+
+    // The first value is the fault a queued reset cleared.
+    pub fn boundary(
+        &self,
+        session: &mut Session<A>,
+        input: Input,
+    ) -> (Option<PhaseError>, Result<Growth, HostError>) {
+        let fault = session.faulted_phase().and_then(|_| session.phase_error());
+        let recovery = self.recover(session);
+        let recovered = fault.filter(|_| recovery.is_ok() && session.faulted_phase().is_none());
+        let result = recovery.map_err(HostError::from).and_then(|()| {
+            self.drain(session);
+            session.boundary(input).map_err(HostError::from)
+        });
+        self.collect(session);
+        (recovered, result)
     }
 
     pub fn recover(&self, session: &mut Session<A>) -> Result<(), RestoreError> {

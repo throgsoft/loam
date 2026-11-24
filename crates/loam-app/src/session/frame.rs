@@ -12,9 +12,9 @@ use loam_render::present::Presenter;
 #[cfg(not(target_arch = "wasm32"))]
 use loam_runtime::host::HostConfig;
 use loam_runtime::host::HostError;
-use loam_runtime::{Eye, Publication, PublishError, Records, Session, Stores};
+use loam_runtime::{Eye, Session, Stores};
+use loam_time::frame_trace;
 use loam_time::par::Executor;
-use loam_time::{frame_trace, FixedTimestep};
 
 use super::app::{
     CaptureControl, FrameFn, FrameHook, InputHook, Posts, PublishedHook, Redraw, SessionApp,
@@ -23,6 +23,7 @@ use super::cursor::CursorCapture;
 #[cfg(feature = "egui")]
 use super::debug_layer::DebugLayer;
 use super::input::InputMap;
+use super::simulation::{Failure, Prepared, Simulation, Simulator};
 #[cfg(feature = "text")]
 use super::text::{ScreenText, Seat};
 
@@ -50,10 +51,7 @@ fn redraws(policy: Redraw, drawn: Option<&Shown>, next: &Shown, forced: bool) ->
 }
 
 struct Inner<A: Stores> {
-    session: Session<A>,
-    executor: Box<dyn Executor>,
-    records: Records<A::Published>,
-    timestep: Option<FixedTimestep>,
+    simulator: Simulator<A>,
     callbacks: Vec<CommandBuffer>,
     input: InputMap,
     cursor: CursorCapture,
@@ -80,30 +78,44 @@ pub(crate) struct Frame<A: Stores> {
 }
 
 impl<A: Stores> Frame<A> {
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) fn new(
         session: Session<A>,
         app: SessionApp<A>,
         executor: Box<dyn Executor>,
     ) -> Result<Self, HostError> {
+        let simulation = Simulation::new(session, &app, executor)?;
+        Ok(Self::with(Simulator::local(simulation), app))
+    }
+
+    // An app whose hooks borrow the session keeps it on the drawing thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn threaded(
+        session: Session<A>,
+        app: SessionApp<A>,
+        executor: Box<dyn Executor>,
+    ) -> Result<Self, HostError> {
+        let simulation = Simulation::new(session, &app, executor)?;
+        let simulator = if app.borrows_session() {
+            Simulator::local(simulation)
+        } else {
+            Simulator::spawn(simulation)?
+        };
+        Ok(Self::with(simulator, app))
+    }
+
+    fn with(simulator: Simulator<A>, app: SessionApp<A>) -> Self {
         #[cfg(feature = "text")]
         let (font, app) = {
             let mut app = app;
             (app.font.take(), app)
         };
-        let sim = session.config();
-        sim.check().map_err(failed)?;
-        let timestep = sim
-            .dt()
-            .map(|_| FixedTimestep::new(sim.fixed_hz).with_max_catch_up(sim.max_ticks_per_frame));
-        Ok(Self {
+        Self {
             presenter: None,
             #[cfg(feature = "egui")]
             layer: None,
             inner: Inner {
-                session,
-                executor,
-                records: Records::default(),
-                timestep,
+                simulator,
                 callbacks: Vec::new(),
                 input: InputMap::default(),
                 cursor: CursorCapture::new(),
@@ -121,7 +133,7 @@ impl<A: Stores> Frame<A> {
                 capture: crate::capture::Capture::new(),
             },
             trace: None,
-        })
+        }
     }
 
     pub(crate) fn redraw(&self) -> Redraw {
@@ -143,7 +155,10 @@ impl<A: Stores> Frame<A> {
 
     #[cfg(any(all(target_arch = "wasm32", feature = "measure"), test))]
     pub(crate) fn phase_error(&self) -> Option<loam_runtime::PhaseError> {
-        self.inner.session.phase_error()
+        self.inner
+            .simulator
+            .session()
+            .and_then(Session::phase_error)
     }
 
     #[cfg(any(target_arch = "wasm32", test))]
@@ -233,9 +248,7 @@ impl<A: Stores> Frame<A> {
     }
 
     pub(crate) fn reset_clock(&mut self, now: Instant) {
-        if let Some(timestep) = self.inner.timestep.as_mut() {
-            timestep.reset_clock(now);
-        }
+        self.inner.simulator.reset_clock(now);
         self.inner.app.pacer.reset();
     }
 
@@ -390,121 +403,6 @@ impl<A: Stores> Frame<A> {
 }
 
 impl<A: Stores> Inner<A> {
-    fn advance(
-        &mut self,
-        now: Instant,
-        size: (u32, u32),
-        #[cfg(feature = "egui")] ui: Option<&loam_egui::egui::Context>,
-    ) -> Result<(), HostError> {
-        let controls = self.app.console.take_controls();
-        if let Some(fps) = controls.target_fps {
-            self.app.pacer.set_target_fps(fps);
-        }
-        if controls.vsync.is_some() {
-            self.app.vsync = controls.vsync;
-        }
-        let Inner {
-            session,
-            executor,
-            input,
-            timestep,
-            app,
-            ..
-        } = self;
-        let aspect = input
-            .display_aspect()
-            .unwrap_or(size.0 as f32 / size.1 as f32);
-        session.views_mut().root_mut().eye.aspect = aspect;
-        let gathered = input.take();
-        let sender = app.commands.sender();
-        let was_faulted = session.faulted_phase().is_some();
-        if app
-            .fault_recovery
-            .is_some_and(|action| was_faulted && gathered.pressed(action))
-        {
-            sender.reset();
-        }
-        if let Some(hook) = app.input.as_mut() {
-            hook(&InputHook {
-                session,
-                input: &gathered,
-                #[cfg(feature = "egui")]
-                ui,
-                size,
-                sender: &sender,
-            });
-        }
-        let result = (|| {
-            {
-                let _dispatch = frame_trace::scope("dispatch");
-                app.boundary(session, gathered)?;
-            }
-            session.views_mut().root_mut().eye.aspect = aspect;
-            if let Some(timestep) = timestep.as_mut() {
-                if was_faulted && session.faulted_phase().is_none() {
-                    timestep.reset_clock(now);
-                }
-                let _simulation = frame_trace::scope("simulation");
-                for _ in timestep.advance(now) {
-                    session.tick_with(executor.as_ref())?;
-                }
-            }
-            session.views_mut().root_mut().eye.aspect = aspect;
-            Ok(())
-        })();
-        input.reclaim(session.take_input());
-        result
-    }
-
-    fn prepare(
-        &mut self,
-        now: Instant,
-        size: (u32, u32),
-        #[cfg(feature = "egui")] ui: Option<&loam_egui::egui::Context>,
-    ) -> Result<(Publication<A::Published>, Eye), HostError> {
-        self.advance(
-            now,
-            size,
-            #[cfg(feature = "egui")]
-            ui,
-        )?;
-        {
-            let _publication = frame_trace::scope("publication");
-            let alpha = self.timestep.as_ref().map_or(1.0, FixedTimestep::alpha);
-            self.records
-                .publish_with(&mut self.session, alpha, self.executor.as_ref())
-                .map_err(|error| match error {
-                    PublishError::Borrowed => {
-                        HostError::Host("publication buffer is borrowed".into())
-                    }
-                    PublishError::Phase(error) => HostError::Phase(error),
-                })?;
-        }
-        self.session.views_mut().root_mut().eye.aspect = self
-            .input
-            .display_aspect()
-            .unwrap_or(size.0 as f32 / size.1 as f32);
-        let root = self.session.views().root();
-        let eye = self
-            .session
-            .views()
-            .get(root)
-            .map(|view| view.eye)
-            .ok_or_else(|| HostError::Host("the root view is missing".into()))?;
-        let records = self
-            .records
-            .lend()
-            .ok_or_else(|| HostError::Host("the publication buffer is unavailable".into()))?;
-        if records.views.is_empty() && !self.no_views_reported {
-            self.no_views_reported = true;
-            tracing::warn!("the session published no views, so nothing is drawn");
-            self.app
-                .console
-                .note("the session published no views, so nothing is drawn".to_string());
-        }
-        Ok((records, eye))
-    }
-
     fn update(
         &mut self,
         gpu: &GpuContext,
@@ -515,124 +413,66 @@ impl<A: Stores> Inner<A> {
     ) -> Result<bool, HostError> {
         #[cfg(feature = "egui")]
         let context = layer.map(DebugLayer::begin);
-        let faulted_before = self.session.faulted_phase();
-        let scene_before = self.session.scene();
-        let prepared = self.prepare(
-            now,
-            size,
+        let controls = self.app.console.take_controls();
+        if let Some(fps) = controls.target_fps {
+            self.app.pacer.set_target_fps(fps);
+        }
+        if controls.vsync.is_some() {
+            self.app.vsync = controls.vsync;
+        }
+        let exchanged = {
+            let Inner {
+                simulator,
+                input,
+                app,
+                ..
+            } = self;
+            let sender = app.commands.sender();
             #[cfg(feature = "egui")]
-            context.as_ref(),
-        );
+            let ui = context.as_ref();
+            simulator.exchange(input, now, size, |session, gathered| {
+                if let Some(hook) = app.input.as_mut() {
+                    hook(&InputHook {
+                        session,
+                        input: gathered,
+                        #[cfg(feature = "egui")]
+                        ui,
+                        size,
+                        sender: &sender,
+                    });
+                }
+            })
+        };
         let mut requested = false;
-        let terminal = match prepared {
-            Ok((records, eye)) => {
-                #[cfg(feature = "text")]
-                let seat = Seat {
-                    origin_px: [0.0; 2],
-                    pixels_per_point: self.input.scale(),
-                };
-                #[cfg(all(feature = "text", feature = "egui"))]
-                let seat = context.as_ref().map_or(seat, |context| {
-                    let free = context.available_rect().min;
-                    let scale = context.pixels_per_point();
-                    Seat {
-                        origin_px: [free.x * scale, free.y * scale],
-                        pixels_per_point: scale,
-                    }
-                });
-                {
-                    let root = self.session.views().root();
-                    let wanted = self
-                        .session
-                        .views()
-                        .get(root)
-                        .and_then(|image| image.rig.cursor());
-                    #[cfg(feature = "egui")]
-                    let typing = context
-                        .as_ref()
-                        .is_some_and(|context| context.wants_keyboard_input());
-                    #[cfg(not(feature = "egui"))]
-                    let typing = false;
-                    self.cursor.follow_rig(wanted.filter(|_| !typing));
-                    let sender = self.app.commands.sender();
-                    let (hook, captures, cursor, background, posts) = (
-                        self.app.frame.as_mut(),
-                        &mut self.app.captures,
-                        &mut self.cursor,
-                        &mut self.app.background,
-                        &mut self.posts,
-                    );
-                    match hook {
-                        Some(FrameFn::Session(hook)) => hook(&mut FrameHook {
-                            session: &self.session,
-                            published: &records,
-                            alpha: records.alpha,
-                            sections: presenter.sections(),
-                            #[cfg(feature = "egui")]
-                            ui: context.as_ref(),
+        let terminal = match exchanged {
+            Ok(reply) => {
+                self.input.reclaim(reply.input);
+                if let Some(fault) = reply.recovered {
+                    self.app.console.note(format!("recovered: {fault}"));
+                }
+                self.app.console.collect();
+                match reply.outcome {
+                    Ok(prepared) => {
+                        self.show(
+                            prepared,
                             size,
-                            sender: &sender,
-                            capture: CaptureControl::new(captures),
-                            cursor,
-                            background,
-                            posts,
-                            redraw: &mut requested,
-                        }),
-                        Some(FrameFn::Published(hook)) => hook(&mut PublishedHook {
-                            published: &records,
-                            eye,
-                            sections: presenter.sections(),
+                            presenter,
+                            gpu,
+                            &mut requested,
                             #[cfg(feature = "egui")]
-                            ui: context.as_ref(),
-                            size,
-                            sender: &sender,
-                            capture: CaptureControl::new(captures),
-                            cursor,
-                            background,
-                            posts,
-                            redraw: &mut requested,
-                        }),
-                        None => {}
+                            context.as_ref(),
+                        );
+                        None
                     }
+                    Err(Failure::Faulted { error, fresh }) => {
+                        if fresh {
+                            tracing::error!("session frame failed: {error}");
+                            self.cursor.suspend();
+                        }
+                        None
+                    }
+                    Err(Failure::Fatal(error)) => Some(error),
                 }
-                let _presentation = frame_trace::scope("presentation");
-                #[cfg(test)]
-                {
-                    self.presented = Some(eye);
-                }
-                presenter.upload(
-                    &gpu.device,
-                    &gpu.queue,
-                    &eye,
-                    Vec2::new(size.0 as f32, size.1 as f32),
-                    &records.views,
-                );
-                presenter.upload_overlay(&eye, &records.overlay);
-                presenter.upload_backdrop(&eye, records.backdrop);
-                #[cfg(feature = "text")]
-                let dropped = self.text.publish(&records.overlay, seat);
-                #[cfg(not(feature = "text"))]
-                let dropped = records.overlay.text().next().is_some();
-                if dropped && !self.dropped_text_reported {
-                    self.dropped_text_reported = true;
-                    let note = "the session published text, but this build has no font or no text feature, so none is drawn";
-                    tracing::warn!("{note}");
-                    self.app.console.note(note.to_string());
-                }
-                self.shown.content = records.content();
-                self.shown.eye = eye;
-                self.records.release(records);
-                None
-            }
-            Err(error) if self.session.faulted_phase().is_some() => {
-                if faulted_before.is_none() || self.session.scene() != scene_before {
-                    tracing::error!("session frame failed: {error}");
-                    self.cursor.suspend();
-                }
-                if let Some(timestep) = self.timestep.as_mut() {
-                    timestep.reset_clock(now);
-                }
-                None
             }
             Err(error) => Some(error),
         };
@@ -644,6 +484,11 @@ impl<A: Stores> Inner<A> {
             driver.advance_console(&mut self.app.console);
         }
         let dispatched = self.app.console.dispatch_pending();
+        #[cfg(not(target_arch = "wasm32"))]
+        let terminal = match terminal {
+            None => self.simulator.send_ahead(&mut self.input, now, size).err(),
+            some => some,
+        };
         #[cfg(feature = "egui")]
         if let Some(layer) = layer {
             layer.finish();
@@ -672,6 +517,119 @@ impl<A: Stores> Inner<A> {
             self.drawn = None;
         }
         Ok(draw)
+    }
+
+    fn show(
+        &mut self,
+        prepared: Prepared<A::Published>,
+        size: (u32, u32),
+        presenter: &mut Presenter,
+        gpu: &GpuContext,
+        requested: &mut bool,
+        #[cfg(feature = "egui")] context: Option<&loam_egui::egui::Context>,
+    ) {
+        let Prepared {
+            publication: records,
+            eye,
+            cursor: wanted,
+        } = prepared;
+        if records.views.is_empty() && !self.no_views_reported {
+            self.no_views_reported = true;
+            tracing::warn!("the session published no views, so nothing is drawn");
+            self.app
+                .console
+                .note("the session published no views, so nothing is drawn".to_string());
+        }
+        #[cfg(feature = "text")]
+        let seat = Seat {
+            origin_px: [0.0; 2],
+            pixels_per_point: self.input.scale(),
+        };
+        #[cfg(all(feature = "text", feature = "egui"))]
+        let seat = context.map_or(seat, |context| {
+            let free = context.available_rect().min;
+            let scale = context.pixels_per_point();
+            Seat {
+                origin_px: [free.x * scale, free.y * scale],
+                pixels_per_point: scale,
+            }
+        });
+        {
+            #[cfg(feature = "egui")]
+            let typing = context.is_some_and(|context| context.wants_keyboard_input());
+            #[cfg(not(feature = "egui"))]
+            let typing = false;
+            self.cursor.follow_rig(wanted.filter(|_| !typing));
+            let sender = self.app.commands.sender();
+            let (hook, captures, cursor, background, posts) = (
+                self.app.frame.as_mut(),
+                &mut self.app.captures,
+                &mut self.cursor,
+                &mut self.app.background,
+                &mut self.posts,
+            );
+            match hook {
+                Some(FrameFn::Session(hook)) => hook(&mut FrameHook {
+                    session: self.simulator.session().expect(
+                        "an app whose frame hook borrows the session keeps it on the drawing thread",
+                    ),
+                    published: &records,
+                    alpha: records.alpha,
+                    sections: presenter.sections(),
+                    #[cfg(feature = "egui")]
+                    ui: context,
+                    size,
+                    sender: &sender,
+                    capture: CaptureControl::new(captures),
+                    cursor,
+                    background,
+                    posts,
+                    redraw: requested,
+                }),
+                Some(FrameFn::Published(hook)) => hook(&mut PublishedHook {
+                    published: &records,
+                    eye,
+                    sections: presenter.sections(),
+                    #[cfg(feature = "egui")]
+                    ui: context,
+                    size,
+                    sender: &sender,
+                    capture: CaptureControl::new(captures),
+                    cursor,
+                    background,
+                    posts,
+                    redraw: requested,
+                }),
+                None => {}
+            }
+        }
+        let _presentation = frame_trace::scope("presentation");
+        #[cfg(test)]
+        {
+            self.presented = Some(eye);
+        }
+        presenter.upload(
+            &gpu.device,
+            &gpu.queue,
+            &eye,
+            Vec2::new(size.0 as f32, size.1 as f32),
+            &records.views,
+        );
+        presenter.upload_overlay(&eye, &records.overlay);
+        presenter.upload_backdrop(&eye, records.backdrop);
+        #[cfg(feature = "text")]
+        let dropped = self.text.publish(&records.overlay, seat);
+        #[cfg(not(feature = "text"))]
+        let dropped = records.overlay.text().next().is_some();
+        if dropped && !self.dropped_text_reported {
+            self.dropped_text_reported = true;
+            let note = "the session published text, but this build has no font or no text feature, so none is drawn";
+            tracing::warn!("{note}");
+            self.app.console.note(note.to_string());
+        }
+        self.shown.content = records.content();
+        self.shown.eye = eye;
+        self.simulator.release(records);
     }
 
     fn draw(
@@ -911,6 +869,14 @@ mod tests {
 
     fn quiet<A: Stores>(app: SessionApp<A>) -> SessionApp<A> {
         app.debug_layer(false)
+    }
+
+    fn session_of<A: Stores>(frame: &Frame<A>) -> &Session<A> {
+        frame
+            .inner
+            .simulator
+            .session()
+            .expect("a test frame keeps its session on the test thread")
     }
 
     fn run_one<A: Stores>(frame: &mut Frame<A>, gpu: &GpuContext, texture: &Texture) {
@@ -1178,7 +1144,11 @@ mod tests {
         run_at(&mut frame, &gpu, &texture, start);
         run_at(&mut frame, &gpu, &texture, start + dt * 3 / 2);
 
-        let publication = frame.inner.records.lend().expect("the buffer is free");
+        let publication = frame
+            .inner
+            .simulator
+            .released()
+            .expect("the buffer is free");
         let x = publication.views[0].records.instances.rows()[0]
             .pose
             .coordinates[0];
@@ -1208,8 +1178,8 @@ mod tests {
             .expect("attached");
         run_at(&mut frame, &gpu, &texture, Instant::now());
 
-        let root = frame.inner.session.views().root();
-        let aspect = frame.inner.session.views().get(root).unwrap().eye.aspect;
+        let root = session_of(&frame).views().root();
+        let aspect = session_of(&frame).views().get(root).unwrap().eye.aspect;
         assert!(
             (aspect - SIZE.0 as f32 / SIZE.1 as f32).abs() <= 1e-6,
             "a Publication-phase eye write published aspect {aspect}"
@@ -1315,8 +1285,8 @@ mod tests {
         assert_eq!(filled.load(Ordering::Relaxed), 2);
 
         assert_eq!(frame.phase_error(), None);
-        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
-        assert_eq!(frame.inner.session.current_tick(), Tick(0));
+        assert_eq!(session_of(&frame).scene().epoch(), epoch.advance());
+        assert_eq!(session_of(&frame).current_tick(), Tick(0));
         assert_eq!(filled.load(Ordering::Relaxed), 2);
         assert_eq!(frame.take_cursor_request(), Some(true));
         run_at(
@@ -1325,7 +1295,7 @@ mod tests {
             &texture,
             start + Duration::from_secs(60) + Duration::from_millis(1),
         );
-        assert_eq!(frame.inner.session.scene().epoch(), epoch.advance());
+        assert_eq!(session_of(&frame).scene().epoch(), epoch.advance());
     }
 
     #[test]
