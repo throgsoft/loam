@@ -276,15 +276,7 @@ where
             let endpoint = endpoint.clone();
             let failure_endpoint = endpoint.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let started = start(
-                    endpoint,
-                    session,
-                    app,
-                    canvas,
-                    (width, height),
-                    dpr,
-                )
-                .await;
+                let started = start(endpoint, session, app, canvas, (width, height), dpr).await;
                 if let Err(error) = started {
                     let message = format!("initialization failed: {error:#}");
                     tracing::error!("loam-app::session::browser: {message}");

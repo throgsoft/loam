@@ -24,9 +24,9 @@ use super::input::InputMap;
 #[cfg(feature = "text")]
 use super::text::ScreenText;
 use crate::capture::Capture;
+use crate::host::HostError;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::host::HostConfig;
-use crate::host::{HostError, Key};
+use crate::host::{HostConfig, Key};
 
 pub struct Target<'a> {
     pub view: &'a TextureView,
