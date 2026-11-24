@@ -3,9 +3,9 @@ use std::ops::{Deref, Index, IndexMut};
 use loam_math::Bivector;
 use loam_shape::{Shape, ShapeKind};
 
-use crate::edit::EditError;
+use crate::error::EditError;
 use crate::geometry::{ColliderRef, GeometryStore};
-use crate::integrator::{PhysicsSpace, VectorOps};
+use crate::space::{PhysicsSpace, VectorOps};
 
 pub struct RigidBody<S: PhysicsSpace> {
     pub position: S::Point,

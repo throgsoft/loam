@@ -5,7 +5,7 @@ use loam_shape::ShapeKind;
 
 use crate::body::RigidBody;
 use crate::geometry::GeometryStore;
-use crate::integrator::PhysicsSpace;
+use crate::space::PhysicsSpace;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldRefusal {
@@ -192,7 +192,7 @@ mod tests {
 
     use super::*;
     use crate::body::BodyId;
-    use crate::edit::EditError;
+    use crate::error::EditError;
     use crate::euclidean_r3::{halfspace_body_r3, sphere_body_r3};
     use crate::manifold::PENETRATION_SLOP;
     use crate::world::{FieldId, World};

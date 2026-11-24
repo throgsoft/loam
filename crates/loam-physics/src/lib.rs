@@ -2,13 +2,13 @@
 
 pub mod body;
 pub mod dirty;
-pub mod edit;
+pub mod error;
 pub mod field_contact;
 pub mod geometry;
-pub mod integrator;
 pub mod manifold;
 pub mod narrowphase;
 pub mod response;
+pub mod space;
 pub mod state;
 pub mod world;
 
@@ -20,12 +20,12 @@ pub mod euclidean_r4;
 
 pub use body::{BodyArena, BodyDef, BodyId, RigidBody};
 pub use dirty::DirtyDrain;
-pub use edit::EditError;
+pub use error::EditError;
 pub use field_contact::{FieldContact, FieldContactFn, FieldNarrowphase, FieldRefusal};
 pub use geometry::{ColliderRef, GeometryRef, GeometryStore};
-pub use integrator::{integrate_body, PhysicsSpace};
 pub use manifold::{ContactPoint, Manifold};
 pub use narrowphase::{Narrowphase, NarrowphaseFn};
 pub use response::{Contact, FRICTION_COEFF};
+pub use space::{integrate_body, PhysicsSpace};
 pub use state::WorldState;
 pub use world::{FieldId, Island, World};

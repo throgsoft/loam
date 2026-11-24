@@ -10,10 +10,10 @@ use loam_shape::{Shape, ShapeKind};
 use crate::body::{BodyDef, RigidBody};
 use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult4, PosedHull4, Sphere4 as GjkSphere4};
 use crate::geometry::GeometryStore;
-use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::manifold::PENETRATION_SLOP;
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
+use crate::space::{BroadphaseBound, PhysicsSpace};
 
 pub fn omega_cross_r(omega: Bivector4, r: glam::Vec4) -> glam::Vec4 {
     -omega.contract_vec(r)

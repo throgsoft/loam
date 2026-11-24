@@ -4,8 +4,8 @@ use loam_shape::ShapeKind;
 
 use crate::body::RigidBody;
 use crate::geometry::GeometryStore;
-use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
+use crate::space::PhysicsSpace;
 
 /// Always called with `a.kind()` matching the key's first component.
 pub type NarrowphaseFn<S> = fn(

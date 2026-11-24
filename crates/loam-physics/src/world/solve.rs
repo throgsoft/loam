@@ -4,11 +4,11 @@ use loam_math::Bivector;
 use loam_time::par::{self, Executor};
 
 use crate::body::{BodyArena, RigidBody};
-use crate::integrator::{integrate_body, PhysicsSpace, VectorOps};
 use crate::manifold::{
     ContactPoint, Manifold, BAUMGARTE_BETA, MAX_LINEAR_CORRECTION, PENETRATION_SLOP,
 };
 use crate::response::FRICTION_COEFF;
+use crate::space::{integrate_body, PhysicsSpace, VectorOps};
 
 use super::{split_two_mut, ConstraintUnit, PairKey, STALE_CONSTRAINT_KEY};
 

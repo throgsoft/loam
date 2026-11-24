@@ -4,7 +4,7 @@ use std::hash::Hasher;
 
 use loam_shape::{Shape, ShapeKind};
 
-use crate::edit::EditError;
+use crate::error::EditError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct GeometryId(u32);

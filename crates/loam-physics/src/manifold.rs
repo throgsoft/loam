@@ -1,9 +1,9 @@
 //! Contact anchors and impulses persist across steps; manifold keys use generational handles.
 
 use crate::body::{BodyId, RigidBody};
-use crate::integrator::{PhysicsSpace, VectorOps};
 use crate::response::Contact;
 use crate::response::FRICTION_COEFF;
+use crate::space::{PhysicsSpace, VectorOps};
 
 pub const MAX_POINTS: usize = 4;
 

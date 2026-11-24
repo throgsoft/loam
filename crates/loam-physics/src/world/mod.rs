@@ -6,13 +6,13 @@ use loam_time::StateHash;
 
 use crate::body::{BodyArena, BodyDef, BodyId, RigidBody};
 use crate::dirty::{DirtyBodies, DirtyDrain};
-use crate::edit::EditError;
+use crate::error::EditError;
 use crate::field_contact::FieldNarrowphase;
 use crate::geometry::GeometryStore;
-use crate::integrator::{integrate_body, PhysicsSpace, VectorOps};
 use crate::manifold::{Manifold, DEFAULT_PGS_ITERS, RESTITUTION_THRESHOLD};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
+use crate::space::{integrate_body, PhysicsSpace, VectorOps};
 use crate::state::WorldState;
 
 mod broadphase;

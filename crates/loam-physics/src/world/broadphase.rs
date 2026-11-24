@@ -2,7 +2,7 @@ use loam_shape::Shape;
 
 use crate::body::{BodyArena, BodyId};
 use crate::geometry::GeometryStore;
-use crate::integrator::{BroadphaseBound, PhysicsSpace};
+use crate::space::{BroadphaseBound, PhysicsSpace};
 
 use super::{canonical_pair, PairKey, StepCounters};
 

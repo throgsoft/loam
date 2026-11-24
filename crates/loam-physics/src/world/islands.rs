@@ -1,5 +1,5 @@
 use crate::body::{BodyArena, BodyId};
-use crate::integrator::PhysicsSpace;
+use crate::space::PhysicsSpace;
 
 use super::{dense_pair, PairKey};
 

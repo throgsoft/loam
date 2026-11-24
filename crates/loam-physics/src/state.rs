@@ -4,8 +4,8 @@ use loam_shape::ShapeKind;
 
 use crate::body::{BodyArena, BodyId};
 use crate::geometry::GeometryStore;
-use crate::integrator::PhysicsSpace;
 use crate::manifold::Manifold;
+use crate::space::PhysicsSpace;
 use crate::world::{FieldId, PairKey};
 
 pub struct WorldState<S: PhysicsSpace> {

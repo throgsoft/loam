@@ -6,7 +6,7 @@ pub mod gjk;
 pub mod gjk_r4;
 mod simplex_r4;
 
-pub use crate::integrator::VectorOps;
+pub use crate::space::VectorOps;
 pub use epa::{epa, ContactInfo};
 pub use epa_r4::{epa_r4, ContactInfo4};
 pub use gjk::{gjk_intersect, ConvexHull, GjkResult, MinkowskiPoint, PosedHull, Sphere, SupportFn};

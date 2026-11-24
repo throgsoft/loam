@@ -7,9 +7,9 @@ use loam_shape::{Shape, ShapeKind};
 use crate::body::{BodyDef, RigidBody};
 use crate::collision::{epa, gjk_intersect, GjkResult, PosedHull, Sphere as GjkSphere};
 use crate::geometry::GeometryStore;
-use crate::integrator::{BroadphaseBound, PhysicsSpace};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
+use crate::space::{BroadphaseBound, PhysicsSpace};
 
 // `(s, xy, yz, zx)` maps to `(w, z, x, y)`, matching `Rotor3::apply`.
 fn rotor_to_quat(r: loam_math::Rotor3) -> Quat {
