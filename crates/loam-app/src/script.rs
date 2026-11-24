@@ -1,4 +1,3 @@
-use std::num::NonZeroU64;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -102,7 +101,8 @@ impl ScriptDriver {
         }
     }
 
-    pub(crate) fn with_frames(mut self, frames: NonZeroU64) -> Self {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn with_frames(mut self, frames: std::num::NonZeroU64) -> Self {
         self.exit_frame = frames.get() - 1;
         self
     }
