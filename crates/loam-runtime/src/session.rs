@@ -472,6 +472,9 @@ impl<A: Stores> Session<A> {
         }
         self.restored = false;
         dispatched?;
+        if let Progress::Faulted(error) = self.progress {
+            return Err(error);
+        }
         self.app.boundary(Owner::new());
         for domain in self.domains.iter_mut() {
             domain.boundary();
