@@ -9,6 +9,8 @@ struct Uniforms {
     time: f32,
     tick: f32,
     params: vec4<f32>,
+    near: f32,
+    aspect: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -93,9 +95,8 @@ fn estimate_normal(p: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = (pos.xy / u.resolution) * 2.0 - 1.0;
-    let aspect = u.resolution.x / u.resolution.y;
     // Pixel y grows downward and view y grows upward.
-    let ndc = vec2<f32>(uv.x * aspect, -uv.y);
+    let ndc = vec2<f32>(uv.x * u.aspect, -uv.y);
 
     let rd = normalize(
         u.camera_forward

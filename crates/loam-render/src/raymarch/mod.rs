@@ -26,7 +26,9 @@ pub struct RayMarchUniforms {
     pub params: [f32; 4],
     /// Near distance of the root projection; see [`crate::depth`].
     pub near: f32,
-    pub _pad3: [f32; 3],
+    /// Width over height of the projection, which is the eye's and may differ from the target's.
+    pub aspect: f32,
+    pub _pad3: [f32; 2],
 }
 
 impl Default for RayMarchUniforms {
@@ -45,7 +47,8 @@ impl Default for RayMarchUniforms {
             tick: 0.0,
             params: [0.0; 4],
             near: 0.05,
-            _pad3: [0.0; 3],
+            aspect: 1.0,
+            _pad3: [0.0; 2],
         }
     }
 }
@@ -60,6 +63,7 @@ impl RayMarchUniforms {
             camera_up: eye.up,
             fov_y_tan: (eye.fov_y * 0.5).tan(),
             near: eye.near,
+            aspect: eye.aspect,
             ..Self::default()
         }
     }
