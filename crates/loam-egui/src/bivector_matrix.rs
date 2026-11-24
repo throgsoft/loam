@@ -26,7 +26,7 @@ pub fn bivector_matrix(ui: &mut Ui, b: &Bivector4) -> Response {
 
 const AXIS: [&str; 4] = ["x", "y", "z", "w"];
 
-pub fn cell_text(b: &Bivector4, row: usize, col: usize) -> String {
+fn cell_text(b: &Bivector4, row: usize, col: usize) -> String {
     if row == col {
         "0".to_string()
     } else if row < col {

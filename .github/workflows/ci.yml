@@ -62,8 +62,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: grep crates/ for target_arch = "wasm32" outside the allowed paths
         run: |
-          ! grep -rn --include='*.rs' --exclude-dir=loam-app 'target_arch = "wasm32"' crates/ \
-            | grep -v -e '^crates/loam-console/src/lib.rs:'
+          ! grep -rn --include='*.rs' --exclude-dir=loam-app 'target_arch = "wasm32"' crates/
 
   test:
     name: test

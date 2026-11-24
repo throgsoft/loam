@@ -1,4 +1,3 @@
-/// Tokenized with `crate::parse_line`, so queue and console share one grammar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandLine {
     pub name: String,

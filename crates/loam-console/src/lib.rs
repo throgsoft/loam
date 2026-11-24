@@ -14,28 +14,6 @@ pub const MAX_HISTORY_LINES: usize = 2000;
 
 pub const MAX_INPUT_HISTORY: usize = 100;
 
-#[cfg(target_arch = "wasm32")]
-static ECHO_TO_BROWSER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// wasm32 only; a no-op on native.
-pub fn set_console_echo(enabled: bool) {
-    #[cfg(target_arch = "wasm32")]
-    ECHO_TO_BROWSER.store(enabled, std::sync::atomic::Ordering::Relaxed);
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = enabled;
-}
-
-pub fn console_echo_enabled() -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        ECHO_TO_BROWSER.load(std::sync::atomic::Ordering::Relaxed)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        false
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct HistoryLine {
     pub kind: LineKind,
@@ -105,57 +83,18 @@ impl Default for ConsoleWriter {
     }
 }
 
-pub trait Command<Ctx>: 'static {
-    fn name(&self) -> &str;
+type CommandFn<Ctx> = Box<dyn FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> anyhow::Result<()>>;
 
-    fn help(&self) -> &str;
-
-    /// `\n` breaks paint as separate scrollback entries.
-    fn long_help(&self) -> String {
-        self.help().to_string()
-    }
-
-    fn arg_choices(&self, arg_index: usize) -> &[&'static str] {
-        let _ = arg_index;
-        &[]
-    }
-
-    /// `prior` is the arg tokens before the cursor.
-    fn arg_choices_ctx<'a>(&'a self, arg_index: usize, prior: &[&str]) -> &'a [&'static str] {
-        let _ = prior;
-        self.arg_choices(arg_index)
-    }
-
-    /// `key` carries no trailing `=`; empty means free-form.
-    fn arg_value_choices(&self, arg_index: usize, key: &str) -> &[&'static str] {
-        let _ = (arg_index, key);
-        &[]
-    }
-
-    fn arg_value_choices_ctx<'a>(
-        &'a self,
-        arg_index: usize,
-        key: &str,
-        prior: &[&str],
-    ) -> &'a [&'static str] {
-        let _ = prior;
-        self.arg_value_choices(arg_index, key)
-    }
-
-    /// Recoverable issues go to `out.error(..)`; unrecoverable ones return `Err`.
-    fn run(&mut self, args: &[&str], ctx: &mut Ctx, out: &mut ConsoleWriter) -> anyhow::Result<()>;
-}
-
-pub struct FnCommand<F> {
+pub struct FnCommand<Ctx> {
     name: &'static str,
     help: &'static str,
     long_help: Option<&'static str>,
     arg_choices: Vec<Vec<&'static str>>,
     value_choices: HashMap<&'static str, Vec<&'static str>>,
-    f: F,
+    f: CommandFn<Ctx>,
 }
 
-impl<F> FnCommand<F> {
+impl<Ctx> FnCommand<Ctx> {
     /// One inner slice per position; trailing free-form args may be omitted.
     pub fn with_args(mut self, choices: &[&[&'static str]]) -> Self {
         self.arg_choices = choices.iter().map(|s| s.to_vec()).collect();
@@ -168,13 +107,34 @@ impl<F> FnCommand<F> {
         self
     }
 
+    /// `\n` breaks paint as separate scrollback entries.
     pub fn with_long_help(mut self, long: &'static str) -> Self {
         self.long_help = Some(long);
         self
     }
+
+    fn long_help(&self) -> &'static str {
+        self.long_help.unwrap_or(self.help)
+    }
+
+    fn arg_choices(&self, arg_index: usize) -> &[&'static str] {
+        self.arg_choices
+            .get(arg_index)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// `key` carries no trailing `=`; empty means free-form.
+    fn value_choices(&self, key: &str) -> &[&'static str] {
+        self.value_choices
+            .get(key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
-pub fn cmd<Ctx, F>(name: &'static str, help: &'static str, f: F) -> FnCommand<F>
+/// Recoverable issues go to `out.error(..)`; unrecoverable ones return `Err`.
+pub fn cmd<Ctx, F>(name: &'static str, help: &'static str, f: F) -> FnCommand<Ctx>
 where
     F: FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
 {
@@ -184,44 +144,12 @@ where
         long_help: None,
         arg_choices: Vec::new(),
         value_choices: HashMap::new(),
-        f,
-    }
-}
-
-impl<Ctx, F> Command<Ctx> for FnCommand<F>
-where
-    F: FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
-{
-    fn name(&self) -> &str {
-        self.name
-    }
-    fn help(&self) -> &str {
-        self.help
-    }
-    fn long_help(&self) -> String {
-        self.long_help
-            .map(str::to_string)
-            .unwrap_or_else(|| self.help.to_string())
-    }
-    fn arg_choices(&self, arg_index: usize) -> &[&'static str] {
-        self.arg_choices
-            .get(arg_index)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-    fn arg_value_choices(&self, _arg_index: usize, key: &str) -> &[&'static str] {
-        self.value_choices
-            .get(key)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-    fn run(&mut self, args: &[&str], ctx: &mut Ctx, out: &mut ConsoleWriter) -> anyhow::Result<()> {
-        (self.f)(args, ctx, out)
+        f: Box::new(f),
     }
 }
 
 pub struct Console<Ctx> {
-    commands: BTreeMap<String, Box<dyn Command<Ctx>>>,
+    commands: BTreeMap<String, FnCommand<Ctx>>,
     toggle_key: Key,
     history: VecDeque<HistoryLine>,
     input: String,
@@ -298,9 +226,8 @@ impl<Ctx: 'static> Console<Ctx> {
     }
 
     /// Silently replaces any existing command of the same name.
-    pub fn register<C: Command<Ctx> + 'static>(&mut self, command: C) {
-        let name = command.name().to_string();
-        self.commands.insert(name, Box::new(command));
+    pub fn register(&mut self, command: FnCommand<Ctx>) {
+        self.commands.insert(command.name.to_string(), command);
     }
 
     pub fn has_command(&self, name: &str) -> bool {
@@ -470,11 +397,6 @@ impl<Ctx: 'static> Console<Ctx> {
     }
 
     fn push_history(&mut self, line: HistoryLine) {
-        // Not via `tracing`: `loam_app::log::ConsoleLayer` would echo it back here.
-        #[cfg(target_arch = "wasm32")]
-        if ECHO_TO_BROWSER.load(std::sync::atomic::Ordering::Relaxed) {
-            web_sys::console::log_1(&line.text.as_str().into());
-        }
         self.history.push_back(line);
         while self.history.len() > MAX_HISTORY_LINES {
             self.history.pop_front();
@@ -541,13 +463,12 @@ impl<Ctx: 'static> Console<Ctx> {
                 let Some(cmd) = self.commands.get(cmd_name) else {
                     return Vec::new();
                 };
-                let prior_refs: Vec<&str> = prior.iter().map(String::as_str).collect();
 
                 if let Some(eq) = prefix.find('=') {
                     let key = &prefix[..eq];
                     let value_prefix = &prefix[eq + 1..];
                     let mut matches: Vec<String> = cmd
-                        .arg_value_choices_ctx(*arg_index, key, &prior_refs)
+                        .value_choices(key)
                         .iter()
                         .filter(|v| v.starts_with(value_prefix))
                         .map(|v| format!("{key}={v}"))
@@ -562,7 +483,7 @@ impl<Ctx: 'static> Console<Ctx> {
                     .collect();
 
                 let mut matches: Vec<String> = cmd
-                    .arg_choices_ctx(*arg_index, &prior_refs)
+                    .arg_choices(*arg_index)
                     .iter()
                     .filter(|choice| choice.starts_with(prefix.as_str()))
                     .filter(|choice| match choice.find('=') {
@@ -626,17 +547,12 @@ impl<Ctx: 'static> Console<Ctx> {
         std::mem::take(&mut self.pending)
     }
 
-    /// Built-ins resolve here too, so a queued built-in runs like a typed one.
     pub fn dispatch(&mut self, name: &str, args: &[&str], ctx: &mut Ctx) {
         self.push_history(HistoryLine::input(format!("> {}", render_line(name, args))));
-        if let Some(builtin) = Builtin::from_name(name) {
-            self.run_builtin(builtin, args.first().copied());
-            return;
-        }
 
         let mut writer = ConsoleWriter::new();
         let result = match self.commands.get_mut(name) {
-            Some(cmd) => cmd.run(args, ctx, &mut writer),
+            Some(cmd) => (cmd.f)(args, ctx, &mut writer),
             None => {
                 self.push_history(HistoryLine::error(format!(
                     "no command '{name}'. try: help"
@@ -674,9 +590,9 @@ impl<Ctx: 'static> Console<Ctx> {
                     self.push_history(HistoryLine::output(format!("{}: {}", b.name(), b.help())));
                 } else {
                     let prepared: Option<Vec<String>> = self.commands.get(name).map(|c| {
-                        let header_prefix = format!("{}: ", c.name());
+                        let header_prefix = format!("{}: ", c.name);
                         let body = c.long_help();
-                        let indent = " ".repeat(c.name().len() + 2);
+                        let indent = " ".repeat(c.name.len() + 2);
                         let mut lines = body.lines();
                         let first = lines.next().unwrap_or("");
                         let mut rendered = vec![format!("{header_prefix}{first}")];
@@ -699,7 +615,7 @@ impl<Ctx: 'static> Console<Ctx> {
                 let mut entries: Vec<(String, String)> = self
                     .commands
                     .values()
-                    .map(|c| (c.name().to_string(), c.help().to_string()))
+                    .map(|c| (c.name.to_string(), c.help.to_string()))
                     .collect();
                 for b in Builtin::ALL {
                     entries.push((b.name().to_string(), b.help().to_string()));
@@ -904,14 +820,14 @@ mod tests {
         }
     }
 
-    fn echo_cmd() -> impl Command<Ctx> {
+    fn echo_cmd() -> FnCommand<Ctx> {
         cmd("echo", "echo args back", |args, _ctx, out| {
             out.line(args.join(" "));
             Ok(())
         })
     }
 
-    fn add_cmd() -> impl Command<Ctx> {
+    fn add_cmd() -> FnCommand<Ctx> {
         cmd("add", "add args to ctx", |args, ctx, out| {
             for a in args {
                 let n: u32 = a.parse()?;

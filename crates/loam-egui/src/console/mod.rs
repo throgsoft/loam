@@ -4,8 +4,8 @@ mod key;
 mod panel;
 
 pub use loam_console::{
-    cmd, console_echo_enabled, parse_line, render_line, set_console_echo, Command, Console,
-    ConsoleWriter, FnCommand, HistoryLine, Key, LineKind, MAX_HISTORY_LINES, MAX_INPUT_HISTORY,
+    cmd, parse_line, render_line, Console, ConsoleWriter, FnCommand, HistoryLine, Key, LineKind,
+    MAX_HISTORY_LINES, MAX_INPUT_HISTORY,
 };
 
 pub const ANIM_DURATION_SECS: f32 = 0.15;

@@ -1362,7 +1362,6 @@ name = "loam-console"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "web-sys",
 ]
 
 [[package]]

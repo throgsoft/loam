@@ -383,14 +383,6 @@ impl TextRenderer {
     pub fn metrics(&self) -> &TextMetrics {
         &self.metrics
     }
-
-    pub fn bake_size_px(&self) -> f32 {
-        self.metrics.bake_size_px
-    }
-
-    pub fn line_height_px(&self) -> f32 {
-        self.metrics.line_height_px
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
