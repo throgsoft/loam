@@ -6,7 +6,7 @@ use wgpu::{
 };
 
 #[test]
-fn a_font_that_does_not_parse_leaves_the_text_pass_drawing_nothing() {
+fn unparseable_font() {
     let instance = Instance::new(&InstanceDescriptor {
         backends: Backends::NOOP,
         backend_options: BackendOptions {

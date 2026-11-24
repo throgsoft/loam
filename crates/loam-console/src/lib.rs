@@ -923,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_completes_a_command_name_then_each_declared_argument_and_cycles_among_matches() {
+    fn tab_completion() {
         let mut c = Console::<Ctx>::new();
         c.register(cmd("capture", "", |_, _, _| Ok(())).with_args(&[
             &["png", "frames", "toggle", "stop"],
@@ -965,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_keeps_quoted_and_multibyte_input_intact() {
+    fn quoted_and_multibyte_completion() {
         let mut console = Console::<()>::new();
         console.register(cmd("mode", "set mode", |_, _, _| Ok(())).with_args(&[&["solid"]]));
         *console.input_mut() = "mode\u{2003}so".to_owned();
@@ -998,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_help_describes_one_command() {
+    fn builtin_help() {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
@@ -1010,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_recalls_submitted_lines_newest_first_without_consecutive_repeats() {
+    fn input_history_recall() {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
@@ -1033,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dispatched_line_is_echoed_once_ahead_of_its_output_and_a_failure_is_an_error_line() {
+    fn dispatch_echo() {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         c.register(cmd("fail", "always fails", |_, _, _| anyhow::bail!("nope")));
@@ -1061,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_runs_the_typed_line_through_its_handler_and_a_blank_prompt_does_nothing() {
+    fn submit_typed_and_blank_lines() {
         let mut c = Console::<Ctx>::new();
         c.register(add_cmd());
         let mut ctx: Ctx = 1;
@@ -1080,8 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn a_typed_line_splits_on_spaces_outside_quotes_and_a_rendered_line_reparses_to_its_invocation()
-    {
+    fn tokenize_and_render_round_trip() {
         let cases: [(&str, &[&str]); 5] = [
             (r#"foo "bar baz" qux"#, &["foo", "bar baz", "qux"]),
             (r#"a "he said \"hi\"" b"#, &["a", r#"he said "hi""#, "b"]),
@@ -1113,7 +1112,7 @@ mod tests {
     }
 
     #[test]
-    fn builtins_run_on_the_typed_frame_and_registry_commands_wait() {
+    fn builtin_and_registry_timing() {
         let mut c = Console::<Ctx>::new();
         c.register(add_cmd());
         let mut ctx: Ctx = 0;

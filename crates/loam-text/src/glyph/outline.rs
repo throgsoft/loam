@@ -126,7 +126,7 @@ mod tests {
     use ab_glyph::point;
 
     #[test]
-    fn flattened_curves_stay_within_tolerance() {
+    fn flattening_tolerance() {
         let tolerance = 1.0e-3;
         let mut out = vec![Vec2::ZERO];
         flatten_into(

@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn glyphs_sit_on_the_ascender_line_at_every_scale_and_advance_by_width_not_ink() {
+    fn glyph_placement_across_scales() {
         let mut glyphs = mock_glyph_table(10.0);
         glyphs.insert(
             'A',

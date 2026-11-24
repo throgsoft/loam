@@ -164,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cover_encloses_every_letter_without_filling_its_counters() {
+    fn letter_cover() {
         let bytes = include_bytes!("../../../examples/fonts/lmroman10-bold.otf");
         let font = FontRef::try_from_slice(bytes).expect("parse font");
         let letters = layout_word(&font, "LOAM", &params()).expect("layout");

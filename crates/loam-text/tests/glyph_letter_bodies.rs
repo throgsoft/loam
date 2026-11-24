@@ -80,7 +80,7 @@ fn assert_resting_on_the_floor(ch: char, deepest: f32) {
 }
 
 #[test]
-fn a_letters_hull_contains_both_its_render_mesh_and_its_cover() {
+fn letter_hull() {
     let letters = word();
     let params = GlyphParams::default();
     for letter in &letters {
@@ -132,7 +132,7 @@ fn a_letters_hull_contains_both_its_render_mesh_and_its_cover() {
 }
 
 #[test]
-fn a_whole_word_dropped_together_settles_in_its_own_line() {
+fn word_drop() {
     let letters = word();
     let mut world = floor_world();
     let dropped: Vec<(BodyId, Vec4)> = letters

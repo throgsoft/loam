@@ -33,7 +33,7 @@ fn pointer_move(time: f64, pos: egui::Pos2) -> egui::RawInput {
 }
 
 #[test]
-fn framed_card_keeps_its_drag_id_and_payload() {
+fn framed_card_drag() {
     let ctx = egui::Context::default();
     let id = Id::new("dnd-test-card");
     let card_pos = egui::pos2(60.0, 30.0);

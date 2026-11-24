@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn distance_is_to_the_nearest_edge_and_signed_by_the_nonzero_winding_rule() {
+    fn distance_sign() {
         let square = vec![rect(Vec2::splat(-1.0), Vec2::splat(1.0), true)];
         assert!((signed_distance(&square, Vec2::ZERO) + 1.0).abs() < 1e-6);
         assert!((signed_distance(&square, Vec2::new(0.5, 0.0)) + 0.5).abs() < 1e-6);

@@ -1,7 +1,7 @@
 use loam_egui::console::{Console, ConsoleUi};
 
 #[test]
-fn printable_toggle_does_not_enter_the_prompt() {
+fn printable_toggle() {
     let text = "`";
     let ctx = egui::Context::default();
     let mut console = Console::<()>::new();
