@@ -2,7 +2,7 @@ use loam_math::WPlane;
 use loam_shape::polytope::{polytope_section_faces_append, polytope_section_perimeter_append};
 use loam_shape::FieldShape;
 
-use super::views::ViewEntry;
+use super::view_table::ViewEntry;
 use super::{DomainError, DomainSpace, EdgeShading, Instance, Pose, TypedDomain};
 use crate::assets::{Library, PreparedGeometry};
 use crate::entity::Entity;

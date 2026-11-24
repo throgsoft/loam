@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::app_state::{HasRelation, HasStore, Stores};
 use crate::assets::{Assets, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId};
 use crate::domain::{
     ChartCommand, ChartPose, DomainError, DomainHandle, DomainId, DomainSpace, Domains, Field,
@@ -9,7 +10,6 @@ use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
 use crate::image::Views;
 use crate::session::RestoreError;
 use crate::store::{Owner, StoreError};
-use crate::stores::{HasRelation, HasStore, Stores};
 use crate::value::Setting;
 use crate::view::{ViewId, ViewMapping, ViewSpec};
 

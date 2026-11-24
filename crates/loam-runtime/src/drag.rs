@@ -1,10 +1,10 @@
+use crate::app_state::Stores;
 use crate::assets::PreparedGeometry;
 use crate::command::{Command, Commands};
 use crate::domain::{ChartCommand, ChartPoint, DomainError, DomainId, Domains};
 use crate::entity::Entity;
 use crate::image::{ImageRay, ImageSpaceId, Views};
 use crate::input::{Input, PointerButton, PointerPhase};
-use crate::stores::Stores;
 use crate::view::{Pick, Vec3, ViewId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

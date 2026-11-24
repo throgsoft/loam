@@ -19,32 +19,32 @@ use crate::store::{Owner, Store, StoreError, StoreField, StoreSnapshot};
 use crate::view::{Pick, ViewId, ViewSpec, ViewStyle, ViewSummary, ViewTarget};
 
 mod blend;
+#[cfg(feature = "physics")]
+mod bodies;
 mod builder;
 mod chart;
 mod euclidean_r4;
 mod facility;
-mod fields;
+mod field_table;
 mod instance;
-#[cfg(feature = "physics")]
-mod physics;
 mod pick;
 mod publish;
 mod registry;
 mod space;
-mod views;
+mod view_table;
 
 pub(crate) use blend::presented_alpha;
 pub use builder::DomainBuilder;
 pub use chart::{ChartCommand, ChartId, ChartPoint, ChartPose, ChartTangent};
 pub use facility::Facility;
-pub use fields::{Field, FieldProgram};
+pub use field_table::{Field, FieldProgram};
 pub use instance::{EdgeShading, Instance};
 pub use registry::Domains;
 pub use space::{DomainSpace, Homogeneous};
 
 use blend::Blend;
-use fields::Fields;
-use views::{ViewEntry, ViewTable};
+use field_table::Fields;
+use view_table::{ViewEntry, ViewTable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DomainId(u32);

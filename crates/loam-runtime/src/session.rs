@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use loam_time::par::{Executor, Sequential};
 
+use crate::app_state::Stores;
 use crate::assets::{Assets, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId};
 use crate::camera::{self, Rig, CAMERA_RIG, CAMERA_TRAVEL};
 use crate::command::{
@@ -18,7 +19,6 @@ use crate::input::{ActionId, Input};
 use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, SystemEntry, Tick};
 use crate::publication::{Overlay, Publication, Stamp};
 use crate::store::{Owner, SchemaId};
-use crate::stores::Stores;
 use crate::value::Setting;
 use crate::view::Pick;
 

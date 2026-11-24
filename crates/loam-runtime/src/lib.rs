@@ -1,3 +1,4 @@
+pub mod app_state;
 pub mod assets;
 pub mod camera;
 pub mod command;
@@ -14,10 +15,10 @@ pub mod publication;
 pub mod relation;
 pub mod session;
 pub mod store;
-pub mod stores;
 pub mod value;
 pub mod view;
 
+pub use app_state::{HasRelation, HasStore, Stores};
 pub use assets::{Library, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId};
 pub use camera::{
     CameraPair, CursorPolicy, FreeCamera, Orbit, Rig, CAMERA_RIG, CAMERA_TRAVEL, MOVE_BACKWARD,
@@ -55,7 +56,6 @@ pub use store::{
     Change, Changes, Cursor, LogCapacity, Owner, Part, Partition, PartitionError, Parts, Removal,
     SchemaId, Store, StoreError, StoreField, StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,
 };
-pub use stores::{HasRelation, HasStore, Stores};
 pub use value::{Setting, Value};
 pub use view::{
     DepthEnvelope, DomainRay, Pick, Projection4, Section4, SectionCut, ViewId, ViewMapping,

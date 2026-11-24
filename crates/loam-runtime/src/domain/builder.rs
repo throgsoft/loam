@@ -1,6 +1,6 @@
 use super::blend::Blend;
-use super::fields::Fields;
-use super::views::ViewTable;
+use super::field_table::Fields;
+use super::view_table::ViewTable;
 use super::{DomainId, DomainSpace, Facility, TypedDomain};
 use crate::entity::SceneId;
 use crate::store::{LogCapacity, Owner, Store};

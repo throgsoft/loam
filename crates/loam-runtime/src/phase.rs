@@ -2,6 +2,7 @@ use std::fmt;
 
 use loam_time::par::Executor;
 
+use crate::app_state::Stores;
 use crate::assets::PreparedGeometry;
 use crate::command::{CommandResult, Commands};
 use crate::domain::{ChartPoint, DomainError, Domains};
@@ -10,7 +11,6 @@ use crate::entity::{Entity, SceneId};
 use crate::image::Views;
 use crate::input::{Input, PointerButton};
 use crate::publication::Overlay;
-use crate::stores::Stores;
 use crate::view::Pick;
 
 /// Fixed order; dispatch runs while paused and is the only phase where capacity grows.
