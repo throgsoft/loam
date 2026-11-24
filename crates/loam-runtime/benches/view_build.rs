@@ -22,6 +22,7 @@ loam_runtime::stores! {
 }
 
 type Point4 = <EuclideanR4 as Space>::Point;
+type Mutation = fn(&mut Fixture);
 
 /// The same pool as `loam_app::par_native::ScopedThreads`, which this crate cannot name.
 struct ScopedThreads {
@@ -153,7 +154,7 @@ fn median_nanos(
     fixture: &mut Fixture,
     executor: &dyn Executor,
     reps: usize,
-    mutate: fn(&mut Fixture),
+    mutate: Mutation,
 ) -> f64 {
     for _ in 0..WARM_REPS {
         mutate(fixture);
@@ -190,7 +191,7 @@ fn main() {
         },
     );
     println!("case views population instance_rows seq_ns par_ns par_over_seq");
-    let cases: [(&str, fn(&mut Fixture)); 3] = [
+    let cases: [(&str, Mutation); 3] = [
         ("moved", Fixture::moved),
         ("eye", Fixture::eye),
         ("idle", Fixture::idle),

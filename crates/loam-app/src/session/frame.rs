@@ -526,21 +526,19 @@ impl<A: Stores> Inner<A> {
         let mut requested = false;
         let terminal = match prepared {
             Ok((records, eye)) => {
+                #[cfg(feature = "text")]
+                let seat = Seat {
+                    origin_px: [0.0; 2],
+                    pixels_per_point: self.input.scale(),
+                };
                 #[cfg(all(feature = "text", feature = "egui"))]
-                let seat = context.as_ref().map(|context| {
+                let seat = context.as_ref().map_or(seat, |context| {
                     let free = context.available_rect().min;
                     let scale = context.pixels_per_point();
                     Seat {
                         origin_px: [free.x * scale, free.y * scale],
                         pixels_per_point: scale,
                     }
-                });
-                #[cfg(all(feature = "text", not(feature = "egui")))]
-                let seat = None;
-                #[cfg(feature = "text")]
-                let seat = seat.unwrap_or(Seat {
-                    origin_px: [0.0; 2],
-                    pixels_per_point: self.input.scale(),
                 });
                 {
                     let root = self.session.views().root();

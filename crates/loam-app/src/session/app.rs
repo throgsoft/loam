@@ -199,9 +199,12 @@ impl<'a> CaptureControl<'a> {
     }
 }
 
+type SessionFn<A> = Box<dyn FnMut(&mut FrameHook<'_, A>)>;
+type PublishedFn<A> = Box<dyn FnMut(&mut PublishedHook<'_, A>)>;
+
 pub(crate) enum FrameFn<A: Stores> {
-    Session(Box<dyn FnMut(&mut FrameHook<'_, A>)>),
-    Published(Box<dyn FnMut(&mut PublishedHook<'_, A>)>),
+    Session(SessionFn<A>),
+    Published(PublishedFn<A>),
 }
 pub(crate) type InputFn<A> = Box<dyn FnMut(&InputHook<'_, A>)>;
 
