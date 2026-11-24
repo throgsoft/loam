@@ -2,8 +2,8 @@ use std::boxed::Box;
 
 use glam::{Vec3, Vec4};
 
-use super::literal::wgsl_f32;
 use super::primitive4::Primitive4;
+use super::shapes;
 use super::SENTINEL_DISTANCE;
 pub use loam_shape::Shape;
 
@@ -165,19 +165,7 @@ fn walk_max_t(
 ) {
     match node {
         SceneNode4::Leaf(Shape::HalfSpace4D { normal, offset }) => {
-            let inner = format!(
-                "\t\tlet n = vec3<f32>({nx}, {ny}, {nz});\n\
-                 \t\tlet dr = dot(rd, n);\n\
-                 \t\tif (dr < -1.0e-4) {{\n\
-                 \t\t\tlet t = (({offset}) - ({nw}) * ({w_slice_expr}) - dot(ro, n)) / dr;\n\
-                 \t\t\tif (t > 0.0 && t < t_max) {{ t_max = t; }}\n\
-                 \t\t}}\n",
-                nw = wgsl_f32(normal.w),
-                nx = wgsl_f32(normal.x),
-                ny = wgsl_f32(normal.y),
-                nz = wgsl_f32(normal.z),
-                offset = wgsl_f32(*offset),
-            );
+            let inner = shapes::half_space4::max_t_wgsl(*normal, *offset, w_slice_expr);
             match halfspace_gate_expr {
                 None => {
                     body.push_str("\t{\n");

@@ -81,7 +81,7 @@ impl GeometryStore {
                 entries[id.0 as usize]
                     .shape
                     .as_ref()
-                    .is_some_and(|prepared| same_shape(prepared, &shape))
+                    .is_some_and(|prepared| *prepared == shape)
             })
         });
         if let Some(id) = shared {
@@ -268,115 +268,6 @@ impl GeometryStore {
 
 fn shape_hash(shape: &Collider) -> u64 {
     let mut hasher = DefaultHasher::new();
-    hasher.write_u8(kind_tag(shape));
-    match shape {
-        Collider::Sphere { center, radius } => {
-            hash_f32s(&mut hasher, center.as_ref());
-            hasher.write_u32(radius.to_bits());
-        }
-        Collider::HyperSphere4D { center, radius } => {
-            hash_f32s(&mut hasher, center.as_ref());
-            hasher.write_u32(radius.to_bits());
-        }
-        Collider::HalfSpace { normal, offset } => {
-            hash_f32s(&mut hasher, normal.as_ref());
-            hasher.write_u32(offset.to_bits());
-        }
-        Collider::HalfSpace4D { normal, offset } => {
-            hash_f32s(&mut hasher, normal.as_ref());
-            hasher.write_u32(offset.to_bits());
-        }
-        Collider::Box3 { half_extents } => hash_f32s(&mut hasher, half_extents.as_ref()),
-        Collider::Polygon2D { vertices } => {
-            for v in vertices {
-                hash_f32s(&mut hasher, v.as_ref());
-            }
-        }
-        Collider::ConvexPolytope3D { vertices } => {
-            for v in vertices {
-                hash_f32s(&mut hasher, v.as_ref());
-            }
-        }
-        Collider::ConvexPolytope4D { vertices } => {
-            for v in vertices {
-                hash_f32s(&mut hasher, v.as_ref());
-            }
-        }
-    }
+    shape.hash_into(&mut hasher);
     hasher.finish()
-}
-
-fn hash_f32s(hasher: &mut DefaultHasher, values: &[f32]) {
-    for value in values {
-        hasher.write_u32(value.to_bits());
-    }
-}
-
-fn kind_tag(shape: &Collider) -> u8 {
-    match shape.kind() {
-        ColliderKind::Sphere => 0,
-        ColliderKind::HalfSpace => 1,
-        ColliderKind::HalfSpace4D => 2,
-        ColliderKind::Box3 => 3,
-        ColliderKind::Polygon2D => 4,
-        ColliderKind::ConvexPolytope3D => 5,
-        ColliderKind::ConvexPolytope4D => 6,
-        ColliderKind::HyperSphere4D => 7,
-    }
-}
-
-fn same_shape(a: &Collider, b: &Collider) -> bool {
-    match (a, b) {
-        (
-            Collider::Sphere {
-                center: ca,
-                radius: ra,
-            },
-            Collider::Sphere {
-                center: cb,
-                radius: rb,
-            },
-        ) => ca == cb && ra == rb,
-        (
-            Collider::HyperSphere4D {
-                center: ca,
-                radius: ra,
-            },
-            Collider::HyperSphere4D {
-                center: cb,
-                radius: rb,
-            },
-        ) => ca == cb && ra == rb,
-        (
-            Collider::HalfSpace {
-                normal: na,
-                offset: oa,
-            },
-            Collider::HalfSpace {
-                normal: nb,
-                offset: ob,
-            },
-        ) => na == nb && oa == ob,
-        (
-            Collider::HalfSpace4D {
-                normal: na,
-                offset: oa,
-            },
-            Collider::HalfSpace4D {
-                normal: nb,
-                offset: ob,
-            },
-        ) => na == nb && oa == ob,
-        (Collider::Box3 { half_extents: a }, Collider::Box3 { half_extents: b }) => a == b,
-        (Collider::Polygon2D { vertices: a }, Collider::Polygon2D { vertices: b }) => a == b,
-        (
-            Collider::ConvexPolytope3D { vertices: a },
-            Collider::ConvexPolytope3D { vertices: b },
-        ) => a == b,
-        (
-            Collider::ConvexPolytope4D { vertices: a },
-            Collider::ConvexPolytope4D { vertices: b },
-        ) => a == b,
-        _ => false,
-    }
 }

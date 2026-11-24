@@ -7,6 +7,7 @@ pub mod primitive;
 pub mod primitive4;
 pub mod scene3;
 pub mod scene4;
+mod shapes;
 
 pub use loam_shape::Shape;
 pub use primitive::Primitive;

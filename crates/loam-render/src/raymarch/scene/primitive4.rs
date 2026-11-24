@@ -1,7 +1,8 @@
 use glam::Vec4;
+use loam_shape::shape::{half_space4, hyper_sphere4};
 use loam_shape::Shape;
 
-use super::literal::wgsl_f32;
+use super::shapes;
 use super::SENTINEL_DISTANCE;
 
 pub trait Primitive4 {
@@ -13,59 +14,26 @@ pub trait Primitive4 {
 impl Primitive4 for Shape {
     fn to_wgsl_4d(&self, name: &str) -> String {
         match self {
-            Shape::HyperSphere4D { center, radius } => format!(
-                "fn {name}(p: vec4<f32>) -> f32 {{\n\
-                \treturn length(p - vec4<f32>({cx}, {cy}, {cz}, {cw})) - ({radius});\n\
-                }}\n",
-                name = name,
-                cx = wgsl_f32(center.x),
-                cy = wgsl_f32(center.y),
-                cz = wgsl_f32(center.z),
-                cw = wgsl_f32(center.w),
-                radius = wgsl_f32(*radius),
-            ),
-
-            Shape::ConvexPolytope4D { .. } => format!(
-                "fn {name}(_p: vec4<f32>) -> f32 {{\n\
-                \t// ConvexPolytope4D: half-space emit lives in the\n\
-                \t// render node's per-frame uniform path, not here.\n\
-                \t// See Hyperslice4DNode.\n\
-                \treturn {SENTINEL_DISTANCE:e};\n\
-                }}\n",
-            ),
-
-            Shape::HalfSpace4D { normal, offset } => format!(
-                "fn {name}(p: vec4<f32>) -> f32 {{\n\
-                \treturn dot(p, vec4<f32>({nx}, {ny}, {nz}, {nw})) - ({offset});\n\
-                }}\n",
-                name = name,
-                nx = wgsl_f32(normal.x),
-                ny = wgsl_f32(normal.y),
-                nz = wgsl_f32(normal.z),
-                nw = wgsl_f32(normal.w),
-                offset = wgsl_f32(*offset),
-            ),
-
+            Shape::HyperSphere4D { center, radius } => {
+                shapes::hyper_sphere4::wgsl_4d(name, *center, *radius)
+            }
+            Shape::ConvexPolytope4D { .. } => shapes::convex_polytope4::wgsl_4d(name),
+            Shape::HalfSpace4D { normal, offset } => {
+                shapes::half_space4::wgsl_4d(name, *normal, *offset)
+            }
             Shape::Sphere { .. }
             | Shape::HalfSpace { .. }
             | Shape::Box3 { .. }
             | Shape::Polygon2D { .. }
-            | Shape::ConvexPolytope3D { .. } => format!(
-                "fn {name}(_p: vec4<f32>) -> f32 {{\n\
-                \treturn {SENTINEL_DISTANCE:e};\n\
-                }}\n",
-            ),
+            | Shape::ConvexPolytope3D { .. } => shapes::sentinel_wgsl_4d(name),
         }
     }
 
     fn eval_4d(&self, p: Vec4) -> f32 {
         match self {
-            Shape::HyperSphere4D { center, radius } => (p - *center).length() - *radius,
-
+            Shape::HyperSphere4D { center, radius } => hyper_sphere4::distance(p, *center, *radius),
             Shape::ConvexPolytope4D { .. } => SENTINEL_DISTANCE,
-
-            Shape::HalfSpace4D { normal, offset } => p.dot(*normal) - *offset,
-
+            Shape::HalfSpace4D { normal, offset } => half_space4::distance(p, *normal, *offset),
             Shape::Sphere { .. }
             | Shape::HalfSpace { .. }
             | Shape::Box3 { .. }

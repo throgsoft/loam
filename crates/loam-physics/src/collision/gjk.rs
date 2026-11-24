@@ -1,4 +1,5 @@
 use glam::{Quat, Vec3};
+use loam_shape::shape::{convex_polytope3, sphere};
 
 pub trait SupportFn {
     fn support(&self, direction: Vec3) -> Vec3;
@@ -10,16 +11,7 @@ pub struct ConvexHull<'a> {
 
 impl<'a> SupportFn for ConvexHull<'a> {
     fn support(&self, direction: Vec3) -> Vec3 {
-        let mut best = self.vertices[0];
-        let mut best_d = best.dot(direction);
-        for &v in &self.vertices[1..] {
-            let d = v.dot(direction);
-            if d > best_d {
-                best_d = d;
-                best = v;
-            }
-        }
-        best
+        convex_polytope3::support(self.vertices, direction)
     }
 }
 
@@ -47,8 +39,7 @@ pub struct Sphere {
 
 impl SupportFn for Sphere {
     fn support(&self, direction: Vec3) -> Vec3 {
-        let dir = direction.normalize_or(Vec3::Y);
-        self.center + dir * self.radius
+        sphere::support(self.center, self.radius, direction)
     }
 }
 

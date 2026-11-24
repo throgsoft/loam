@@ -4,6 +4,7 @@ use glam::Vec4;
 
 use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat, Rotor};
 use loam_shape::polytope::Polytope4;
+use loam_shape::shape::convex_polytope4;
 
 use crate::body::{valid_mass, BodyDef, RigidBody};
 use crate::collider::{Collider, ColliderKind};
@@ -258,14 +259,6 @@ fn polytope_halfspace_r4(
     })
 }
 
-fn polytope4_bounding_radius(local_vertices: &[Vec4]) -> f32 {
-    local_vertices
-        .iter()
-        .map(|v| v.length_squared())
-        .fold(0.0_f32, f32::max)
-        .sqrt()
-}
-
 fn validate_contact4(
     info: &crate::collision::ContactInfo4,
     a: &RigidBody<EuclideanR4>,
@@ -303,8 +296,8 @@ fn polytope_polytope_r4(
         return None;
     };
 
-    let ra = polytope4_bounding_radius(va_local);
-    let rb = polytope4_bounding_radius(vb_local);
+    let ra = convex_polytope4::bounding_radius(va_local);
+    let rb = convex_polytope4::bounding_radius(vb_local);
     let center_dist_sq = (b.position - a.position).length_squared();
     let combined = ra + rb;
     if center_dist_sq > combined * combined {
@@ -344,7 +337,7 @@ fn sphere_polytope_r4(
         return None;
     };
 
-    let rb = polytope4_bounding_radius(vb_local);
+    let rb = convex_polytope4::bounding_radius(vb_local);
     let center_dist_sq = (b.position - a.position).length_squared();
     let combined = radius + rb;
     if center_dist_sq > combined * combined {

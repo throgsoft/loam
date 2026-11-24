@@ -1,5 +1,6 @@
 use glam::Vec4;
 use loam_math::{Rotor, Rotor4};
+use loam_shape::shape::{convex_polytope4, hyper_sphere4};
 
 use super::simplex_r4::{closest_to_origin, project_origin_onto_affine_hull};
 
@@ -13,16 +14,7 @@ pub struct ConvexHull4<'a> {
 
 impl<'a> SupportFn4 for ConvexHull4<'a> {
     fn support(&self, direction: Vec4) -> Vec4 {
-        let mut best = self.vertices[0];
-        let mut best_d = best.dot(direction);
-        for &v in &self.vertices[1..] {
-            let d = v.dot(direction);
-            if d > best_d {
-                best_d = d;
-                best = v;
-            }
-        }
-        best
+        convex_polytope4::support(self.vertices, direction)
     }
 }
 
@@ -35,16 +27,9 @@ pub struct PosedHull4<'a> {
 impl SupportFn4 for PosedHull4<'_> {
     fn support(&self, direction: Vec4) -> Vec4 {
         let local_dir = self.rotation.inverse().apply(direction);
-        let mut best = self.local[0];
-        let mut best_d = best.dot(local_dir);
-        for &v in &self.local[1..] {
-            let d = v.dot(local_dir);
-            if d > best_d {
-                best_d = d;
-                best = v;
-            }
-        }
-        self.rotation.apply(best) + self.position
+        self.rotation
+            .apply(convex_polytope4::support(self.local, local_dir))
+            + self.position
     }
 }
 
@@ -55,13 +40,7 @@ pub struct Sphere4 {
 
 impl SupportFn4 for Sphere4 {
     fn support(&self, direction: Vec4) -> Vec4 {
-        let d = direction.length_squared();
-        let dir = if d > 1e-12 {
-            direction / d.sqrt()
-        } else {
-            Vec4::Y
-        };
-        self.center + dir * self.radius
+        hyper_sphere4::support(self.center, self.radius, direction)
     }
 }
 

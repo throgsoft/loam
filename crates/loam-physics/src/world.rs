@@ -73,28 +73,6 @@ struct RadialInterval {
     mask: u32,
 }
 
-fn bounding_radius(collider: Option<&Collider>) -> f32 {
-    let Some(collider) = collider else {
-        return 0.0;
-    };
-    match collider {
-        Collider::Sphere { radius, .. } | Collider::HyperSphere4D { radius, .. } => *radius,
-        Collider::Box3 { half_extents } => half_extents.length(),
-        Collider::Polygon2D { vertices } => max_norm(vertices.iter().map(|v| v.length_squared())),
-        Collider::ConvexPolytope3D { vertices } => {
-            max_norm(vertices.iter().map(|v| v.length_squared()))
-        }
-        Collider::ConvexPolytope4D { vertices } => {
-            max_norm(vertices.iter().map(|v| v.length_squared()))
-        }
-        Collider::HalfSpace { .. } | Collider::HalfSpace4D { .. } => f32::INFINITY,
-    }
-}
-
-fn max_norm(norms_squared: impl Iterator<Item = f32>) -> f32 {
-    norms_squared.fold(0.0_f32, f32::max).sqrt()
-}
-
 /// `residual` is the largest normal-impulse change of the last sweep; `converged` compares it to `World::solver_tolerance`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SolveReport {
@@ -1266,7 +1244,9 @@ impl<S: PhysicsSpace> World<S> {
 
         for dense in 0..n {
             let body = &bodies[dense];
-            let radius = bounding_radius(geometry.get(body.collider()));
+            let radius = geometry
+                .get(body.collider())
+                .map_or(0.0, Collider::bounding_radius);
             let (lo, hi) = if certified {
                 counters.distance_evals += 1;
                 let d = space.distance(origin, body.position);

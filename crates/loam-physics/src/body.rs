@@ -310,48 +310,12 @@ pub(crate) fn valid_collider<S: PhysicsSpace>(space: &S, collider: &Collider, ma
     {
         return false;
     }
-    match collider {
-        Collider::Sphere { center, radius } => {
-            center.is_finite()
-                && *center == glam::Vec3::ZERO
-                && radius.is_finite()
-                && *radius >= 0.0
-        }
-        Collider::HalfSpace { normal, offset } => {
-            normal.is_finite() && offset.is_finite() && (normal.length_squared() - 1.0).abs() < 1e-5
-        }
-        Collider::HalfSpace4D { normal, offset } => {
-            normal.is_finite() && offset.is_finite() && (normal.length_squared() - 1.0).abs() < 1e-5
-        }
-        Collider::Polygon2D { vertices } => convex_ccw_polygon(vertices),
-        Collider::ConvexPolytope3D { vertices } => {
-            !vertices.is_empty() && vertices.iter().all(|v| v.is_finite())
-        }
-        Collider::ConvexPolytope4D { vertices } => {
-            !vertices.is_empty() && vertices.iter().all(|v| v.is_finite())
-        }
-        _ => false,
-    }
-}
-
-fn convex_ccw_polygon(vertices: &[glam::Vec2]) -> bool {
-    if vertices.len() < 3 || !vertices.iter().all(|v| v.is_finite()) {
-        return false;
-    }
-    let mut has_area = false;
-    for i in 0..vertices.len() {
-        let origin = vertices[i];
-        let edge = vertices[(i + 1) % vertices.len()] - origin;
-        for &vertex in vertices {
-            let offset = vertex - origin;
-            let cross = edge.perp_dot(offset);
-            if !cross.is_finite() || cross < 0.0 {
-                return false;
-            }
-            has_area |= cross > 0.0;
+    if let Collider::Sphere { center, .. } = collider {
+        if *center != glam::Vec3::ZERO {
+            return false;
         }
     }
-    has_area
+    collider.is_well_formed()
 }
 
 /// A body handle is valid only in its owning arena and is ordered by slot, then generation.

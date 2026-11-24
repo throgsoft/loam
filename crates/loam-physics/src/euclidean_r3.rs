@@ -1,6 +1,7 @@
 use glam::{Quat, Vec3};
 
 use loam_math::{Bivector, Bivector3, EuclideanR3, Iso3};
+use loam_shape::shape::convex_polytope3;
 
 use crate::body::{BodyDef, RigidBody};
 use crate::collider::{Collider, ColliderKind};
@@ -235,14 +236,6 @@ fn validate_contact(
     })
 }
 
-fn polytope_bounding_radius(local_vertices: &[Vec3]) -> f32 {
-    local_vertices
-        .iter()
-        .map(|v| v.length_squared())
-        .fold(0.0_f32, f32::max)
-        .sqrt()
-}
-
 fn polytope_polytope_r3(
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
@@ -256,8 +249,8 @@ fn polytope_polytope_r3(
         return None;
     };
 
-    let ra = polytope_bounding_radius(va_local);
-    let rb = polytope_bounding_radius(vb_local);
+    let ra = convex_polytope3::bounding_radius(va_local);
+    let rb = convex_polytope3::bounding_radius(vb_local);
     let center_dist_sq = (b.position - a.position).length_squared();
     let combined = ra + rb;
     if center_dist_sq > combined * combined {
@@ -297,7 +290,7 @@ fn sphere_polytope_r3(
         return None;
     };
 
-    let rb = polytope_bounding_radius(vb_local);
+    let rb = convex_polytope3::bounding_radius(vb_local);
     let center_dist_sq = (b.position - a.position).length_squared();
     let combined = radius + rb;
     if center_dist_sq > combined * combined {
