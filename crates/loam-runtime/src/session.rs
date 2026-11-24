@@ -464,6 +464,10 @@ impl<A: Stores> Session<A> {
         };
         let mut dispatched = Ok(());
         for index in 0..self.phases.entries(Phase::Dispatch).len() {
+            // A Reset whose restore failed leaves the session half restored, so no later system runs on it.
+            if matches!(self.progress, Progress::Faulted(_)) {
+                break;
+            }
             if let Err(error) = self.run_entry(Phase::Dispatch, index, step, 1.0, &Sequential) {
                 dispatched = Err(error);
                 break;
