@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Fixed ticks, replay tapes, presentation timelines, and frame timing."
+description = "Fixed ticks, state hashes, presentation timelines, and frame timing."
 keywords = ["fixed-timestep", "determinism", "timing", "gamedev"]
 categories = ["game-development", "date-and-time"]
 

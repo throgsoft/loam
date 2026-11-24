@@ -7,14 +7,6 @@ use crate::edit::EditError;
 use crate::geometry::{ColliderRef, GeometryStore};
 use crate::integrator::{PhysicsSpace, VectorOps};
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "persist",
-    serde(bound(
-        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
-        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
-    ))
-)]
 pub struct RigidBody<S: PhysicsSpace> {
     pub position: S::Point,
     pub velocity: S::Vector,
@@ -296,7 +288,6 @@ pub(crate) fn valid_collider<S: PhysicsSpace>(space: &S, collider: &Shape, mass:
 }
 
 /// A body handle is valid only in its owning arena and is ordered by slot, then generation.
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BodyId {
     slot: u32,
@@ -320,7 +311,6 @@ impl BodyId {
 
 const STALE_HANDLE: &str = "BodyId refers to a despawned body";
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 struct Slot {
     generation: u32,
@@ -328,14 +318,6 @@ struct Slot {
 }
 
 /// Compaction preserves handles; callers must not exchange bodies between mutable references.
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "persist",
-    serde(bound(
-        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
-        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
-    ))
-)]
 pub struct BodyArena<S: PhysicsSpace> {
     dense: Vec<RigidBody<S>>,
     ids: Vec<BodyId>,

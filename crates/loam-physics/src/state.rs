@@ -8,14 +8,6 @@ use crate::integrator::PhysicsSpace;
 use crate::manifold::Manifold;
 use crate::world::{FieldId, PairKey};
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "persist",
-    serde(bound(
-        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
-        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
-    ))
-)]
 pub struct WorldState<S: PhysicsSpace> {
     pub(crate) bodies: BodyArena<S>,
     pub(crate) geometry: GeometryStore,
@@ -23,8 +15,6 @@ pub struct WorldState<S: PhysicsSpace> {
     pub(crate) time: f32,
     pub(crate) field_bindings: Vec<(BodyId, FieldId)>,
     pub(crate) field_anchors: Vec<BodyId>,
-    #[cfg_attr(feature = "persist", serde(skip))]
     pub(crate) registrations: Vec<(ShapeKind, ShapeKind)>,
-    #[cfg_attr(feature = "persist", serde(skip))]
     pub(crate) field_registrations: Vec<ShapeKind>,
 }

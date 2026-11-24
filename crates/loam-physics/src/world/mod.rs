@@ -70,7 +70,6 @@ struct ConstraintUnit {
     dense: (usize, usize),
 }
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FieldId(u32);
 
@@ -1012,52 +1011,33 @@ mod tests {
     use loam_time::par::Sequential;
 
     use super::*;
-    use crate::determinism_fixture::{
-        record_flick_chamber_tape, replay_flick_chamber_tape, sample_body_r3, REPLAY_SEED,
-    };
     use crate::euclidean_r3::{
         box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
     };
     use glam::Vec3;
     use loam_math::{Bivector3, EuclideanR3};
     use loam_time::alloc::{bytes_allocated_by, CountingAllocator};
-    use loam_time::Tape;
 
     const PERMUTATION_SEEDS: [u64; 4] = [1, 0x9e37_79b9_7f4a_7c15, 0xdead_beef_cafe_f00d, 424_242];
 
     #[global_allocator]
     static COUNTING_ALLOCATOR: CountingAllocator<System> = CountingAllocator::new(System);
 
-    #[test]
-    fn a_tape_replays_to_its_recorded_checkpoints_and_a_tampered_one_does_not() {
-        let recorded = record_flick_chamber_tape(REPLAY_SEED);
-        let decoded = Tape::decode(&recorded.encode()).expect("own encoding decodes");
-        assert_eq!(decoded, recorded);
-        assert_eq!(replay_flick_chamber_tape(&decoded), decoded.checkpoints());
-
-        let throw = (0..recorded.ticks())
-            .find(|&tick| recorded.input(tick).expect("inside the tape")[0] != u32::MAX)
-            .expect("the scripted stream throws at least once");
-
-        let mut tampered = Tape::new(
-            recorded.tick_hz(),
-            recorded.seed(),
-            recorded.words_per_tick(),
-        );
-        for tick in 0..recorded.ticks() {
-            let mut frame: Vec<u32> = recorded.input(tick).expect("inside the tape").to_vec();
-            if tick == throw {
-                frame[2] ^= 1;
-            }
-            tampered.push_tick(&frame);
-        }
-
-        assert_ne!(
-            replay_flick_chamber_tape(&tampered),
-            recorded.checkpoints(),
-            "one ulp of input made no difference, so the tape is not driving \
-             the simulation"
-        );
+    fn sample_body_r3(body: &RigidBody<EuclideanR3>, words: &mut Vec<u32>) {
+        let p = body.position;
+        let v = body.velocity;
+        let w = body.angular_velocity;
+        words.extend_from_slice(&[
+            p.x.to_bits(),
+            p.y.to_bits(),
+            p.z.to_bits(),
+            v.x.to_bits(),
+            v.y.to_bits(),
+            v.z.to_bits(),
+            w.xy.to_bits(),
+            w.yz.to_bits(),
+            w.zx.to_bits(),
+        ]);
     }
 
     const SPHERE_RADIUS: f32 = 0.5;
