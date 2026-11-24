@@ -1,5 +1,4 @@
-use loam::math::{Bivector4, EuclideanR4, Rotor4};
-use loam::runtime::{DomainHandle, Domains, Entity, Views};
+use loam::prelude::*;
 
 use crate::color::ColorMode;
 use crate::display::Display;

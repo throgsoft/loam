@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Result};
-use loam::app::args::Args;
-use loam::shape::polytope::Polytope4;
-use loam::shape::FieldShape;
+use loam::prelude::*;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Category {

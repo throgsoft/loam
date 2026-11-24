@@ -1,7 +1,6 @@
 use std::fmt::Write as _;
 
-use loam::math::Plane4;
-use loam::runtime::{Overlay, TextRecord};
+use loam::prelude::*;
 
 const SIZE_PT: f32 = 16.0;
 

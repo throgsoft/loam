@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use loam::app::environment::Environment;
 use loam::prelude::*;
 
 mod action;
@@ -644,12 +643,6 @@ fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<Euclidean
 
 #[cfg(test)]
 mod tests {
-    use loam::math::Rotor;
-    use loam::runtime::{Command, Publication};
-    use loam::shape::polytope::Polytope4;
-    use loam::shape::FieldShape;
-    use loam::time::par::Sequential;
-
     use super::*;
 
     const CELL24: ShapeEntry = ShapeEntry {
@@ -717,7 +710,7 @@ mod tests {
             .expect("domain");
         for (entity, _) in &rows {
             let pose = domain.poses().get(*entity).expect("pose");
-            assert_ne!(pose.frame, loam::math::Rotor4::IDENTITY);
+            assert_ne!(pose.frame, Rotor4::IDENTITY);
         }
 
         send(&mut booted, Action::Reset);
@@ -731,7 +724,7 @@ mod tests {
         for (entity, slot) in rows {
             let pose = domain.poses().get(entity).expect("same entity");
             assert_eq!(pose.point, slot.rest);
-            assert_eq!(pose.frame, loam::math::Rotor4::IDENTITY);
+            assert_eq!(pose.frame, Rotor4::IDENTITY);
         }
         published(&mut booted.session, &mut publication, |publication| {
             assert!(!publication.views[0].records.triangles().is_empty());

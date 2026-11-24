@@ -1,5 +1,4 @@
-use loam::runtime::{EdgeShading, PaletteId};
-use loam::shape::polytope::{vertex_color_by_position, Polytope4Topology};
+use loam::prelude::*;
 
 pub(crate) const W_DEPTH_BACK: [f32; 4] = [0.30, 0.42, 0.58, 1.0];
 

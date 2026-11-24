@@ -1,9 +1,5 @@
 use glam::{Vec3, Vec4};
-use loam::math::{EuclideanR4, Projection, RasterizableSpace, SphericalS3Embedded};
-use loam::runtime::{
-    DepthEnvelope, DomainRay, DomainSpace, ImageRay, Pose, SectionCut, ViewMapping,
-};
-use loam::shape::projected_edges::stereographic_view_point;
+use loam::prelude::*;
 
 pub(crate) const STEREOGRAPHIC_POLE: Vec4 = Vec4::W;
 

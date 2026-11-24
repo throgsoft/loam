@@ -1,6 +1,5 @@
 use glam::{Vec2, Vec3};
-use loam::math::{EuclideanR4, Rotor};
-use loam::runtime::{Ctx, DomainHandle, PointRecord, SegmentRecord};
+use loam::prelude::*;
 
 use crate::consts::FLOOR_Y;
 use crate::mode::Mode;

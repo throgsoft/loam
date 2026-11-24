@@ -1,16 +1,5 @@
 use glam::Vec4;
-use loam::math::{EuclideanR4, Rotor, Rotor4};
-use loam::physics::euclidean_r4::{
-    flush_halfspace4_body_r4, halfspace4_body_r4, register_default_narrowphase,
-    regular_polytope_body_r4,
-};
-use loam::physics::{BodyDef, RigidBody};
-use loam::runtime::{
-    Dispatch, DomainHandle, Domains, Entity, GrabConfig, Instance, PhysicsConfig, Pose, Rejection,
-    RestConfig, SpawnBundle, ThrowConfig,
-};
-use loam::shape::polytope::Polytope4;
-use loam::shape::Shape;
+use loam::prelude::*;
 
 use crate::catalog::{ShapeEntry, SHAPE_CATALOG};
 use crate::consts::{FLOOR_Y, GRAVITY};

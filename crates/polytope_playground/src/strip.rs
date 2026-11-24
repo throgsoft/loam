@@ -1,6 +1,4 @@
-use loam::math::{Bivector, Bivector4, Rotor4};
-use loam::render::raymarch::{shape_id, BodyUniform};
-use loam::render::Viewport;
+use loam::prelude::*;
 
 use crate::catalog::SHAPE_CATALOG;
 use crate::consts::{BODY_SIZE, BODY_Y};

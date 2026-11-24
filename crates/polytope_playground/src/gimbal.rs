@@ -1,8 +1,5 @@
 use glam::Vec3;
-use loam::math::{Plane4, Rotor, Rotor4};
-use loam::render::hypergimbal::{Hypergimbal, RingDrag, RingStyle};
-use loam::runtime::{ImageRay, SegmentRecord};
-use loam::shape::LineMesh;
+use loam::prelude::*;
 
 const SCALE: f32 = 0.55;
 

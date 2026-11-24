@@ -3,19 +3,7 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
-use loam::app::environment::Environment;
-use loam::physics::body::MASK_ALL;
-use loam::physics::euclidean_r4::{
-    halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope_body_r4,
-};
 use loam::prelude::*;
-use loam::shape::polytope::{polytope_section_faces_append, SectionScratch};
-use loam::text::ab_glyph::FontRef;
-use loam::text::glyph::{
-    append_field_prism, layout_word, DistanceField2D, GlyphParams, GlyphSolid,
-};
-use loam::time::{Ease, Track};
 
 const WORD: &str = "LOAM";
 const FONT: &[u8] = include_bytes!("../../fonts/lmroman10-bold.otf");
@@ -750,8 +738,6 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use loam::time::par::Sequential;
-
     use super::*;
 
     #[test]

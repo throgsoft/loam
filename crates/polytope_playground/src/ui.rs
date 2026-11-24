@@ -1,7 +1,5 @@
 use loam::app::egui;
-use loam::app::session::CommandSender;
-use loam::math::Rotor;
-use loam::runtime::Entity;
+use loam::prelude::*;
 use loam_egui::{
     dnd::{drag_source_collapsing, drop_target_idx, force_opaque_active, make_room_gap, pickup_t},
     media::{add_button, chevron_button, play_pause_button, rate_toggle, refresh_button},

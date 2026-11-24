@@ -1,5 +1,4 @@
-use loam::math::EuclideanR4;
-use loam::runtime::{Dispatch, DomainHandle, EdgeShading, Instance, Pose, Rejection, SpawnBundle};
+use loam::prelude::*;
 
 use crate::catalog::ShapeEntry;
 use crate::mode::Mode;

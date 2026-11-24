@@ -1,7 +1,4 @@
-use loam::math::{Bivector4, EuclideanR4, Plane4, Rotor4};
-use loam::runtime::{
-    Dispatch, DomainHandle, Domains, EdgeShading, Instance, Pose, Rejection, SpawnBundle,
-};
+use loam::prelude::*;
 
 use crate::catalog::ShapeEntry;
 use crate::consts::{self, BASE_ROTATION_RATE};
