@@ -119,11 +119,18 @@ fn median_nanos(mut body: impl FnMut()) -> f64 {
 }
 
 fn main() {
+    // cargo test runs a bench without --bench, where one small case proves it builds and runs.
+    let full = std::env::args().any(|arg| arg == "--bench");
+    let counts = if full {
+        &BODY_COUNTS[..]
+    } else {
+        &BODY_COUNTS[..1]
+    };
     println!("bodies pairs sweep_ns scan_ns");
     let mut radii = Vec::new();
     let mut scan_out = Vec::new();
     let mut sweep_out = Vec::new();
-    for count in BODY_COUNTS {
+    for &count in counts {
         let mut world = settled_scene(count);
         world.broadphase_into(&mut sweep_out);
         scan(&world, &mut radii, &mut scan_out);

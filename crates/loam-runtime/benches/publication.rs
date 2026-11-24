@@ -528,7 +528,14 @@ fn soak_churn(state: &mut LinesFixture, population: usize) {
 }
 
 fn main() {
-    let filters = filters();
+    // cargo test runs a bench without --bench, where one small case proves it builds and runs.
+    let full = std::env::args().any(|arg| arg == "--bench");
+    let filters = if full {
+        filters()
+    } else {
+        vec!["r4_lines_idle".to_owned()]
+    };
+    let populations: &[usize] = if full { &[1_000, 10_000] } else { &[1_000] };
     println!(
         "environment os={} arch={} host={} mode={} source={}",
         std::env::consts::OS,
@@ -544,7 +551,7 @@ fn main() {
         std::env::var("LOAM_SOURCE_MANIFEST").unwrap_or_else(|_| "unspecified".to_owned()),
     );
     println!("case population reps publication_ns mutation_plus_publication_ns publication_alloc_count publication_alloc_bytes mutation_alloc_count mutation_alloc_bytes warm_retained_bytes instances segments triangles refusals output_bytes");
-    for population in [1_000, 10_000] {
+    for &population in populations {
         run_case(
             &filters,
             "r4_lines_idle",

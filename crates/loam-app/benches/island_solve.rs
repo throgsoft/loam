@@ -63,8 +63,15 @@ fn main() {
     };
     let mode = if parallel { "par" } else { "seq" };
     let threads = executor.parallelism();
+    // cargo test runs a bench without --bench, where one small case proves it builds and runs.
+    let full = std::env::args().any(|arg| arg == "--bench");
+    let counts = if full {
+        &COLUMN_COUNTS[..]
+    } else {
+        &COLUMN_COUNTS[..1]
+    };
     println!("mode threads islands bodies iters step_ns");
-    for count in COLUMN_COUNTS {
+    for &count in counts {
         let mut world = columns(count);
         let islands = world.islands().len();
         let bodies = world.bodies().len();
