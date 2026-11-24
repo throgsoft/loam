@@ -44,6 +44,7 @@ pub fn run_script<A: Stores>(
             &mut cursor,
             FRAME,
             &LayerSlot::default(),
+            false,
             |session, _| session.tick(),
         )?;
         if let Some((number, error)) = app.console.take_refused() {
