@@ -48,7 +48,7 @@ async fn request_device() -> Result<(Device, Queue), String> {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn offscreen_hud_frame() {
+fn offscreen_hud_frame_gpu_probe() {
     let font_bytes = include_bytes!("../../examples/fonts/lmroman10-bold.otf");
     let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
 
