@@ -8,6 +8,7 @@ use loam_egui::{
     slider_with_edit,
 };
 
+use crate::action::Action;
 use crate::color::ColorMode;
 use crate::consts::{BASE_ROTATION_RATE, W_RANGE};
 use crate::display::Surface;
@@ -16,7 +17,7 @@ use crate::projection::Family;
 use crate::shown::{Callout, Shown};
 use crate::strip::{Cell, Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
 use crate::toy::{DepthBand, ARENA_HALF};
-use crate::{catalog, Action, Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GUIDES};
+use crate::{catalog, Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GUIDES};
 
 const PLANE_LABELS: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
 const OVERLAY_PAD: f32 = 16.0;

@@ -1,6 +1,9 @@
+use loam::math::{Bivector, Bivector4, Rotor4};
+use loam::render::raymarch::{shape_id, BodyUniform};
 use loam::render::Viewport;
 
 use crate::catalog::SHAPE_CATALOG;
+use crate::consts::{BODY_SIZE, BODY_Y};
 
 pub(crate) const MIN_CELLS: usize = 3;
 
@@ -96,5 +99,42 @@ impl Strip {
                 });
             }
         }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Scratch {
+    pub(crate) cells: Vec<Cell>,
+    pub(crate) strip: Vec<(Viewport, f32, BodyUniform)>,
+}
+
+pub(crate) fn fill_strip(
+    strip: &Strip,
+    omega: Bivector4,
+    subject: Rotor4,
+    frame: (u32, u32),
+    slice: f32,
+    scratch: &mut Scratch,
+) {
+    scratch.strip.clear();
+    if !strip.on {
+        scratch.cells.clear();
+        return;
+    }
+    strip.cells([frame.0, frame.1], slice, BODY_SIZE, &mut scratch.cells);
+    let entry = SHAPE_CATALOG[strip.subject()];
+    for cell in &scratch.cells {
+        let rotor = ((omega * cell.t).exp() * subject).normalize();
+        scratch.strip.push((
+            cell.viewport,
+            cell.w,
+            BodyUniform::polytope_with_rotor(
+                [0.0, BODY_Y, 0.0, 0.0],
+                shape_id(entry.shape),
+                BODY_SIZE,
+                rotor,
+                entry.body_color,
+            ),
+        ));
     }
 }

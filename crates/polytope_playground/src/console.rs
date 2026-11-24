@@ -1,14 +1,13 @@
 use anyhow::{anyhow, bail, Result};
 use loam::prelude::*;
 
+use crate::action::Action;
 use crate::color::ColorMode;
 use crate::display::{Surface, MAX_WIREFRAME_WIDTH_PX};
 use crate::mode::Mode;
 use crate::projection::Family;
 use crate::strip::Strip;
-use crate::{
-    Action, Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GIMBAL, SHOW_GUIDES, TOYBOX_DEBUG,
-};
+use crate::{Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GIMBAL, SHOW_GUIDES, TOYBOX_DEBUG};
 
 const MAX_SEEK_SECONDS: f32 = 1.0e6;
 

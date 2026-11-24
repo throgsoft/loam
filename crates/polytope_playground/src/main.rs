@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use loam::app::environment::Environment;
 use loam::prelude::*;
-use loam::render::raymarch::{shape_id, BodyUniform};
 
+mod action;
+mod camera;
 mod catalog;
 mod color;
 mod console;
@@ -20,15 +21,17 @@ mod strip;
 mod toy;
 mod ui;
 
+use action::Action;
+use camera::{focus_camera, home, scene_center};
 use catalog::ShapeEntry;
 use color::{ColorMode, Shades};
 use consts::{BODY_SIZE, BODY_X_SPACING, BODY_Y, W_SCRUB_RATE};
 use display::{Display, Surface};
 use gimbal::Gimbal;
-use mode::{Mode, Spin};
+use mode::{slice_reach, Mode, Spin};
 use projection::Family;
 use shown::Shown;
-use strip::{Cell, Strip};
+use strip::{fill_strip, Scratch, Strip};
 
 const SPIN: ActionId = ActionId("spin");
 const NEXT_MODE: ActionId = ActionId("next mode");
@@ -48,7 +51,6 @@ const PLANE: [ActionId; 6] = [
 const SECTION_COLOR: [f32; 4] = [1.0, 0.85, 0.35, 1.0];
 const SECTION_WIDTH_PX: f32 = 2.0;
 const EDGE_WIDTH_PX: f32 = display::DEFAULT_WIREFRAME_WIDTH_PX;
-const CAMERA_DISTANCE: f32 = 8.0;
 const DOMAIN_NAME: &str = "r4";
 
 #[derive(Clone, Copy)]
@@ -164,30 +166,6 @@ pub(crate) const TOYBOX_DEBUG: Toggle = Toggle {
     name: "toybox debug",
     setting: |app| app.toybox_debug.get_mut(),
 };
-
-#[derive(Clone, Copy)]
-pub(crate) enum Action {
-    Mode(Mode),
-    Active(usize),
-    Slice(f32),
-    ExactSlice(f32),
-    Plane(usize),
-    Running(Option<bool>),
-    Projection(Family),
-    NextProjection,
-    Color(ColorMode),
-    NextColor,
-    Shape(usize, usize),
-    AddShape(usize),
-    RemoveShape(usize),
-    ReorderShape { from: usize, to: usize },
-    Strip(Strip),
-    Rate(f32),
-    Display(Display),
-    Reset,
-    Time(f32),
-    PlaneAngle(usize, f32),
-}
 
 fn rest_of(index: usize, len: usize) -> Vec4 {
     let center = (len.max(1) - 1) as f32 * 0.5;
@@ -520,138 +498,6 @@ fn install_systems(
     });
 }
 
-impl AppCommand<Playground> for Action {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Mode(mode) => mode.name(),
-            Self::Active(_) => "active",
-            Self::Slice(_) | Self::ExactSlice(_) => "slice",
-            Self::Plane(_) => "plane",
-            Self::Running(_) => "spin",
-            Self::Projection(family) => family.name(),
-            Self::NextProjection => "wireframe perspective",
-            Self::Color(mode) => mode.name(),
-            Self::NextColor => "wireframe color",
-            Self::Shape(_, card) => catalog::SHAPE_CATALOG
-                .get(*card)
-                .map_or("shape", |entry| entry.label),
-            Self::AddShape(_) => "add shape",
-            Self::RemoveShape(_) => "remove shape",
-            Self::ReorderShape { .. } => "reorder shape",
-            Self::Strip(_) => "strip",
-            Self::Rate(_) => "rate",
-            Self::Display(_) => "display",
-            Self::Reset => "reset",
-            Self::Time(_) => "time",
-            Self::PlaneAngle(_, _) => "plane angle",
-        }
-    }
-
-    fn apply(&mut self, dispatch: &mut Dispatch<'_, Playground>) -> Result<Outcome, Rejection> {
-        let domain = dispatch.domains.named::<EuclideanR4>(DOMAIN_NAME)?;
-        let cards = dispatch.app.catalog.cards.clone();
-        match *self {
-            Action::Mode(mode) => mode::set_mode(dispatch, domain, &cards, mode)?,
-            Action::Active(slot) => {
-                if slot >= dispatch.app.slots.len() {
-                    return Err(Rejection::Unsupported("no such slot"));
-                }
-                dispatch.app.active.set(slot);
-            }
-            Action::ReorderShape { from, to } => {
-                row::reorder_shape(dispatch, domain, from, to)?;
-            }
-            Action::Slice(w) => {
-                if !w.is_finite() {
-                    return Err(Rejection::Unsupported("slice is not finite"));
-                }
-                let reach = slice_reach(*dispatch.app.mode);
-                dispatch.app.slice.set(w.clamp(-reach, reach));
-            }
-            Action::ExactSlice(w) => {
-                if !w.is_finite() {
-                    return Err(Rejection::Unsupported("slice is not finite"));
-                }
-                let reach = slice_reach(*dispatch.app.mode);
-                if !(-reach..=reach).contains(&w) {
-                    return Err(Rejection::Unsupported(
-                        "slice is outside the mode's w range",
-                    ));
-                }
-                dispatch.app.slice.set(w);
-            }
-            Action::Plane(plane) => mode::toggle_plane(dispatch, plane)?,
-            Action::Running(setting) => {
-                if *dispatch.app.mode == Mode::Toybox {
-                    return Err(Rejection::Unsupported("rotation belongs to Rotate"));
-                }
-                let running = dispatch.app.spin.get_mut();
-                running.running = setting.unwrap_or(!running.running);
-            }
-            Action::Projection(family) => {
-                dispatch.app.projection.set(family);
-                if family == Family::Stereographic {
-                    dispatch.app.display.get_mut().wireframe = true;
-                }
-            }
-            Action::NextProjection => {
-                let held = *dispatch.app.projection;
-                let at = Family::ALL
-                    .iter()
-                    .position(|family| *family == held)
-                    .unwrap_or(0);
-                let family = Family::ALL[(at + 1) % Family::ALL.len()];
-                dispatch.app.projection.set(family);
-                if family == Family::Stereographic {
-                    dispatch.app.display.get_mut().wireframe = true;
-                }
-            }
-            Action::Color(mode) => dispatch.app.color.set(mode),
-            Action::NextColor => {
-                let held = *dispatch.app.color;
-                let at = ColorMode::ALL
-                    .iter()
-                    .position(|mode| *mode == held)
-                    .unwrap_or(0);
-                dispatch
-                    .app
-                    .color
-                    .set(ColorMode::ALL[(at + 1) % ColorMode::ALL.len()]);
-            }
-            Action::Strip(strip) => mode::set_strip(dispatch.app, strip)?,
-            Action::Rate(rate) => {
-                if !rate.is_finite() {
-                    return Err(Rejection::Unsupported("the rate is not finite"));
-                }
-                dispatch.app.spin.get_mut().rate = rate.clamp(0.0, consts::MAX_RATE);
-            }
-            Action::Display(display) => display::set(dispatch.app, display)?,
-            Action::Reset => mode::reset(dispatch, domain, &cards)?,
-            Action::Time(time) => {
-                display::seek(dispatch.app, dispatch.domains, domain, time)
-                    .map_err(Rejection::Domain)?;
-            }
-            Action::PlaneAngle(plane, angle) => {
-                display::set_plane_angle(dispatch, domain, plane, angle)?;
-            }
-            Action::Shape(slot, card) => {
-                let Some(entry) = catalog::SHAPE_CATALOG.get(card) else {
-                    return Ok(Outcome::Done);
-                };
-                mode::set_shape(dispatch, domain, slot, *entry, cards[card])?;
-            }
-            Action::AddShape(card) => {
-                let Some(entry) = catalog::SHAPE_CATALOG.get(card) else {
-                    return Ok(Outcome::Done);
-                };
-                row::add_shape(dispatch, domain, *entry, cards[card])?;
-            }
-            Action::RemoveShape(slot) => row::remove_shape(dispatch, domain, slot)?,
-        }
-        Ok(Outcome::Done)
-    }
-}
-
 pub(crate) fn bindings() -> Bindings {
     let mut bound = Bindings::new()
         .key(Key::Space, SPIN)
@@ -687,12 +533,6 @@ impl Frame {
     fn passes(&self) -> Vec<Box<dyn FramePass>> {
         vec![Box::new(self.hyperslice.clone())]
     }
-}
-
-#[derive(Default)]
-struct Scratch {
-    cells: Vec<Cell>,
-    strip: Vec<(loam::render::Viewport, f32, BodyUniform)>,
 }
 
 fn main() -> Result<(), HostError> {
@@ -748,56 +588,6 @@ fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground
     Ok((session, app))
 }
 
-fn focus_camera(
-    orbit: &mut Orbit,
-    camera_focus: &mut Option<(bool, usize, Mode)>,
-    filmstrip_return: &mut Option<Orbit>,
-    strip: Strip,
-    focus: (bool, usize, Mode),
-    center: glam::Vec3,
-) {
-    if strip.on {
-        if filmstrip_return.is_none() {
-            let mut centered = Orbit::around([0.0; 3], orbit.distance);
-            centered.yaw = orbit.yaw;
-            centered.pitch = orbit.pitch;
-            *filmstrip_return = Some(std::mem::replace(orbit, centered));
-            *camera_focus = Some(focus);
-        }
-        orbit.target[1] = if strip.w && strip.t { BODY_Y } else { 0.0 };
-        return;
-    }
-    if let Some(returned) = filmstrip_return.take() {
-        *orbit = returned;
-    }
-    if *camera_focus == Some(focus) {
-        return;
-    }
-    let reset =
-        camera_focus.is_some_and(|previous| previous.2 != focus.2 || previous.0 && !focus.0);
-    let target = [center.x, 0.0, center.z];
-    if reset {
-        *orbit = home(target);
-    } else {
-        orbit.target = target;
-    }
-    *camera_focus = Some(focus);
-}
-
-fn home(target: [f32; 3]) -> Orbit {
-    Orbit {
-        pitch: -0.25,
-        ..Orbit::around(target, CAMERA_DISTANCE)
-    }
-}
-
-fn slice_reach(mode: Mode) -> f32 {
-    match mode {
-        Mode::Rotate => consts::W_RANGE,
-        Mode::Toybox => toy::ARENA_HALF,
-    }
-}
-
 fn readout_of(app: &Playground) -> hud::Readout {
     hud::Readout {
         slice: *app.slice.get(),
@@ -806,63 +596,6 @@ fn readout_of(app: &Playground) -> hud::Readout {
         planes: app.spin.get().planes,
         toybox: *app.mode.get() == Mode::Toybox,
     }
-}
-
-fn fill_strip(
-    strip: &Strip,
-    omega: Bivector4,
-    subject: loam::math::Rotor4,
-    frame: (u32, u32),
-    slice: f32,
-    scratch: &mut Scratch,
-) {
-    scratch.strip.clear();
-    if !strip.on {
-        scratch.cells.clear();
-        return;
-    }
-    strip.cells([frame.0, frame.1], slice, BODY_SIZE, &mut scratch.cells);
-    let entry = catalog::SHAPE_CATALOG[strip.subject()];
-    for cell in &scratch.cells {
-        let rotor = ((omega * cell.t).exp() * subject).normalize();
-        scratch.strip.push((
-            cell.viewport,
-            cell.w,
-            BodyUniform::polytope_with_rotor(
-                [0.0, BODY_Y, 0.0, 0.0],
-                shape_id(entry.shape),
-                BODY_SIZE,
-                rotor,
-                entry.body_color,
-            ),
-        ));
-    }
-}
-
-fn scene_center(
-    app: &Playground,
-    domains: &Domains,
-    domain: DomainHandle<EuclideanR4>,
-    alpha: f32,
-) -> glam::Vec3 {
-    let active = *app.active;
-    let single = app.display.single;
-    let Ok(r4) = domains.read(domain) else {
-        return glam::Vec3::ZERO;
-    };
-    let mut sum = glam::Vec3::ZERO;
-    let mut count = 0;
-    for (entity, slot) in app.slots.iter() {
-        if single && slot.index != active {
-            continue;
-        }
-        let Some(pose) = r4.drawn_pose(entity, alpha) else {
-            continue;
-        };
-        sum += pose.point.truncate();
-        count += 1;
-    }
-    sum / count.max(1) as f32
 }
 
 fn control_primary(ctx: &mut Ctx<'_, Playground>, domain: DomainHandle<EuclideanR4>) {

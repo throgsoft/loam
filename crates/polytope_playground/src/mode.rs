@@ -4,7 +4,7 @@ use loam::runtime::{
 };
 
 use crate::catalog::ShapeEntry;
-use crate::consts::BASE_ROTATION_RATE;
+use crate::consts::{self, BASE_ROTATION_RATE};
 use crate::strip::{Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
 use crate::toy;
 use crate::{Card, Playground, Toy};
@@ -28,6 +28,13 @@ impl Mode {
 
     pub(crate) fn from_token(token: &str) -> Option<Self> {
         Mode::ALL.into_iter().find(|mode| mode.name() == token)
+    }
+}
+
+pub(crate) fn slice_reach(mode: Mode) -> f32 {
+    match mode {
+        Mode::Rotate => consts::W_RANGE,
+        Mode::Toybox => toy::ARENA_HALF,
     }
 }
 
