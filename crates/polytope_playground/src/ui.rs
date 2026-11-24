@@ -156,23 +156,13 @@ fn view_tabs(ui: &mut egui::Ui, app: &Shown, sender: &CommandSender<Playground>)
             .selectable_label(!display.single && !strip.on, "Shapes")
             .clicked()
         {
-            let mut next = display;
-            next.single = false;
-            sender.app(Action::Display(next));
-            if strip.on {
-                sender.app(Action::Strip(Strip { on: false, ..strip }));
-            }
+            sender.app(Action::View { single: false });
         }
         if ui
             .selectable_label(display.single && !strip.on, "Single")
             .clicked()
         {
-            let mut next = display;
-            next.single = true;
-            sender.app(Action::Display(next));
-            if strip.on {
-                sender.app(Action::Strip(Strip { on: false, ..strip }));
-            }
+            sender.app(Action::View { single: true });
         }
         if ui.selectable_label(strip.on, "Filmstrip").clicked() {
             sender.app(Action::Strip(Strip { on: true, ..strip }));

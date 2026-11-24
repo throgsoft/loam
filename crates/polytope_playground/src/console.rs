@@ -3,10 +3,9 @@ use loam::prelude::*;
 
 use crate::action::Action;
 use crate::color::ColorMode;
-use crate::display::{Surface, MAX_WIREFRAME_WIDTH_PX};
+use crate::display::Surface;
 use crate::mode::Mode;
 use crate::projection::Family;
-use crate::strip::Strip;
 use crate::{Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GIMBAL, SHOW_GUIDES, TOYBOX_DEBUG};
 
 const MAX_SEEK_SECONDS: f32 = 1.0e6;
@@ -145,13 +144,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                 ["single"] => true,
                 _ => bail!("usage: view shapes|single"),
             };
-            submit.app_fn("view", move |dispatch: &mut Dispatch<'_, Playground>| {
-                dispatch.app.display.get_mut().single = single;
-                let strip = *dispatch.app.strip.get();
-                if strip.on {
-                    dispatch.app.strip.set(Strip { on: false, ..strip });
-                }
-            });
+            submit.app(Action::View { single });
             Ok(())
         },
     );
@@ -230,9 +223,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                 ["sdf"] => Surface::Sdf,
                 _ => bail!("usage: surface [raster|sdf|off]"),
             };
-            submit.app_fn("surface", move |dispatch: &mut Dispatch<'_, Playground>| {
-                dispatch.app.display.get_mut().surface = surface;
-            });
+            submit.app(Action::Surface(surface));
             Ok(())
         },
     );
@@ -242,22 +233,9 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         "wireframe [on|off|width [px]|alpha [value]|color [mode]|perspective [mode]]",
         |args, submit, _out| {
             match args {
-                [] => submit.app_fn(
-                    "wireframe",
-                    |dispatch: &mut Dispatch<'_, Playground>| {
-                        let shown = &mut dispatch.app.display.get_mut().wireframe;
-                        *shown = !*shown;
-                    },
-                ),
-                ["on"] | ["off"] => {
-                    let shown = args[0] == "on";
-                    submit.app_fn(
-                        "wireframe",
-                        move |dispatch: &mut Dispatch<'_, Playground>| {
-                            dispatch.app.display.get_mut().wireframe = shown;
-                        },
-                    );
-                }
+                [] => submit.app(Action::Wireframe(None)),
+                ["on"] => submit.app(Action::Wireframe(Some(true))),
+                ["off"] => submit.app(Action::Wireframe(Some(false))),
                 ["width"] => submit.inspect("wireframe width", |dispatch, out| {
                     out.line(format!(
                         "wireframe width: {:.2} px",
@@ -265,21 +243,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                     ));
                 }),
                 ["width", token] => {
-                    let width_px = number(token, "wireframe width")?;
-                    if !width_px.is_finite()
-                        || width_px <= 0.0
-                        || width_px > MAX_WIREFRAME_WIDTH_PX
-                    {
-                        bail!(
-                            "wireframe width {width_px} out of range; expected (0, {MAX_WIREFRAME_WIDTH_PX}]"
-                        );
-                    }
-                    submit.app_fn(
-                        "wireframe width",
-                        move |dispatch: &mut Dispatch<'_, Playground>| {
-                            dispatch.app.display.get_mut().wireframe_width_px = width_px;
-                        },
-                    );
+                    submit.app(Action::WireframeWidth(number(token, "wireframe width")?));
                 }
                 ["alpha"] => submit.inspect("wireframe alpha", |dispatch, out| {
                     out.line(format!(
@@ -288,16 +252,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                     ));
                 }),
                 ["alpha", token] => {
-                    let opacity = number(token, "wireframe alpha")?;
-                    if !opacity.is_finite() || opacity <= 0.0 || opacity > 1.0 {
-                        bail!("wireframe alpha {opacity} out of range; expected (0, 1]");
-                    }
-                    submit.app_fn(
-                        "wireframe alpha",
-                        move |dispatch: &mut Dispatch<'_, Playground>| {
-                            dispatch.app.display.get_mut().wireframe_opacity = opacity;
-                        },
-                    );
+                    submit.app(Action::WireframeOpacity(number(token, "wireframe alpha")?));
                 }
                 ["color"] => submit.app(Action::NextColor),
                 ["color", token] => {
@@ -336,22 +291,10 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                         }
                     ));
                 }),
-                ["perimeter"] => submit.app_fn(
-                    "section perimeter",
-                    |dispatch: &mut Dispatch<'_, Playground>| {
-                        let shown = &mut dispatch.app.display.get_mut().section_perimeter;
-                        *shown = !*shown;
-                    },
-                ),
-                ["perimeter", "on"] | ["perimeter", "off"] => {
-                    let shown = args[1] == "on";
-                    submit.app_fn(
-                        "section perimeter",
-                        move |dispatch: &mut Dispatch<'_, Playground>| {
-                            dispatch.app.display.get_mut().section_perimeter = shown;
-                        },
-                    );
-                }
+                ["perimeter", rest @ ..] => submit.app(Action::SectionPerimeter(toggle(
+                    rest,
+                    "usage: section perimeter [on|off]",
+                )?)),
                 _ => bail!("usage: section perimeter [on|off]"),
             }
             Ok(())
