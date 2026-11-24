@@ -218,7 +218,7 @@ impl<A: Stores> Session<A> {
         self.paused
     }
 
-    /// While paused a tick runs no simulation system and leaves the tick count alone, and boundaries and publishes go on as usual.
+    /// While paused a tick moves only the free camera and leaves the tick count alone, and boundaries and publishes go on as usual.
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
@@ -494,6 +494,7 @@ impl<A: Stores> Session<A> {
                 domain.begin_tick();
                 domain.end_tick();
             }
+            camera::travel(&mut self.views, &self.input, dt);
             return Ok(());
         }
         self.unfinished = Some(Phase::Simulation);
