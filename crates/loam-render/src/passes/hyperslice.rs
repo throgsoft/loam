@@ -1,18 +1,23 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use glam::Vec3;
+
 use loam_runtime::{Backdrop, Eye, FieldRecord, PublishedView, Rigid};
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
 use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage};
-use crate::raymarch::{shape_id, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms};
+use crate::raymarch::{
+    hyperslice_ground_wgsl, shape_id, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
+};
 use crate::sky_ground::DEFAULT_SKY;
 use crate::{DepthConvention, DepthMode, Viewport};
 
 struct State {
     source: String,
     uniforms: Hyperslice4DUniforms,
+    to_image: Rigid,
     bodies: Vec<BodyUniform>,
     cells: Vec<(Viewport, f32, BodyUniform)>,
     node: Option<Hyperslice4DNode>,
@@ -34,6 +39,7 @@ impl HyperslicePass {
             shared: Rc::new(RefCell::new(State {
                 source,
                 uniforms: Hyperslice4DUniforms::default(),
+                to_image: Rigid::IDENTITY,
                 bodies: Vec::new(),
                 cells: Vec::new(),
                 node: None,
@@ -41,6 +47,11 @@ impl HyperslicePass {
                 queue: None,
             })),
         }
+    }
+
+    /// The kernel over the backdrop's ground plane, which bounds the march and hides what lies below it.
+    pub fn with_ground() -> Self {
+        Self::new(hyperslice_ground_wgsl())
     }
 
     /// One draw per cell within the frame, each with its own w and body; an empty strip returns the pass to its full-frame draw.
@@ -94,7 +105,10 @@ impl FramePass for HyperslicePass {
     fn read_publication(&mut self, eye: &Eye, views: &[PublishedView]) {
         let mut state = self.shared.borrow_mut();
         let State {
-            uniforms, bodies, ..
+            uniforms,
+            to_image: kept,
+            bodies,
+            ..
         } = &mut *state;
         let drawn = views.iter().find_map(|view| {
             let cut = view.records.field_cut()?;
@@ -107,6 +121,7 @@ impl FramePass for HyperslicePass {
         uniforms.camera_up = to_image.direction(eye.up);
         uniforms.fov_y_tan = (eye.fov_y * 0.5).tan();
         uniforms.near = eye.near * to_image.scale;
+        *kept = to_image;
         bodies.clear();
         if let Some((view, cut)) = drawn {
             uniforms.w_slice = cut;
@@ -115,12 +130,20 @@ impl FramePass for HyperslicePass {
     }
 
     fn read_backdrop(&mut self, backdrop: Option<&Backdrop>) {
-        let uniforms = &mut self.shared.borrow_mut().uniforms;
+        let mut state = self.shared.borrow_mut();
+        let State {
+            uniforms, to_image, ..
+        } = &mut *state;
         let sky = backdrop.map_or(DEFAULT_SKY, |backdrop| backdrop.sky);
         let floor = backdrop.is_some_and(|backdrop| backdrop.ground.visible);
         uniforms.sky_below = sky.below;
         uniforms.sky_above = sky.above;
         uniforms.params = [if floor { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0];
+        if let Some(backdrop) = backdrop {
+            let normal = Vec3::from(to_image.direction([0.0, 1.0, 0.0]));
+            let on_plane = Vec3::from(to_image.apply([0.0, backdrop.ground.y, 0.0]));
+            uniforms.ground_plane = normal.extend(normal.dot(on_plane)).to_array();
+        }
     }
 
     fn record(

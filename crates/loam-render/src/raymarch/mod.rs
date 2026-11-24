@@ -5,9 +5,10 @@ mod hyperslice4d;
 mod polytope_data;
 pub mod scene;
 pub use hyperslice4d::{
-    BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
-    SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE, SHAPE_600CELL, SHAPE_CLIFFORD_TORUS,
-    SHAPE_DUOCYLINDER, SHAPE_PENTATOPE, SHAPE_SPHERINDER, SHAPE_TESSERACT,
+    hyperslice_ground_wgsl, BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
+    HYPERSLICE_KERNEL_WGSL, SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE,
+    SHAPE_600CELL, SHAPE_CLIFFORD_TORUS, SHAPE_DUOCYLINDER, SHAPE_PENTATOPE, SHAPE_SPHERINDER,
+    SHAPE_TESSERACT,
 };
 pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
 

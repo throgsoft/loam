@@ -123,6 +123,8 @@ pub struct Hyperslice4DUniforms {
     pub _pad4: f32,
     pub sky_above: [f32; 3],
     pub _pad5: f32,
+    /// Unit normal in `xyz` and offset in `w` of the ground plane in the drawn view's image space, so `dot(p, xyz) = w` on the plane.
+    pub ground_plane: [f32; 4],
 }
 
 impl Default for Hyperslice4DUniforms {
@@ -150,11 +152,12 @@ impl Default for Hyperslice4DUniforms {
             _pad4: 0.0,
             sky_above: crate::sky_ground::DEFAULT_SKY.above,
             _pad5: 0.0,
+            ground_plane: [0.0, 1.0, 0.0, 0.0],
         }
     }
 }
 
-/// Prefixed with [`crate::sky_ground::SKY_GROUND_WGSL`] and the shared `loam_projective_depth`; the user's `Scene4` emit supplies `loam_scene_sdf`.
+/// Prefixed with [`crate::sky_ground::SKY_GROUND_WGSL`] and the shared `loam_projective_depth`; a `Scene4` emit or [`hyperslice_ground_wgsl`] supplies `loam_scene_sdf`.
 pub const HYPERSLICE_KERNEL_WGSL: &str = concat!(
     include_str!("../sky_ground.wgsl"),
     include_str!("../shader/projective_depth.wgsl"),
@@ -206,6 +209,7 @@ struct Uniforms {
     body_offset: f32,
     sky_below: vec3<f32>,
     sky_above: vec3<f32>,
+    ground_plane: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -527,6 +531,43 @@ fn fs_depth(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
 }
 "#
 );
+
+// The backdrop's ground plane gated by `u.params.x`; it bounds the march and its hits are discarded for the backdrop to draw.
+const GROUND_SCENE_WGSL: &str = r#"
+struct LoamSceneHit { dist: f32, kind: u32 }
+fn loam_scene_at(p: vec3<f32>) -> LoamSceneHit {
+    let d = select(1.0e9, dot(p, u.ground_plane.xyz) - u.ground_plane.w, u.params.x >= 0.5);
+    return LoamSceneHit(d, LOAM_PRIM_HALFSPACE4D);
+}
+fn loam_scene_sdf(p: vec3<f32>) -> f32 {
+    return loam_scene_at(p).dist;
+}
+fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
+    var t_max: f32 = 1.0e9;
+    if (u.params.x >= 0.5) {
+        let dr = dot(rd, u.ground_plane.xyz);
+        if (dr < -1.0e-4) {
+            let t = (u.ground_plane.w - dot(ro, u.ground_plane.xyz)) / dr;
+            if (t > 0.0 && t < t_max) { t_max = t; }
+        }
+    }
+    return t_max;
+}
+"#;
+
+/// The kernel, the polytope SDFs and a scene of the uniforms' ground plane.
+pub fn hyperslice_ground_wgsl() -> String {
+    use super::scene::scene4::{PRIM_KIND_HALFSPACE4D, PRIM_KIND_HYPERSPHERE4D, PRIM_KIND_OTHER};
+    format!(
+        "{HYPERSLICE_KERNEL_WGSL}
+{polytope}
+         const LOAM_PRIM_HYPERSPHERE4D: u32 = {PRIM_KIND_HYPERSPHERE4D}u;
+         const LOAM_PRIM_HALFSPACE4D: u32 = {PRIM_KIND_HALFSPACE4D}u;
+         const LOAM_PRIM_OTHER: u32 = {PRIM_KIND_OTHER}u;
+         {GROUND_SCENE_WGSL}",
+        polytope = super::polytope_extended_sdfs_wgsl(),
+    )
+}
 
 const HYPERSLICE_UNIFORMS_SIZE: u64 = std::mem::size_of::<Hyperslice4DUniforms>() as u64;
 
@@ -1083,6 +1124,10 @@ mod tests {
             (
                 "sky_above",
                 std::mem::offset_of!(Hyperslice4DUniforms, sky_above),
+            ),
+            (
+                "ground_plane",
+                std::mem::offset_of!(Hyperslice4DUniforms, ground_plane),
             ),
         ];
         assert_eq!(members.len(), rust_offsets.len());

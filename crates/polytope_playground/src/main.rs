@@ -19,7 +19,6 @@ mod hud;
 mod mode;
 mod projection;
 mod row;
-mod scene;
 mod shown;
 mod strip;
 mod toy;
@@ -705,7 +704,7 @@ pub(crate) struct Frame {
 impl Frame {
     pub(crate) fn new() -> Self {
         Self {
-            hyperslice: HyperslicePass::new(scene::shader_source()),
+            hyperslice: HyperslicePass::with_ground(),
         }
     }
 
