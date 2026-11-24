@@ -15,8 +15,8 @@ use crate::phase::Step;
 use crate::session::{Library, PreparedGeometry, RestoreError, Stamp};
 use crate::store::{Change, Owner, Store, StoreError, StoreField, StoreSnapshot};
 use crate::view::{
-    self, ImageRay, ImageSpaceId, Pick, Rigid, ViewId, ViewRecords, ViewSpec, ViewStyle,
-    ViewSummary, ViewTarget, Views,
+    self, ImageRay, ImageSpaceId, PendingBuild, Pick, Rigid, ViewId, ViewRecords, ViewSpec,
+    ViewStyle, ViewSummary, ViewTarget, Views,
 };
 
 mod blend;
@@ -334,14 +334,22 @@ pub trait Domain: Send + 'static {
 pub(crate) trait DomainOwner: Domain + Sync {
     fn retarget(&mut self, view: ViewId, image: ImageSpaceId) -> Result<(), DomainError>;
 
-    fn publish(
+    fn prepare(
+        &self,
+        view: ViewId,
+        into: &mut ViewRecords,
+        stamp: Stamp,
+        alpha: f32,
+    ) -> Result<usize, DomainError>;
+
+    fn build(
         &self,
         view: ViewId,
         library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
         alpha: f32,
-    ) -> Result<(), DomainError>;
+    );
 
     fn step(&mut self, step: Step, executor: &dyn Executor) -> Result<(), DomainError>;
 
@@ -743,14 +751,13 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         self.views.retarget(view, image)
     }
 
-    fn publish(
+    fn prepare(
         &self,
         view: ViewId,
-        library: Library<'_>,
         into: &mut ViewRecords,
         stamp: Stamp,
         alpha: f32,
-    ) -> Result<(), DomainError> {
+    ) -> Result<usize, DomainError> {
         let spec = self.views.get(view).ok_or(DomainError::UnknownView(view))?;
         let revision = self
             .views
@@ -797,25 +804,55 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
             && into.revision == revision
             && !into.changed.contains(&spec.eye)
         {
-            let patched = if into.changed.is_empty() {
+            if into.changed.is_empty() {
                 into.instances.restamp(stamp);
-                true
-            } else if spec.style.enabled && into.refusals.count == 0 {
-                self.patch_view(spec, library, into, stamp, alpha)
-            } else {
-                false
-            };
-            if patched {
                 into.poses = pose_cursor;
                 into.attachments = attachment_cursor;
-                return Ok(());
+                into.pending = PendingBuild::Current;
+                return Ok(0);
             }
+            if spec.style.enabled && into.refusals.count == 0 {
+                into.pending = PendingBuild::Patch {
+                    poses: pose_cursor,
+                    attachments: attachment_cursor,
+                };
+                return Ok(into.changed.len());
+            }
+        }
+        into.pending = PendingBuild::Rebuild;
+        Ok(self.instances.len())
+    }
+
+    fn build(
+        &self,
+        view: ViewId,
+        library: Library<'_>,
+        into: &mut ViewRecords,
+        stamp: Stamp,
+        alpha: f32,
+    ) {
+        let spec = self
+            .views
+            .get(view)
+            .expect("a prepared view is still registered");
+        match into.pending {
+            PendingBuild::Current => return,
+            PendingBuild::Patch { poses, attachments } => {
+                if self.patch_view(spec, library, into, stamp, alpha) {
+                    into.poses = poses;
+                    into.attachments = attachments;
+                    return;
+                }
+            }
+            PendingBuild::Rebuild => {}
         }
         self.poses.catch_up(&mut into.poses);
         self.instances.catch_up(&mut into.attachments);
-        into.revision = revision;
+        into.revision = self
+            .views
+            .revision(view)
+            .expect("a prepared view is still registered");
         self.rebuild_view(spec, library, into, stamp, alpha);
-        Ok(())
     }
 
     fn step(&mut self, step: Step, executor: &dyn Executor) -> Result<(), DomainError> {

@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use loam_shape::polytope::Polytope4Topology;
 use loam_time::par::{self, Executor, Sequential};
@@ -26,6 +26,9 @@ use crate::view::{
 };
 
 const RELEASE_STALE_SECONDS: f64 = 0.12;
+
+// Measured with scoped threads by the `view_build` bench: 64 instances across two or four views gain and 16 lose.
+const INSTANCES_PER_PARALLEL_PUBLICATION: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SimConfig {
@@ -1212,33 +1215,35 @@ impl<A: Stores> Session<A> {
             changed |= into.views.len() != count;
             into.views.truncate(count);
             let domains = &self.domains;
-            let failed = Mutex::new(None);
-            par::for_each_chunk(executor, &mut into.views, 1, |views| {
+            let owner = |id: DomainId| {
+                domains
+                    .owner(id)
+                    .expect("a published view names a domain of this session")
+            };
+            let mut work = 0;
+            for view in &mut into.views {
+                work += owner(view.domain).prepare(
+                    view.target.view,
+                    &mut view.records,
+                    stamp,
+                    alpha,
+                )?;
+            }
+            let build = |views: &mut [PublishedView]| {
                 for view in views {
-                    let domain = domains
-                        .owner(view.domain)
-                        .expect("a published view names a domain of this session");
-                    let Err(error) =
-                        domain.publish(view.target.view, library, &mut view.records, stamp, alpha)
-                    else {
-                        continue;
-                    };
-                    let order = (
-                        view.domain,
-                        domain.views().iter().position(|&held| held == view.target),
+                    owner(view.domain).build(
+                        view.target.view,
+                        library,
+                        &mut view.records,
+                        stamp,
+                        alpha,
                     );
-                    if let Ok(mut failed) = failed.lock() {
-                        if failed.is_none_or(|(first, _)| order < first) {
-                            *failed = Some((order, error));
-                        }
-                    }
                 }
-            });
-            let failed = failed
-                .into_inner()
-                .expect("a view build does not panic while holding the error slot");
-            if let Some((_, error)) = failed {
-                return Err(error);
+            };
+            if work < INSTANCES_PER_PARALLEL_PUBLICATION {
+                build(&mut into.views);
+            } else {
+                par::for_each_chunk(executor, &mut into.views, 1, build);
             }
             for view in &into.views {
                 changed |= view.records.built == stamp;

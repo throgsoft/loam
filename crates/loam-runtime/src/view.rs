@@ -1095,6 +1095,17 @@ impl ViewOutputCache {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) enum PendingBuild {
+    #[default]
+    Current,
+    Patch {
+        poses: Cursor,
+        attachments: Cursor,
+    },
+    Rebuild,
+}
+
 #[derive(Default)]
 pub struct ViewRecords {
     pub instances: RecordBuffer<InstanceRecord>,
@@ -1111,6 +1122,7 @@ pub struct ViewRecords {
     pub(crate) changed: Vec<Entity>,
     pub(crate) poses: Cursor,
     pub(crate) attachments: Cursor,
+    pub(crate) pending: PendingBuild,
     pub(crate) revision: u32,
     pub(crate) built: Stamp,
     pub(crate) alpha: f32,
