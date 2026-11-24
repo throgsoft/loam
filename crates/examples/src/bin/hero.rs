@@ -20,7 +20,7 @@ use loam::text::ab_glyph::FontRef;
 use loam::text::glyph::{
     append_field_prism, layout_word, DistanceField2D, GlyphParams, GlyphSolid,
 };
-use loam::time::director::{Ease, Track};
+use loam::time::{Ease, Track};
 
 const WORD: &str = "LOAM";
 const FONT: &[u8] = include_bytes!("../../fonts/lmroman10-bold.otf");
