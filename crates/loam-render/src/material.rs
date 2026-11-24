@@ -96,8 +96,6 @@ impl MaterialSpec<'_> {
             multiview: None,
             cache: None,
         });
-        Ok(MaterialPipeline {
-            pipeline,
-        })
+        Ok(MaterialPipeline { pipeline })
     }
 }
