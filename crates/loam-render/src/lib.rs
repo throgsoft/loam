@@ -3,34 +3,31 @@ pub mod depth;
 pub mod device;
 pub mod gpu_timer;
 pub mod hypergimbal;
-pub mod line_raster;
-pub mod material;
+pub mod hyperslice;
+pub mod line;
 pub mod pass;
-pub mod passes;
-pub mod point_raster;
+pub mod point;
 pub mod present;
 pub mod raymarch;
 pub mod shader;
 pub mod sky_ground;
-pub mod triangle_pass;
-pub mod triangle_raster;
+pub mod triangle;
 pub mod viewport;
 
 pub use depth::DepthBuffer;
-pub use line_raster::{LineRasterNode, LineRasterUniforms};
-pub use material::{MaterialPipeline, MaterialSpec};
+pub use hyperslice::HyperslicePass;
+pub use line::{LinePass, LineRasterNode, LineRasterUniforms};
 pub use pass::{
     ColorLoad, FrameFormat, FramePass, FrameTarget, GpuTime, PassError, PassExecutionError,
     PassPhase, PassSchedule, PassStage, Section,
 };
-pub use passes::{HyperslicePass, LinePass, PointPass, RaymarchPass, SkyGroundPass};
-pub use point_raster::{PointInstance, PointRasterNode, PointRasterUniforms};
+pub use point::{PointInstance, PointPass, PointRasterNode, PointRasterUniforms};
 pub use present::Presenter;
-pub use raymarch::{RayMarchNode, RayMarchUniforms};
-pub use sky_ground::{SkyGroundNode, SkyGroundUniforms};
-pub use triangle_pass::TriangleFeed;
-pub use triangle_raster::{
-    FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
+pub use raymarch::{RayMarchNode, RayMarchUniforms, RaymarchPass};
+pub use sky_ground::{SkyGroundNode, SkyGroundPass, SkyGroundUniforms};
+pub use triangle::{
+    FragmentShading, MaterialPipeline, MaterialSpec, TriangleFeed, TriangleRasterNode,
+    TriangleRasterUniforms, TriangleVertex,
 };
 pub use viewport::Viewport;
 

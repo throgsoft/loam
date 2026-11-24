@@ -1,5 +1,7 @@
-//! The caller owns the depth texture and clears it before this node's draw,
-//! which loads both color and depth.
+mod pass;
+mod published;
+pub use pass::LinePass;
+pub(crate) use published::{PublishedLines, ViewLines};
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
@@ -29,6 +31,7 @@ pub struct LineRasterUniforms {
     pub _pad: [f32; 2],
 }
 
+/// The caller owns the depth texture and clears it before this node's draw, which loads both color and depth.
 pub struct LineRasterNode {
     pipeline: RenderPipeline,
     uniform_buf: Buffer,

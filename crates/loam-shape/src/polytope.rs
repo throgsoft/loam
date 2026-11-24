@@ -7,7 +7,7 @@ use crate::polytope_geom::{
     tesseract_vertices,
 };
 
-/// Discriminants match `loam_render::raymarch::SHAPE_*`.
+/// Discriminants match `loam_render::hyperslice::SHAPE_*`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum Polytope4 {

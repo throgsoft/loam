@@ -1,34 +1,8 @@
 //! A user shader for [`RayMarchNode`] exports `vs_fullscreen(@builtin(vertex_index))` and
 //! `fs_main(@builtin(position))` and binds [`RayMarchUniforms`] at group 0, binding 0.
 
-mod hyperslice4d;
-mod polytope_data;
-pub use hyperslice4d::{
-    hyperslice_ground_wgsl, BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
-    HYPERSLICE_KERNEL_WGSL, SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE,
-    SHAPE_600CELL, SHAPE_CLIFFORD_TORUS, SHAPE_DUOCYLINDER, SHAPE_PENTATOPE, SHAPE_SPHERINDER,
-    SHAPE_TESSERACT,
-};
-pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
-
-pub fn shape_id(shape: loam_shape::FieldShape) -> u32 {
-    use loam_shape::polytope::Polytope4;
-    use loam_shape::FieldShape;
-    match shape {
-        FieldShape::Polytope(p) => match p {
-            Polytope4::Pentatope => SHAPE_PENTATOPE,
-            Polytope4::Tesseract => SHAPE_TESSERACT,
-            Polytope4::Cell16 => SHAPE_16CELL,
-            Polytope4::Cell24 => SHAPE_24CELL,
-            Polytope4::Cell120 => SHAPE_120CELL,
-            Polytope4::Cell600 => SHAPE_600CELL,
-        },
-        FieldShape::ThreeSphere => SHAPE_3SPHERE,
-        FieldShape::Duocylinder => SHAPE_DUOCYLINDER,
-        FieldShape::CliffordTorus => SHAPE_CLIFFORD_TORUS,
-        FieldShape::Spherinder => SHAPE_SPHERINDER,
-    }
-}
+mod pass;
+pub use pass::RaymarchPass;
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::*;

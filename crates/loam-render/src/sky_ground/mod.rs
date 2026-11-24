@@ -1,3 +1,6 @@
+mod pass;
+pub use pass::SkyGroundPass;
+
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use wgpu::*;

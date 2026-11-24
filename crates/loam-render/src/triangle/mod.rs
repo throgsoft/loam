@@ -1,3 +1,8 @@
+mod material;
+mod pass;
+pub use material::{MaterialPipeline, MaterialSpec};
+pub use pass::TriangleFeed;
+
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use loam_math::{Projection, RasterizableSpace};
@@ -12,7 +17,6 @@ use wgpu::{
 };
 
 use crate::device::{FeatureRequest, GpuContext, MissingGpuCapability};
-use crate::material::MaterialSpec;
 
 const TRIANGLE_RASTER_WGSL: &str = include_str!("triangle_raster.wgsl");
 

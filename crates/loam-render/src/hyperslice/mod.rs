@@ -1,9 +1,33 @@
+mod pass;
+mod polytope_data;
+pub use pass::HyperslicePass;
+pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
+
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use loam_math::Rotor4;
 use wgpu::*;
 
 use crate::pass::ColorLoad;
+
+pub fn shape_id(shape: loam_shape::FieldShape) -> u32 {
+    use loam_shape::polytope::Polytope4;
+    use loam_shape::FieldShape;
+    match shape {
+        FieldShape::Polytope(p) => match p {
+            Polytope4::Pentatope => SHAPE_PENTATOPE,
+            Polytope4::Tesseract => SHAPE_TESSERACT,
+            Polytope4::Cell16 => SHAPE_16CELL,
+            Polytope4::Cell24 => SHAPE_24CELL,
+            Polytope4::Cell120 => SHAPE_120CELL,
+            Polytope4::Cell600 => SHAPE_600CELL,
+        },
+        FieldShape::ThreeSphere => SHAPE_3SPHERE,
+        FieldShape::Duocylinder => SHAPE_DUOCYLINDER,
+        FieldShape::CliffordTorus => SHAPE_CLIFFORD_TORUS,
+        FieldShape::Spherinder => SHAPE_SPHERINDER,
+    }
+}
 
 const INITIAL_BODY_CAPACITY: usize = 32;
 
@@ -159,7 +183,7 @@ impl Default for Hyperslice4DUniforms {
 
 /// Prefixed with `sky_ground.wgsl` and the shared `loam_projective_depth`; [`hyperslice_ground_wgsl`] supplies `loam_scene_sdf`.
 pub const HYPERSLICE_KERNEL_WGSL: &str = concat!(
-    include_str!("../sky_ground.wgsl"),
+    include_str!("../sky_ground/sky_ground.wgsl"),
     include_str!("../shader/projective_depth.wgsl"),
     r#"
 const NO_BODY: u32 = 0xffffffffu;
@@ -516,34 +540,13 @@ fn fs_depth(@builtin(position) frag_pos: vec4<f32>) -> Fragment {
 );
 
 // The backdrop's ground plane gated by `u.params.x`; it bounds the march and its hits are discarded for the backdrop to draw.
-const GROUND_SCENE_WGSL: &str = r#"
-const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
-struct LoamSceneHit { dist: f32, kind: u32 }
-fn loam_scene_at(p: vec3<f32>) -> LoamSceneHit {
-    let d = select(1.0e9, dot(p, u.ground_plane.xyz) - u.ground_plane.w, u.params.x >= 0.5);
-    return LoamSceneHit(d, LOAM_PRIM_HALFSPACE4D);
-}
-fn loam_scene_sdf(p: vec3<f32>) -> f32 {
-    return loam_scene_at(p).dist;
-}
-fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
-    var t_max: f32 = 1.0e9;
-    if (u.params.x >= 0.5) {
-        let dr = dot(rd, u.ground_plane.xyz);
-        if (dr < -1.0e-4) {
-            let t = (u.ground_plane.w - dot(ro, u.ground_plane.xyz)) / dr;
-            if (t > 0.0 && t < t_max) { t_max = t; }
-        }
-    }
-    return t_max;
-}
-"#;
+const GROUND_SCENE_WGSL: &str = include_str!("ground_scene.wgsl");
 
 /// The kernel, the polytope SDFs and a scene of the uniforms' ground plane.
 pub fn hyperslice_ground_wgsl() -> String {
     format!(
         "{HYPERSLICE_KERNEL_WGSL}\n{}\n{GROUND_SCENE_WGSL}",
-        super::polytope_extended_sdfs_wgsl()
+        polytope_extended_sdfs_wgsl()
     )
 }
 
@@ -992,7 +995,7 @@ mod tests {
     fn kernel_uniform_layout() {
         let source = format!(
             "{HYPERSLICE_KERNEL_WGSL}\n{}\n{EMPTY_SCENE_STUB}",
-            super::super::polytope_data::polytope_stub_sdfs_wgsl()
+            polytope_data::polytope_stub_sdfs_wgsl()
         );
         let module = naga::front::wgsl::parse_str(&source).expect("parse");
         let ty = module
@@ -1179,7 +1182,7 @@ fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
     }
 
     fn strip_probe_module(device: &Device) -> ShaderModule {
-        let polytope = super::super::polytope_data::polytope_stub_sdfs_wgsl();
+        let polytope = polytope_data::polytope_stub_sdfs_wgsl();
         device.create_shader_module(ShaderModuleDescriptor {
             label: Some("hyperslice4d strip probe"),
             source: ShaderSource::Wgsl(

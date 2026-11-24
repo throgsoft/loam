@@ -1,9 +1,9 @@
 use loam_render::depth::DEPTH_FORMAT;
 use loam_render::device::{FeatureRequest, GpuContext};
-use loam_render::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget};
-use loam_render::raymarch::{
+use loam_render::hyperslice::{
     polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
 };
+use loam_render::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget};
 use loam_render::sky_ground::SKY_HORIZON;
 use loam_render::{HyperslicePass, Viewport};
 use wgpu::*;

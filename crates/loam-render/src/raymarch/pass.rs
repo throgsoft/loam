@@ -3,9 +3,9 @@ use std::rc::Rc;
 
 use wgpu::{CommandEncoder, Queue};
 
+use super::{RayMarchNode, RayMarchUniforms};
 use crate::device::GpuContext;
 use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
-use crate::raymarch::{RayMarchNode, RayMarchUniforms};
 use crate::Viewport;
 
 struct State {
@@ -93,7 +93,7 @@ impl FramePass for RaymarchPass {
         let module = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("loam-render::passes::raymarch"),
+                label: Some("loam-render::raymarch"),
                 source: wgpu::ShaderSource::Wgsl(state.source.clone().into()),
             });
         state.built = Some(Built {

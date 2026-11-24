@@ -4,11 +4,11 @@ use std::rc::Rc;
 use loam_runtime::FieldRecord;
 use wgpu::{CommandEncoder, Device, Queue};
 
-use crate::device::GpuContext;
-use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
-use crate::raymarch::{
+use super::{
     hyperslice_ground_wgsl, shape_id, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
 };
+use crate::device::GpuContext;
+use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
 use crate::sky_ground::DEFAULT_SKY;
 use crate::{DepthConvention, DepthMode, Viewport};
 
@@ -172,7 +172,7 @@ impl FramePass for HyperslicePass {
         let module = gpu
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("loam-render::passes::hyperslice"),
+                label: Some("loam-render::hyperslice"),
                 source: wgpu::ShaderSource::Wgsl(state.source.clone().into()),
             });
         state.built = Some(Built {

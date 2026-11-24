@@ -1,139 +1,21 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use glam::Vec2;
-use loam_runtime::{DomainId, SegmentRecord, Stamp, ViewTarget};
-use wgpu::{Color, CommandEncoder, Device, Queue, RenderPass, TextureFormat, TextureView};
+use loam_runtime::{DomainId, ViewTarget};
+use wgpu::{Color, CommandEncoder, Device, Queue, TextureFormat, TextureView};
 
 use crate::depth::DepthBuffer;
 use crate::depth::DEPTH_FORMAT;
 use crate::device::GpuContext;
+use crate::line::{LinePass, PublishedLines, ViewLines};
 use crate::pass::{
     FrameFormat, FramePass, FrameTarget, PassError, PassExecutionError, PassSchedule, PassStage,
     PublishedFrame, Section,
 };
-use crate::passes::{LinePass, PointPass, SkyGroundPass};
-use crate::triangle_pass::TriangleFeed;
-use crate::{DepthConvention, DepthMode, FragmentShading, LineRasterNode};
-
-struct ViewLines {
-    opaque: LineRasterNode,
-    translucent: LineRasterNode,
-    scratch: Vec<SegmentRecord>,
-    uploaded: Option<(DomainId, ViewTarget, Stamp)>,
-    camera: Option<(glam::Mat4, Vec2)>,
-}
-
-impl ViewLines {
-    fn new(device: &Device, format: TextureFormat) -> Self {
-        Self {
-            opaque: LineRasterNode::new(
-                device,
-                format,
-                DepthMode::ReadWrite {
-                    format: DEPTH_FORMAT,
-                },
-                DepthConvention::ReversedZ,
-            ),
-            translucent: LineRasterNode::new(
-                device,
-                format,
-                DepthMode::ReadOnly {
-                    format: DEPTH_FORMAT,
-                },
-                DepthConvention::ReversedZ,
-            ),
-            scratch: Vec::new(),
-            uploaded: None,
-            camera: None,
-        }
-    }
-
-    fn set_camera(&mut self, queue: &Queue, camera: glam::Mat4, viewport: Vec2) {
-        if self.camera == Some((camera, viewport)) {
-            return;
-        }
-        self.camera = Some((camera, viewport));
-        self.opaque.set_camera(queue, camera, viewport);
-        self.translucent.set_camera(queue, camera, viewport);
-    }
-
-    fn upload_segments(&mut self, device: &Device, queue: &Queue, segments: &[SegmentRecord]) {
-        self.scratch.clear();
-        self.scratch
-            .extend(segments.iter().copied().filter(segment_is_opaque));
-        self.opaque.upload_segments(device, queue, &self.scratch);
-        self.scratch.clear();
-        self.scratch.extend(
-            segments
-                .iter()
-                .copied()
-                .filter(|segment| !segment_is_opaque(segment)),
-        );
-        self.translucent
-            .upload_segments(device, queue, &self.scratch);
-    }
-}
-
-struct PublishedLines {
-    views: Rc<RefCell<Vec<ViewLines>>>,
-}
-
-impl FramePass for PublishedLines {
-    fn name(&self) -> &'static str {
-        "present-draw"
-    }
-
-    fn stage(&self) -> PassStage {
-        PassStage::Scene
-    }
-
-    fn depth_convention(&self) -> Option<DepthConvention> {
-        Some(DepthConvention::ReversedZ)
-    }
-
-    fn depth_read(&self) -> Option<DepthConvention> {
-        Some(DepthConvention::ReversedZ)
-    }
-
-    fn shares_pass(&self) -> bool {
-        true
-    }
-
-    fn draw(&mut self, pass: &mut RenderPass<'_>, _target: &FrameTarget<'_>) -> anyhow::Result<()> {
-        let views = self.views.borrow();
-        for slot in views.iter() {
-            slot.opaque.draw(pass, None);
-        }
-        for slot in views.iter() {
-            slot.translucent.draw(pass, None);
-        }
-        Ok(())
-    }
-
-    fn record(
-        &mut self,
-        encoder: &mut CommandEncoder,
-        target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
-        let Some(depth) = target.depth else {
-            return Ok(());
-        };
-        let views = self.views.borrow();
-        for slot in views.iter() {
-            slot.opaque.record(encoder, target.color, Some(depth), None);
-        }
-        for slot in views.iter() {
-            slot.translucent
-                .record(encoder, target.color, Some(depth), None);
-        }
-        Ok(())
-    }
-
-    fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
+use crate::point::PointPass;
+use crate::sky_ground::SkyGroundPass;
+use crate::triangle::TriangleFeed;
+use crate::{DepthConvention, FragmentShading};
 
 pub struct Presenter {
     uploads: u64,
@@ -287,17 +169,15 @@ impl Presenter {
     }
 }
 
-fn segment_is_opaque(segment: &SegmentRecord) -> bool {
-    segment.start_color[3] >= 1.0 && segment.end_color[3] >= 1.0
-}
-
 #[cfg(test)]
 mod tests {
     use crate::pass::ColorLoad;
+    use glam::Vec2;
     use loam_math::EuclideanR4;
     use loam_runtime::{
         DomainBuilder, Eye, Instance, LogCapacity, Material, Overlay, Pose, PreparedGeometry,
-        Projection4, Publication, PublishedView, Session, SimConfig, SpawnBundle, ViewSpec,
+        Projection4, Publication, PublishedView, SegmentRecord, Session, SimConfig, SpawnBundle,
+        ViewSpec,
     };
     use wgpu::{
         BackendOptions, Backends, InstanceDescriptor, LoadOp, NoopBackendOptions, Operations,

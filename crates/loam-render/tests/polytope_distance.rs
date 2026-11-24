@@ -1,4 +1,4 @@
-use loam_render::raymarch::polytope_extended_sdfs_wgsl;
+use loam_render::hyperslice::polytope_extended_sdfs_wgsl;
 use loam_shape::polytope::Polytope4;
 
 mod support;

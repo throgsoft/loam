@@ -1,3 +1,6 @@
+mod pass;
+pub use pass::PointPass;
+
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
 use loam_math::{Projection, RasterizableSpace};
