@@ -1,7 +1,5 @@
 mod pass;
-mod published;
 pub use pass::LinePass;
-pub(crate) use published::{PublishedLines, ViewLines};
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec2};
