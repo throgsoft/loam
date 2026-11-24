@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use loam_console::{cmd, CommandLine, Console, ConsoleWriter, HistoryLine};
 use loam_runtime::{AppCommand, Dispatch, Setting, Stores};
 
-use super::commands::{CommandSender, Reported};
+use super::commands::{CommandSender, Report, Reported};
 
 #[derive(Default)]
 struct ConsoleState {
@@ -104,6 +104,7 @@ pub struct SessionConsole<A: Stores> {
     submit: Submit<A>,
     state: Shared,
     completed: Vec<Reported>,
+    refused: Option<(usize, String)>,
 }
 
 impl<A: Stores> SessionConsole<A> {
@@ -117,6 +118,7 @@ impl<A: Stores> SessionConsole<A> {
             },
             state,
             completed: Vec::new(),
+            refused: None,
         };
         crate::trace::register_command(&mut console.console);
         console.register(
@@ -244,7 +246,13 @@ impl<A: Stores> SessionConsole<A> {
         for reported in self.completed.drain(..) {
             let line = match reported.outcome {
                 Ok(outcome) => format!("{}: {outcome}", reported.name),
-                Err(rejection) => format!("{}: rejected, {rejection}", reported.name),
+                Err(rejection) => {
+                    let line = format!("{}: rejected, {rejection}", reported.name);
+                    if let (Report::Script(number), None) = (reported.report, &self.refused) {
+                        self.refused = Some((number, line.clone()));
+                    }
+                    line
+                }
             };
             self.console.write(HistoryLine::output(line));
         }
@@ -253,6 +261,17 @@ impl<A: Stores> SessionConsole<A> {
                 "commands: {dropped} results omitted"
             )));
         }
+    }
+
+    pub(crate) fn dispatch_script_line(&mut self, text: &str, number: usize) {
+        self.submit.commands.set_report(Report::Script(number));
+        self.console.execute(text);
+        self.dispatch_pending();
+        self.submit.commands.set_report(Report::Console);
+    }
+
+    pub(crate) fn take_refused(&mut self) -> Option<(usize, String)> {
+        self.refused.take()
     }
 
     pub fn dispatch_pending(&mut self) -> bool {

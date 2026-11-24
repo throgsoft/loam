@@ -9,21 +9,30 @@ use loam_runtime::{
 pub(crate) const MAX_PENDING_COMMANDS: usize = 1024;
 const MAX_REPORTED_COMMANDS: usize = 256;
 
+// Script holds the 1-based script line that queued the command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Report {
+    Silent,
+    Console,
+    Script(usize),
+}
+
 struct Queued<A> {
     name: &'static str,
     command: Command<A>,
-    report: bool,
+    report: Report,
 }
 
 struct Submitted {
     request: RequestId,
     name: &'static str,
-    report: bool,
+    report: Report,
     recovery: bool,
 }
 
 pub(crate) struct Reported {
     pub name: &'static str,
+    pub report: Report,
     pub outcome: Result<Outcome, Rejection>,
 }
 
@@ -57,7 +66,7 @@ fn lock<A>(shared: &Shared<A>) -> MutexGuard<'_, State<A>> {
 
 pub struct CommandSender<A: Stores> {
     shared: Shared<A>,
-    report: bool,
+    report: Report,
 }
 
 impl<A: Stores> Clone for CommandSender<A> {
@@ -135,8 +144,12 @@ impl<A: Stores> CommandSender<A> {
     pub(crate) fn reported(&self) -> Self {
         Self {
             shared: self.shared.clone(),
-            report: true,
+            report: Report::Console,
         }
+    }
+
+    pub(crate) fn set_report(&mut self, report: Report) {
+        self.report = report;
     }
 
     pub(crate) fn take_reported(&self, into: &mut Vec<Reported>) -> usize {
@@ -149,17 +162,21 @@ impl<A: Stores> CommandSender<A> {
 fn deliver<A>(
     shared: &mut State<A>,
     name: &'static str,
-    report: bool,
+    report: Report,
     outcome: Result<Outcome, Rejection>,
 ) {
-    if !report {
+    if report == Report::Silent {
         match &outcome {
             Ok(_) => return,
             Err(rejection) => tracing::warn!("{name}: rejected, {rejection}"),
         }
     }
     if shared.reported.len() < MAX_REPORTED_COMMANDS {
-        shared.reported.push(Reported { name, outcome });
+        shared.reported.push(Reported {
+            name,
+            report,
+            outcome,
+        });
     } else {
         shared.dropped_reports = shared.dropped_reports.saturating_add(1);
     }
@@ -189,7 +206,7 @@ impl<A: Stores> CommandInbox<A> {
     pub fn sender(&self) -> CommandSender<A> {
         CommandSender {
             shared: self.shared.clone(),
-            report: false,
+            report: Report::Silent,
         }
     }
 
@@ -270,7 +287,7 @@ impl<A: Stores> CommandInbox<A> {
                 .position(|submitted| submitted.request == result.request)
             else {
                 if result.outcome.is_err() {
-                    deliver(&mut shared, result.name, false, result.outcome);
+                    deliver(&mut shared, result.name, Report::Silent, result.outcome);
                 }
                 continue;
             };

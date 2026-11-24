@@ -1,12 +1,12 @@
 use loam_console::{render_line, CommandLine, LineKind};
 use loam_runtime::host::HostError;
-use loam_runtime::{Bindings, PointerButton, Publication, Session, Stores};
+use loam_runtime::{Bindings, Key, PointerButton, Publication, Session, Stores};
 
 use super::app::{InputHook, SessionApp};
 use super::console::SessionConsole;
 use super::cursor::CursorCapture;
 use super::input::{dom_key, InputMap};
-use crate::script::{ScriptDriver, ScriptStatus};
+use crate::script::{ScriptDriver, ScriptStatus, ScriptStep};
 
 // A 720p canvas, so pointer deltas and the eye aspect match a common windowed run.
 const FRAME: (u32, u32) = (1280, 720);
@@ -19,6 +19,11 @@ pub fn run_script<A: Stores>(
     alpha: f32,
     mut each: impl FnMut(u32, &mut Session<A>, &Publication<A::Published>) -> Result<(), HostError>,
 ) -> Result<Publication<A::Published>, HostError> {
+    let lines = driver
+        .steps()
+        .iter()
+        .map(|step| parse(&app.console, &step.command).map_err(|error| refused(step, &error)))
+        .collect::<Result<Vec<_>, _>>()?;
     session.capture_initial();
     let dt = f64::from(session.config().dt().unwrap_or(0.0));
     let aspect = FRAME.0 as f32 / FRAME.1 as f32;
@@ -50,6 +55,9 @@ pub fn run_script<A: Stores>(
         });
         input.reclaim(session.take_input());
         stepped?;
+        if let Some((number, error)) = app.console.take_refused() {
+            return Err(HostError::Host(format!("script line {number}: {error}")));
+        }
         session.views_mut().root_mut().eye.aspect = aspect;
         let views = session.views();
         cursor.follow_rig(views.get(views.root()).and_then(|image| image.rig.cursor()));
@@ -60,40 +68,66 @@ pub fn run_script<A: Stores>(
         session.publish_at(&mut publication, alpha)?;
         each(step, session, &publication)?;
 
-        let mut refused = None;
-        let status = driver.advance_with(|line| {
-            if refused.is_none() {
-                refused = feed(&mut input, &app.config.bindings, &mut app.console, &line)
-                    .err()
-                    .map(|error| {
-                        format!("`{}`: {error}", render_line(&line.name, &line.arg_refs()))
-                    });
+        let mut failed = None;
+        let status = driver.advance_with(|index, step| {
+            if failed.is_some() {
+                return;
+            }
+            match &lines[index] {
+                Line::Input(event) => event.apply(&mut input, &app.config.bindings),
+                Line::Console => {
+                    let text = render_line(&step.command.name, &step.command.arg_refs());
+                    app.console.dispatch_script_line(&text, step.line);
+                    failed = echo(&mut app.console).map(|error| refused(step, &error));
+                }
             }
         });
-        if let Some(error) = refused {
+        if let Some(error) = failed {
+            return Err(error);
+        }
+        if let Some(error) = echo(&mut app.console) {
             return Err(HostError::Host(format!("frame {frame}: {error}")));
         }
-        app.console.dispatch_pending();
-        echo(&mut app.console, frame)?;
         if status == ScriptStatus::Finished {
             return Ok(publication);
         }
     }
 }
 
-fn feed<A: Stores>(
-    input: &mut InputMap,
-    bindings: &Bindings,
-    console: &mut SessionConsole<A>,
-    line: &CommandLine,
-) -> Result<(), String> {
-    let args = line.arg_refs();
-    match (line.name.as_str(), args.as_slice()) {
-        ("key", [code, edge]) => {
-            let key = dom_key(code).ok_or_else(|| format!("`{code}` is not a key code"))?;
-            input.action(bindings, key, pressed(edge)?);
+enum Line {
+    Input(Event),
+    Console,
+}
+
+#[derive(Clone, Copy)]
+enum Event {
+    Key(Key, bool),
+    Move([f32; 2]),
+    Button([f32; 2], PointerButton, bool),
+    Wheel(f32),
+    Look(f32, f32),
+}
+
+impl Event {
+    fn apply(self, input: &mut InputMap, bindings: &Bindings) {
+        match self {
+            Event::Key(key, down) => input.action(bindings, key, down),
+            Event::Move(at) => input.moved(at),
+            Event::Button(at, button, down) => input.button(at, button, down),
+            Event::Wheel(lines) => input.wheel([0.0, lines]),
+            Event::Look(dx, dy) => input.raw_motion(dx, dy),
         }
-        ("pointer", [x, y, "move"]) => input.moved([number(x)?, number(y)?]),
+    }
+}
+
+fn parse<A: Stores>(console: &SessionConsole<A>, line: &CommandLine) -> Result<Line, String> {
+    let args = line.arg_refs();
+    let event = match (line.name.as_str(), args.as_slice()) {
+        ("key", [code, edge]) => Event::Key(
+            dom_key(code).ok_or_else(|| format!("`{code}` is not a key code"))?,
+            pressed(edge)?,
+        ),
+        ("pointer", [x, y, "move"]) => Event::Move([number(x)?, number(y)?]),
         ("pointer", [x, y, edge, button @ ..]) => {
             let button = match button {
                 [] | ["primary"] => PointerButton::Primary,
@@ -101,17 +135,23 @@ fn feed<A: Stores>(
                 ["middle"] => PointerButton::Middle,
                 _ => return Err("the button is primary, secondary or middle".into()),
             };
-            input.button([number(x)?, number(y)?], button, pressed(edge)?);
+            Event::Button([number(x)?, number(y)?], button, pressed(edge)?)
         }
-        ("wheel", [lines]) => input.wheel([0.0, number(lines)?]),
-        ("look", [dx, dy]) => input.raw_motion(number(dx)?, number(dy)?),
+        ("wheel", [lines]) => Event::Wheel(number(lines)?),
+        ("look", [dx, dy]) => Event::Look(number(dx)?, number(dy)?),
         ("key", _) => return Err("usage: key <code> down|up".into()),
         ("pointer", _) => return Err("usage: pointer <x> <y> down|up [button] | move".into()),
         ("wheel", _) => return Err("usage: wheel <lines>".into()),
         ("look", _) => return Err("usage: look <dx> <dy>".into()),
-        _ => console.execute(&render_line(&line.name, &args)),
-    }
-    Ok(())
+        (name, _) if console.has(name) => return Ok(Line::Console),
+        (name, _) => return Err(format!("no command '{name}'")),
+    };
+    Ok(Line::Input(event))
+}
+
+fn refused(step: &ScriptStep, error: &str) -> HostError {
+    let text = render_line(&step.command.name, &step.command.arg_refs());
+    HostError::Host(format!("script line {}: `{text}`: {error}", step.line))
 }
 
 fn pressed(edge: &str) -> Result<bool, String> {
@@ -130,8 +170,8 @@ fn number(token: &str) -> Result<f32, String> {
         .ok_or_else(|| format!("`{token}` is not a finite number"))
 }
 
-// A console error line fails the run, so a mistyped verb cannot pass silently.
-fn echo<A: Stores>(console: &mut SessionConsole<A>, frame: u64) -> Result<(), HostError> {
+// Echoes the console to stderr and returns its first error line, so a refused verb cannot pass silently.
+fn echo<A: Stores>(console: &mut SessionConsole<A>) -> Option<String> {
     let ui = console.ui_mut();
     let mut refused = None;
     for line in ui.history() {
@@ -141,8 +181,5 @@ fn echo<A: Stores>(console: &mut SessionConsole<A>, frame: u64) -> Result<(), Ho
         }
     }
     ui.clear_history();
-    match refused {
-        Some(text) => Err(HostError::Host(format!("frame {frame}: {text}"))),
-        None => Ok(()),
-    }
+    refused
 }

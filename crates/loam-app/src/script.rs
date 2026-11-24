@@ -13,6 +13,8 @@ const SETTLE_FRAMES: u64 = 60;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptStep {
+    /// 1-based, counting blank and comment lines.
+    pub line: usize,
     pub frame: u64,
     pub command: CommandLine,
 }
@@ -52,6 +54,7 @@ impl Script {
                 }
             }
             steps.push(ScriptStep {
+                line: number,
                 frame,
                 command: CommandLine::parse(command)
                     .ok_or_else(|| anyhow!("line {number}: no command tokens"))?,
@@ -83,7 +86,8 @@ pub enum ScriptStatus {
 
 #[derive(Debug)]
 pub struct ScriptDriver {
-    steps: std::iter::Peekable<std::vec::IntoIter<ScriptStep>>,
+    steps: Vec<ScriptStep>,
+    next: usize,
     frame: u64,
     exit_frame: u64,
 }
@@ -92,7 +96,8 @@ impl ScriptDriver {
     pub fn new(script: Script) -> Self {
         let exit_frame = script.last_frame().saturating_add(SETTLE_FRAMES);
         Self {
-            steps: script.steps.into_iter().peekable(),
+            steps: script.steps,
+            next: 0,
             frame: 0,
             exit_frame,
         }
@@ -102,15 +107,19 @@ impl ScriptDriver {
         self.frame
     }
 
-    pub fn advance_with(&mut self, mut submit: impl FnMut(CommandLine)) -> ScriptStatus {
-        while self
+    pub fn steps(&self) -> &[ScriptStep] {
+        &self.steps
+    }
+
+    /// Hands `submit` each step due by this frame with its index in [`ScriptDriver::steps`].
+    pub fn advance_with(&mut self, mut submit: impl FnMut(usize, &ScriptStep)) -> ScriptStatus {
+        while let Some(step) = self
             .steps
-            .peek()
-            .is_some_and(|step| step.frame <= self.frame)
+            .get(self.next)
+            .filter(|step| step.frame <= self.frame)
         {
-            if let Some(step) = self.steps.next() {
-                submit(step.command);
-            }
+            submit(self.next, step);
+            self.next += 1;
         }
         let status = if self.frame >= self.exit_frame {
             ScriptStatus::Finished
@@ -122,10 +131,10 @@ impl ScriptDriver {
     }
 
     pub fn advance_console<A: Stores>(&mut self, console: &mut SessionConsole<A>) -> ScriptStatus {
-        self.advance_with(|command| {
+        self.advance_with(|_, step| {
             console.execute(&loam_console::render_line(
-                &command.name,
-                &command.arg_refs(),
+                &step.command.name,
+                &step.command.arg_refs(),
             ));
         })
     }
