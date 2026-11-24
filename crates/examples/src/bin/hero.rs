@@ -764,53 +764,6 @@ fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
                 recording = false;
             }
         })
-        .command(
-            "ground",
-            "checker colors and fog: dark|light <r> <g> <b>, fog <density>, reset",
-            |args, submit, out| {
-                Environment::default().apply(args)?;
-                let owned: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-                submit.app_fn("ground", move |d: &mut Dispatch<'_, HeroStores>| {
-                    let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
-                    let root = d.views.root_mut();
-                    let mut environment = root
-                        .backdrop
-                        .map_or_else(Environment::default, |backdrop| Environment::of(&backdrop));
-                    match environment.apply(&refs) {
-                        Ok(line) => {
-                            root.backdrop = Some(environment.backdrop(FLOOR_Y));
-                            tracing::info!("{line}");
-                        }
-                        Err(error) => tracing::error!("{error}"),
-                    }
-                });
-                out.line("ground: applied at the next boundary");
-                Ok(())
-            },
-        )
-        .command(
-            "floor",
-            "the ground plane: on | off (bare flips)",
-            |args, submit, out| {
-                let next = match args.first().copied() {
-                    None => None,
-                    Some("on") => Some(true),
-                    Some("off") => Some(false),
-                    Some(other) => {
-                        out.line(format!("floor: unknown arg `{other}` (try on|off)"));
-                        return Ok(());
-                    }
-                };
-                submit.app_fn("floor", move |d: &mut Dispatch<'_, HeroStores>| {
-                    if let Some(backdrop) = d.views.root_mut().backdrop.as_mut() {
-                        let ground = &mut backdrop.ground;
-                        ground.visible = next.unwrap_or(!ground.visible);
-                    }
-                });
-                out.line("floor: applied at the next boundary");
-                Ok(())
-            },
-        )
 }
 
 fn letter_height(

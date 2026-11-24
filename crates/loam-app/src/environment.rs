@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use loam_console::Console;
 use loam_render::sky_ground::{
     DEFAULT_FOG_PER_UNIT, DEFAULT_SKY, GROUND_DARK_GREY, GROUND_LIGHT_GREY,
 };
@@ -162,34 +161,6 @@ fn parse_fog(token: &str) -> Result<f32> {
         ));
     }
     Ok(value)
-}
-
-pub fn register_ground_command<Ctx: 'static>(
-    console: &mut Console<Ctx>,
-    reach: fn(&mut Ctx) -> &mut Environment,
-) {
-    console.register(
-        loam_console::cmd::<Ctx, _>(
-            "ground",
-            "background checker colors and fog density (bare reads all three)",
-            move |args, ctx, out| {
-                let line = reach(ctx).apply(args)?;
-                out.line(line);
-                Ok(())
-            },
-        )
-        .with_args(&[&["dark", "light", "fog", "reset"]])
-        .with_long_help(
-            "ground                     read all three\n\
-             ground dark                read the dark checker color\n\
-             ground dark <r> <g> <b>    set it, each channel in [0, 1]\n\
-             ground light <r> <g> <b>   the light checker color\n\
-             ground fog                 read the density\n\
-             ground fog <density>       sky blended per world unit, in [0, 1];\n\
-             \x20                          half the sky is mixed in at ln2/density\n\
-             ground reset               back to the shipped defaults",
-        ),
-    );
 }
 
 #[cfg(test)]

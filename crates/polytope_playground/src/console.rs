@@ -1,9 +1,7 @@
 use anyhow::{anyhow, bail, Result};
-use loam::app::environment::Environment;
 use loam::prelude::*;
 
 use crate::color::ColorMode;
-use crate::consts::FLOOR_Y;
 use crate::display::{Surface, MAX_WIREFRAME_WIDTH_PX};
 use crate::mode::Mode;
 use crate::projection::Family;
@@ -20,13 +18,6 @@ fn number(token: &str, name: &str) -> Result<f32> {
         .map_err(|error| anyhow!("{name}: invalid `{token}`: {error}"))
 }
 
-fn environment_of(views: &Views) -> Environment {
-    views
-        .get(views.root())
-        .and_then(|root| root.backdrop)
-        .map_or_else(Environment::default, |backdrop| Environment::of(&backdrop))
-}
-
 fn toggle(args: &[&str], usage: &str) -> Result<Option<bool>> {
     match args {
         [] => Ok(None),
@@ -34,21 +25,6 @@ fn toggle(args: &[&str], usage: &str) -> Result<Option<bool>> {
         ["off"] => Ok(Some(false)),
         _ => bail!("{usage}"),
     }
-}
-
-fn free_camera(views: &Views) -> &FreeCamera {
-    views
-        .get(views.root())
-        .and_then(|root| root.rig.free())
-        .expect("the playground's rig is a pair")
-}
-
-fn free_camera_mut(views: &mut Views) -> &mut FreeCamera {
-    views
-        .root_mut()
-        .rig
-        .free_mut()
-        .expect("the playground's rig is a pair")
 }
 
 fn color(token: &str) -> Option<ColorMode> {
@@ -246,54 +222,6 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
     );
 
     app = app.command(
-        "floor",
-        "toggle the ground plane; optional on | off",
-        |args, submit, _out| {
-            let shown = toggle(args, "usage: floor [on|off]")?;
-            submit.app_fn("floor", move |dispatch: &mut Dispatch<'_, Playground>| {
-                if let Some(backdrop) = dispatch.views.root_mut().backdrop.as_mut() {
-                    let ground = &mut backdrop.ground;
-                    ground.visible = shown.unwrap_or(!ground.visible);
-                }
-            });
-            Ok(())
-        },
-    );
-
-    app = app.command(
-        "ground",
-        "read or set checker colors and fog: dark | light | fog | reset",
-        |args, submit, _out| {
-            let field = match args {
-                [] => Some(None),
-                ["dark"] => Some(Some("dark")),
-                ["light"] => Some(Some("light")),
-                ["fog"] => Some(Some("fog")),
-                _ => None,
-            };
-            if let Some(field) = field {
-                submit.inspect("ground", move |dispatch, out| {
-                    out.line(environment_of(&*dispatch.views).report(field));
-                });
-                return Ok(());
-            }
-            Environment::default().apply(args)?;
-            let owned = args
-                .iter()
-                .map(|token| (*token).to_string())
-                .collect::<Vec<_>>();
-            submit.app_fn("ground", move |dispatch: &mut Dispatch<'_, Playground>| {
-                let args = owned.iter().map(String::as_str).collect::<Vec<_>>();
-                let mut environment = environment_of(&*dispatch.views);
-                if environment.apply(&args).is_ok() {
-                    dispatch.views.root_mut().backdrop = Some(environment.backdrop(FLOOR_Y));
-                }
-            });
-            Ok(())
-        },
-    );
-
-    app = app.command(
         "surface",
         "set the surface mode: raster | sdf | off; bare selects off",
         |args, submit, _out| {
@@ -426,63 +354,6 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                     );
                 }
                 _ => bail!("usage: section perimeter [on|off]"),
-            }
-            Ok(())
-        },
-    );
-
-    app = app.command(
-        "camera",
-        "camera [orbit|freecam|speed <N>|cursor <hold|toggle>]; bare cycles",
-        |args, submit, _out| {
-            match args {
-                [] => submit.app_fn("camera", |dispatch: &mut Dispatch<'_, Playground>| {
-                    let root = dispatch.views.root_mut();
-                    root.set_flying(!root.rig.flying());
-                }),
-                ["orbit"] | ["freecam"] => {
-                    let free = args[0] == "freecam";
-                    submit.app_fn("camera", move |dispatch: &mut Dispatch<'_, Playground>| {
-                        dispatch.views.root_mut().set_flying(free);
-                    });
-                }
-                ["speed"] => submit.inspect("camera speed", |dispatch, out| {
-                    let speed = free_camera(dispatch.views).speed;
-                    out.line(format!("camera speed: {speed:.2} u/sec"));
-                }),
-                ["speed", token] => {
-                    let speed = number(token, "camera speed")?;
-                    if !speed.is_finite() || speed <= 0.0 {
-                        bail!("camera speed must be finite and positive");
-                    }
-                    submit.app_fn(
-                        "camera speed",
-                        move |dispatch: &mut Dispatch<'_, Playground>| {
-                            free_camera_mut(dispatch.views).speed = speed;
-                        },
-                    );
-                }
-                ["cursor"] => submit.inspect("camera cursor", |dispatch, out| {
-                    let policy = match free_camera(dispatch.views).cursor {
-                        CursorPolicy::Hold => "hold",
-                        CursorPolicy::Toggle => "toggle",
-                    };
-                    out.line(format!("camera cursor: {policy}"));
-                }),
-                ["cursor", "hold"] | ["cursor", "toggle"] => {
-                    let policy = if args[1] == "hold" {
-                        CursorPolicy::Hold
-                    } else {
-                        CursorPolicy::Toggle
-                    };
-                    submit.app_fn(
-                        "camera cursor",
-                        move |dispatch: &mut Dispatch<'_, Playground>| {
-                            free_camera_mut(dispatch.views).cursor = policy;
-                        },
-                    );
-                }
-                _ => bail!("camera: unknown argument (try orbit|freecam|speed|cursor)"),
             }
             Ok(())
         },

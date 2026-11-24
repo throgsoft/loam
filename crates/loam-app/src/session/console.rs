@@ -1,9 +1,14 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use anyhow::bail;
 use loam_console::{cmd, CommandLine, Console, ConsoleWriter, HistoryLine};
-use loam_runtime::{AppCommand, Dispatch, Setting, Stores};
+use loam_runtime::{
+    AppCommand, Backdrop, CursorPolicy, Dispatch, FreeCamera, Outcome, Rejection, Rig, Setting,
+    Stores, Views,
+};
 
 use super::commands::{CommandSender, Report, Reported};
+use crate::environment::Environment;
 
 #[derive(Default)]
 struct ConsoleState {
@@ -176,6 +181,9 @@ impl<A: Stores> SessionConsole<A> {
                 Ok(())
             },
         );
+        register_ground(&mut console.console);
+        register_floor(&mut console.console);
+        register_camera(&mut console.console);
         console
     }
 
@@ -289,6 +297,196 @@ impl<A: Stores> SessionConsole<A> {
 }
 
 const MAX_ACCEPTED_FPS: f32 = 1000.0;
+
+const NO_BACKDROP: &str = "this scene has no backdrop";
+const NO_FREE_CAMERA: &str = "this scene has no free camera";
+const NO_CAMERA_PAIR: &str = "this scene has no orbit and free camera pair";
+
+fn root_backdrop(views: &Views) -> Option<Backdrop> {
+    views.get(views.root()).and_then(|root| root.backdrop)
+}
+
+fn root_free_camera(views: &Views) -> Option<&FreeCamera> {
+    views.get(views.root()).and_then(|root| root.rig.free())
+}
+
+fn register_ground<A: Stores>(console: &mut Console<Submit<A>>) {
+    console.register(
+        cmd(
+            "ground",
+            "read or set checker colors and fog: dark | light | fog | reset",
+            |args, submit: &mut Submit<A>, _out| {
+                let field = match args {
+                    [] => Some(None),
+                    ["dark"] => Some(Some("dark")),
+                    ["light"] => Some(Some("light")),
+                    ["fog"] => Some(Some("fog")),
+                    _ => None,
+                };
+                if let Some(field) = field {
+                    submit.inspect("ground", move |dispatch, out| {
+                        match root_backdrop(dispatch.views) {
+                            Some(backdrop) => out.line(Environment::of(&backdrop).report(field)),
+                            None => out.line(format!("ground: {NO_BACKDROP}")),
+                        }
+                    });
+                    return Ok(());
+                }
+                Environment::default().apply(args)?;
+                let owned = args
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect::<Vec<_>>();
+                let console = submit.console.clone();
+                submit.commands.try_app_fn("ground", move |dispatch| {
+                    let backdrop = dispatch
+                        .views
+                        .root_mut()
+                        .backdrop
+                        .as_mut()
+                        .ok_or(Rejection::Unsupported(NO_BACKDROP))?;
+                    let args = owned.iter().map(String::as_str).collect::<Vec<_>>();
+                    let mut environment = Environment::of(backdrop);
+                    let line = environment
+                        .apply(&args)
+                        .expect("the console accepted these arguments before queueing them");
+                    *backdrop = environment.backdrop(backdrop.ground.y);
+                    lock(&console).responses.push(HistoryLine::output(line));
+                    Ok(Outcome::Done)
+                });
+                Ok(())
+            },
+        )
+        .with_args(&[&["dark", "light", "fog", "reset"]])
+        .with_long_help(
+            "ground                     read all three\n\
+             ground dark                read the dark checker color\n\
+             ground dark <r> <g> <b>    set it, each channel in [0, 1]\n\
+             ground light <r> <g> <b>   the light checker color\n\
+             ground fog                 read the density\n\
+             ground fog <density>       sky blended per world unit, in [0, 1];\n\
+             \x20                          half the sky is mixed in at ln2/density\n\
+             ground reset               back to the shipped defaults",
+        ),
+    );
+}
+
+fn register_floor<A: Stores>(console: &mut Console<Submit<A>>) {
+    console.register(
+        cmd(
+            "floor",
+            "toggle the ground plane; optional on | off",
+            |args, submit: &mut Submit<A>, _out| {
+                let shown = match args {
+                    [] => None,
+                    ["on"] => Some(true),
+                    ["off"] => Some(false),
+                    _ => bail!("usage: floor [on|off]"),
+                };
+                submit.commands.try_app_fn("floor", move |dispatch| {
+                    let backdrop = dispatch
+                        .views
+                        .root_mut()
+                        .backdrop
+                        .as_mut()
+                        .ok_or(Rejection::Unsupported(NO_BACKDROP))?;
+                    let ground = &mut backdrop.ground;
+                    ground.visible = shown.unwrap_or(!ground.visible);
+                    Ok(Outcome::Done)
+                });
+                Ok(())
+            },
+        )
+        .with_args(&[&["on", "off"]]),
+    );
+}
+
+fn register_camera<A: Stores>(console: &mut Console<Submit<A>>) {
+    console.register(
+        cmd(
+            "camera",
+            "camera [orbit|freecam|speed <N>|cursor <hold|toggle>]; bare switches",
+            |args, submit: &mut Submit<A>, _out| {
+                match args {
+                    [] | ["orbit"] | ["freecam"] => {
+                        let flying = args.first().map(|arg| *arg == "freecam");
+                        submit.commands.try_app_fn("camera", move |dispatch| {
+                            let root = dispatch.views.root_mut();
+                            if !matches!(root.rig, Rig::Pair(_)) {
+                                return Err(Rejection::Unsupported(NO_CAMERA_PAIR));
+                            }
+                            let flying = flying.unwrap_or(!root.rig.flying());
+                            root.set_flying(flying);
+                            Ok(Outcome::Done)
+                        });
+                    }
+                    ["speed"] => submit.inspect("camera speed", |dispatch, out| {
+                        match root_free_camera(dispatch.views) {
+                            Some(free) => {
+                                out.line(format!("camera speed: {:.2} u/sec", free.speed))
+                            }
+                            None => out.line(format!("camera speed: {NO_FREE_CAMERA}")),
+                        }
+                    }),
+                    ["speed", token] => {
+                        let speed = token.parse::<f32>().map_err(|error| {
+                            anyhow::anyhow!("camera speed: invalid `{token}`: {error}")
+                        })?;
+                        if !speed.is_finite() || speed <= 0.0 {
+                            bail!("camera speed must be finite and positive");
+                        }
+                        submit.commands.try_app_fn("camera speed", move |dispatch| {
+                            free_camera_mut(dispatch.views)?.speed = speed;
+                            Ok(Outcome::Done)
+                        });
+                    }
+                    ["cursor"] => submit.inspect("camera cursor", |dispatch, out| {
+                        match root_free_camera(dispatch.views) {
+                            Some(free) => {
+                                out.line(format!("camera cursor: {}", cursor_name(free.cursor)))
+                            }
+                            None => out.line(format!("camera cursor: {NO_FREE_CAMERA}")),
+                        }
+                    }),
+                    ["cursor", "hold"] | ["cursor", "toggle"] => {
+                        let policy = if args[1] == "hold" {
+                            CursorPolicy::Hold
+                        } else {
+                            CursorPolicy::Toggle
+                        };
+                        submit
+                            .commands
+                            .try_app_fn("camera cursor", move |dispatch| {
+                                free_camera_mut(dispatch.views)?.cursor = policy;
+                                Ok(Outcome::Done)
+                            });
+                    }
+                    _ => bail!("camera: unknown argument (try orbit|freecam|speed|cursor)"),
+                }
+                Ok(())
+            },
+        )
+        .with_args(&[
+            &["orbit", "freecam", "speed", "cursor"],
+            &["hold", "toggle"],
+        ]),
+    );
+}
+
+fn free_camera_mut(views: &mut Views) -> Result<&mut FreeCamera, Rejection> {
+    views
+        .root_mut()
+        .rig
+        .free_mut()
+        .ok_or(Rejection::Unsupported(NO_FREE_CAMERA))
+}
+
+fn cursor_name(policy: CursorPolicy) -> &'static str {
+    match policy {
+        CursorPolicy::Hold => "hold",
+        CursorPolicy::Toggle => "toggle",
+    }
+}
 
 #[cfg(test)]
 mod tests {
