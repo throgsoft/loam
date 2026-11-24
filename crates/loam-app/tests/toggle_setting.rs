@@ -15,8 +15,7 @@ loam_runtime::stores! {
 const SHOW: ActionId = ActionId("show");
 
 #[test]
-fn key_verb_and_sender(
-) {
+fn key_verb_and_sender() {
     let mut session = Session::new(Flags::default(), SimConfig::default());
     session.toggle_on(SHOW, |app| app.shown.get_mut());
     let mut app =

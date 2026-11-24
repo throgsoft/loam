@@ -1144,8 +1144,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_request_in_free_rig(
-    ) {
+    fn cursor_request_in_free_rig() {
         const RESET: ActionId = ActionId("reset");
         const LAND: ActionId = ActionId("land");
 
