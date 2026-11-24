@@ -73,7 +73,9 @@ impl HostChannel {
                 &js_sys::Float32Array::from(message.values.as_slice()),
             );
             if let Err(error) = worker.post_message(&msg) {
-                tracing::error!("loam_app::wasm: postMessage host_message failed: {error:?}");
+                tracing::error!(
+                    "loam_app::web::page::host_api: postMessage host_message failed: {error:?}"
+                );
             }
         }
     }
@@ -106,7 +108,7 @@ pub(super) fn install_host_channel(
                 .and_then(|value| value.as_string());
             let Some(topic) = topic else {
                 tracing::warn!(
-                    "loam_app::wasm: {HOST_MESSAGE_EVENT} without a string topic ignored"
+                    "loam_app::web::page::host_api: {HOST_MESSAGE_EVENT} without a string topic ignored"
                 );
                 return;
             };
@@ -143,7 +145,9 @@ pub(super) fn install_host_channel(
                 let _ = host.dispatch_event(&event);
             }
             Err(error) => {
-                tracing::error!("loam_app::wasm: create {HOST_POST_EVENT} event: {error:?}")
+                tracing::error!(
+                    "loam_app::web::page::host_api: create {HOST_POST_EVENT} event: {error:?}"
+                )
             }
         }
     }) as Box<dyn FnMut(MessageEvent)>);
@@ -167,7 +171,9 @@ pub(super) fn install_page_control(
             Some("pause") => Kind::HostPause,
             Some("resume") => Kind::HostResume,
             other => {
-                tracing::warn!("loam_app::wasm: {HOST_CONTROL_EVENT} ignored: {other:?}");
+                tracing::warn!(
+                    "loam_app::web::page::host_api: {HOST_CONTROL_EVENT} ignored: {other:?}"
+                );
                 return;
             }
         };
@@ -177,7 +183,9 @@ pub(super) fn install_page_control(
             return;
         }
         if let Err(error) = worker.post_message(&kind.message()) {
-            tracing::error!("loam_app::wasm: postMessage {kind:?} failed: {error:?}");
+            tracing::error!(
+                "loam_app::web::page::host_api: postMessage {kind:?} failed: {error:?}"
+            );
         }
     }) as Box<dyn FnMut(web_sys::CustomEvent)>);
     host.add_event_listener_with_callback(HOST_CONTROL_EVENT, callback.as_ref().unchecked_ref())

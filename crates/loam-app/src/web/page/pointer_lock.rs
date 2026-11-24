@@ -128,11 +128,11 @@ fn request_pointer_lock(canvas: &HtmlCanvasElement) {
         js_sys::Reflect::get(canvas.as_ref(), &JsValue::from_str("requestPointerLock"))
             .and_then(|value| value.dyn_into::<js_sys::Function>())
     else {
-        tracing::warn!("loam_app::wasm::worker: requestPointerLock is unavailable");
+        tracing::warn!("loam_app::web::page::pointer_lock: requestPointerLock is unavailable");
         return;
     };
     let Ok(result) = method.call0(canvas.as_ref()) else {
-        tracing::warn!("loam_app::wasm::worker: requestPointerLock failed");
+        tracing::warn!("loam_app::web::page::pointer_lock: requestPointerLock failed");
         return;
     };
     let Ok(promise) = result.dyn_into::<js_sys::Promise>() else {
@@ -140,7 +140,9 @@ fn request_pointer_lock(canvas: &HtmlCanvasElement) {
     };
     wasm_bindgen_futures::spawn_local(async move {
         if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await {
-            tracing::warn!("loam_app::wasm::worker: requestPointerLock rejected: {error:?}");
+            tracing::warn!(
+                "loam_app::web::page::pointer_lock: requestPointerLock rejected: {error:?}"
+            );
         }
     });
 }

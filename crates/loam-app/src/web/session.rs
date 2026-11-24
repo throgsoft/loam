@@ -77,7 +77,7 @@ where
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         if let Err(error) = on_message(&handler_endpoint, event, &pending, &page_canvas) {
             let message = format!("message handler failed: {error:#}");
-            tracing::error!("loam-app::session::browser: {message}");
+            tracing::error!("loam_app::web::session: {message}");
             post_failure(&handler_endpoint, &message);
         }
     }) as Box<dyn FnMut(MessageEvent)>);
@@ -129,7 +129,7 @@ fn restart_if_unhalted(was_halted: bool) {
 
 fn post(endpoint: &Endpoint, kind: Kind) {
     if let Err(error) = endpoint.post(&kind.message()) {
-        tracing::warn!("loam-app::session::browser: post {kind:?} failed: {error:?}");
+        tracing::warn!("loam_app::web::session: post {kind:?} failed: {error:?}");
     }
 }
 
@@ -141,7 +141,7 @@ fn post_cursor_request(endpoint: &Endpoint, locked: bool) {
         &JsValue::from_bool(locked),
     );
     if let Err(error) = endpoint.post(&message) {
-        tracing::warn!("loam-app::session::browser: cursor request failed: {error:?}");
+        tracing::warn!("loam_app::web::session: cursor request failed: {error:?}");
     }
 }
 
@@ -158,7 +158,7 @@ fn post_to_page(endpoint: &Endpoint, topic: &str, values: &[f32]) {
         &js_sys::Float32Array::from(values),
     );
     if let Err(error) = endpoint.post(&message) {
-        tracing::warn!("loam-app::session::browser: post {topic} failed: {error:?}");
+        tracing::warn!("loam_app::web::session: post {topic} failed: {error:?}");
     }
 }
 
@@ -252,7 +252,7 @@ where
                 let started = start(endpoint, session, app, canvas, (width, height), dpr).await;
                 if let Err(error) = started {
                     let message = format!("initialization failed: {error:#}");
-                    tracing::error!("loam-app::session::browser: {message}");
+                    tracing::error!("loam_app::web::session: {message}");
                     post_failure(&failure_endpoint, &message);
                 }
             });
@@ -353,7 +353,7 @@ fn install_animation_frame<A: Stores>(endpoint: Endpoint, worker: Rc<RefCell<Opt
             Next::Idle => {}
             Next::Frame => request_frame(&scope_for_closure, &callback_for_closure),
             Next::Failed(message) => {
-                tracing::error!("loam-app::session::browser: {message}");
+                tracing::error!("loam_app::web::session: {message}");
                 post_failure(&scope_for_closure, &message);
             }
             Next::Recover => {
@@ -383,7 +383,7 @@ fn install_animation_frame<A: Stores>(endpoint: Endpoint, worker: Rc<RefCell<Opt
                             request_frame(&scope, &callback);
                         }
                         Next::Failed(message) => {
-                            tracing::error!("loam-app::session::browser: {message}");
+                            tracing::error!("loam_app::web::session: {message}");
                             post_failure(&scope, &message);
                         }
                         Next::Idle | Next::Recover => {}
@@ -441,7 +441,7 @@ fn request_frame(endpoint: &Endpoint, callback: &Pending<Closure<dyn FnMut(f64)>
     };
     match endpoint.request_animation_frame(callback.as_ref().unchecked_ref()) {
         Ok(_) => RAF_PENDING.with(|pending| pending.set(true)),
-        Err(error) => tracing::error!("loam-app::session::browser: RAF failed: {error:?}"),
+        Err(error) => tracing::error!("loam_app::web::session: RAF failed: {error:?}"),
     }
 }
 

@@ -74,7 +74,7 @@ pub(crate) fn post_failure(endpoint: &Endpoint, message: &str) {
         &JsValue::from_str(message),
     );
     if let Err(e) = endpoint.post(&msg) {
-        tracing::error!("loam_app::wasm: post error failed: {e:?}");
+        tracing::error!("loam_app::web: post error failed: {e:?}");
     }
 }
 

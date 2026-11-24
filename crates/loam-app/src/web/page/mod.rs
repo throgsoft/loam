@@ -91,14 +91,14 @@ pub(crate) fn launch_page(config: &WasmConfig, in_page: InPage) -> Result<()> {
     if let Some(host) = host_element(&config.host_id) {
         if host.has_attribute(HOST_STATE_ATTR) {
             tracing::warn!(
-                "loam_app::wasm: host '{}' already carries {HOST_STATE_ATTR}; second launch ignored",
+                "loam_app::web::page: host '{}' already carries {HOST_STATE_ATTR}; second launch ignored",
                 config.host_id
             );
             return Ok(());
         }
     }
     spawn_session(config, in_page).inspect_err(|error| {
-        tracing::error!("loam_app::wasm: launch failed: {error:#}");
+        tracing::error!("loam_app::web::page: launch failed: {error:#}");
         if let Some(host) = host_element(&config.host_id) {
             set_host_state(&host, "failed");
         }
@@ -129,7 +129,9 @@ fn set_host_state(host: &Element, state: &str) {
         Ok(event) => {
             let _ = host.dispatch_event(&event);
         }
-        Err(error) => tracing::error!("loam_app::wasm: create {HOST_STATE_EVENT} event: {error:?}"),
+        Err(error) => {
+            tracing::error!("loam_app::web::page: create {HOST_STATE_EVENT} event: {error:?}")
+        }
     }
 }
 
@@ -180,7 +182,7 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
         let _ = style.set_property("width", &format!("{}px", css.0.max(1)));
         let _ = style.set_property("height", &format!("{}px", css.1.max(1)));
         tracing::warn!(
-            "loam_app::wasm: canvas '{canvas_id}' has no CSS size; pinned to {}x{} CSS px",
+            "loam_app::web::page: canvas '{canvas_id}' has no CSS size; pinned to {}x{} CSS px",
             css.0,
             css.1
         );
@@ -191,13 +193,13 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
     canvas.set_width(width);
     canvas.set_height(height);
     tracing::info!(
-        "loam_app::wasm::worker: canvas sized to {width}x{height} (scale {})",
+        "loam_app::web::page: canvas sized to {width}x{height} (scale {})",
         metrics.scale
     );
     PAGE_HOST.with(|slot| *slot.borrow_mut() = Some((host.clone(), button_id.to_string())));
 
     let (worker, offscreen, bootstrap_url) = if runs_in_page(&window) {
-        tracing::info!("loam_app::wasm: running the session on the page");
+        tracing::info!("loam_app::web::page: running the session on the page");
         let channel = MessageChannel::new().map_err(|e| anyhow!("MessageChannel::new: {e:?}"))?;
         in_page(channel.port2(), window.clone(), canvas.clone())?;
         (Link::Page(channel.port1()), None, None)
@@ -267,7 +269,7 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
         let control = channel_for_ready.borrow_mut().open();
         if let Some(kind) = control {
             if let Err(error) = worker_for_ready.post_message(&kind.message()) {
-                tracing::error!("loam_app::wasm: postMessage {kind:?} failed: {error:?}");
+                tracing::error!("loam_app::web::page: postMessage {kind:?} failed: {error:?}");
             }
         }
     }) as Box<dyn FnMut(MessageEvent)>);
@@ -301,12 +303,12 @@ fn spawn_session(config: &WasmConfig, in_page: InPage) -> Result<()> {
         let fired: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
         let on_click = Closure::wrap(Box::new(move || {
             if fired.get() {
-                tracing::debug!("loam_app::wasm::worker: launch click ignored (already fired)");
+                tracing::debug!("loam_app::web::page: launch click ignored (already fired)");
                 return;
             }
             if !overlay_for_click.class_name().contains("ready") {
                 tracing::debug!(
-                    "loam_app::wasm::worker: launch click ignored (not yet ready, overlay state = {})",
+                    "loam_app::web::page: launch click ignored (not yet ready, overlay state = {})",
                     overlay_for_click.class_name()
                 );
                 return;
@@ -344,7 +346,7 @@ fn spawn_worker(canvas: &HtmlCanvasElement) -> Result<(Worker, web_sys::Offscree
         js_path.strip_suffix(".js").unwrap_or(js_path),
         if query.is_empty() { "" } else { "?" }
     );
-    tracing::info!("loam_app::wasm::worker: spawning worker (js={js_url}, wasm={wasm_url})");
+    tracing::info!("loam_app::web::page: spawning worker (js={js_url}, wasm={wasm_url})");
 
     let bootstrap_js =
         format!("import init from {js_url:?};\nawait init({{ module_or_path: {wasm_url:?} }});\n");
@@ -461,7 +463,7 @@ fn install_worker_failure_handler(worker: &Link, host: &Element, button_id: &str
 }
 
 fn show_worker_failure(message: &str, host: &Element, button_id: &str) {
-    tracing::error!("loam_app::wasm: {message}");
+    tracing::error!("loam_app::web::page: {message}");
     set_host_state(host, "failed");
     let Some(document) = web_sys::window().and_then(|w| w.document()) else {
         return;

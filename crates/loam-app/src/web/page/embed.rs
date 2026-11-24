@@ -19,7 +19,7 @@ pub(super) fn dispatch_embed_activated(host_id: &str) {
         Ok(event) => {
             let _ = document.dispatch_event(&event);
         }
-        Err(e) => tracing::error!("loam_app::wasm::worker: create activated event: {e:?}"),
+        Err(e) => tracing::error!("loam_app::web::page::embed: create activated event: {e:?}"),
     }
 }
 
@@ -39,7 +39,7 @@ pub(super) fn install_embed_lifecycle(worker: &Link, host_id: &str, button_id: &
         let msg = Kind::Resume.message();
         if let Err(e) = worker_for_resume.post_message(&msg) {
             tracing::error!(
-                "loam_app::wasm::worker: postMessage resume failed: {e:?}; \
+                "loam_app::web::page::embed: postMessage resume failed: {e:?}; \
                  overlay retained for retry"
             );
             return;
@@ -64,7 +64,7 @@ pub(super) fn install_embed_lifecycle(worker: &Link, host_id: &str, button_id: &
         }
         let msg = Kind::Pause.message();
         if let Err(e) = worker_for_deact.post_message(&msg) {
-            tracing::error!("loam_app::wasm::worker: postMessage pause failed: {e:?}");
+            tracing::error!("loam_app::web::page::embed: postMessage pause failed: {e:?}");
         }
         match crate::web::launch::show_resume_overlay(&host_for_deact, &button_for_deact) {
             Ok(button) => {
@@ -72,10 +72,10 @@ pub(super) fn install_embed_lifecycle(worker: &Link, host_id: &str, button_id: &
                     "click",
                     (*resume_cb).as_ref().unchecked_ref(),
                 ) {
-                    tracing::error!("loam_app::wasm::worker: resume click listener: {e:?}");
+                    tracing::error!("loam_app::web::page::embed: resume click listener: {e:?}");
                 }
             }
-            Err(e) => tracing::error!("loam_app::wasm::worker: show_resume_overlay: {e:#}"),
+            Err(e) => tracing::error!("loam_app::web::page::embed: show_resume_overlay: {e:#}"),
         }
     });
 
