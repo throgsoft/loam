@@ -117,8 +117,7 @@ impl Stage {
 }
 
 #[test]
-fn a_release_throws_the_body_at_the_gained_and_capped_pointer_velocity_and_keeps_its_hidden_motion()
-{
+fn release_throw() {
     let thrown = |ndc_x: f32| {
         let mut stage = stage(hold().throw(throw()));
         stage.grab();
@@ -155,7 +154,7 @@ fn a_release_throws_the_body_at_the_gained_and_capped_pointer_velocity_and_keeps
 }
 
 #[test]
-fn a_cancelled_carry_an_unconfigured_grab_and_an_anchor_hold_leave_the_bodys_motion_alone() {
+fn cancel_plain_grab_and_anchor() {
     type End = fn(&mut Session<Probe>) -> Option<DragRelease>;
     let kept = |case: &str, grab: GrabConfig<EuclideanR4>, end: End| {
         let mut stage = stage(grab);
@@ -183,7 +182,7 @@ fn a_cancelled_carry_an_unconfigured_grab_and_an_anchor_hold_leave_the_bodys_mot
 }
 
 #[test]
-fn carry_ignores_a_pick_its_program_refuses_and_drops_a_held_body_the_program_stops_allowing() {
+fn program_refusal() {
     let mut stage = stage(hold());
     stage
         .session

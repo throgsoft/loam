@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn endpoints_resolve_after_a_swap_remove() {
+    fn endpoints_after_swap_remove() {
         let mut entities = Entities::new(SceneId {
             runtime: RuntimeId::allocate(),
             epoch: Epoch::default(),

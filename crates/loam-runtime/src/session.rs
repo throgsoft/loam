@@ -794,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn a_grab_takes_the_view_it_can_lift_while_a_plain_pick_keeps_the_nearer_one() {
+    fn grab_and_plain_pick() {
         use crate::view::{Eye, Projection4, Section4, Vec4, ViewId};
         use loam_math::EuclideanR4;
 
@@ -842,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn a_section_pick_passes_through_a_body_the_slice_misses() {
+    fn section_pick_past_missed_body() {
         use crate::view::{Eye, Section4};
         use loam_shape::polytope::Polytope4;
 

@@ -905,7 +905,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn swap_remove_keeps_every_survivor_once_in_iteration_and_the_sparse_index() {
+    fn swap_remove_survivors() {
         let (_, mut store, e) = filled(5, None);
         assert_eq!(store.remove(e[1]), Ok(1));
         assert_eq!(store.remove(e[1]), Err(StoreError::Missing(e[1])));
@@ -922,7 +922,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn churn_overflow_expiry_or_a_restore_leaves_a_cursor_consumer_out_of_step_with_the_store() {
+    fn cursor_through_churn_and_restore() {
         let (mut entities, mut store, e) = filled(3, Some(SMALL));
         let mut mirror = Mirror::default();
         assert!(mirror.sync(&store).0);

@@ -124,7 +124,7 @@ impl ViewMapping<EuclideanR4> for DropW {
 }
 
 #[test]
-fn a_reset_cancels_pending_commands_and_reservations_and_never_reuses_their_request_ids() {
+fn reset_with_pending_requests() {
     let (mut session, r4) = session();
     session.set_initial().unwrap();
     session.system(Phase::Simulation, "queue", move |ctx: Ctx<'_, Probe>| {
@@ -164,7 +164,7 @@ fn a_reset_cancels_pending_commands_and_reservations_and_never_reuses_their_requ
 }
 
 #[test]
-fn reset_or_restore_leaves_rows_relations_poses_or_the_tick_changed_or_resolves_an_old_handle() {
+fn reset_and_restore() {
     let (mut session, r4) = session();
     let kept = session.dispatch(|d| d.spawn(placed(r4, Tag(1)))).unwrap();
     session.set_initial().unwrap();
@@ -240,7 +240,7 @@ fn reset_or_restore_leaves_rows_relations_poses_or_the_tick_changed_or_resolves_
 }
 
 #[test]
-fn reset_restores_the_captured_view_configuration_and_rebases_its_entities() {
+fn reset_views() {
     let (mut session, r4) = session();
     let root = session.views().root_id();
     let root_eye = Eye::looking_at([2.0, 3.0, 4.0], [0.0; 3], [0.0, 1.0, 0.0]);
@@ -333,7 +333,7 @@ impl Facility<EuclideanR4> for RejectStep {
 }
 
 #[test]
-fn a_failed_cpu_phase_cannot_advance_or_publish_until_recovery() {
+fn failed_cpu_phase() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     session.register_domain(
         DomainBuilder::new("r4", EuclideanR4)
@@ -376,7 +376,7 @@ fn a_failed_cpu_phase_cannot_advance_or_publish_until_recovery() {
 }
 
 #[test]
-fn an_unchanged_view_keeps_its_built_records_and_a_pose_edit_rebuilds_them() {
+fn unchanged_view_and_pose_edit() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let r4 = session
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
@@ -455,7 +455,7 @@ fn an_unchanged_view_keeps_its_built_records_and_a_pose_edit_rebuilds_them() {
 }
 
 #[test]
-fn published_segments_miss_the_endpoints_the_mapping_sends_them_to() {
+fn mapped_segment_endpoints() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let r4 = session
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
@@ -518,7 +518,7 @@ impl AppCommand<Probe> for PrepareSegment {
 }
 
 #[test]
-fn geometry_prepared_by_a_command_outlives_the_restore_that_follows_it() {
+fn prepared_geometry_across_restore() {
     let (mut session, r4) = session();
     let before = session.snapshot().unwrap();
     session.submit(Command::App(Box::new(PrepareSegment)));
@@ -559,8 +559,7 @@ fn geometry_prepared_by_a_command_outlives_the_restore_that_follows_it() {
 }
 
 #[test]
-fn a_reset_command_restores_the_first_boundary_once_and_later_requests_in_its_batch_apply_after_it()
-{
+fn reset_in_a_batch() {
     let (mut session, r4) = session();
     session.dispatch(|d| d.spawn(placed(r4, Tag(7)))).unwrap();
     assert_eq!(session.reset(), Err(RestoreError::NoInitial));
@@ -642,7 +641,7 @@ fn a_reset_command_restores_the_first_boundary_once_and_later_requests_in_its_ba
 }
 
 #[test]
-fn a_reset_action_pressed_with_another_handler_ends_the_boundary_in_the_initial_state() {
+fn reset_beside_another_handler() {
     const MARK: ActionId = ActionId("mark");
     const RESET: ActionId = ActionId("reset");
     let press = |actions: &[ActionId]| Input {
@@ -684,7 +683,7 @@ fn a_reset_action_pressed_with_another_handler_ends_the_boundary_in_the_initial_
 }
 
 #[test]
-fn a_view_added_through_dispatch_publishes_into_the_root_image_from_the_given_eye_pose() {
+fn dispatched_view() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4));
     let geometry = session.prepare(PreparedGeometry::Lines4 {
@@ -717,7 +716,7 @@ fn a_view_added_through_dispatch_publishes_into_the_root_image_from_the_given_ey
 }
 
 #[test]
-fn the_root_backdrop_is_published_asks_for_a_redraw_only_when_it_changes_and_is_restored() {
+fn root_backdrop() {
     let (mut session, _) = session();
     let dusk = Backdrop {
         sky: Sky {

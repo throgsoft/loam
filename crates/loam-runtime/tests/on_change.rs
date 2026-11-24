@@ -32,8 +32,7 @@ fn boundary<A: loam_runtime::Stores>(session: &mut Session<A>) {
 }
 
 #[test]
-fn a_watched_system_runs_at_its_first_chance_on_a_new_key_and_after_a_restore_that_leaves_the_key_equal(
-) {
+fn new_key_and_restore() {
     let mut session = Session::new(Watched::default(), SimConfig::default());
     let (runs, count) = counter();
     session.system_on_change(
@@ -71,7 +70,7 @@ fn a_watched_system_runs_at_its_first_chance_on_a_new_key_and_after_a_restore_th
 }
 
 #[test]
-fn a_watched_system_that_writes_what_it_watches_runs_once_per_outside_change() {
+fn self_write() {
     let mut session = Session::new(Watched::default(), SimConfig::default());
     let (runs, count) = counter();
     session.system_on_change(
@@ -100,7 +99,7 @@ fn a_watched_system_that_writes_what_it_watches_runs_once_per_outside_change() {
 }
 
 #[test]
-fn a_store_revision_changes_on_a_second_write_to_an_unread_dirty_row_and_on_a_restore() {
+fn store_revision() {
     let rows = Rows {
         tags: Store::tracked(LogCapacity::default()),
     };

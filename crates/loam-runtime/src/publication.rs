@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tesseract_cut_at_w_zero_publishes_the_square_caps_of_its_six_straddling_cells() {
+    fn tesseract_cut_at_w_zero() {
         use crate::view::{Eye, Section4, Vec4, ViewId};
 
         const SIZE: f32 = 0.7;
@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn published_segments_take_their_color_width_and_opacity_from_the_instance() {
+    fn segment_instance_style() {
         use crate::domain::EdgeShading;
 
         const COLORS: [[f32; 4]; 4] = [
@@ -439,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn warmed_publish_allocates() {
+    fn warm_no_allocation() {
         let shown = Shown {
             scores: Store::tracked(LogCapacity::default()),
         };

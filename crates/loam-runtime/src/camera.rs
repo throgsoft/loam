@@ -278,7 +278,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn freecam_keeps_the_activation_heading_and_does_not_accelerate_diagonally() {
+    fn freecam_activation_and_diagonal() {
         let mut camera = FreeCamera {
             eye: Eye::looking_at([2.0, 1.0, 3.0], [1.0, 1.5, 2.0], [0.0, 1.0, 0.0]),
             ..FreeCamera::default()
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn looking_at_mirrors_the_eye_basis_or_the_orbit_sits_on_the_wrong_side_of_its_target() {
+    fn looking_at_basis() {
         let close = |got: [f32; 3], want: [f32; 3]| {
             assert!(
                 got.iter().zip(want).all(|(g, w)| (g - w).abs() <= 1e-6),

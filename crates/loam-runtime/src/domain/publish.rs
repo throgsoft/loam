@@ -665,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn despawned_view_subject_stays_selected_and_publishes_an_empty_view() {
+    fn despawned_view_subject() {
         let mut session = Session::new(Probe::default(), SimConfig::default());
         let r4 = session
             .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_output_ranges_match_fresh_publication_across_view_lifecycle_changes() {
+    fn cached_ranges_across_view_lifecycle() {
         let mut session = Session::new(Probe::default(), SimConfig::default());
         let r4 = session
             .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));

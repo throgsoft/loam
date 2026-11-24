@@ -73,8 +73,7 @@ fn from_target(eye: &Eye) -> Vec3 {
 }
 
 #[test]
-fn an_orbit_rig_turns_on_a_secondary_drag_alone_and_zooms_inside_the_clip_range_at_the_hosts_aspect(
-) {
+fn orbit_rig() {
     let mut session = hosted(
         SimConfig::default(),
         Rig::Orbit(Orbit::around(TARGET, DISTANCE)),
@@ -163,8 +162,7 @@ fn an_orbit_rig_turns_on_a_secondary_drag_alone_and_zooms_inside_the_clip_range_
 }
 
 #[test]
-fn a_free_rig_walks_speed_times_dt_per_tick_and_looks_once_per_boundary_only_while_the_cursor_is_locked(
-) {
+fn free_rig() {
     const SPEED: f32 = 3.0;
     const HZ: u32 = 50;
     const SECONDS: f32 = 0.5;
@@ -250,7 +248,7 @@ fn a_free_rig_walks_speed_times_dt_per_tick_and_looks_once_per_boundary_only_whi
 }
 
 #[test]
-fn a_manual_rig_leaves_the_programs_eye_alone_under_camera_input_at_a_boundary_and_a_tick() {
+fn manual_rig() {
     let mut session = Session::new(Bare::default(), SimConfig::default());
     let authored = Eye {
         aspect: ASPECT,
@@ -279,7 +277,7 @@ fn a_manual_rig_leaves_the_programs_eye_alone_under_camera_input_at_a_boundary_a
 }
 
 #[test]
-fn a_reset_action_shows_the_orbit_rigs_starting_eye_on_the_boundary_that_resets() {
+fn orbit_reset() {
     const RESET: ActionId = ActionId("reset");
     let start = Orbit::around(TARGET, DISTANCE);
     let mut session = hosted(SimConfig::default(), Rig::Orbit(start));
@@ -330,7 +328,7 @@ fn a_reset_action_shows_the_orbit_rigs_starting_eye_on_the_boundary_that_resets(
 }
 
 #[test]
-fn a_camera_pair_seeds_the_free_camera_only_at_takeover_and_keeps_the_parked_orbit_off_the_eye() {
+fn pair_takeover() {
     const PERCH: [f32; 3] = [7.0, 8.0, 9.0];
     const RETARGET: [f32; 3] = [-2.0, 0.5, 1.0];
     let authored = FreeCamera {
@@ -443,7 +441,7 @@ fn a_camera_pair_seeds_the_free_camera_only_at_takeover_and_keeps_the_parked_orb
 }
 
 #[test]
-fn a_restore_and_a_reset_bring_back_both_cameras_of_a_pair_and_the_one_that_was_live() {
+fn pair_restore_and_reset() {
     let pair = Rig::Pair(CameraPair::new(
         Orbit::around(TARGET, DISTANCE),
         FreeCamera::default(),
@@ -498,7 +496,7 @@ fn a_restore_and_a_reset_bring_back_both_cameras_of_a_pair_and_the_one_that_was_
 }
 
 #[test]
-fn asking_a_rig_that_is_not_a_pair_to_fly_or_to_stop_changes_neither_the_rig_nor_the_eye() {
+fn fly_without_pair() {
     let free = FreeCamera {
         eye: Eye::looking_at([2.0, 3.0, 4.0], [0.0; 3], [0.0, 1.0, 0.0]),
         ..FreeCamera::default()

@@ -122,7 +122,7 @@ fn marks(values: &[u32]) -> Input {
 }
 
 #[test]
-fn stale_attachments_do_not_claim_recycled_slots() {
+fn stale_attachment_recycled_slot() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).untracked());
     let geometry = session.prepare(PreparedGeometry::Lines4 {
@@ -161,7 +161,7 @@ fn stale_attachments_do_not_claim_recycled_slots() {
 }
 
 #[test]
-fn later_failed_command_rolls_back_an_earlier_successful_spawn() {
+fn failure_after_spawn() {
     let (mut session, r4) = session();
     session.system(
         Phase::Simulation,
@@ -211,7 +211,7 @@ fn later_failed_command_rolls_back_an_earlier_successful_spawn() {
 }
 
 #[test]
-fn commands_reorder_repeat_or_vanish_around_pause_and_catch_up() {
+fn pause_and_catch_up() {
     let (mut session, _) = session();
     session.system(Phase::Dispatch, "marks", |ctx: Ctx<'_, Probe>| {
         for event in &ctx.input.actions {
@@ -261,7 +261,7 @@ fn commands_reorder_repeat_or_vanish_around_pause_and_catch_up() {
 }
 
 #[test]
-fn a_spawn_is_live_at_once_through_dispatch_and_a_reserved_one_only_after_its_boundary() {
+fn dispatched_and_reserved_spawn() {
     let (mut session, r4) = session();
     let direct = session.dispatch(|d| d.spawn(placed(r4, Tag(1)))).unwrap();
     assert_eq!(session.entities().resolve(direct), Some(direct.key()));
@@ -340,7 +340,7 @@ fn a_spawn_is_live_at_once_through_dispatch_and_a_reserved_one_only_after_its_bo
 }
 
 #[test]
-fn system_after_the_domain_step_does_not_see_the_steps_writes() {
+fn system_after_domain_step() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     let r4 = session.register_domain(
         DomainBuilder::new("r4", EuclideanR4)
@@ -382,7 +382,7 @@ fn system_after_the_domain_step_does_not_see_the_steps_writes() {
 }
 
 #[test]
-fn an_action_handler_runs_once_per_press_at_its_place_in_dispatch_under_the_actions_name() {
+fn action_handler() {
     const BUMP: ActionId = ActionId("bump");
     const REFUSE: ActionId = ActionId("refuse");
     let event = |action, pressed| Input {
@@ -438,7 +438,7 @@ fn an_action_handler_runs_once_per_press_at_its_place_in_dispatch_under_the_acti
 }
 
 #[test]
-fn an_axis_is_the_held_direction_and_zero_when_both_or_neither_is_held() {
+fn held_axis() {
     const LEFT: ActionId = ActionId("left");
     const RIGHT: ActionId = ActionId("right");
     let axis = |held: &[ActionId]| {

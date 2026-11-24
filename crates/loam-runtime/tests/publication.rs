@@ -16,7 +16,7 @@ loam_runtime::stores! {
 }
 
 #[test]
-fn the_published_value_is_what_the_latest_value_system_wrote_after_the_publication_systems() {
+fn latest_value_system() {
     let mut session = Session::new(Scored::default(), SimConfig::default());
     session.system(Phase::Publication, "count", |ctx| {
         *ctx.app.frames.get_mut() += 1;
@@ -65,7 +65,7 @@ loam_runtime::stores! {
 }
 
 #[test]
-fn a_still_scene_keeps_its_content_after_a_move_that_changed_the_record_count() {
+fn still_after_record_count_change() {
     let mut session = Session::new(Bare::default(), SimConfig::default());
     let r4 = session
         .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));

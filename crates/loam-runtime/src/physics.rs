@@ -1136,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn a_constrained_grab_does_not_drop_its_release_lever() {
+    fn constrained_grab_release() {
         let scene = SceneId {
             runtime: RuntimeId::allocate(),
             epoch: Epoch::default(),
@@ -1195,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn the_grab_hold_decides_whether_an_off_center_body_swings() {
+    fn off_center_hold() {
         let lowest = |hold: GrabHold| {
             let scene = SceneId {
                 runtime: RuntimeId::allocate(),
@@ -1252,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn a_held_body_transfers_motion_through_sleeping_contacts() {
+    fn held_body_on_sleeping_contacts() {
         let scene = SceneId {
             runtime: RuntimeId::allocate(),
             epoch: Epoch::default(),
@@ -1304,7 +1304,7 @@ mod tests {
     }
 
     #[test]
-    fn a_held_body_dragged_and_thrown_between_ticks_keeps_its_blend() {
+    fn drag_and_throw_between_ticks() {
         let mut session = Session::new(Bare::default(), SimConfig::default());
         let r4 = session.register_domain(
             DomainBuilder::new("r4", EuclideanR4)

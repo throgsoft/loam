@@ -120,7 +120,7 @@ where
 }
 
 #[test]
-fn every_adapter_walks_moves_publishes_picks_and_restores_the_same_way() {
+fn adapter_parity() {
     trace(
         EuclideanR4,
         "r4",

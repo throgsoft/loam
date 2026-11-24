@@ -38,7 +38,7 @@ fn label(x: f32) -> TextRecord {
 }
 
 #[test]
-fn an_overlay_reaches_the_publication_only_from_a_publication_system_and_only_for_its_frame() {
+fn phase_and_frame() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     session.system(Phase::Dispatch, "stray", |ctx| {
         ctx.overlay.lines.push(SegmentRecord::default());
@@ -105,7 +105,7 @@ fn an_overlay_reaches_the_publication_only_from_a_publication_system_and_only_fo
 }
 
 #[test]
-fn a_publication_system_reads_the_clamped_alpha_and_a_simulation_system_reads_one() {
+fn alpha_by_phase() {
     let mut session = Session::new(Probe::default(), SimConfig::default());
     session.system(Phase::Publication, "publication alpha", |ctx| {
         let alpha = ctx.alpha;

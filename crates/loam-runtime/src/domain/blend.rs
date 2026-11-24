@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn a_body_is_drawn_between_its_last_two_ticks_and_a_stop_or_jump_is_not_smeared() {
+    fn stop_and_jump() {
         let (mut session, _, _) = drawn_session(|tick| Some((tick.0 as f32 + 1.0, false)));
         let mut publication = Publication::default();
         session.tick(&Sequential).unwrap();
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn drawn_pose_and_image_of_read_the_pose_the_publication_drew() {
+    fn drawn_pose_and_image_of() {
         let (mut session, r4, mover) = drawn_session(|tick| Some((tick.0 as f32 + 1.0, false)));
         let mut publication = Publication::default();
         session.tick(&Sequential).unwrap();
@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn a_body_swapped_into_a_despawned_row_keeps_its_blend() {
+    fn swap_into_despawned_row() {
         let (mut session, r4, doomed) = drawn_session(|_| None);
         let prepared = session.prepare(lines());
         let material = session.add_material(Material::flat([1.0; 4]));
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rotor_sign_flip_between_ticks_is_drawn_without_a_turn() {
+    fn rotor_sign_flip() {
         let (mut session, r4, mover) = drawn_session(|_| None);
         let turned = Rotor4::from_rotation_arc(Vec4::X, Vec4::new(1.0, 1.0, 0.0, 1.0).normalize());
         session

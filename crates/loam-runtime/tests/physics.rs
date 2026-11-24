@@ -125,7 +125,7 @@ fn only_pose(session: &Session<Probe>, r4: DomainHandle<EuclideanR4>) -> (Entity
 }
 
 #[test]
-fn a_stepped_body_moves_its_entity_pose_and_reports_the_row_and_a_sleeping_one_writes_nothing() {
+fn stepped_and_sleeping_body() {
     let (mut session, r4) = session();
     let entity = ball(&mut session, r4, Vec4::new(0.0, 10.0, 0.0, 0.0));
     let mut cursor = Cursor::default();
@@ -175,7 +175,7 @@ fn a_stepped_body_moves_its_entity_pose_and_reports_the_row_and_a_sleeping_one_w
 }
 
 #[test]
-fn a_released_entity_leaves_no_body_and_no_pose_row() {
+fn released_entity() {
     let (mut session, r4) = session();
     let entity = ball(&mut session, r4, Vec4::new(0.0, 10.0, 0.0, 0.0));
     session.tick(&Sequential).unwrap();
@@ -190,7 +190,7 @@ fn a_released_entity_leaves_no_body_and_no_pose_row() {
 }
 
 #[test]
-fn a_restore_rewinds_the_pose_store_and_the_world_and_drops_a_later_body() {
+fn restore_rewind() {
     let (mut session, r4) = session();
     let entity = ball(&mut session, r4, Vec4::new(0.0, 10.0, 0.0, 0.0));
     for _ in 0..5 {
@@ -214,7 +214,7 @@ fn a_restore_rewinds_the_pose_store_and_the_world_and_drops_a_later_body() {
 }
 
 #[test]
-fn checked_pose_edits_update_the_body_and_mirror_before_step() {
+fn checked_pose_edit() {
     let (mut session, r4) = session();
     let entity = ball(&mut session, r4, Vec4::new(0.0, 10.0, 0.0, 0.0));
     let body = session
@@ -289,7 +289,7 @@ fn checked_pose_edits_update_the_body_and_mirror_before_step() {
 }
 
 #[test]
-fn a_bundle_whose_body_is_refused_leaves_no_pose_and_no_body() {
+fn refused_bundle() {
     let (mut session, r4) = session();
     let plain = session.register_domain(DomainBuilder::new("plain", EuclideanR4).untracked());
 
@@ -315,7 +315,7 @@ fn a_bundle_whose_body_is_refused_leaves_no_pose_and_no_body() {
 }
 
 #[test]
-fn a_bundled_body_keeps_its_velocity_or_its_sleep_at_a_moved_and_turned_pose() {
+fn bundled_at_turned_pose() {
     let (mut session, r4) = session();
     let turned = |x: f32| Pose {
         point: Vec4::new(x, 1.0, -2.0, 0.5),
@@ -353,7 +353,7 @@ fn a_bundled_body_keeps_its_velocity_or_its_sleep_at_a_moved_and_turned_pose() {
 }
 
 #[test]
-fn a_still_body_sleeps_once_its_rest_window_closes_and_a_held_body_only_after_its_release() {
+fn rest_window() {
     let (mut session, r4) = resting_session();
     let in_bundle = bundled(&mut session, r4, Pose::at(Vec4::ZERO), still());
     let attached = ball(&mut session, r4, Vec4::X * 5.0);
@@ -389,7 +389,7 @@ fn a_still_body_sleeps_once_its_rest_window_closes_and_a_held_body_only_after_it
 }
 
 #[test]
-fn a_restore_keeps_the_rest_time_a_body_had_at_the_snapshot() {
+fn rest_time_restore() {
     let (mut session, r4) = resting_session();
     let entity = ball(&mut session, r4, Vec4::ZERO);
     ticks(&mut session, 20);
@@ -429,7 +429,7 @@ impl Executor for Counting {
 }
 
 #[test]
-fn a_tick_hands_its_executor_to_a_world_with_enough_islands_to_share() {
+fn many_islands() {
     let (mut session, r4) = session();
     for pair in 0..2 * ISLANDS_PER_SOLVE_WORKER {
         let x = pair as f32 * 4.0;

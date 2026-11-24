@@ -134,7 +134,7 @@ fn same_turn(got: Rotor4, want: Rotor4) -> bool {
 }
 
 #[test]
-fn a_view_draws_as_fields_only_the_solids_its_section_does_not_already_fill() {
+fn section_filled_solids() {
     let mut stage = stage(Pose::at(Vec4::ZERO));
     let (filled, hollow, ball) = (stage.filled, stage.hollow, stage.ball);
 
@@ -192,7 +192,7 @@ fn a_view_draws_as_fields_only_the_solids_its_section_does_not_already_fill() {
 }
 
 #[test]
-fn a_field_record_is_posed_in_the_frame_of_a_moved_and_turned_eye() {
+fn moved_and_turned_eye() {
     // The eye's x axis points along world z, so world (dx, dy, dz, dw) reads (dz, dy, -dx, dw).
     let turn = Rotor4::from_rotation_arc(Vec4::X, Vec4::Z);
     let eye = Pose {
@@ -216,7 +216,7 @@ fn a_field_record_is_posed_in_the_frame_of_a_moved_and_turned_eye() {
 }
 
 #[test]
-fn a_patched_publication_holds_the_same_blended_field_pose_as_a_fresh_one() {
+fn patched_blended_pose() {
     const EYE_AT: Vec4 = Vec4::new(0.5, 0.0, 0.0, 0.0);
     const STEP: Vec4 = Vec4::new(2.0, 0.0, 0.0, 1.0);
     let mut stage = stage(Pose::at(EYE_AT));
@@ -281,7 +281,7 @@ fn a_patched_publication_holds_the_same_blended_field_pose_as_a_fresh_one() {
 }
 
 #[test]
-fn a_field_solid_publishes_no_lines_or_faces_and_is_picked_at_its_surface() {
+fn field_solid() {
     const SIZE: f32 = 0.5;
     const AT: Vec4 = Vec4::new(0.0, 0.0, -4.0, 0.0);
     let mut session = Session::new(Probe::default(), SimConfig::default());
