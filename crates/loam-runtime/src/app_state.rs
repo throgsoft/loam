@@ -20,6 +20,21 @@ pub trait Stores: Send + 'static {
     fn restore(&mut self, from: &Self::Snapshot, scene: SceneId, owner: Owner);
 }
 
+impl Stores for () {
+    type Snapshot = ();
+    type Published = ();
+
+    fn bind(&mut self, _scene: SceneId, _owner: Owner) {}
+
+    fn boundary(&mut self, _owner: Owner) {}
+
+    fn release(&mut self, _entity: Entity, _owner: Owner) {}
+
+    fn snapshot(&self) -> Self::Snapshot {}
+
+    fn restore(&mut self, _from: &Self::Snapshot, _scene: SceneId, _owner: Owner) {}
+}
+
 pub trait HasStore<T>: Stores {
     fn store(&self) -> &Store<T>;
 
