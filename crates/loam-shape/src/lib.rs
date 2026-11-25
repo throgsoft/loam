@@ -13,6 +13,6 @@ pub mod visualizable;
 
 pub use field::{DistanceField, FieldKind};
 pub use field_shape::FieldShape;
-pub use isovolume::Isovolume;
+pub use isovolume::{Isovolume, IsovolumeError};
 pub use shape::{Shape, ShapeKind};
 pub use visualizable::{LineMesh, NotVisualizable, PointMesh, TriangleMesh, Visualizable};

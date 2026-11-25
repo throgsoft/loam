@@ -5,6 +5,25 @@ use glam::{Vec3, Vec4};
 
 use crate::Shape;
 
+/// Why [`Isovolume::extract`] refuses its sampling domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IsovolumeError {
+    NoCells,
+    /// The axis whose extent is not positive.
+    EmptyAxis(usize),
+}
+
+impl std::fmt::Display for IsovolumeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoCells => write!(f, "the resolution must be at least one cell"),
+            Self::EmptyAxis(axis) => write!(f, "the domain has no positive extent on axis {axis}"),
+        }
+    }
+}
+
+impl std::error::Error for IsovolumeError {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellBox<const D: usize> {
     lo: [usize; D],
@@ -28,12 +47,20 @@ impl<const D: usize> Isovolume<D> {
         max: [f32; D],
         resolution: usize,
         sdf: impl Fn([f32; D]) -> f32,
-    ) -> Self {
-        assert!(resolution > 0, "resolution must be positive");
+    ) -> Result<Self, IsovolumeError> {
+        if resolution == 0 {
+            return Err(IsovolumeError::NoCells);
+        }
         let mut extent = [0.0f32; D];
-        for (e, (lo, hi)) in extent.iter_mut().zip(min.iter().zip(max.iter())) {
+        for (axis, (e, (lo, hi))) in extent
+            .iter_mut()
+            .zip(min.iter().zip(max.iter()))
+            .enumerate()
+        {
             *e = hi - lo;
-            assert!(*e > 0.0, "domain must be non-degenerate on every axis");
+            if e.is_nan() || *e <= 0.0 {
+                return Err(IsovolumeError::EmptyAxis(axis));
+            }
         }
 
         let cell = extent.iter().copied().fold(0.0f32, f32::max) / resolution as f32;
@@ -78,13 +105,13 @@ impl<const D: usize> Isovolume<D> {
             boxes.push(grown);
         }
 
-        Self {
+        Ok(Self {
             origin: min,
             cell,
             boxes,
             occupied_cells,
             clipped,
-        }
+        })
     }
 
     pub fn piece_count(&self) -> usize {

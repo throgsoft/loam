@@ -228,6 +228,7 @@ fn extract_cover(field: &DistanceField2D, cell: f32) -> Isovolume<2> {
         resolution,
         |p| LIPSCHITZ_SCALE * field.sample(Vec2::from_array(p)),
     )
+    .expect("a validated collider cell gives a cover of at least one cell with positive extent")
 }
 
 /// Appends the triangulated extrusion and returns whether the field enclosed any area.

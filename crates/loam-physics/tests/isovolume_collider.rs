@@ -23,7 +23,8 @@ fn torus(p: [f32; 3]) -> f32 {
 }
 
 fn extract() -> Isovolume<3> {
-    let volume = Isovolume::extract([-BOUND; 3], [BOUND; 3], RESOLUTION, torus);
+    let volume = Isovolume::extract([-BOUND; 3], [BOUND; 3], RESOLUTION, torus)
+        .expect("the torus domain is a positive cube");
     assert!(!volume.clipped(), "sampling domain clipped the solid");
     volume
 }

@@ -28,7 +28,8 @@ fn main() {
     println!("dim  res  cells  occupied  pieces  cover/solid  margin  extract");
     for resolution in [16usize, 32, 64] {
         let started = Instant::now();
-        let volume = Isovolume::extract([-BOUND; 3], [BOUND; 3], resolution, torus_3d);
+        let volume = Isovolume::extract([-BOUND; 3], [BOUND; 3], resolution, torus_3d)
+            .expect("the torus domain is a positive cube");
         let elapsed = started.elapsed();
         println!(
             "3D  {resolution:4} {:7} {:9} {:7} {:11.2} {:8.4} {elapsed:>10.2?}",
@@ -41,7 +42,8 @@ fn main() {
     }
     for resolution in [12usize, 16, 24] {
         let started = Instant::now();
-        let volume = Isovolume::extract([-BOUND; 4], [BOUND; 4], resolution, torus_4d);
+        let volume = Isovolume::extract([-BOUND; 4], [BOUND; 4], resolution, torus_4d)
+            .expect("the torus domain is a positive cube");
         let elapsed = started.elapsed();
         println!(
             "4D  {resolution:4} {:7} {:9} {:7} {:11.2} {:8.4} {elapsed:>10.2?}",
