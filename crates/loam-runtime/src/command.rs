@@ -495,12 +495,31 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         eye: Pose<S>,
         mapping: impl ViewMapping<S>,
     ) -> Result<ViewId, Rejection> {
+        self.add_eye_view(domain, eye, mapping, true)
+    }
+
+    /// Like `add_view` with whole edges off, so the view shows only what the mapping cuts.
+    pub fn add_section<S: DomainSpace>(
+        &mut self,
+        domain: DomainHandle<S>,
+        eye: Pose<S>,
+        mapping: impl ViewMapping<S>,
+    ) -> Result<ViewId, Rejection> {
+        self.add_eye_view(domain, eye, mapping, false)
+    }
+
+    fn add_eye_view<S: DomainSpace>(
+        &mut self,
+        domain: DomainHandle<S>,
+        eye: Pose<S>,
+        mapping: impl ViewMapping<S>,
+        edges: bool,
+    ) -> Result<ViewId, Rejection> {
         let eye = self.spawn(SpawnBundle::new().at(domain, eye))?;
         let root = self.views.root_id();
-        let view = self
-            .domains
-            .typed(domain)?
-            .add_view(ViewSpec::new(root, eye, mapping))?;
+        let mut spec = ViewSpec::new(root, eye, mapping);
+        spec.edges = edges;
+        let view = self.domains.typed(domain)?.add_view(spec)?;
         Ok(view)
     }
 
