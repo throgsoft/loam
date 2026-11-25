@@ -19,15 +19,15 @@ const GROUP_FALLING: u32 = 1 << 1;
 const GROUP_LANDED: u32 = 1 << 2;
 const MASK_FALLING: u32 = GROUP_SCENERY | GROUP_LANDED;
 
-const ASSEMBLE_FRAMES: u32 = 90;
-const LETTER_STAGGER_FRAMES: u32 = 12;
-const LETTER_SLIDE_FRAMES: u32 = 36;
-const SETTLE_FRAMES: u32 = 120;
-const RAIN_START_FRAME: u32 = ASSEMBLE_FRAMES + SETTLE_FRAMES;
-const PHYSICS_FRAMES: u32 = 360;
-const FREEZE_FRAME: u32 = RAIN_START_FRAME + PHYSICS_FRAMES;
-const SWEEP_FRAMES: u32 = 300;
-const SEQUENCE_FRAMES: u32 = FREEZE_FRAME + SWEEP_FRAMES;
+const ASSEMBLE: f32 = 1.5;
+const LETTER_STAGGER: f32 = 0.2;
+const LETTER_SLIDE: f32 = 0.6;
+const SETTLE: f32 = 2.0;
+const RAIN_AT: f32 = ASSEMBLE + SETTLE;
+const RAIN: f32 = 6.0;
+const FREEZE_AT: f32 = RAIN_AT + RAIN;
+const SWEEP: f32 = 5.0;
+const END_AT: f32 = FREEZE_AT + SWEEP;
 
 const W_ENTRY_SPAN: f32 = 0.6;
 const RELEASE_CLEARANCE: f32 = 0.20;
@@ -83,36 +83,25 @@ struct Drop {
 
 #[derive(Clone, Copy)]
 struct Stage {
-    tick: u32,
-    next_spawn: u32,
+    now: Moment,
+    next_drop: f32,
     rng: u64,
     seed: u64,
-    released: bool,
-    frozen: bool,
 }
 
 impl Stage {
     fn seeded(seed: u64) -> Self {
         Self {
-            tick: 0,
-            next_spawn: RAIN_START_FRAME,
+            now: Moment::default(),
+            next_drop: RAIN_AT,
             rng: (seed ^ 0x9e37_79b9_7f4a_7c15).max(1),
             seed,
-            released: false,
-            frozen: false,
         }
     }
 
-    fn frame(&self) -> u32 {
-        self.tick / SUBSTEPS
-    }
-
     fn slice(&self) -> f32 {
-        let Some(since) = self.tick.checked_sub(FREEZE_FRAME * SUBSTEPS) else {
-            return W_SLICE;
-        };
-        let phase = std::f32::consts::TAU * since as f32 / (SWEEP_FRAMES * SUBSTEPS) as f32;
-        W_SLICE + SLICE_SWEEP_RANGE * phase.sin()
+        let swept = ((self.now.seconds() - FREEZE_AT) / SWEEP).clamp(0.0, 1.0);
+        W_SLICE + SLICE_SWEEP_RANGE * (std::f32::consts::TAU * swept).sin()
     }
 
     // xorshift64*, Vigna 2016 §4.
@@ -145,7 +134,7 @@ stores! {
 pub struct Shown {
     mesh: TriangleMesh<3>,
     version: Option<Version>,
-    frame: u32,
+    done: bool,
 }
 
 fn unit(draw: u64) -> f32 {
@@ -242,7 +231,6 @@ impl MorphField {
 }
 
 fn letters_of(solids: &[GlyphSolid]) -> Option<Vec<Letter>> {
-    let seconds = |frames: u32| frames as f32 / TICK_HZ as f32;
     let mut letters = Vec::new();
     for (index, solid) in solids.iter().filter(|s| !s.is_blank()).enumerate() {
         let (centre, shape) = solid.rigid_hull_4d()?;
@@ -272,14 +260,12 @@ fn letters_of(solids: &[GlyphSolid]) -> Option<Vec<Letter>> {
     for letter in &mut letters {
         letter.mark.x += shift;
         letter.entry.x += shift;
-        let start = LETTER_STAGGER_FRAMES * letter.index as u32;
-        letter.slide = Track::new()
-            .key(seconds(start), letter.entry, Ease::Linear)
-            .key(
-                seconds(start + LETTER_SLIDE_FRAMES),
-                letter.mark,
-                Ease::InOutCubic,
-            );
+        let start = LETTER_STAGGER * letter.index as f32;
+        letter.slide = Track::new().key(start, letter.entry, Ease::Linear).key(
+            start + LETTER_SLIDE,
+            letter.mark,
+            Ease::InOutCubic,
+        );
     }
     Some(letters)
 }
@@ -507,18 +493,18 @@ fn build() -> Result<Session<HeroStores>, HostError> {
         Order::Before(DOMAIN_STEP),
         "assemble",
         move |ctx| {
-            let stage = *ctx.app.stage;
+            let now = ctx.step.start();
             let domain = ctx.domains.typed(r4)?;
-            if !stage.released {
+            if !now.reached(ASSEMBLE) {
                 for (entity, letter) in ctx.app.letters.iter() {
-                    let Some(at) = letter.slide.sample(stage.frame(), fps()) else {
+                    let Some(at) = letter.slide.sample(now.frame(fps()), fps()) else {
                         continue;
                     };
                     domain.set_point(entity, at)?;
                 }
-                if stage.frame() < ASSEMBLE_FRAMES {
-                    return Ok(());
-                }
+                return Ok(());
+            }
+            if now.fires(ASSEMBLE) {
                 for (entity, letter) in ctx.app.letters.iter() {
                     let body =
                         polytope_body_r4(letter.mark, Vec4::ZERO, letter.hull.clone(), LETTER_MASS)
@@ -526,7 +512,6 @@ fn build() -> Result<Session<HeroStores>, HostError> {
                             .restitution(RESTITUTION)?;
                     domain.spawn_body(entity, body)?;
                 }
-                ctx.app.stage.get_mut().released = true;
                 return Ok(());
             }
             let physics = ctx.domains.physics(r4)?;
@@ -545,8 +530,7 @@ fn build() -> Result<Session<HeroStores>, HostError> {
         Order::After(DOMAIN_STEP),
         "settle",
         move |ctx| {
-            let mut stage = *ctx.app.stage;
-            if stage.frame() >= SEQUENCE_FRAMES {
+            if ctx.step.start().reached(END_AT) {
                 return Ok(());
             }
             {
@@ -590,23 +574,18 @@ fn build() -> Result<Session<HeroStores>, HostError> {
                 }
             }
 
-            stage.tick += 1;
-            if stage.frame() >= FREEZE_FRAME {
-                if !stage.frozen {
-                    stage.frozen = true;
-                    ctx.commands
-                        .try_app_fn(
-                            "freeze",
-                            move |d: &mut Dispatch<'_, HeroStores>| match freeze(d, r4) {
-                                Ok(()) => Ok(Outcome::Done),
-                                Err(error) => {
-                                    d.app.stage.get_mut().frozen = false;
-                                    Err(error)
-                                }
-                            },
-                        );
-                }
-            } else if stage.frame() >= stage.next_spawn && ctx.app.drops.len() < RAIN_CAP {
+            let now = ctx.step.end();
+            let mut stage = *ctx.app.stage;
+            stage.now = now;
+            if now.fires(FREEZE_AT) {
+                ctx.commands
+                    .try_app_fn("freeze", move |d: &mut Dispatch<'_, HeroStores>| {
+                        freeze(d, r4).map(|()| Outcome::Done)
+                    });
+            } else if !now.reached(FREEZE_AT)
+                && now.reached(stage.next_drop)
+                && ctx.app.drops.len() < RAIN_CAP
+            {
                 let polytope = RAIN_SHAPES[ctx.app.drops.len() % RAIN_SHAPES.len()];
                 let span = word_span(ctx.app.letters.rows());
                 let position = Vec4::new(
@@ -624,7 +603,8 @@ fn build() -> Result<Session<HeroStores>, HostError> {
                     RAIN_TUMBLE * signed_unit(stage.draw()),
                 );
                 let jitter = (stage.draw() % (2 * RAIN_INTERVAL_JITTER as u64 + 1)) as u32;
-                stage.next_spawn = stage.frame() + RAIN_INTERVAL_MIN + jitter;
+                stage.next_drop =
+                    now.seconds() + (RAIN_INTERVAL_MIN + jitter) as f32 / TICK_HZ as f32;
                 ctx.commands
                     .try_app_fn("rain", move |d: &mut Dispatch<'_, HeroStores>| {
                         spawn_drop(d, r4, polytope, position, tumble).map(Outcome::Spawned)
@@ -640,7 +620,7 @@ fn build() -> Result<Session<HeroStores>, HostError> {
     session.system_on_change(
         Phase::Publication,
         "compose",
-        |app: &HeroStores| (app.stage.tick, app.mesh.version()),
+        |app: &HeroStores| (app.stage.now, app.mesh.version()),
         move |ctx| {
             compose(
                 ctx.app,
@@ -663,7 +643,7 @@ fn build() -> Result<Session<HeroStores>, HostError> {
             shown.mesh.indices.clone_from(&mesh.indices);
             shown.version = Some(version);
         }
-        shown.frame = ctx.app.stage.frame();
+        shown.done = ctx.app.stage.now.reached(END_AT);
         Ok(())
     });
     session.views_mut().root_mut().backdrop = Some(Environment::default().backdrop(FLOOR_Y));
@@ -695,7 +675,7 @@ fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
                     recording = false;
                 }
             }
-            if recording && shown.frame >= SEQUENCE_FRAMES {
+            if recording && shown.done {
                 if let Err(error) = hook.capture.stop() {
                     tracing::error!("hero capture stop refused: {error}");
                 }
