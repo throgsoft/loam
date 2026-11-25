@@ -30,7 +30,7 @@ impl<A: Stores> Dispatch<'_, A> {
             Some(&PreparedGeometry::Polytope4 { polytope, scale }) => {
                 regular_polytope_body_r4(polytope, scale, mass).map_err(Rejection::from)
             }
-            _ => Err(Rejection::Unsupported("a body needs polytope geometry")),
+            _ => Err(Rejection::NotPolytope(geometry)),
         }
     }
 

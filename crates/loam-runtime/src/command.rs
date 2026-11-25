@@ -39,8 +39,16 @@ pub enum Rejection {
     Store(StoreError),
     Restore(RestoreError),
     Cancelled,
-    Unsupported(&'static str),
     OutOfRange(OutOfRange),
+    #[cfg(feature = "physics")]
+    BodyUnplaced,
+    /// The prepared geometry is missing or is not a polytope, so it has no body.
+    #[cfg(feature = "physics")]
+    NotPolytope(PreparedId),
+    /// Reset and pause apply at a session boundary.
+    BoundaryCommand,
+    /// An app command refused for its own reason, which is the text.
+    Refused(&'static str),
 }
 
 impl fmt::Display for Rejection {
@@ -52,8 +60,19 @@ impl fmt::Display for Rejection {
             Self::Store(error) => fmt::Display::fmt(error, f),
             Self::Restore(error) => fmt::Display::fmt(error, f),
             Self::Cancelled => f.write_str("cancelled by a reset"),
-            Self::Unsupported(what) => write!(f, "unsupported: {what}"),
             Self::OutOfRange(error) => fmt::Display::fmt(error, f),
+            #[cfg(feature = "physics")]
+            Self::BodyUnplaced => f.write_str("the bundle has a body and no placement"),
+            #[cfg(feature = "physics")]
+            Self::NotPolytope(geometry) => {
+                write!(
+                    f,
+                    "prepared geometry {} is not a polytope",
+                    geometry.index()
+                )
+            }
+            Self::BoundaryCommand => f.write_str("reset and pause apply at a session boundary"),
+            Self::Refused(reason) => f.write_str(reason),
         }
     }
 }
@@ -523,7 +542,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         };
         #[cfg(feature = "physics")]
         if let Some(body) = bundle.body {
-            let domain = placed.ok_or(Rejection::Unsupported("a body without a placement"))?;
+            let domain = placed.ok_or(Rejection::BodyUnplaced)?;
             body.spawn(self.domains, domain, entity)?;
         }
         #[cfg(not(feature = "physics"))]
@@ -575,12 +594,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
                     .apply(&command)
             }
             Command::App(mut command) => command.apply(self),
-            Command::Reset => Err(Rejection::Unsupported(
-                "reset applies at a session boundary",
-            )),
-            Command::TogglePause => Err(Rejection::Unsupported(
-                "pause applies at a session boundary",
-            )),
+            Command::Reset | Command::TogglePause => Err(Rejection::BoundaryCommand),
         }
     }
 

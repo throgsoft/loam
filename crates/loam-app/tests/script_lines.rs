@@ -24,7 +24,7 @@ impl AppCommand<Slots> for Pick {
 
     fn apply(&mut self, dispatch: &mut Dispatch<'_, Slots>) -> Result<Outcome, Rejection> {
         if self.0 >= SLOTS {
-            return Err(Rejection::Unsupported("no such slot"));
+            return Err(Rejection::Refused("no such slot"));
         }
         dispatch.app.active.set(self.0);
         Ok(Outcome::Done)

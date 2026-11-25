@@ -406,7 +406,7 @@ fn action_handler() {
         Ok(())
     });
     session.system(Phase::Dispatch, "after", observe(20));
-    session.on_action(REFUSE, |_| Err(Rejection::Unsupported("refused")));
+    session.on_action(REFUSE, |_| Err(Rejection::Refused("refused")));
 
     session.boundary(event(BUMP, true)).unwrap();
     assert_eq!(
@@ -433,7 +433,7 @@ fn action_handler() {
     };
     assert_eq!(
         (result.name, result.outcome),
-        ("refuse", Err(Rejection::Unsupported("refused")))
+        ("refuse", Err(Rejection::Refused("refused")))
     );
 }
 

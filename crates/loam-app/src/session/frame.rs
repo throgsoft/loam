@@ -1389,7 +1389,7 @@ mod tests {
             &mut self,
             _dispatch: &mut loam_runtime::Dispatch<'_, Bare>,
         ) -> Result<loam_runtime::Outcome, loam_runtime::Rejection> {
-            Err(loam_runtime::Rejection::Unsupported("refused"))
+            Err(loam_runtime::Rejection::Refused("refused"))
         }
     }
 

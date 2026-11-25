@@ -264,8 +264,8 @@ pub(crate) fn populate(
     }
 
     for (at, polytope) in TOYS.into_iter().enumerate() {
-        let (entry, instance) = asset_of(polytope, cards)
-            .ok_or(Rejection::Unsupported("the toy has no prepared asset"))?;
+        let (entry, instance) =
+            asset_of(polytope, cards).ok_or(Rejection::Refused("the toy has no prepared asset"))?;
         spawn_toy(dispatch, domain, polytope, entry, instance, at, TOYS.len())?;
     }
     spawn_walls(dispatch, domain)

@@ -58,7 +58,7 @@ impl AppCommand<Playground> for Action {
             Action::Mode(mode) => mode::set_mode(dispatch, domain, &cards, mode)?,
             Action::Active(slot) => {
                 if slot >= dispatch.app.slots.len() {
-                    return Err(Rejection::Unsupported("no such slot"));
+                    return Err(Rejection::Refused("no such slot"));
                 }
                 dispatch.app.active.set(slot);
             }
@@ -67,27 +67,25 @@ impl AppCommand<Playground> for Action {
             }
             Action::Slice(w) => {
                 if !w.is_finite() {
-                    return Err(Rejection::Unsupported("slice is not finite"));
+                    return Err(Rejection::Refused("slice is not finite"));
                 }
                 let reach = slice_reach(*dispatch.app.mode);
                 dispatch.app.slice.set(w.clamp(-reach, reach));
             }
             Action::ExactSlice(w) => {
                 if !w.is_finite() {
-                    return Err(Rejection::Unsupported("slice is not finite"));
+                    return Err(Rejection::Refused("slice is not finite"));
                 }
                 let reach = slice_reach(*dispatch.app.mode);
                 if !(-reach..=reach).contains(&w) {
-                    return Err(Rejection::Unsupported(
-                        "slice is outside the mode's w range",
-                    ));
+                    return Err(Rejection::Refused("slice is outside the mode's w range"));
                 }
                 dispatch.app.slice.set(w);
             }
             Action::Plane(plane) => mode::toggle_plane(dispatch, plane)?,
             Action::Running(setting) => {
                 if *dispatch.app.mode == Mode::Toybox {
-                    return Err(Rejection::Unsupported("rotation belongs to Rotate"));
+                    return Err(Rejection::Refused("rotation belongs to Rotate"));
                 }
                 let running = dispatch.app.spin.get_mut();
                 running.running = setting.unwrap_or(!running.running);
@@ -121,12 +119,12 @@ impl AppCommand<Playground> for Action {
             Action::Reset => mode::reset(dispatch, domain, &cards)?,
             Action::Time(time) => {
                 if !time.is_finite() || time < 0.0 {
-                    return Err(Rejection::Unsupported(
+                    return Err(Rejection::Refused(
                         "playback time must be finite and nonnegative",
                     ));
                 }
                 if *dispatch.app.mode.get() == Mode::Toybox {
-                    return Err(Rejection::Unsupported("playback belongs to Rotate"));
+                    return Err(Rejection::Refused("playback belongs to Rotate"));
                 }
                 display::seek(dispatch.app, dispatch.domains, domain, time)
                     .map_err(Rejection::Domain)?;

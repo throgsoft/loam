@@ -125,14 +125,14 @@ pub(crate) fn toggle_plane(
         .get()
         .planes
         .get(plane)
-        .ok_or(Rejection::Unsupported("no such plane"))?;
+        .ok_or(Rejection::Refused("no such plane"))?;
     let elapsed = *dispatch.app.time.get() * BASE_ROTATION_RATE;
     let angle = dispatch
         .app
         .angles
         .get_mut()
         .get_mut(plane)
-        .ok_or(Rejection::Unsupported("no such plane"))?;
+        .ok_or(Rejection::Refused("no such plane"))?;
     *angle += if held { elapsed } else { -elapsed };
     dispatch.app.spin.get_mut().planes[plane] = !held;
     Ok(())
@@ -145,7 +145,7 @@ pub(crate) fn turn_row(
     rotor: Rotor4,
 ) -> Result<(), Rejection> {
     if *app.mode.get() != Mode::Rotate {
-        return Err(Rejection::Unsupported("rotation handles belong to Rotate"));
+        return Err(Rejection::Refused("rotation handles belong to Rotate"));
     }
     let entities = app.slots.iter().map(|(entity, _)| entity);
     let r4 = domains.typed(domain)?;
@@ -171,7 +171,7 @@ pub(crate) fn set_shape(
         .iter()
         .find(|(_, held)| held.index == slot)
         .map(|(entity, held)| (entity, *held))
-        .ok_or(Rejection::Unsupported("no such slot"))?;
+        .ok_or(Rejection::Refused("no such slot"))?;
     let (entity, mut row) = held;
     if row.entry == entry {
         return Ok(());
@@ -181,14 +181,14 @@ pub(crate) fn set_shape(
         Some(
             entry
                 .collider_polytope()
-                .ok_or(Rejection::Unsupported("the toy has no collider"))?,
+                .ok_or(Rejection::Refused("the toy has no collider"))?,
         )
     } else {
         None
     };
     let geometry = if is_toy {
         card.toy_geometry
-            .ok_or(Rejection::Unsupported("the toy has no prepared geometry"))?
+            .ok_or(Rejection::Refused("the toy has no prepared geometry"))?
     } else {
         card.geometry
     };
@@ -230,13 +230,13 @@ pub(crate) fn set_shape(
 
 pub(crate) fn set_strip(app: &mut Playground, mut strip: Strip) -> Result<(), Rejection> {
     if strip.on && *app.mode.get() == Mode::Toybox {
-        return Err(Rejection::Unsupported("filmstrip belongs to Rotate"));
+        return Err(Rejection::Refused("filmstrip belongs to Rotate"));
     }
     if !strip.t_extent.is_finite() {
-        return Err(Rejection::Unsupported("the t extent is not finite"));
+        return Err(Rejection::Refused("the t extent is not finite"));
     }
     if !strip.w && !strip.t {
-        return Err(Rejection::Unsupported("the strip needs one axis"));
+        return Err(Rejection::Refused("the strip needs one axis"));
     }
     strip.count_w = strip.count_w.clamp(MIN_CELLS, MAX_CELLS);
     strip.count_t = strip.count_t.clamp(MIN_CELLS, MAX_CELLS);

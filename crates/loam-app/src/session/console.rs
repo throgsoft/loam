@@ -391,7 +391,7 @@ fn register_ground<A: Stores>(console: &mut Console<Submit<A>>) {
                         .root_mut()
                         .backdrop
                         .as_mut()
-                        .ok_or(Rejection::Unsupported(NO_BACKDROP))?;
+                        .ok_or(Rejection::Refused(NO_BACKDROP))?;
                     let args = owned.iter().map(String::as_str).collect::<Vec<_>>();
                     let mut environment = Environment::of(backdrop);
                     let line = environment
@@ -436,7 +436,7 @@ fn register_floor<A: Stores>(console: &mut Console<Submit<A>>) {
                         .root_mut()
                         .backdrop
                         .as_mut()
-                        .ok_or(Rejection::Unsupported(NO_BACKDROP))?;
+                        .ok_or(Rejection::Refused(NO_BACKDROP))?;
                     let ground = &mut backdrop.ground;
                     ground.visible = shown.unwrap_or(!ground.visible);
                     Ok(Outcome::Done)
@@ -460,7 +460,7 @@ fn register_camera<A: Stores>(console: &mut Console<Submit<A>>) {
                         submit.commands.try_app_fn("camera", move |dispatch| {
                             let root = dispatch.views.root_mut();
                             if !matches!(root.rig, Rig::Pair(_)) {
-                                return Err(Rejection::Unsupported(NO_CAMERA_PAIR));
+                                return Err(Rejection::Refused(NO_CAMERA_PAIR));
                             }
                             let flying = flying.unwrap_or(!root.rig.flying());
                             root.set_flying(flying);
@@ -525,7 +525,7 @@ fn free_camera_mut(views: &mut Views) -> Result<&mut FreeCamera, Rejection> {
         .root_mut()
         .rig
         .free_mut()
-        .ok_or(Rejection::Unsupported(NO_FREE_CAMERA))
+        .ok_or(Rejection::Refused(NO_FREE_CAMERA))
 }
 
 fn cursor_name(policy: CursorPolicy) -> &'static str {
@@ -603,7 +603,7 @@ mod tests {
         session.system(Phase::Dispatch, "keys", |ctx: Ctx<'_, Counted>| {
             ctx.commands
                 .try_app_fn("strip", |_d: &mut Dispatch<'_, Counted>| {
-                    Err(Rejection::Unsupported("filmstrip belongs to Rotate"))
+                    Err(Rejection::Refused("filmstrip belongs to Rotate"))
                 });
             Ok(())
         });
@@ -614,7 +614,7 @@ mod tests {
             .expect("a bare entity");
         app.sender()
             .try_app_fn("refused", |_d: &mut Dispatch<'_, Counted>| {
-                Err(Rejection::Unsupported("not now"))
+                Err(Rejection::Refused("not now"))
             });
         app.sender()
             .try_app_fn("nudge", move |_d: &mut Dispatch<'_, Counted>| {

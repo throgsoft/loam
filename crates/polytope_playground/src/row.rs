@@ -11,7 +11,7 @@ pub(crate) fn add_shape(
     card: Card,
 ) -> Result<(), Rejection> {
     if *dispatch.app.mode.get() != Mode::Rotate {
-        return Err(Rejection::Unsupported("shapes can only be added in Rotate"));
+        return Err(Rejection::Refused("shapes can only be added in Rotate"));
     }
     let index = dispatch.app.slots.len();
     let rest = rest_of(index, index + 1);
@@ -50,13 +50,11 @@ pub(crate) fn reorder_shape(
     to: usize,
 ) -> Result<(), Rejection> {
     if *dispatch.app.mode.get() != Mode::Rotate {
-        return Err(Rejection::Unsupported(
-            "shapes can only be reordered in Rotate",
-        ));
+        return Err(Rejection::Refused("shapes can only be reordered in Rotate"));
     }
     let count = dispatch.app.slots.len();
     if to > count {
-        return Err(Rejection::Unsupported("no such row gap"));
+        return Err(Rejection::Refused("no such row gap"));
     }
     if !dispatch
         .app
@@ -64,7 +62,7 @@ pub(crate) fn reorder_shape(
         .iter()
         .any(|(_, slot)| slot.index == from)
     {
-        return Err(Rejection::Unsupported("no such slot"));
+        return Err(Rejection::Refused("no such slot"));
     }
     let destination = if to > from { to - 1 } else { to };
     if destination == from {
@@ -105,9 +103,7 @@ pub(crate) fn remove_shape(
     slot: usize,
 ) -> Result<(), Rejection> {
     if *dispatch.app.mode.get() != Mode::Rotate {
-        return Err(Rejection::Unsupported(
-            "shapes can only be removed in Rotate",
-        ));
+        return Err(Rejection::Refused("shapes can only be removed in Rotate"));
     }
     let entity = dispatch
         .app
@@ -115,7 +111,7 @@ pub(crate) fn remove_shape(
         .iter()
         .find(|(_, held)| held.index == slot)
         .map(|(entity, _)| entity)
-        .ok_or(Rejection::Unsupported("no such slot"))?;
+        .ok_or(Rejection::Refused("no such slot"))?;
     dispatch.despawn(entity)?;
     for (_, held) in dispatch.app.slots.iter_mut() {
         if held.index > slot {

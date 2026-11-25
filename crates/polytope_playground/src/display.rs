@@ -122,7 +122,7 @@ pub(crate) fn set_plane_angle(
     angle: f32,
 ) -> Result<(), Rejection> {
     if plane >= 6 || !angle.is_finite() {
-        return Err(Rejection::Unsupported("invalid plane angle"));
+        return Err(Rejection::Refused("invalid plane angle"));
     }
     let time = *dispatch.app.time.get();
     let before = rotor_at(dispatch.app, time);
