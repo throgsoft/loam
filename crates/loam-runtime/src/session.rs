@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use loam_time::par::{Executor, Sequential};
+use loam_time::FixedTimestep;
 
 use crate::app_state::Stores;
 use crate::assets::{Assets, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId};
@@ -42,6 +43,9 @@ impl SimConfig {
         if self.max_ticks_per_frame == 0 {
             return Err(SimConfigError::NoCatchUp);
         }
+        if self.fixed_hz > FixedTimestep::MAX_HZ {
+            return Err(SimConfigError::TickRate(self.fixed_hz));
+        }
         Ok(())
     }
 
@@ -54,12 +58,18 @@ impl SimConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimConfigError {
     NoCatchUp,
+    TickRate(u32),
 }
 
 impl std::fmt::Display for SimConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoCatchUp => f.write_str("max_ticks_per_frame must be at least one"),
+            Self::TickRate(hz) => write!(
+                f,
+                "fixed_hz {hz} is above the {} Hz limit",
+                FixedTimestep::MAX_HZ
+            ),
         }
     }
 }

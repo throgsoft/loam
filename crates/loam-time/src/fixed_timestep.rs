@@ -16,10 +16,13 @@ pub struct FixedTimestep {
 }
 
 impl FixedTimestep {
-    /// Panics outside `1..=1_000_000_000` Hz, the range supported by nanosecond ticks.
+    /// The fastest rate whose tick is at least one nanosecond.
+    pub const MAX_HZ: u32 = 1_000_000_000;
+
+    /// Panics outside `1..=MAX_HZ` Hz.
     pub fn new(hz: u32) -> Self {
         assert!(
-            (1..=1_000_000_000).contains(&hz),
+            (1..=Self::MAX_HZ).contains(&hz),
             "tick rate must be between 1 and 1000000000 Hz"
         );
         Self {
