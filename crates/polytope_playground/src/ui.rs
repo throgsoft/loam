@@ -9,8 +9,10 @@ use loam_egui::{
 use crate::action::Action;
 use crate::color::WIREFRAME_COLOR;
 use crate::consts::{BASE_ROTATION_RATE, W_RANGE};
-use crate::display::{Surface, SECTION_PERIMETER, SURFACE, WIREFRAME};
-use crate::mode::Mode;
+use crate::display::{
+    Surface, SECTION_PERIMETER, SURFACE, WIREFRAME, WIREFRAME_OPACITY, WIREFRAME_WIDTH,
+};
+use crate::mode::{Mode, RATE};
 use crate::projection::Family;
 use crate::shown::{Callout, Shown};
 use crate::strip::{Cell, Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
@@ -655,7 +657,7 @@ fn transport(
         });
     });
     if rate != app.spin.rate {
-        sender.app(Action::Rate(rate));
+        sender.submit(RATE.set(rate));
     }
 }
 
@@ -723,8 +725,11 @@ fn render_settings(
             }
         },
     );
-    if display != before {
-        sender.app(Action::Display(display));
+    if display.wireframe_width_px != before.wireframe_width_px {
+        sender.submit(WIREFRAME_WIDTH.set(display.wireframe_width_px));
+    }
+    if display.wireframe_opacity != before.wireframe_opacity {
+        sender.submit(WIREFRAME_OPACITY.set(display.wireframe_opacity));
     }
 }
 

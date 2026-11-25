@@ -1,10 +1,10 @@
 use loam::prelude::*;
 
-use crate::display::{self, Display};
+use crate::display;
 use crate::mode::{self, slice_reach, Mode};
 use crate::projection::Family;
 use crate::strip::Strip;
-use crate::{catalog, consts, row, Playground, DOMAIN_NAME};
+use crate::{catalog, row, Playground, DOMAIN_NAME};
 
 #[derive(Clone, Copy)]
 pub(crate) enum Action {
@@ -21,20 +21,10 @@ pub(crate) enum Action {
     RemoveShape(usize),
     ReorderShape { from: usize, to: usize },
     Strip(Strip),
-    Rate(f32),
-    Display(Display),
     View { single: bool },
-    WireframeWidth(f32),
-    WireframeOpacity(f32),
     Reset,
     Time(f32),
     PlaneAngle(usize, f32),
-}
-
-fn edit_display(app: &mut Playground, edit: impl FnOnce(&mut Display)) -> Result<(), Rejection> {
-    let mut next = *app.display.get();
-    edit(&mut next);
-    display::set(app, next)
 }
 
 impl AppCommand<Playground> for Action {
@@ -54,11 +44,7 @@ impl AppCommand<Playground> for Action {
             Self::RemoveShape(_) => "remove shape",
             Self::ReorderShape { .. } => "reorder shape",
             Self::Strip(_) => "strip",
-            Self::Rate(_) => "rate",
-            Self::Display(_) => "display",
             Self::View { .. } => "view",
-            Self::WireframeWidth(_) => "wireframe width",
-            Self::WireframeOpacity(_) => "wireframe alpha",
             Self::Reset => "reset",
             Self::Time(_) => "time",
             Self::PlaneAngle(_, _) => "plane angle",
@@ -125,27 +111,12 @@ impl AppCommand<Playground> for Action {
                 }
             }
             Action::Strip(strip) => mode::set_strip(dispatch.app, strip)?,
-            Action::Rate(rate) => {
-                if !rate.is_finite() {
-                    return Err(Rejection::Unsupported("the rate is not finite"));
-                }
-                dispatch.app.spin.get_mut().rate = rate.clamp(0.0, consts::MAX_RATE);
-            }
-            Action::Display(display) => display::set(dispatch.app, display)?,
             Action::View { single } => {
-                edit_display(dispatch.app, |display| display.single = single)?;
+                dispatch.app.display.get_mut().single = single;
                 let strip = *dispatch.app.strip.get();
                 if strip.on {
                     mode::set_strip(dispatch.app, Strip { on: false, ..strip })?;
                 }
-            }
-            Action::WireframeWidth(width_px) => {
-                edit_display(dispatch.app, |display| {
-                    display.wireframe_width_px = width_px;
-                })?;
-            }
-            Action::WireframeOpacity(opacity) => {
-                edit_display(dispatch.app, |display| display.wireframe_opacity = opacity)?;
             }
             Action::Reset => mode::reset(dispatch, domain, &cards)?,
             Action::Time(time) => {

@@ -3,8 +3,10 @@ use loam::prelude::*;
 
 use crate::action::Action;
 use crate::color::{ColorMode, WIREFRAME_COLOR};
-use crate::display::{Surface, SECTION_PERIMETER, SURFACE, WIREFRAME};
-use crate::mode::Mode;
+use crate::display::{
+    Surface, SECTION_PERIMETER, SURFACE, WIREFRAME, WIREFRAME_OPACITY, WIREFRAME_WIDTH,
+};
+use crate::mode::{Mode, RATE};
 use crate::projection::Family;
 use crate::{
     Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GIMBAL, SHOW_GUIDES, SHOW_HUD, SHOW_LABELS,
@@ -103,21 +105,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         },
     );
 
-    app = app.command(
-        "rate",
-        "set rotation speed from 0.25 to 4",
-        |args, submit, _out| {
-            let [token] = args else {
-                bail!("usage: rate <multiplier>");
-            };
-            let rate = number(token, "rate")?;
-            if !rate.is_finite() || !(0.25..=4.0).contains(&rate) {
-                bail!("rate must be between 0.25 and 4");
-            }
-            submit.app(Action::Rate(rate));
-            Ok(())
-        },
-    );
+    app = app.number(RATE, "set rotation speed from 0.25 to 4");
 
     app = app.command(
         "active",
@@ -215,18 +203,14 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                         dispatch.app.display.get().wireframe_width_px
                     ));
                 }),
-                ["width", token] => {
-                    submit.app(Action::WireframeWidth(number(token, "wireframe width")?));
-                }
+                ["width", rest @ ..] => submit.number(WIREFRAME_WIDTH, rest)?,
                 ["alpha"] => submit.inspect("wireframe alpha", |dispatch, out| {
                     out.line(format!(
                         "wireframe alpha: {:.3}",
                         dispatch.app.display.get().wireframe_opacity
                     ));
                 }),
-                ["alpha", token] => {
-                    submit.app(Action::WireframeOpacity(number(token, "wireframe alpha")?));
-                }
+                ["alpha", rest @ ..] => submit.number(WIREFRAME_OPACITY, rest)?,
                 ["color"] => submit.submit(WIREFRAME_COLOR.toggle()),
                 ["color", token] => {
                     let mode = color(token).ok_or_else(|| {

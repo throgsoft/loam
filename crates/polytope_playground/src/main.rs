@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn refused_display_edits() {
         let mut booted = one_slot();
-        send(&mut booted, Action::WireframeWidth(3.0));
+        booted.session.submit(display::WIREFRAME_WIDTH.set(3.0));
         booted.session.boundary(Input::default()).expect("boundary");
         let accepted = *booted.session.app.display.get();
         assert_eq!(
@@ -931,15 +931,16 @@ mod tests {
         );
 
         let refused = [
-            Action::WireframeWidth(0.0),
-            Action::WireframeWidth(2.0 * display::MAX_WIREFRAME_WIDTH_PX),
-            Action::WireframeWidth(f32::NAN),
-            Action::WireframeOpacity(0.0),
-            Action::WireframeOpacity(1.5),
-            Action::WireframeOpacity(f32::NAN),
+            display::WIREFRAME_WIDTH.set(0.0),
+            display::WIREFRAME_WIDTH.set(2.0 * display::MAX_WIREFRAME_WIDTH_PX),
+            display::WIREFRAME_WIDTH.set(f32::NAN),
+            display::WIREFRAME_OPACITY.set(0.0),
+            display::WIREFRAME_OPACITY.set(1.5),
+            display::WIREFRAME_OPACITY.set(f32::NAN),
         ];
-        for action in refused {
-            send(&mut booted, action);
+        let count = refused.len();
+        for command in refused {
+            booted.session.submit(command);
         }
         booted.session.boundary(Input::default()).expect("boundary");
 
@@ -949,7 +950,7 @@ mod tests {
             .iter()
             .filter(|result| result.outcome.is_err())
             .count();
-        assert_eq!(rejected, refused.len(), "an out of range edit was accepted");
+        assert_eq!(rejected, count, "an out of range edit was accepted");
         assert_eq!(*booted.session.app.display.get(), accepted);
     }
 }

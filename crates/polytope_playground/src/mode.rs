@@ -52,6 +52,11 @@ impl Default for Spin {
     }
 }
 
+pub(crate) const RATE: Number<Playground> =
+    Number::new("rate", consts::MIN_RATE, consts::MAX_RATE, |app| {
+        &mut app.spin.get_mut().rate
+    });
+
 impl Spin {
     pub(crate) fn omega(&self) -> Bivector4 {
         Plane4::ALL

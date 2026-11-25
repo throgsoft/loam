@@ -57,26 +57,15 @@ pub(crate) const SECTION_PERIMETER: Setting<Playground, bool> =
         &mut app.display.get_mut().section_perimeter
     });
 
-pub(crate) fn set(app: &mut Playground, display: Display) -> Result<(), Rejection> {
-    if !display.wireframe_width_px.is_finite()
-        || display.wireframe_width_px <= 0.0
-        || display.wireframe_width_px > MAX_WIREFRAME_WIDTH_PX
-    {
-        return Err(Rejection::Unsupported(
-            "wireframe width must be finite and in (0, 16]",
-        ));
-    }
-    if !display.wireframe_opacity.is_finite()
-        || display.wireframe_opacity <= 0.0
-        || display.wireframe_opacity > 1.0
-    {
-        return Err(Rejection::Unsupported(
-            "wireframe opacity must be finite and in (0, 1]",
-        ));
-    }
-    app.display.set(display);
-    Ok(())
-}
+pub(crate) const WIREFRAME_WIDTH: Number<Playground> =
+    Number::above("wireframe width", 0.0, MAX_WIREFRAME_WIDTH_PX, |app| {
+        &mut app.display.get_mut().wireframe_width_px
+    });
+
+pub(crate) const WIREFRAME_OPACITY: Number<Playground> =
+    Number::above("wireframe alpha", 0.0, 1.0, |app| {
+        &mut app.display.get_mut().wireframe_opacity
+    });
 
 pub(crate) fn rotor_at(app: &Playground, time: f32) -> Rotor4 {
     match *app.mode.get() {
