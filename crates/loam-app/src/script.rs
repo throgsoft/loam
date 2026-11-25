@@ -335,16 +335,37 @@ mod tests {
 
     #[test]
     fn malformed_filename() {
-        for source in ["10", " 10  ", "-1 reset", "1.5 reset", "abc reset"] {
-            assert!(Script::parse(source).is_err(), "{source}");
+        for source in ["10", " 10  "] {
+            assert!(
+                matches!(
+                    Script::parse(source),
+                    Err(ScriptError::NoCommand { line: 1, .. })
+                ),
+                "{source}"
+            );
         }
-        let error = Script::parse("0 reset\n10 spin\n5 hud").unwrap_err();
-        assert!(error.to_string().contains("line 3"));
+        for source in ["-1 reset", "1.5 reset", "abc reset"] {
+            assert!(
+                matches!(
+                    Script::parse(source),
+                    Err(ScriptError::BadFrame { line: 1, .. })
+                ),
+                "{source}"
+            );
+        }
+        assert!(matches!(
+            Script::parse("0 reset\n10 spin\n5 hud"),
+            Err(ScriptError::OutOfOrder {
+                line: 3,
+                frame: 5,
+                previous: 10
+            })
+        ));
 
         let args = Args::from_argv(["--script", "some.script"]);
-        assert!(driver_from_args(&args)
-            .unwrap_err()
-            .to_string()
-            .contains("--script="));
+        assert!(matches!(
+            driver_from_args(&args),
+            Err(HostError::Detached { flag: "script", .. })
+        ));
     }
 }

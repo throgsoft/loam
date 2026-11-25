@@ -639,9 +639,9 @@ mod tests {
 
         let lines = history(&app.console);
         for expected in [
-            "refused: rejected, unsupported: not now".to_string(),
+            "refused: rejected, not now".to_string(),
             format!("nudge: rejected, {entity} is stale"),
-            "strip: rejected, unsupported: filmstrip belongs to Rotate".to_string(),
+            "strip: rejected, filmstrip belongs to Rotate".to_string(),
         ] {
             assert!(
                 lines.contains(&expected),

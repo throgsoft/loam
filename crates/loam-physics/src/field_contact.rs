@@ -320,6 +320,10 @@ mod tests {
             world.bind_field(anchor, field),
             Err(EditError::AnchorBindsOwnField)
         );
+        assert_eq!(
+            world.set_collision_filter(anchor, 1, 1),
+            Err(EditError::FieldAnchorFilter)
+        );
         world.bind_field(ball, field).expect("binding");
 
         for _ in 0..600 {

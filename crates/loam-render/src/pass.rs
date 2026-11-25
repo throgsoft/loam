@@ -1041,7 +1041,14 @@ fn fragment() -> @location(0) vec4<f32> {
             size: (8, 8),
         };
 
-        assert!(schedule.attach(&gpu, frame).is_err());
+        assert!(matches!(
+            schedule.attach(&gpu, frame),
+            Err(PassExecutionError::Pass {
+                pass: "flaky",
+                phase: PassPhase::Attach,
+                fault: PassFault::Unattached,
+            })
+        ));
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

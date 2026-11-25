@@ -1478,6 +1478,52 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "egui")]
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn debug_layer_in_gamma_view_gpu_probe() {
+        const VIEW: TextureFormat = TextureFormat::Rgba8Unorm;
+
+        let instance = Instance::default();
+        let gpu = pollster::block_on(GpuContext::new(instance, FeatureRequest::default(), None))
+            .expect("a wgpu adapter");
+        let texture = gpu.device.create_texture(&TextureDescriptor {
+            label: Some("gamma view probe"),
+            size: Extent3d {
+                width: SIZE.0,
+                height: SIZE.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: FORMAT,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[VIEW],
+        });
+        let app = SessionApp::<Bare>::with_args(
+            HostConfig::new("gamma view", Bindings::new()),
+            Args::default(),
+        )
+        .on_published(|hook| {
+            if let Some(ui) = hook.ui {
+                loam_egui::egui::CentralPanel::default().show(ui, |ui| ui.label("layer"));
+            }
+        });
+        let mut frame = bare(app);
+        frame
+            .attach(&gpu, FORMAT, Some(VIEW), None, SIZE, 1.0)
+            .expect("attached");
+        for _ in 0..3 {
+            run_one(&mut frame, &gpu, &texture);
+        }
+        gpu.device.poll(wgpu::PollType::Poll).expect("polled");
+        assert!(
+            gpu.take_uncaptured_error().is_none(),
+            "the layer drew into the view with a pipeline of another format"
+        );
+    }
+
     loam_runtime::stores! {
         #[derive(Default)]
         pub struct Valued {}

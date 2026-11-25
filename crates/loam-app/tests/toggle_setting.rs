@@ -3,7 +3,8 @@
 use loam_app::args::Args;
 use loam_app::host::{Bindings, HostConfig};
 use loam_app::session::SessionApp;
-use loam_runtime::{ActionEvent, ActionId, Input, Session, Setting, SimConfig};
+use loam_console::LineKind;
+use loam_runtime::{ActionEvent, ActionId, Input, Number, Session, Setting, SimConfig};
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -89,5 +90,71 @@ fn key_verb_and_sender() {
     assert!(
         *session.app.shown.get(),
         "the sender's toggle left the setting off"
+    );
+}
+
+loam_runtime::stores! {
+    #[derive(Default)]
+    pub struct Lines {
+        width: Value<f32>,
+        cap: Value<u8>,
+    }
+}
+
+const WIDTH: Number<Lines> = Number::new("width", 1.0, 4.0, |app| app.width.get_mut());
+const CAP: Setting<Lines, u8> =
+    Setting::choice("cap", &[("butt", 0), ("round", 1), ("square", 2)], |app| {
+        app.cap.get_mut()
+    });
+
+#[test]
+fn refused_number_and_choice() {
+    let mut session = Session::new(Lines::default(), SimConfig::default());
+    let mut app =
+        SessionApp::<Lines>::with_args(HostConfig::new("lines", Bindings::new()), Args::default())
+            .number(WIDTH, "set the line width")
+            .setting(CAP, "pick the line cap");
+    let mut run = |session: &mut Session<Lines>, line: &str| {
+        app.console_mut().ui_mut().clear_history();
+        app.console_mut().execute(line);
+        app.console_mut().dispatch_pending();
+        app.boundary(session, Input::default()).expect("boundary");
+        app.console_mut()
+            .ui()
+            .history()
+            .iter()
+            .filter(|line| line.kind != LineKind::Input)
+            .map(|line| (line.kind, line.text.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    run(&mut session, "width 2");
+    run(&mut session, "cap square");
+    assert_eq!((*session.app.width.get(), *session.app.cap.get()), (2.0, 2));
+    let held = (session.app.width.version(), session.app.cap.version());
+
+    let lines = run(&mut session, "width 9");
+    assert!(
+        matches!(lines.as_slice(), [(_, line)] if line.starts_with("width: rejected, ")),
+        "a width past its range reached the console as {lines:?}"
+    );
+    for line in [
+        "width",
+        "width 1 2",
+        "width wide",
+        "cap flat",
+        "cap butt round",
+    ] {
+        let lines = run(&mut session, line);
+        assert!(
+            matches!(lines.as_slice(), [(LineKind::Error, _)]),
+            "`{line}` should end on one error line and no result: {lines:?}"
+        );
+    }
+    assert_eq!((*session.app.width.get(), *session.app.cap.get()), (2.0, 2));
+    assert_eq!(
+        (session.app.width.version(), session.app.cap.version()),
+        held,
+        "a refused line bumped a version"
     );
 }

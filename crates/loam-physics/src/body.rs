@@ -548,73 +548,109 @@ mod tests {
 
     #[test]
     fn invalid_definition() {
-        assert!(BodyDef::new(
-            Vec3::ZERO,
-            Vec3::ZERO,
-            Shape::HalfSpace {
-                normal: Vec3::Y,
-                offset: 0.0
-            },
-            1.0,
-            1.0,
-            &EuclideanR3
-        )
-        .is_err());
-        assert!(BodyDef::new(
+        let sphere = |position, velocity, mass, inertia| {
+            BodyDef::new(
+                position,
+                velocity,
+                Shape::sphere_at_origin(0.5),
+                mass,
+                inertia,
+                &EuclideanR3,
+            )
+            .err()
+        };
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for (position, velocity, mass, inertia, cause) in [
+                (Vec3::ZERO, Vec3::ZERO, invalid, 1.0, EditError::InvalidMass),
+                (
+                    Vec3::splat(invalid),
+                    Vec3::ZERO,
+                    1.0,
+                    1.0,
+                    EditError::NotFinite,
+                ),
+                (
+                    Vec3::ZERO,
+                    Vec3::splat(invalid),
+                    1.0,
+                    1.0,
+                    EditError::NotFinite,
+                ),
+                (
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    1.0,
+                    invalid,
+                    EditError::InvalidInertia,
+                ),
+            ] {
+                assert_eq!(sphere(position, velocity, mass, inertia), Some(cause));
+            }
+        }
+
+        let dynamic_halfspace4 = BodyDef::new(
             Vec4::ZERO,
             Vec4::ZERO,
             Shape::HalfSpace4D {
                 normal: Vec4::Y,
-                offset: 0.0
+                offset: 0.0,
             },
             1.0,
             1.0,
-            &EuclideanR4
-        )
-        .is_err());
-
-        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            for (position, velocity, inertia) in [
-                (Vec3::splat(invalid), Vec3::ZERO, 1.0),
-                (Vec3::ZERO, Vec3::splat(invalid), 1.0),
-                (Vec3::ZERO, Vec3::ZERO, invalid),
-            ] {
-                assert!(BodyDef::new(
-                    position,
-                    velocity,
-                    Shape::sphere_at_origin(0.5),
-                    1.0,
-                    inertia,
-                    &EuclideanR3
-                )
-                .is_err());
-            }
-        }
+            &EuclideanR4,
+        );
+        assert_eq!(dynamic_halfspace4.err(), Some(EditError::DynamicHalfSpace));
+        assert_eq!(
+            crate::euclidean_r4::halfspace4_body_r4(Vec4::ZERO, 0.0).err(),
+            Some(EditError::MalformedCollider),
+            "a half-space without a normal"
+        );
+        assert_eq!(
+            crate::euclidean_r3::halfspace_body_r3(Vec3::ZERO, 0.0).err(),
+            Some(EditError::MalformedCollider),
+            "a half-space without a normal"
+        );
 
         let mut world = World::new(EuclideanR3);
         let id = world.push_body(def_r3(Vec3::ZERO, 2.0, 1.0));
-        for collider in [
-            Shape::ConvexPolytope3D { vertices: vec![] },
-            Shape::Box3 {
-                half_extents: Vec3::ONE,
-            },
-            Shape::sphere_at_origin(f32::NAN),
-            Shape::sphere_at(Vec3::X, 1.0),
-            Shape::HalfSpace {
-                normal: Vec3::Y,
-                offset: 0.0,
-            },
+        for (collider, cause) in [
+            (
+                Shape::ConvexPolytope3D { vertices: vec![] },
+                EditError::MalformedCollider,
+            ),
+            (
+                Shape::Box3 {
+                    half_extents: Vec3::ONE,
+                },
+                EditError::UnsupportedCollider,
+            ),
+            (
+                Shape::sphere_at_origin(f32::NAN),
+                EditError::MalformedCollider,
+            ),
+            (Shape::sphere_at(Vec3::X, 1.0), EditError::OffCentreSphere),
+            (
+                Shape::HalfSpace {
+                    normal: Vec3::Y,
+                    offset: 0.0,
+                },
+                EditError::DynamicHalfSpace,
+            ),
         ] {
-            assert!(BodyDef::new(
+            let built = BodyDef::new(
                 Vec3::ZERO,
                 Vec3::ZERO,
                 collider.clone(),
                 2.0,
                 1.0,
-                &EuclideanR3
-            )
-            .is_err());
-            assert!(world.set_collider(id, collider, 1.0).is_err());
+                &EuclideanR3,
+            );
+            assert_eq!(built.err(), Some(cause));
+            assert_eq!(
+                world.set_collider(id, collider, 1.0),
+                Err(cause),
+                "an edit and a definition disagree on the cause"
+            );
             let kept = world.collider(&world.bodies[id]);
             assert!(matches!(kept, Some(Shape::Sphere { radius, .. }) if *radius == 0.5));
         }

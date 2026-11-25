@@ -775,4 +775,30 @@ mod tests {
             "the reset lost the backdrop"
         );
     }
+
+    #[test]
+    fn release_after_reset() {
+        let mut session = build().expect("hero builds");
+        let past_release = (ASSEMBLE * (TICK_HZ * SUBSTEPS) as f32) as u32 + 2;
+        for run in ["the first run", "the run after a reset"] {
+            for _ in 0..past_release {
+                session.tick(&Sequential).expect("tick");
+            }
+            let r4 = session
+                .domains()
+                .named::<EuclideanR4>("r4")
+                .expect("hero has one r4 domain");
+            let domain = session.domains().read(r4).expect("the r4 domain");
+            let physics = domain.physics().expect("the r4 domain has physics");
+            let letters = session.app.letters.len();
+            let bodies = session
+                .app
+                .letters
+                .iter()
+                .filter(|(entity, _)| physics.body(*entity).is_some())
+                .count();
+            assert_eq!(bodies, letters, "{run} released {bodies} of the letters");
+            session.reset().expect("reset");
+        }
+    }
 }

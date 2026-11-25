@@ -8,12 +8,14 @@ use loam_physics::euclidean_r4::{
     halfspace4_body_r4, register_default_narrowphase, sphere_body_r4,
 };
 use loam_physics::world::ISLANDS_PER_SOLVE_WORKER;
-use loam_physics::BodyDef;
+use loam_physics::{BodyDef, EditError};
 use loam_runtime::{
-    ActionEvent, ActionId, Change, ChartCommand, Command, Ctx, Cursor, DomainBuilder, DomainError,
-    DomainHandle, DomainSpace, Entity, GrabConfig, Input, LogCapacity, Phase, PhysicsConfig, Pose,
-    Publication, Rejection, RestConfig, Session, SimConfig, SpawnBundle, Store,
+    ActionEvent, ActionId, Backdrop, Change, ChartCommand, Command, Ctx, Cursor, DomainBuilder,
+    DomainError, DomainHandle, DomainSpace, Entity, GrabConfig, Ground, Input, LogCapacity, Phase,
+    PhysicsConfig, PhysicsConfigError, Pose, PreparedGeometry, Publication, Rejection, RestConfig,
+    Session, SimConfig, Sky, SpawnBundle, Store,
 };
+use loam_shape::polytope::Polytope4;
 use loam_time::par::{ChunkSource, Executor, Sequential};
 
 loam_runtime::stores! {
@@ -557,5 +559,175 @@ fn many_islands() {
     assert!(
         executor.drains.load(Ordering::Relaxed) > 0,
         "the world solved its islands without the executor the tick was given"
+    );
+}
+
+fn backdrop(ground_y: f32) -> Backdrop {
+    Backdrop {
+        sky: Sky {
+            below: [0.3, 0.1, 0.1],
+            above: [0.1, 0.1, 0.4],
+        },
+        ground: Ground {
+            y: ground_y,
+            dark: [0.1; 3],
+            light: [0.6; 3],
+            fog_per_unit: 0.01,
+            fog_start: 2.0,
+            visible: true,
+        },
+    }
+}
+
+#[test]
+fn prepared_polytope_on_the_floor() {
+    const SCALE: f32 = 0.8;
+    const GROUND: f32 = -1.0;
+    let mut session = Session::new(Probe::default(), SimConfig::default());
+    let r4 = session.register_domain(
+        DomainBuilder::new("r4", EuclideanR4)
+            .tracked(LogCapacity::default())
+            .physics(PhysicsConfig::default().gravity(Vec4::NEG_Y * GRAVITY))
+            .unwrap(),
+    );
+    let tesseract = session.prepare(PreparedGeometry::Polytope4 {
+        polytope: Polytope4::Tesseract,
+        scale: SCALE,
+    });
+    let dusk = backdrop(GROUND);
+    let dropped = session
+        .try_dispatch(|d| {
+            d.floor(r4, dusk)?;
+            let body = d.body_of(tesseract, MASS)?;
+            let above = Pose::at(Vec4::new(0.0, GROUND + 1.0, 0.0, 0.0));
+            d.spawn(SpawnBundle::new().at(r4, above).body(body))
+        })
+        .unwrap();
+    assert_eq!(session.views().root().backdrop, Some(dusk));
+
+    ticks(&mut session, 240);
+    // A tesseract of circumradius SCALE has a half extent of SCALE / 2.
+    let rest = GROUND + SCALE / 2.0;
+    let height = pose_of(&session, r4, dropped).y;
+    assert!(
+        (height - rest).abs() < 0.02,
+        "the body of the prepared tesseract came to rest at {height}, not {rest}"
+    );
+}
+
+#[test]
+fn named_refusals() {
+    let (mut session, r4) = session();
+    let plain = session.register_domain(DomainBuilder::new("plain", EuclideanR4).untracked());
+    let lines = session.prepare(PreparedGeometry::Lines4 {
+        segments: Vec::new(),
+    });
+    let tesseract = session.prepare(PreparedGeometry::Polytope4 {
+        polytope: Polytope4::Tesseract,
+        scale: 1.0,
+    });
+
+    session.dispatch(|d| {
+        assert_eq!(
+            d.body_of(lines, MASS).err(),
+            Some(Rejection::NotPolytope(lines))
+        );
+        assert_eq!(
+            d.body_of(tesseract, f32::NAN).err(),
+            Some(Rejection::Domain(DomainError::Physics(
+                EditError::InvalidMass
+            ))),
+            "the builder's cause did not reach the caller"
+        );
+        assert!(
+            d.floor(plain, backdrop(0.0)).is_err(),
+            "a domain without physics took a floor"
+        );
+        assert_eq!(
+            d.spawn(SpawnBundle::new().body(still())).err(),
+            Some(Rejection::BodyUnplaced)
+        );
+        assert_eq!(
+            d.apply(Command::Reset).err(),
+            Some(Rejection::BoundaryCommand)
+        );
+    });
+    assert_eq!(
+        session.views().root().backdrop,
+        None,
+        "a refused floor set the backdrop"
+    );
+    assert!(session.domains().read(plain).unwrap().poses().is_empty());
+    assert!(session.domains().read(r4).unwrap().poses().is_empty());
+}
+
+#[test]
+fn refused_config() {
+    let config = PhysicsConfig::<EuclideanR4>::default;
+    let rest = RestConfig {
+        travel: -0.1,
+        window: 0.5,
+        speed: 0.1,
+        angular_speed: 0.1,
+    };
+    for (config, cause) in [
+        (
+            config().gravity(Vec4::new(0.0, f32::NAN, 0.0, 0.0)),
+            PhysicsConfigError::Gravity,
+        ),
+        (
+            config().grab(GrabConfig::new(-1.0, 10.0, 100.0)),
+            PhysicsConfigError::Grab,
+        ),
+        (config().rest(rest), PhysicsConfigError::Rest),
+        (config().angular_damping(-1.0), PhysicsConfigError::Rest),
+        (
+            config().adaptive_substeps(1, 4, 0.0, |_| 0.0),
+            PhysicsConfigError::StepTravel,
+        ),
+    ] {
+        let refused = DomainBuilder::new("r4", EuclideanR4)
+            .untracked()
+            .physics(config)
+            .err();
+        assert_eq!(refused, Some(DomainError::PhysicsConfig(cause)));
+    }
+}
+
+#[test]
+fn refused_edit_cause() {
+    let (mut session, r4) = session();
+    let entity = ball(&mut session, r4, Vec4::new(0.0, 10.0, 0.0, 0.0));
+    let bare = session
+        .dispatch(|d| d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::X))))
+        .unwrap();
+    let nowhere = Vec4::new(f32::NAN, 0.0, 0.0, 0.0);
+    let not_finite = DomainError::Physics(EditError::NotFinite);
+
+    let refused = session.try_dispatch(|d| {
+        d.domains
+            .physics(r4)?
+            .set_velocity(entity, nowhere, Bivector4::ZERO)?;
+        Ok(())
+    });
+    assert_eq!(refused, Err(Rejection::Domain(not_finite)));
+    assert_eq!(
+        session
+            .domains_mut()
+            .physics(r4)
+            .unwrap()
+            .set_restitution(bare, 0.5),
+        Err(DomainError::NoBody(bare))
+    );
+
+    session.system(Phase::Dispatch, "bad edit", move |ctx: Ctx<'_, Probe>| {
+        ctx.domains
+            .physics(r4)?
+            .set_velocity(entity, nowhere, Bivector4::ZERO)
+    });
+    let fault = session.boundary(Input::default()).unwrap_err();
+    assert_eq!(
+        fault.cause, not_finite,
+        "a system's refused edit differs from a command's"
     );
 }

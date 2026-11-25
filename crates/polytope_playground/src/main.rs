@@ -948,4 +948,63 @@ mod tests {
         assert_eq!(rejected, count, "an out of range edit was accepted");
         assert_eq!(*booted.session.app.display.get(), accepted);
     }
+
+    fn console() -> SessionApp<Playground> {
+        console::install(SessionApp::with_args(
+            HostConfig::new("verbs", bindings()),
+            Args::default(),
+        ))
+    }
+
+    fn run(booted: &mut Boot, app: &mut SessionApp<Playground>, line: &str) {
+        app.console_mut().execute(line);
+        app.console_mut().dispatch_pending();
+        app.boundary(&mut booted.session, Input::default())
+            .expect("boundary");
+    }
+
+    #[test]
+    fn bare_surface() {
+        let mut booted = one_slot();
+        let mut app = console();
+        for held in ["raster", "sdf", "off"] {
+            run(&mut booted, &mut app, &format!("surface {held}"));
+            run(&mut booted, &mut app, "surface");
+            assert_eq!(
+                booted.session.app.display.get().surface,
+                Surface::Off,
+                "a bare surface after {held}"
+            );
+        }
+
+        run(&mut booted, &mut app, "surface sdf");
+        assert_eq!(booted.session.app.display.get().surface, Surface::Sdf);
+        let version = booted.session.app.display.version();
+        run(&mut booted, &mut app, "surface bogus");
+        assert_eq!(booted.session.app.display.get().surface, Surface::Sdf);
+        assert_eq!(
+            booted.session.app.display.version(),
+            version,
+            "an unknown surface word wrote the display"
+        );
+    }
+
+    #[test]
+    fn wireframe_color_words() {
+        let mut booted = one_slot();
+        let mut app = console();
+        let mut after = |line: &str| {
+            run(&mut booted, &mut app, line);
+            *booted.session.app.color.get()
+        };
+        assert_eq!(after("wireframe color vertex"), ColorMode::VertexGradient);
+        assert_eq!(after("wireframe color"), ColorMode::UniqueEdge);
+        assert_eq!(after("wireframe color"), ColorMode::WDepth);
+        assert_eq!(after("wireframe color"), ColorMode::VertexGradient);
+        assert_eq!(after("wireframe color unique-edge"), ColorMode::UniqueEdge);
+        assert_eq!(
+            after("wireframe color vertex-gradient"),
+            ColorMode::VertexGradient
+        );
+    }
 }

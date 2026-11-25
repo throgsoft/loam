@@ -145,3 +145,35 @@ fn still_after_record_count_change() {
     );
     assert_eq!(slid_again.2, lifted.2);
 }
+
+#[test]
+fn section_without_whole_edges() {
+    let mut session = Session::new(Bare::default(), SimConfig::default());
+    let r4 = session
+        .register_domain(DomainBuilder::new("r4", EuclideanR4).tracked(LogCapacity::default()));
+    let tesseract = session.prepare(PreparedGeometry::Polytope4 {
+        polytope: Polytope4::Tesseract,
+        scale: 0.5,
+    });
+    let edge = session.add_material(Material::lines([1.0; 4], 1.0));
+    session
+        .try_dispatch(|d| {
+            d.spawn(
+                SpawnBundle::new()
+                    .at(r4, Pose::at(Vec4::new(0.0, 0.0, -4.0, 0.0)))
+                    .instance(Instance::new(tesseract, edge).sectioned(edge)),
+            )?;
+            d.add_section(r4, Pose::at(Vec4::ZERO), Section4 { w: 0.0 })
+        })
+        .unwrap();
+
+    let mut publication = Publication::default();
+    session.publish(&mut publication, 1.0).unwrap();
+    let records = &publication.views[0].records;
+    assert_eq!(records.triangles().len(), 24);
+    assert_eq!(
+        records.segments().len(),
+        24,
+        "a section view drew the 32 whole edges beside the cut's 24 perimeter segments"
+    );
+}
