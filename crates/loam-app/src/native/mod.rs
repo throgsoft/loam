@@ -237,6 +237,7 @@ impl<A: Stores> ApplicationHandler for Host<A> {
         let attached = self.frame.attach(
             &device.context,
             device.target_format(),
+            surface.view_format(),
             Some(window.clone()),
             (size.width, size.height),
             window.scale_factor() as f32,

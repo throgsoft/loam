@@ -82,6 +82,10 @@ impl SurfaceHost {
         self.config.format
     }
 
+    pub(crate) fn view_format(&self) -> Option<TextureFormat> {
+        self.config.view_formats.first().copied()
+    }
+
     pub(crate) fn reconfigure(&self, device: &Device) {
         self.surface.configure(device, &self.config);
     }

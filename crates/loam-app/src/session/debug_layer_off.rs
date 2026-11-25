@@ -4,7 +4,7 @@ use std::sync::Arc;
 use loam_render::device::GpuContext;
 use loam_render::pass::FramePass;
 use loam_runtime::Stores;
-use wgpu::{CommandBuffer, TextureFormat};
+use wgpu::{CommandBuffer, Texture, TextureFormat};
 #[cfg(not(target_arch = "wasm32"))]
 use winit::window::Window;
 
@@ -18,6 +18,7 @@ impl LayerSlot {
         &mut self,
         _gpu: &GpuContext,
         _format: TextureFormat,
+        _view_format: Option<TextureFormat>,
         #[cfg(not(target_arch = "wasm32"))] _window: Option<Arc<Window>>,
         _size: (u32, u32),
         _scale: f32,
@@ -26,6 +27,8 @@ impl LayerSlot {
     }
 
     pub(crate) fn resize(&self, _width: u32, _height: u32, _scale: f32) {}
+
+    pub(crate) fn aim(&self, _texture: &Texture) {}
 
     pub(crate) fn begin(&mut self) {}
 

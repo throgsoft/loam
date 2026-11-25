@@ -260,6 +260,7 @@ impl<A: Stores> Frame<A> {
         &mut self,
         gpu: &GpuContext,
         format: TextureFormat,
+        view_format: Option<TextureFormat>,
         #[cfg(not(target_arch = "wasm32"))] window: Option<Arc<Window>>,
         size: (u32, u32),
         scale: f32,
@@ -276,6 +277,7 @@ impl<A: Stores> Frame<A> {
             if let Some(pass) = self.state.layer.attach(
                 gpu,
                 format,
+                view_format,
                 #[cfg(not(target_arch = "wasm32"))]
                 window,
                 size,
@@ -628,6 +630,7 @@ impl<A: Stores> LoopState<A> {
             self.capture
                 .record(&mut shot, true, &gpu.device, &mut encoder, target);
         }
+        self.layer.aim(target.texture);
         presenter
             .record_overlays(&mut encoder, target.view, target.size)
             .map_err(failed)?;
@@ -830,7 +833,7 @@ mod tests {
         let mut frame = Frame::new(session, app, Box::new(Sequential))
             .expect("the frame accepted the simulation config");
         frame
-            .attach(gpu, FORMAT, None, SIZE, 1.0)
+            .attach(gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
         (frame, recorded)
     }
@@ -918,7 +921,7 @@ mod tests {
         }));
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
         run_one(&mut frame, &gpu, &texture);
         assert_eq!(recorded.load(Ordering::Relaxed), 1);
@@ -952,7 +955,7 @@ mod tests {
         });
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
 
         run_one(&mut frame, &gpu, &texture);
@@ -1009,7 +1012,7 @@ mod tests {
         let mut frame = Frame::new(session, host("alpha"), Box::new(Sequential))
             .expect("the frame accepted the config");
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
         let start = Instant::now();
         let dt = Duration::from_nanos(1_000_000_000 / u64::from(SimConfig::default().fixed_hz));
@@ -1042,7 +1045,7 @@ mod tests {
         let mut frame = Frame::new(session, app, Box::new(Sequential))
             .expect("the frame accepted the simulation config");
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
         run_at(&mut frame, &gpu, &texture, Instant::now());
 
@@ -1120,7 +1123,7 @@ mod tests {
         let mut frame = Frame::new(session, app, Box::new(Sequential))
             .expect("the frame accepted the simulation config");
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
         let start = Instant::now();
 
@@ -1211,7 +1214,7 @@ mod tests {
         let mut frame = Frame::new(session, app, Box::new(Sequential))
             .expect("the frame accepted the simulation config");
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
         let start = Instant::now();
         let mut millis = 0;
@@ -1298,7 +1301,7 @@ mod tests {
         });
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
 
         let mut after_each = Vec::new();
@@ -1361,7 +1364,7 @@ mod tests {
         let mut frame = Frame::new(session, app, Box::new(Sequential))
             .expect("the frame accepted the simulation config");
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
 
         for _ in 0..2 {
@@ -1419,7 +1422,7 @@ mod tests {
         });
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
 
         let mut after_each = Vec::new();
@@ -1467,7 +1470,7 @@ mod tests {
         });
         let mut frame = bare(app);
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
         for _ in 0..4 {
             run_one(&mut frame, &gpu, &texture);
@@ -1511,7 +1514,7 @@ mod tests {
         let mut frame = Frame::new(session, app, Box::new(Sequential))
             .expect("the frame accepted the simulation config");
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
 
         run_one(&mut frame, &gpu, &texture);
@@ -1545,7 +1548,7 @@ mod tests {
         let mut frame = Frame::new(session, app, Box::new(Sequential))
             .expect("the frame accepted the simulation config");
         frame
-            .attach(&gpu, FORMAT, None, SIZE, 1.0)
+            .attach(&gpu, FORMAT, None, None, SIZE, 1.0)
             .expect("attached");
         for _ in 0..3 {
             run_one(&mut frame, &gpu, &texture);

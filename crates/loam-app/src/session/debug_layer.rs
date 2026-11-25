@@ -8,7 +8,10 @@ use loam_egui::egui;
 use loam_render::device::GpuContext;
 use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
 use loam_runtime::Stores;
-use wgpu::{CommandBuffer, CommandEncoder, Device, Queue, TextureFormat, TextureView};
+use wgpu::{
+    CommandBuffer, CommandEncoder, Device, Queue, Texture, TextureFormat, TextureView,
+    TextureViewDescriptor,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event::WindowEvent;
 #[cfg(not(target_arch = "wasm32"))]
@@ -136,6 +139,9 @@ struct ManagedTexture {
 struct Layer {
     ctx: egui::Context,
     renderer: Renderer,
+    // egui's feathering assumes gamma-space blending, so the layer draws through this non-sRGB view.
+    view_format: Option<TextureFormat>,
+    view: Option<TextureView>,
     device: Device,
     queue: Queue,
     feed: Feed,
@@ -162,6 +168,7 @@ impl Layer {
     fn new(
         gpu: &GpuContext,
         format: TextureFormat,
+        view_format: Option<TextureFormat>,
         ctx: egui::Context,
         feed: Feed,
         size: (u32, u32),
@@ -169,7 +176,9 @@ impl Layer {
     ) -> Self {
         Self {
             ctx,
-            renderer: renderer(&gpu.device, format),
+            renderer: renderer(&gpu.device, view_format.unwrap_or(format)),
+            view_format,
+            view: None,
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
             feed,
@@ -245,7 +254,21 @@ impl Layer {
         self.screen.pixels_per_point = output.pixels_per_point;
     }
 
+    fn aim(&mut self, texture: &Texture) {
+        self.view = self.view_format.map(|format| {
+            texture.create_view(&TextureViewDescriptor {
+                format: Some(format),
+                ..Default::default()
+            })
+        });
+    }
+
     fn paint(&mut self, encoder: &mut CommandEncoder, target: &TextureView) -> anyhow::Result<()> {
+        let view = self.view.take();
+        if self.view_format.is_some() && view.is_none() {
+            anyhow::bail!("the debug layer was not aimed at this frame's texture");
+        }
+        let target = view.as_ref().unwrap_or(target);
         for (id, delta) in &self.textures.set {
             retain_managed_texture(&mut self.managed_textures, *id, delta)?;
             self.renderer
@@ -342,22 +365,25 @@ impl DebugLayer {
     pub fn on_window(
         gpu: &GpuContext,
         format: TextureFormat,
+        view_format: Option<TextureFormat>,
         window: Arc<Window>,
         size: (u32, u32),
     ) -> Self {
         let ctx = egui::Context::default();
         let feed = Feed::Winit(Box::new(WinitInput::new(&ctx, window.as_ref())));
         let scale = window.scale_factor() as f32;
-        let layer = Layer::new(gpu, format, ctx, feed, size, scale);
+        let layer = Layer::new(gpu, format, view_format, ctx, feed, size, scale);
         Self {
             shared: Rc::new(RefCell::new(layer)),
             window: Some(window),
         }
     }
 
+    /// `view_format` is a non-sRGB format each frame's texture can be viewed as, or `None` to draw into the frame's own view.
     pub fn offscreen(
         gpu: &GpuContext,
         format: TextureFormat,
+        view_format: Option<TextureFormat>,
         size: (u32, u32),
         scale: f32,
     ) -> Self {
@@ -370,7 +396,15 @@ impl DebugLayer {
             #[cfg(any(target_arch = "wasm32", test))]
             reset: false,
         });
-        let layer = Layer::new(gpu, format, egui::Context::default(), feed, size, scale);
+        let layer = Layer::new(
+            gpu,
+            format,
+            view_format,
+            egui::Context::default(),
+            feed,
+            size,
+            scale,
+        );
         Self {
             shared: Rc::new(RefCell::new(layer)),
             #[cfg(not(target_arch = "wasm32"))]
@@ -382,6 +416,10 @@ impl DebugLayer {
         Box::new(LayerPass {
             shared: self.shared.clone(),
         })
+    }
+
+    fn aim(&self, texture: &Texture) {
+        self.shared.borrow_mut().aim(texture);
     }
 
     pub fn context(&self) -> egui::Context {
@@ -490,6 +528,7 @@ impl LayerSlot {
         &mut self,
         gpu: &GpuContext,
         format: TextureFormat,
+        view_format: Option<TextureFormat>,
         #[cfg(not(target_arch = "wasm32"))] window: Option<Arc<Window>>,
         size: (u32, u32),
         scale: f32,
@@ -498,11 +537,11 @@ impl LayerSlot {
             Some(layer) => layer,
             #[cfg(not(target_arch = "wasm32"))]
             None => match window {
-                Some(window) => DebugLayer::on_window(gpu, format, window, size),
-                None => DebugLayer::offscreen(gpu, format, size, scale),
+                Some(window) => DebugLayer::on_window(gpu, format, view_format, window, size),
+                None => DebugLayer::offscreen(gpu, format, view_format, size, scale),
             },
             #[cfg(target_arch = "wasm32")]
-            None => DebugLayer::offscreen(gpu, format, size, scale),
+            None => DebugLayer::offscreen(gpu, format, view_format, size, scale),
         };
         let pass = layer.pass();
         self.layer = Some(layer);
@@ -512,6 +551,12 @@ impl LayerSlot {
     pub(crate) fn resize(&self, width: u32, height: u32, scale: f32) {
         if let Some(layer) = self.layer.as_ref() {
             layer.resize(width, height, scale);
+        }
+    }
+
+    pub(crate) fn aim(&self, texture: &Texture) {
+        if let Some(layer) = self.layer.as_ref() {
+            layer.aim(texture);
         }
     }
 
@@ -582,7 +627,7 @@ impl FramePass for LayerPass {
         let mut layer = self.shared.borrow_mut();
         layer.device = gpu.device.clone();
         layer.queue = gpu.queue.clone();
-        layer.renderer = renderer(&gpu.device, frame.color);
+        layer.renderer = renderer(&gpu.device, layer.view_format.unwrap_or(frame.color));
         let Layer {
             renderer,
             managed_textures,
@@ -743,7 +788,8 @@ mod tests {
         }
 
         let gpu = noop_gpu();
-        let layer = DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, (256, 192), 1.0);
+        let layer =
+            DebugLayer::offscreen(&gpu, TextureFormat::Rgba8UnormSrgb, None, (256, 192), 1.0);
         let mut touches = TouchCapture::default();
         let initial = observe(&layer);
 
