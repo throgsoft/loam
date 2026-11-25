@@ -149,6 +149,12 @@ pub(crate) const SHOW_GIMBAL: Setting<Playground, bool> =
     Setting::flag("handles", |app| app.gimbal.get_mut());
 pub(crate) const TOYBOX_DEBUG: Setting<Playground, bool> =
     Setting::flag("toybox debug", |app| app.toybox_debug.get_mut());
+pub(crate) const SHOW_HUD: Setting<Playground, bool> =
+    Setting::flag("hud", |app| app.hud.get_mut());
+pub(crate) const SHOW_LABELS: Setting<Playground, bool> =
+    Setting::flag("labels", |app| app.labels.get_mut());
+pub(crate) const ROPE_CARRY: Setting<Playground, bool> =
+    Setting::flag("rope carry", |app| app.rope.get_mut());
 
 fn rest_of(index: usize, len: usize) -> Vec4 {
     let center = (len.max(1) - 1) as f32 * 0.5;
@@ -525,19 +531,10 @@ fn main() -> Result<(), HostError> {
 fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground>), HostError> {
     let row = catalog::parse_row(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
     let (mut session, _) = boot(&row)?;
-    let surface = match args.flag_value("surface") {
-        None => None,
-        Some("raster") => Some(Surface::Raster),
-        Some("sdf") => Some(Surface::Sdf),
-        Some("off") => Some(Surface::Off),
-        Some(other) => {
-            return Err(HostError::Host(format!(
-                "--surface {other:?} is not raster, sdf or off"
-            )))
-        }
-    };
-    if let Some(surface) = surface {
-        session.app.display.get_mut().surface = surface;
+    if let Some(token) = args.flag_value("surface") {
+        session.app.display.get_mut().surface = display::SURFACE.parse(token).ok_or_else(|| {
+            HostError::Host(format!("--surface {token:?} is not raster, sdf or off"))
+        })?;
     }
     let frame = Frame::new();
     let config = HostConfig::new("polytope playground", bindings());

@@ -1,7 +1,6 @@
 use loam::prelude::*;
 
-use crate::color::ColorMode;
-use crate::display::{self, Display, Surface};
+use crate::display::{self, Display};
 use crate::mode::{self, slice_reach, Mode};
 use crate::projection::Family;
 use crate::strip::Strip;
@@ -17,8 +16,6 @@ pub(crate) enum Action {
     Running(Option<bool>),
     Projection(Family),
     NextProjection,
-    Color(ColorMode),
-    NextColor,
     Shape(usize, usize),
     AddShape(usize),
     RemoveShape(usize),
@@ -27,11 +24,8 @@ pub(crate) enum Action {
     Rate(f32),
     Display(Display),
     View { single: bool },
-    Surface(Surface),
-    Wireframe(Option<bool>),
     WireframeWidth(f32),
     WireframeOpacity(f32),
-    SectionPerimeter(Option<bool>),
     Reset,
     Time(f32),
     PlaneAngle(usize, f32),
@@ -53,8 +47,6 @@ impl AppCommand<Playground> for Action {
             Self::Running(_) => "spin",
             Self::Projection(family) => family.name(),
             Self::NextProjection => "wireframe perspective",
-            Self::Color(mode) => mode.name(),
-            Self::NextColor => "wireframe color",
             Self::Shape(_, card) => catalog::SHAPE_CATALOG
                 .get(*card)
                 .map_or("shape", |entry| entry.label),
@@ -65,11 +57,8 @@ impl AppCommand<Playground> for Action {
             Self::Rate(_) => "rate",
             Self::Display(_) => "display",
             Self::View { .. } => "view",
-            Self::Surface(_) => "surface",
-            Self::Wireframe(_) => "wireframe",
             Self::WireframeWidth(_) => "wireframe width",
             Self::WireframeOpacity(_) => "wireframe alpha",
-            Self::SectionPerimeter(_) => "section perimeter",
             Self::Reset => "reset",
             Self::Time(_) => "time",
             Self::PlaneAngle(_, _) => "plane angle",
@@ -135,18 +124,6 @@ impl AppCommand<Playground> for Action {
                     dispatch.app.display.get_mut().wireframe = true;
                 }
             }
-            Action::Color(mode) => dispatch.app.color.set(mode),
-            Action::NextColor => {
-                let held = *dispatch.app.color;
-                let at = ColorMode::ALL
-                    .iter()
-                    .position(|mode| *mode == held)
-                    .unwrap_or(0);
-                dispatch
-                    .app
-                    .color
-                    .set(ColorMode::ALL[(at + 1) % ColorMode::ALL.len()]);
-            }
             Action::Strip(strip) => mode::set_strip(dispatch.app, strip)?,
             Action::Rate(rate) => {
                 if !rate.is_finite() {
@@ -162,12 +139,6 @@ impl AppCommand<Playground> for Action {
                     mode::set_strip(dispatch.app, Strip { on: false, ..strip })?;
                 }
             }
-            Action::Surface(surface) => {
-                edit_display(dispatch.app, |display| display.surface = surface)?;
-            }
-            Action::Wireframe(setting) => edit_display(dispatch.app, |display| {
-                display.wireframe = setting.unwrap_or(!display.wireframe);
-            })?,
             Action::WireframeWidth(width_px) => {
                 edit_display(dispatch.app, |display| {
                     display.wireframe_width_px = width_px;
@@ -176,9 +147,6 @@ impl AppCommand<Playground> for Action {
             Action::WireframeOpacity(opacity) => {
                 edit_display(dispatch.app, |display| display.wireframe_opacity = opacity)?;
             }
-            Action::SectionPerimeter(setting) => edit_display(dispatch.app, |display| {
-                display.section_perimeter = setting.unwrap_or(!display.section_perimeter);
-            })?,
             Action::Reset => mode::reset(dispatch, domain, &cards)?,
             Action::Time(time) => {
                 display::seek(dispatch.app, dispatch.domains, domain, time)

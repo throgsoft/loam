@@ -2,11 +2,14 @@ use anyhow::{anyhow, bail, Result};
 use loam::prelude::*;
 
 use crate::action::Action;
-use crate::color::ColorMode;
-use crate::display::Surface;
+use crate::color::{ColorMode, WIREFRAME_COLOR};
+use crate::display::{Surface, SECTION_PERIMETER, SURFACE, WIREFRAME};
 use crate::mode::Mode;
 use crate::projection::Family;
-use crate::{Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GIMBAL, SHOW_GUIDES, TOYBOX_DEBUG};
+use crate::{
+    Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GIMBAL, SHOW_GUIDES, SHOW_HUD, SHOW_LABELS,
+    TOYBOX_DEBUG,
+};
 
 const MAX_SEEK_SECONDS: f32 = 1.0e6;
 
@@ -29,7 +32,7 @@ fn color(token: &str) -> Option<ColorMode> {
     match token {
         "vertex-gradient" => Some(ColorMode::VertexGradient),
         "unique-edge" => Some(ColorMode::UniqueEdge),
-        _ => ColorMode::from_token(token),
+        _ => WIREFRAME_COLOR.parse(token),
     }
 }
 
@@ -82,10 +85,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         },
     );
 
-    app = app.setting(
-        Setting::flag("hud", |app| app.hud.get_mut()),
-        "toggle the state readout; optional on | off",
-    );
+    app = app.setting(SHOW_HUD, "toggle the state readout; optional on | off");
 
     app = app.command(
         "seek",
@@ -170,10 +170,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         "toggle the rotation formula; optional on | off",
     );
 
-    app = app.setting(
-        Setting::flag("labels", |app| app.labels.get_mut()),
-        "toggle the shape labels; optional on | off",
-    );
+    app = app.setting(SHOW_LABELS, "toggle the shape labels; optional on | off");
 
     app = app.setting(
         SHOW_GUIDES,
@@ -197,15 +194,12 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
     app = app.command(
         "surface",
         "set the surface mode: raster | sdf | off; bare selects off",
-        |args, submit, _out| {
-            let surface = match args {
-                [] | ["off"] => Surface::Off,
-                ["raster"] => Surface::Raster,
-                ["sdf"] => Surface::Sdf,
-                _ => bail!("usage: surface [raster|sdf|off]"),
-            };
-            submit.app(Action::Surface(surface));
-            Ok(())
+        |args, submit, _out| match args {
+            [] => {
+                submit.submit(SURFACE.set(Surface::Off));
+                Ok(())
+            }
+            rest => submit.setting(SURFACE, rest),
         },
     );
 
@@ -214,9 +208,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         "wireframe [on|off|width [px]|alpha [value]|color [mode]|perspective [mode]]",
         |args, submit, _out| {
             match args {
-                [] => submit.app(Action::Wireframe(None)),
-                ["on"] => submit.app(Action::Wireframe(Some(true))),
-                ["off"] => submit.app(Action::Wireframe(Some(false))),
+                [] | ["on" | "off"] => submit.setting(WIREFRAME, args)?,
                 ["width"] => submit.inspect("wireframe width", |dispatch, out| {
                     out.line(format!(
                         "wireframe width: {:.2} px",
@@ -235,12 +227,12 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                 ["alpha", token] => {
                     submit.app(Action::WireframeOpacity(number(token, "wireframe alpha")?));
                 }
-                ["color"] => submit.app(Action::NextColor),
+                ["color"] => submit.submit(WIREFRAME_COLOR.toggle()),
                 ["color", token] => {
                     let mode = color(token).ok_or_else(|| {
                         anyhow!("unknown color mode `{token}` (try vertex-gradient|unique-edge|w-depth)")
                     })?;
-                    submit.app(Action::Color(mode));
+                    submit.submit(WIREFRAME_COLOR.set(mode));
                 }
                 ["perspective"] => submit.app(Action::NextProjection),
                 ["perspective", token] => {
@@ -272,10 +264,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                         }
                     ));
                 }),
-                ["perimeter", rest @ ..] => submit.app(Action::SectionPerimeter(toggle(
-                    rest,
-                    "usage: section perimeter [on|off]",
-                )?)),
+                ["perimeter", rest @ ..] => submit.setting(SECTION_PERIMETER, rest)?,
                 _ => bail!("usage: section perimeter [on|off]"),
             }
             Ok(())

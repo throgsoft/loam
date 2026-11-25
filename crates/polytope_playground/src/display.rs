@@ -39,6 +39,24 @@ impl Default for Display {
     }
 }
 
+pub(crate) const SURFACE: Setting<Playground, Surface> = Setting::choice(
+    "surface",
+    &[
+        ("raster", Surface::Raster),
+        ("sdf", Surface::Sdf),
+        ("off", Surface::Off),
+    ],
+    |app| &mut app.display.get_mut().surface,
+);
+
+pub(crate) const WIREFRAME: Setting<Playground, bool> =
+    Setting::flag("wireframe", |app| &mut app.display.get_mut().wireframe);
+
+pub(crate) const SECTION_PERIMETER: Setting<Playground, bool> =
+    Setting::flag("section perimeter", |app| {
+        &mut app.display.get_mut().section_perimeter
+    });
+
 pub(crate) fn set(app: &mut Playground, display: Display) -> Result<(), Rejection> {
     if !display.wireframe_width_px.is_finite()
         || display.wireframe_width_px <= 0.0

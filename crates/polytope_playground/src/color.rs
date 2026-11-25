@@ -1,5 +1,7 @@
 use loam::prelude::*;
 
+use crate::Playground;
+
 pub(crate) const W_DEPTH_BACK: [f32; 4] = [0.30, 0.42, 0.58, 1.0];
 
 pub(crate) const W_DEPTH_FRONT: [f32; 4] = [1.00, 0.78, 0.45, 1.0];
@@ -12,25 +14,15 @@ pub(crate) enum ColorMode {
     WDepth,
 }
 
-impl ColorMode {
-    pub(crate) const ALL: [ColorMode; 3] = [
-        ColorMode::VertexGradient,
-        ColorMode::UniqueEdge,
-        ColorMode::WDepth,
-    ];
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            ColorMode::VertexGradient => "vertex",
-            ColorMode::UniqueEdge => "edge",
-            ColorMode::WDepth => "w-depth",
-        }
-    }
-
-    pub(crate) fn from_token(token: &str) -> Option<Self> {
-        ColorMode::ALL.into_iter().find(|mode| mode.name() == token)
-    }
-}
+pub(crate) const WIREFRAME_COLOR: Setting<Playground, ColorMode> = Setting::choice(
+    "wireframe color",
+    &[
+        ("vertex", ColorMode::VertexGradient),
+        ("edge", ColorMode::UniqueEdge),
+        ("w-depth", ColorMode::WDepth),
+    ],
+    |app| app.color.get_mut(),
+);
 
 #[derive(Clone, Copy)]
 pub(crate) struct Shades {

@@ -7,15 +7,15 @@ use loam_egui::{
 };
 
 use crate::action::Action;
-use crate::color::ColorMode;
+use crate::color::WIREFRAME_COLOR;
 use crate::consts::{BASE_ROTATION_RATE, W_RANGE};
-use crate::display::Surface;
+use crate::display::{Surface, SECTION_PERIMETER, SURFACE, WIREFRAME};
 use crate::mode::Mode;
 use crate::projection::Family;
 use crate::shown::{Callout, Shown};
 use crate::strip::{Cell, Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
 use crate::toy::{DepthBand, ARENA_HALF};
-use crate::{catalog, Playground, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GUIDES};
+use crate::{catalog, Playground, ROPE_CARRY, SHOW_CONTROLS, SHOW_FORMULA, SHOW_GUIDES};
 
 const PLANE_LABELS: [&str; 6] = ["xy", "xz", "xw", "yz", "yw", "zw"];
 const OVERLAY_PAD: f32 = 16.0;
@@ -98,12 +98,7 @@ fn menu_bar(
                             .on_hover_text("Held shapes swing from the point you grabbed.")
                             .changed()
                         {
-                            sender.submit(
-                                Setting::<Playground, bool>::flag("rope carry", |app| {
-                                    app.rope.get_mut()
-                                })
-                                .toggle(),
-                            );
+                            sender.submit(ROPE_CARRY.toggle());
                         }
                     }
                 }
@@ -679,13 +674,26 @@ fn render_settings(
         &mut panel.show_render,
         |ui| {
             ui.label(egui::RichText::new("Surface").strong());
-            ui.radio_value(&mut display.surface, Surface::Raster, "Raster");
-            ui.radio_value(&mut display.surface, Surface::Sdf, "SDF");
-            ui.radio_value(&mut display.surface, Surface::Off, "Off");
+            for (surface, label) in [
+                (Surface::Raster, "Raster"),
+                (Surface::Sdf, "SDF"),
+                (Surface::Off, "Off"),
+            ] {
+                if ui.radio(before.surface == surface, label).clicked() && before.surface != surface
+                {
+                    sender.submit(SURFACE.set(surface));
+                }
+            }
             ui.separator();
-            ui.checkbox(&mut display.wireframe, "Wireframe");
-            ui.checkbox(&mut display.section_perimeter, "Section perimeter");
-            ui.add_enabled_ui(display.wireframe, |ui| {
+            let mut wireframe = before.wireframe;
+            if ui.checkbox(&mut wireframe, "Wireframe").changed() {
+                sender.submit(WIREFRAME.set(wireframe));
+            }
+            let mut perimeter = before.section_perimeter;
+            if ui.checkbox(&mut perimeter, "Section perimeter").changed() {
+                sender.submit(SECTION_PERIMETER.set(perimeter));
+            }
+            ui.add_enabled_ui(before.wireframe, |ui| {
                 ui.add(
                     egui::Slider::new(&mut display.wireframe_width_px, 0.5..=6.0)
                         .clamping(egui::SliderClamping::Edits)
@@ -701,9 +709,9 @@ fn render_settings(
             });
             ui.separator();
             ui.label(egui::RichText::new("Color").strong());
-            for mode in ColorMode::ALL {
-                if ui.radio(app.color == mode, mode.name()).clicked() {
-                    sender.app(Action::Color(mode));
+            for &(name, mode) in WIREFRAME_COLOR.choices() {
+                if ui.radio(app.color == mode, name).clicked() {
+                    sender.submit(WIREFRAME_COLOR.set(mode));
                 }
             }
             ui.separator();
