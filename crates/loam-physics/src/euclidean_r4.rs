@@ -2,17 +2,18 @@
 
 use glam::Vec4;
 
-use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat, Rotor};
+use loam_math::{Bivector, Bivector4, EuclideanR4, Iso4Flat, Rotor, Rotor4};
 use loam_shape::polytope::Polytope4;
 use loam_shape::shape::convex_polytope4;
 use loam_shape::{Shape, ShapeKind};
 
 use crate::body::{BodyDef, RigidBody};
-use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult, PosedHull, Sphere as GjkSphere};
-use crate::geometry::GeometryStore;
+use crate::collision::{
+    epa_r4, gjk_intersect_r4, ContactInfo, GjkResult, PosedHull, Sphere, SupportFn,
+};
+use crate::euclidean::{register_pairs, Euclidean};
 use crate::manifold::PENETRATION_SLOP;
 use crate::narrowphase::Narrowphase;
-use crate::response::Contact;
 use crate::space::{BroadphaseBound, PhysicsSpace};
 
 pub fn omega_cross_r(omega: Bivector4, r: glam::Vec4) -> glam::Vec4 {
@@ -154,236 +155,64 @@ impl PhysicsSpace for EuclideanR4 {
     }
 }
 
-fn sphere_sphere_r4(
-    a: &RigidBody<EuclideanR4>,
-    b: &RigidBody<EuclideanR4>,
-    geometry: &GeometryStore,
-    space: &EuclideanR4,
-) -> Option<Contact<EuclideanR4>> {
-    let Some(&Shape::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(&Shape::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
-        return None;
-    };
+impl Euclidean for EuclideanR4 {
+    const POLYTOPE: ShapeKind = ShapeKind::ConvexPolytope4D;
+    const HALFSPACE: ShapeKind = ShapeKind::HalfSpace4D;
+    const COINCIDENT_NORMAL: Vec4 = Vec4::Y;
 
-    use loam_math::Space;
-    let d = space.distance(a.position, b.position);
-    let combined = ra + rb;
-    if d >= combined {
-        return None;
-    }
-    let log = space.log(a.position, b.position);
-    let len = log.length();
-    let normal = if len > 1e-8 { log / len } else { Vec4::Y };
+    type Hull<'a> = PosedHull<'a, Vec4, Rotor4>;
+    type Ball = Sphere<Vec4>;
 
-    let surface_a = a.position + normal * ra;
-    let surface_b = b.position - normal * rb;
-    let point = (surface_a + surface_b) * 0.5;
-
-    Some(Contact {
-        normal,
-        point,
-        penetration: combined - d,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
-}
-
-fn sphere_halfspace_r4(
-    a: &RigidBody<EuclideanR4>,
-    b: &RigidBody<EuclideanR4>,
-    geometry: &GeometryStore,
-    _space: &EuclideanR4,
-) -> Option<Contact<EuclideanR4>> {
-    let Some(&Shape::Sphere { radius, .. }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(&Shape::HalfSpace4D { normal, offset }) = geometry.get(b.collider()) else {
-        return None;
-    };
-    let normal = b.orientation.rotation.apply(normal);
-    let offset = offset + normal.dot(b.position);
-    let signed = a.position.dot(normal) - offset;
-    let penetration = radius - signed;
-    if penetration <= 0.0 {
-        return None;
-    }
-    let contact_normal = -normal;
-    let point = a.position - normal * radius;
-    Some(Contact {
-        normal: contact_normal,
-        point,
-        penetration,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
-}
-
-fn polytope_halfspace_r4(
-    a: &RigidBody<EuclideanR4>,
-    b: &RigidBody<EuclideanR4>,
-    geometry: &GeometryStore,
-    _space: &EuclideanR4,
-) -> Option<Contact<EuclideanR4>> {
-    let Some(Shape::ConvexPolytope4D { vertices: va_local }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(&Shape::HalfSpace4D {
-        normal: plane_n,
-        offset,
-    }) = geometry.get(b.collider())
-    else {
-        return None;
-    };
-    let plane_n = b.orientation.rotation.apply(plane_n);
-    let offset = offset + plane_n.dot(b.position);
-
-    let mut deepest = Vec4::ZERO;
-    let mut deepest_depth = 0.0_f32;
-    for &v_local in va_local {
-        let v_world = a.orientation.rotation.apply(v_local) + a.position;
-        let signed = v_world.dot(plane_n) - offset;
-        let depth = -signed;
-        if depth > deepest_depth {
-            deepest_depth = depth;
-            deepest = v_world;
+    fn polytope(shape: &Shape) -> Option<&[Vec4]> {
+        match shape {
+            Shape::ConvexPolytope4D { vertices } => Some(vertices),
+            _ => None,
         }
     }
-    if deepest_depth <= 0.0 {
-        return None;
-    }
-    Some(Contact {
-        normal: -plane_n,
-        point: deepest,
-        penetration: deepest_depth,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
-}
 
-fn validate_contact4(
-    info: &crate::collision::ContactInfo<Vec4>,
-    a: &RigidBody<EuclideanR4>,
-    b: &RigidBody<EuclideanR4>,
-) -> Option<Contact<EuclideanR4>> {
-    if !info.penetration.is_finite()
-        || info.penetration <= 0.0
-        || !info.normal.is_finite()
-        || !info.point.is_finite()
-    {
-        return None;
-    }
-    let n2 = info.normal.length_squared();
-    if !(0.5..=1.5).contains(&n2) {
-        return None;
-    }
-    Some(Contact {
-        normal: info.normal,
-        point: info.point,
-        penetration: info.penetration,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
-}
-
-fn polytope_polytope_r4(
-    a: &RigidBody<EuclideanR4>,
-    b: &RigidBody<EuclideanR4>,
-    geometry: &GeometryStore,
-    _space: &EuclideanR4,
-) -> Option<Contact<EuclideanR4>> {
-    let Some(Shape::ConvexPolytope4D { vertices: va_local }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(Shape::ConvexPolytope4D { vertices: vb_local }) = geometry.get(b.collider()) else {
-        return None;
-    };
-
-    let ra = convex_polytope4::bounding_radius(va_local);
-    let rb = convex_polytope4::bounding_radius(vb_local);
-    let center_dist_sq = (b.position - a.position).length_squared();
-    let combined = ra + rb;
-    if center_dist_sq > combined * combined {
-        return None;
+    fn halfspace(shape: &Shape) -> Option<(Vec4, f32)> {
+        match *shape {
+            Shape::HalfSpace4D { normal, offset } => Some((normal, offset)),
+            _ => None,
+        }
     }
 
-    let hull_a = PosedHull {
-        local: va_local,
-        position: a.position,
-        rotation: a.orientation.rotation,
-    };
-    let hull_b = PosedHull {
-        local: vb_local,
-        position: b.position,
-        rotation: b.orientation.rotation,
-    };
-
-    let initial_dir = b.position - a.position;
-    let simplex = match gjk_intersect_r4(&hull_a, &hull_b, initial_dir) {
-        GjkResult::Intersecting { simplex } => simplex,
-        GjkResult::Separated => return None,
-    };
-    let info = epa_r4(&hull_a, &hull_b, simplex, combined)?;
-    validate_contact4(&info, a, b)
-}
-
-fn sphere_polytope_r4(
-    a: &RigidBody<EuclideanR4>,
-    b: &RigidBody<EuclideanR4>,
-    geometry: &GeometryStore,
-    _space: &EuclideanR4,
-) -> Option<Contact<EuclideanR4>> {
-    let Some(&Shape::Sphere { radius, .. }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(Shape::ConvexPolytope4D { vertices: vb_local }) = geometry.get(b.collider()) else {
-        return None;
-    };
-
-    let rb = convex_polytope4::bounding_radius(vb_local);
-    let center_dist_sq = (b.position - a.position).length_squared();
-    let combined = radius + rb;
-    if center_dist_sq > combined * combined {
-        return None;
+    fn bounding_radius(vertices: &[Vec4]) -> f32 {
+        convex_polytope4::bounding_radius(vertices)
     }
 
-    let support_a = GjkSphere {
-        center: a.position,
-        radius,
-    };
-    let support_b = PosedHull {
-        local: vb_local,
-        position: b.position,
-        rotation: b.orientation.rotation,
-    };
-    let initial_dir = b.position - a.position;
-    let simplex = match gjk_intersect_r4(&support_a, &support_b, initial_dir) {
-        GjkResult::Intersecting { simplex } => simplex,
-        GjkResult::Separated => return None,
-    };
-    let info = epa_r4(&support_a, &support_b, simplex, combined)?;
-    validate_contact4(&info, a, b)
+    fn rotate(orientation: Iso4Flat, v: Vec4) -> Vec4 {
+        orientation.rotation.apply(v)
+    }
+
+    fn hull(local: &[Vec4], position: Vec4, orientation: Iso4Flat) -> PosedHull<'_, Vec4, Rotor4> {
+        PosedHull {
+            local,
+            position,
+            rotation: orientation.rotation,
+        }
+    }
+
+    fn ball(center: Vec4, radius: f32) -> Sphere<Vec4> {
+        Sphere { center, radius }
+    }
+
+    fn penetration<A: SupportFn<Vec4>, B: SupportFn<Vec4>>(
+        a: &A,
+        b: &B,
+        initial_direction: Vec4,
+        scale: f32,
+    ) -> Option<ContactInfo<Vec4>> {
+        let simplex = match gjk_intersect_r4(a, b, initial_direction) {
+            GjkResult::Intersecting { simplex } => simplex,
+            GjkResult::Separated => return None,
+        };
+        epa_r4(a, b, simplex, scale)
+    }
 }
 
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR4>) {
-    np.register(ShapeKind::Sphere, ShapeKind::Sphere, sphere_sphere_r4);
-    np.register(
-        ShapeKind::Sphere,
-        ShapeKind::HalfSpace4D,
-        sphere_halfspace_r4,
-    );
-    np.register(
-        ShapeKind::ConvexPolytope4D,
-        ShapeKind::ConvexPolytope4D,
-        polytope_polytope_r4,
-    );
-    np.register(
-        ShapeKind::Sphere,
-        ShapeKind::ConvexPolytope4D,
-        sphere_polytope_r4,
-    );
-    np.register(
-        ShapeKind::ConvexPolytope4D,
-        ShapeKind::HalfSpace4D,
-        polytope_halfspace_r4,
-    );
+    register_pairs(np);
 }
 
 pub fn ball4_inertia(mass: f32, radius: f32) -> f32 {

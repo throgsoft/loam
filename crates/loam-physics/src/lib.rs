@@ -13,6 +13,8 @@ pub mod state;
 pub mod world;
 
 pub mod collision;
+#[cfg(any(feature = "r3", feature = "r4"))]
+mod euclidean;
 #[cfg(feature = "r3")]
 pub mod euclidean_r3;
 #[cfg(feature = "r4")]
