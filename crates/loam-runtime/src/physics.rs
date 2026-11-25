@@ -1100,7 +1100,7 @@ where
     S: Homogeneous + PhysicsSpace + Copy,
     S::AngVel: PartialEq,
 {
-    pub fn physics(self, config: PhysicsConfig<S>) -> Result<Self, EditError> {
+    pub fn physics(self, config: PhysicsConfig<S>) -> Result<Self, DomainError> {
         config.validate(&self.space)?;
         let mut world = World::new(self.space);
         world.set_gravity(config.gravity)?;
