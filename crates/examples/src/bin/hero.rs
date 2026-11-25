@@ -468,13 +468,9 @@ fn build() -> Result<Session<HeroStores>, HostError> {
             max_ticks_per_frame: 2 * SUBSTEPS,
         },
     );
-    let physics = PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::Y * GRAVITY);
-    let r4 = session.register_domain(
-        DomainBuilder::new("r4", EuclideanR4)
-            .physics(physics)
-            .map_err(Rejection::from)?,
-    );
-    session.dispatch(|d| -> Result<(), Rejection> {
+    let physics = PhysicsConfig::default().gravity(Vec4::Y * GRAVITY);
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).physics(physics)?);
+    session.try_dispatch(|d| {
         for letter in letters {
             let entry = letter.entry;
             d.spawn(SpawnBundle::new().at(r4, Pose::at(entry)).row(letter))?;
