@@ -16,8 +16,9 @@ use crate::args::Args;
 use crate::capture::{CaptureRequest, CaptureUnavailable};
 use crate::host::{HostConfig, HostError, Key};
 
-const PAUSE: ActionId = ActionId("pause");
-const RESET: ActionId = ActionId("reset");
+// Namespaced so a program's own "pause" or "reset" action never shares these systems.
+const PAUSE: ActionId = ActionId("loam.pause");
+const RESET: ActionId = ActionId("loam.reset");
 
 /// Runs before the frame boundary with read-only session input.
 #[non_exhaustive]
