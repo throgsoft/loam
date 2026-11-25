@@ -1187,6 +1187,7 @@ mod tests {
         Step {
             tick: Tick(tick),
             dt: 1.0 / 60.0,
+            hz: 60,
         }
     }
 

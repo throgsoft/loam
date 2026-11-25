@@ -41,7 +41,7 @@ pub use image::{
     Backdrop, Eye, Ground, ImageRay, ImageSpace, ImageSpaceId, Sky, Views, ViewsSnapshot,
 };
 pub use input::{ActionEvent, ActionId, HostMessages, Input, Pointer, PointerButton, PointerPhase};
-pub use phase::{Ctx, Order, Phase, PhaseError, Step, SystemEntry, Tick};
+pub use phase::{Ctx, Moment, Order, Phase, PhaseError, Step, SystemEntry, Tick};
 #[cfg(feature = "physics")]
 pub use physics::{GrabConfig, GrabHold, Physics, PhysicsConfig, RestConfig, ThrowConfig};
 pub use publication::{

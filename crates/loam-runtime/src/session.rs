@@ -473,6 +473,7 @@ impl<A: Stores> Session<A> {
         let step = Step {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
+            hz: self.config.fixed_hz,
         };
         let mut dispatched = Ok(());
         for index in 0..self.phases.entries(Phase::Dispatch).len() {
@@ -531,6 +532,7 @@ impl<A: Stores> Session<A> {
         let step = Step {
             tick: self.tick,
             dt,
+            hz: self.config.fixed_hz,
         };
         for domain in self.domains.iter_mut() {
             domain.begin_tick();
@@ -564,6 +566,7 @@ impl<A: Stores> Session<A> {
         let step = Step {
             tick: self.tick,
             dt: self.config.dt().unwrap_or(0.0),
+            hz: self.config.fixed_hz,
         };
         self.progress = Progress::Running(Phase::Publication);
         self.overlay.clear();

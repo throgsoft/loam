@@ -1,4 +1,5 @@
 use std::fmt;
+use std::num::NonZeroU32;
 
 use loam_time::par::Executor;
 
@@ -40,6 +41,67 @@ pub struct Tick(pub u64);
 pub struct Step {
     pub tick: Tick,
     pub dt: f32,
+    /// Ticks per second, zero while the simulation is stopped.
+    pub hz: u32,
+}
+
+impl Step {
+    pub fn start(&self) -> Moment {
+        Moment::at(self.tick.0, self.hz)
+    }
+
+    /// The time a simulation entry ordered after the domain step has reached.
+    pub fn end(&self) -> Moment {
+        Moment::at(self.tick.0 + 1, self.hz)
+    }
+}
+
+/// A simulated time held as a tick count and a rate, which defaults to time zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Moment {
+    tick: u64,
+    hz: NonZeroU32,
+}
+
+impl Default for Moment {
+    fn default() -> Self {
+        Self {
+            tick: 0,
+            hz: NonZeroU32::MIN,
+        }
+    }
+}
+
+impl Moment {
+    fn at(tick: u64, hz: u32) -> Self {
+        NonZeroU32::new(hz).map_or_else(Self::default, |hz| Self { tick, hz })
+    }
+
+    pub fn seconds(self) -> f32 {
+        self.tick as f32 / self.hz.get() as f32
+    }
+
+    /// Whole frames of `1 / fps` seconds elapsed, which `Track::sample` takes.
+    pub fn frame(self, fps: NonZeroU32) -> u32 {
+        let frame = self.tick.saturating_mul(u64::from(fps.get())) / u64::from(self.hz.get());
+        u32::try_from(frame).unwrap_or(u32::MAX)
+    }
+
+    /// True from the first tick at or after `seconds`.
+    pub fn reached(self, seconds: f32) -> bool {
+        self.tick >= self.due(seconds)
+    }
+
+    /// True on the first tick at or after `seconds` and on no other, so a simulation system acts on it once.
+    pub fn fires(self, seconds: f32) -> bool {
+        self.tick == self.due(seconds)
+    }
+
+    fn due(self, seconds: f32) -> u64 {
+        // An f32 sum of seconds can sit a few parts in 1e8 past its tick, and this pulls it back.
+        const SLACK: f64 = 1.0e-6;
+        (f64::from(seconds) * f64::from(self.hz.get()) * (1.0 - SLACK)).ceil() as u64
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

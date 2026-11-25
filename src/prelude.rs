@@ -6,11 +6,11 @@ pub use loam_runtime::{
     stores, ActionId, AppCommand, CameraPair, Command, Ctx, CursorPolicy, DepthEnvelope, Dispatch,
     DomainBuilder, DomainError, DomainHandle, DomainId, DomainRay, DomainSpace, Domains,
     EdgeShading, Entity, Eye, FreeCamera, Growth, ImageRay, Input, Instance, LogCapacity, Material,
-    MaterialId, Number, Orbit, Order, Outcome, Overlay, PaletteId, Phase, PointRecord, Pointer,
-    PointerButton, PointerPhase, Pose, PreparedGeometry, PreparedId, Projection4, Publication,
-    Rejection, Rig, Section4, SectionCut, SegmentRecord, Session, Setting, SimConfig, SpawnBundle,
-    Store, Stores, TextRecord, TypedDomain, Version, ViewId, ViewMapping, ViewSpec, Views,
-    CAMERA_RIG, DOMAIN_STEP, MOVE_BACKWARD, MOVE_DOWN, MOVE_FORWARD, MOVE_LEFT, MOVE_RIGHT,
+    MaterialId, Moment, Number, Orbit, Order, Outcome, Overlay, PaletteId, Phase, PointRecord,
+    Pointer, PointerButton, PointerPhase, Pose, PreparedGeometry, PreparedId, Projection4,
+    Publication, Rejection, Rig, Section4, SectionCut, SegmentRecord, Session, Setting, SimConfig,
+    SpawnBundle, Store, Stores, TextRecord, TypedDomain, Version, ViewId, ViewMapping, ViewSpec,
+    Views, CAMERA_RIG, DOMAIN_STEP, MOVE_BACKWARD, MOVE_DOWN, MOVE_FORWARD, MOVE_LEFT, MOVE_RIGHT,
     MOVE_UP,
 };
 #[cfg(feature = "physics")]
