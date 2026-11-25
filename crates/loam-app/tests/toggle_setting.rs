@@ -3,7 +3,7 @@
 use loam_app::args::Args;
 use loam_app::host::{Bindings, HostConfig};
 use loam_app::session::SessionApp;
-use loam_runtime::{ActionEvent, ActionId, Input, Session, SimConfig};
+use loam_runtime::{ActionEvent, ActionId, Input, Session, Setting, SimConfig};
 
 loam_runtime::stores! {
     #[derive(Default)]
@@ -13,14 +13,15 @@ loam_runtime::stores! {
 }
 
 const SHOW: ActionId = ActionId("show");
+const SHOWN: Setting<Flags, bool> = Setting::flag("shown", |app| app.shown.get_mut());
 
 #[test]
 fn key_verb_and_sender() {
     let mut session = Session::new(Flags::default(), SimConfig::default());
-    session.toggle_on(SHOW, |app| app.shown.get_mut());
+    session.toggle_on(SHOW, SHOWN);
     let mut app =
         SessionApp::<Flags>::with_args(HostConfig::new("toggle", Bindings::new()), Args::default())
-            .toggle_command("shown", "show or hide it", |app| app.shown.get_mut());
+            .setting(SHOWN, "show or hide it");
 
     let press = Input {
         actions: vec![ActionEvent {
@@ -71,7 +72,7 @@ fn key_verb_and_sender() {
     );
 
     let sender = app.sender();
-    sender.set("shown", |app| app.shown.get_mut(), false);
+    sender.submit(SHOWN.set(false));
     assert!(
         *session.app.shown.get(),
         "the sender changed the setting before a boundary"
@@ -82,7 +83,7 @@ fn key_verb_and_sender() {
         !*session.app.shown.get(),
         "the sender's set left the setting on"
     );
-    sender.toggle("shown", |app| app.shown.get_mut());
+    sender.submit(SHOWN.toggle());
     app.boundary(&mut session, Input::default())
         .expect("boundary");
     assert!(

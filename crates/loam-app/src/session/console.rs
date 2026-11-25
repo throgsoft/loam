@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::bail;
 use loam_console::{cmd, CommandLine, Console, ConsoleWriter, HistoryLine, LineKind};
 use loam_runtime::{
-    AppCommand, Backdrop, CursorPolicy, Dispatch, FreeCamera, Outcome, Rejection, Rig, Setting,
-    Stores, Views,
+    AppCommand, Backdrop, Command, CursorPolicy, Dispatch, FreeCamera, Outcome, Rejection, Rig,
+    Setting, Stores, Views,
 };
 
 use super::commands::{CommandSender, Report, Reported};
@@ -58,12 +58,25 @@ impl<A: Stores> Submit<A> {
         self.commands.app_fn(name, apply);
     }
 
-    pub fn toggle(&mut self, name: &'static str, setting: Setting<A>) {
-        self.commands.toggle(name, setting);
+    pub fn submit(&mut self, command: Command<A>) {
+        self.commands.submit(command);
     }
 
-    pub fn set(&mut self, name: &'static str, setting: Setting<A>, on: bool) {
-        self.commands.set(name, setting, on);
+    /// Submits [`Setting::toggle`] when `args` is empty and [`Setting::set`] when it names one choice.
+    pub fn setting<T: Copy + PartialEq + Send + Sync + 'static>(
+        &mut self,
+        setting: Setting<A, T>,
+        args: &[&str],
+    ) -> anyhow::Result<()> {
+        match args {
+            [] => self.submit(setting.toggle()),
+            [token] => match setting.parse(token) {
+                Some(value) => self.submit(setting.set(value)),
+                None => bail!("{}", usage(setting)),
+            },
+            _ => bail!("{}", usage(setting)),
+        }
+        Ok(())
     }
 
     pub fn reset(&mut self) {
@@ -77,6 +90,11 @@ impl<A: Stores> Submit<A> {
     pub fn vsync(&mut self, enabled: bool) {
         lock(&self.console).controls.vsync = Some(enabled);
     }
+}
+
+fn usage<A, T>(setting: Setting<A, T>) -> String {
+    let names: Vec<&str> = setting.choices().iter().map(|&(name, _)| name).collect();
+    format!("usage: {} [{}]", setting.name, names.join("|"))
 }
 
 struct Inspect<F> {
@@ -200,19 +218,20 @@ impl<A: Stores> SessionConsole<A> {
             }));
     }
 
-    /// Registers a verb that flips `setting` when bare and sets it on `on` or `off`, each as a command named `name`.
-    pub fn toggle_command(&mut self, name: &'static str, help: &'static str, setting: Setting<A>) {
+    /// Registers a verb named after `setting` that runs [`Submit::setting`], so the name must be one word.
+    pub fn setting<T: Copy + PartialEq + Send + Sync + 'static>(
+        &mut self,
+        setting: Setting<A, T>,
+        help: &'static str,
+    ) {
+        let names: Vec<&'static str> = setting.choices().iter().map(|&(name, _)| name).collect();
         self.console.register(
-            cmd(name, help, move |args, submit: &mut Submit<A>, _out| {
-                match args {
-                    [] => submit.toggle(name, setting),
-                    ["on"] => submit.set(name, setting, true),
-                    ["off"] => submit.set(name, setting, false),
-                    _ => anyhow::bail!("usage: {name} [on|off]"),
-                }
-                Ok(())
-            })
-            .with_args(&[&["on", "off"]]),
+            cmd(
+                setting.name,
+                help,
+                move |args, submit: &mut Submit<A>, _out| submit.setting(setting, args),
+            )
+            .with_args(&[&names]),
         );
     }
 

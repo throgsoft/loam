@@ -1,8 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use loam_runtime::{
-    AppCommand, Command, Dispatch, Outcome, Rejection, RequestId, RestoreError, Session, Setting,
-    Stores,
+    AppCommand, Command, Dispatch, Outcome, Rejection, RequestId, RestoreError, Session, Stores,
 };
 
 pub(crate) const MAX_PENDING_COMMANDS: usize = 1024;
@@ -126,14 +125,6 @@ impl<A: Stores> CommandSender<A> {
         apply: impl FnMut(&mut Dispatch<'_, A>) -> Result<Outcome, Rejection> + Send + 'static,
     ) {
         self.submit(Command::try_app_fn(name, apply));
-    }
-
-    pub fn toggle(&self, name: &'static str, setting: Setting<A>) {
-        self.submit(Command::toggle(name, setting));
-    }
-
-    pub fn set(&self, name: &'static str, setting: Setting<A>, on: bool) {
-        self.submit(Command::set(name, setting, on));
     }
 
     pub fn reset(&self) {

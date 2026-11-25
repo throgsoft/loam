@@ -306,13 +306,12 @@ impl<A: Stores> SessionApp<A> {
         self
     }
 
-    pub fn toggle_command(
+    pub fn setting<T: Copy + PartialEq + Send + Sync + 'static>(
         mut self,
-        name: &'static str,
+        setting: Setting<A, T>,
         help: &'static str,
-        setting: Setting<A>,
     ) -> Self {
-        self.console.toggle_command(name, help, setting);
+        self.console.setting(setting, help);
         self
     }
 

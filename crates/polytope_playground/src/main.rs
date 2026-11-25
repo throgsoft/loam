@@ -139,32 +139,16 @@ stores! {
     publishes Shown;
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct Toggle {
-    pub(crate) name: &'static str,
-    pub(crate) setting: Setting<Playground>,
-}
-
-pub(crate) const SHOW_CONTROLS: Toggle = Toggle {
-    name: "controls",
-    setting: |app| app.controls.get_mut(),
-};
-pub(crate) const SHOW_FORMULA: Toggle = Toggle {
-    name: "formula",
-    setting: |app| app.formula.get_mut(),
-};
-pub(crate) const SHOW_GUIDES: Toggle = Toggle {
-    name: "guides",
-    setting: |app| app.guides.get_mut(),
-};
-pub(crate) const SHOW_GIMBAL: Toggle = Toggle {
-    name: "gimbal",
-    setting: |app| app.gimbal.get_mut(),
-};
-pub(crate) const TOYBOX_DEBUG: Toggle = Toggle {
-    name: "toybox debug",
-    setting: |app| app.toybox_debug.get_mut(),
-};
+pub(crate) const SHOW_CONTROLS: Setting<Playground, bool> =
+    Setting::flag("controls", |app| app.controls.get_mut());
+pub(crate) const SHOW_FORMULA: Setting<Playground, bool> =
+    Setting::flag("formula", |app| app.formula.get_mut());
+pub(crate) const SHOW_GUIDES: Setting<Playground, bool> =
+    Setting::flag("guides", |app| app.guides.get_mut());
+pub(crate) const SHOW_GIMBAL: Setting<Playground, bool> =
+    Setting::flag("handles", |app| app.gimbal.get_mut());
+pub(crate) const TOYBOX_DEBUG: Setting<Playground, bool> =
+    Setting::flag("toybox debug", |app| app.toybox_debug.get_mut());
 
 fn rest_of(index: usize, len: usize) -> Vec4 {
     let center = (len.max(1) - 1) as f32 * 0.5;
@@ -375,8 +359,8 @@ fn install_systems(
         shown.write(ctx.app, ctx.domains, ctx.views, domain, ctx.alpha);
         Ok(())
     });
-    session.toggle_on(GIMBAL, SHOW_GIMBAL.setting);
-    session.toggle_on(CONTROLS, SHOW_CONTROLS.setting);
+    session.toggle_on(GIMBAL, SHOW_GIMBAL);
+    session.toggle_on(CONTROLS, SHOW_CONTROLS);
     for (index, action) in PLANE.into_iter().enumerate() {
         session.on_action(action, move |d| Action::Plane(index).apply(d).map(drop));
     }

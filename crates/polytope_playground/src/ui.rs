@@ -77,20 +77,20 @@ fn menu_bar(
                 match app.mode {
                     Mode::Rotate => {
                         if ui.checkbox(&mut controls, "Controls").changed() {
-                            sender.toggle(SHOW_CONTROLS.name, SHOW_CONTROLS.setting);
+                            sender.submit(SHOW_CONTROLS.toggle());
                         }
                         let mut formula = app.formula;
                         if ui.checkbox(&mut formula, "Rotation formula").changed() {
-                            sender.toggle(SHOW_FORMULA.name, SHOW_FORMULA.setting);
+                            sender.submit(SHOW_FORMULA.toggle());
                         }
                     }
                     Mode::Toybox => {
                         if ui.checkbox(&mut controls, "w line").changed() {
-                            sender.toggle(SHOW_CONTROLS.name, SHOW_CONTROLS.setting);
+                            sender.submit(SHOW_CONTROLS.toggle());
                         }
                         let mut guides = app.guides;
                         if ui.checkbox(&mut guides, "Floor guides").changed() {
-                            sender.toggle(SHOW_GUIDES.name, SHOW_GUIDES.setting);
+                            sender.submit(SHOW_GUIDES.toggle());
                         }
                         let mut rope = app.rope;
                         if ui
@@ -98,7 +98,12 @@ fn menu_bar(
                             .on_hover_text("Held shapes swing from the point you grabbed.")
                             .changed()
                         {
-                            sender.toggle("rope carry", |app| app.rope.get_mut());
+                            sender.submit(
+                                Setting::<Playground, bool>::flag("rope carry", |app| {
+                                    app.rope.get_mut()
+                                })
+                                .toggle(),
+                            );
                         }
                     }
                 }
@@ -167,7 +172,7 @@ fn view_tabs(ui: &mut egui::Ui, app: &Shown, sender: &CommandSender<Playground>)
         }
         let mut formula = app.formula;
         if ui.checkbox(&mut formula, "Formula").changed() {
-            sender.toggle(SHOW_FORMULA.name, SHOW_FORMULA.setting);
+            sender.submit(SHOW_FORMULA.toggle());
         }
     });
 }

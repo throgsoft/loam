@@ -18,8 +18,8 @@ use crate::image::{Views, ViewsSnapshot};
 use crate::input::{ActionId, Input};
 use crate::phase::{Ctx, Order, Phase, PhaseError, Phases, Step, SystemEntry, Tick};
 use crate::publication::{Overlay, Publication, Stamp};
+use crate::setting::Setting;
 use crate::store::{Owner, SchemaId};
-use crate::value::Setting;
 use crate::view::Pick;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -388,9 +388,13 @@ impl<A: Stores> Session<A> {
         self.submit_on(action, || Command::TogglePause);
     }
 
-    /// Adds a dispatch system after those already registered that flips `setting` as a command named after `action` at each boundary where it is pressed.
-    pub fn toggle_on(&mut self, action: ActionId, setting: Setting<A>) {
-        self.submit_on(action, move || Command::toggle(action.0, setting));
+    /// Adds a dispatch system after those already registered that submits [`Setting::toggle`] at each boundary where `action` is pressed.
+    pub fn toggle_on<T: Copy + PartialEq + Send + Sync + 'static>(
+        &mut self,
+        action: ActionId,
+        setting: Setting<A, T>,
+    ) {
+        self.submit_on(action, move || setting.toggle());
     }
 
     fn submit_on(&mut self, action: ActionId, command: impl Fn() -> Command<A> + Send + 'static) {

@@ -82,10 +82,9 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         },
     );
 
-    app = app.toggle_command(
-        "hud",
+    app = app.setting(
+        Setting::flag("hud", |app| app.hud.get_mut()),
         "toggle the state readout; optional on | off",
-        |app| app.hud.get_mut(),
     );
 
     app = app.command(
@@ -161,56 +160,38 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         Ok(())
     });
 
-    app = app.toggle_command(
-        SHOW_CONTROLS.name,
+    app = app.setting(
+        SHOW_CONTROLS,
         "toggle the controls panel; optional on | off",
-        SHOW_CONTROLS.setting,
     );
 
-    app = app.toggle_command(
-        SHOW_FORMULA.name,
+    app = app.setting(
+        SHOW_FORMULA,
         "toggle the rotation formula; optional on | off",
-        SHOW_FORMULA.setting,
     );
 
-    app = app.toggle_command(
-        "labels",
+    app = app.setting(
+        Setting::flag("labels", |app| app.labels.get_mut()),
         "toggle the shape labels; optional on | off",
-        |app| app.labels.get_mut(),
     );
 
-    app = app.toggle_command(
-        SHOW_GUIDES.name,
+    app = app.setting(
+        SHOW_GUIDES,
         "toggle the toybox floor guides; optional on | off",
-        SHOW_GUIDES.setting,
     );
 
     app = app.command(
         "toybox",
         "toybox debug drawing: debug [on|off]",
         |args, submit, _out| match args {
-            ["debug", rest @ ..] => {
-                match toggle(rest, "usage: toybox debug [on|off]")? {
-                    None => submit.toggle(TOYBOX_DEBUG.name, TOYBOX_DEBUG.setting),
-                    Some(on) => submit.set(TOYBOX_DEBUG.name, TOYBOX_DEBUG.setting, on),
-                }
-                Ok(())
-            }
+            ["debug", rest @ ..] => submit.setting(TOYBOX_DEBUG, rest),
             _ => bail!("usage: toybox debug [on|off]"),
         },
     );
 
-    // A bare `handles` reports under `gimbal`, the name the G key's toggle uses.
-    app = app.command(
-        "handles",
+    app = app.setting(
+        SHOW_GIMBAL,
         "toggle the 4D rotation handles; optional on | off",
-        |args, submit, _out| {
-            match toggle(args, "usage: handles [on|off]")? {
-                None => submit.toggle(SHOW_GIMBAL.name, SHOW_GIMBAL.setting),
-                Some(on) => submit.set("handles", SHOW_GIMBAL.setting, on),
-            }
-            Ok(())
-        },
     );
 
     app = app.command(

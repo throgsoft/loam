@@ -14,6 +14,7 @@ pub mod physics;
 pub mod publication;
 pub mod relation;
 pub mod session;
+pub mod setting;
 pub mod store;
 pub mod value;
 pub mod view;
@@ -52,11 +53,12 @@ pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
     Growth, RestoreError, Session, SessionSnapshot, SimConfig, SimConfigError, DOMAIN_STEP,
 };
+pub use setting::Setting;
 pub use store::{
     Change, Changes, Cursor, LogCapacity, Owner, Part, Partition, PartitionError, Parts, Removal,
     SchemaId, Store, StoreError, StoreField, StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,
 };
-pub use value::{Setting, Value};
+pub use value::Value;
 pub use view::{
     DepthEnvelope, DomainRay, Pick, Projection4, Section4, SectionCut, ViewId, ViewMapping,
     ViewSpec, ViewStyle, ViewSummary, ViewTarget,
