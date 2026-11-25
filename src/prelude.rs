@@ -58,6 +58,7 @@ pub use loam_text::glyph::{
 #[cfg(feature = "app")]
 pub use loam_app::{
     launch, launch_with, Args, Bindings, CaptureControl, CaptureFormat, CaptureRequest,
-    CaptureStage, CaptureUnavailable, CommandSender, Environment, HostConfig, HostError, InputHook,
-    Key, LaunchMode, PaletteMode, PublishedHook, Redraw, SessionApp, Submit, WasmConfig,
+    CaptureStage, CaptureUnavailable, CommandError, CommandSender, Environment, HostConfig,
+    HostError, InputHook, Key, LaunchMode, PaletteMode, PublishedHook, Redraw, SessionApp, Submit,
+    WasmConfig,
 };

@@ -6,6 +6,7 @@ pub use command_line::{parse_line, render_line, CommandLine};
 use command_line::{quote_token, tokenize_spans};
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::fmt;
 
 mod key;
 
@@ -84,7 +85,65 @@ impl Default for ConsoleWriter {
     }
 }
 
-type CommandFn<Ctx> = Box<dyn FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> anyhow::Result<()>>;
+/// Why a command refused its arguments.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CommandError {
+    /// The text is the command's form without the `usage: ` prefix.
+    Usage(String),
+    Invalid {
+        name: &'static str,
+        token: String,
+        reason: String,
+    },
+    Unknown {
+        name: &'static str,
+        token: String,
+        choices: &'static str,
+    },
+    OutOfRange {
+        name: &'static str,
+        value: f32,
+        expected: &'static str,
+    },
+}
+
+impl CommandError {
+    pub fn invalid(name: &'static str, token: &str, reason: impl fmt::Display) -> Self {
+        Self::Invalid {
+            name,
+            token: token.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Usage(form) => write!(f, "usage: {form}"),
+            Self::Invalid {
+                name,
+                token,
+                reason,
+            } => write!(f, "{name}: invalid `{token}`: {reason}"),
+            Self::Unknown {
+                name,
+                token,
+                choices,
+            } => write!(f, "{name}: unknown `{token}` (try {choices})"),
+            Self::OutOfRange {
+                name,
+                value,
+                expected,
+            } => write!(f, "{name}: {value} is out of range; expected {expected}"),
+        }
+    }
+}
+
+impl std::error::Error for CommandError {}
+
+type CommandFn<Ctx> =
+    Box<dyn FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> Result<(), CommandError>>;
 
 pub struct FnCommand<Ctx> {
     name: &'static str,
@@ -137,7 +196,7 @@ impl<Ctx> FnCommand<Ctx> {
 /// Recoverable issues go to `out.error(..)`; unrecoverable ones return `Err`.
 pub fn cmd<Ctx, F>(name: &'static str, help: &'static str, f: F) -> FnCommand<Ctx>
 where
-    F: FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
+    F: FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> Result<(), CommandError> + 'static,
 {
     FnCommand {
         name,
@@ -566,7 +625,7 @@ impl<Ctx: 'static> Console<Ctx> {
             self.push_history(hl);
         }
         if let Err(e) = result {
-            self.push_history(HistoryLine::error(format!("error: {e:#}")));
+            self.push_history(HistoryLine::error(format!("error: {e}")));
         }
     }
 
@@ -717,7 +776,9 @@ mod tests {
     fn add_cmd() -> FnCommand<Ctx> {
         cmd("add", "add args to ctx", |args, ctx, out| {
             for a in args {
-                let n: u32 = a.parse()?;
+                let n: u32 = a
+                    .parse()
+                    .map_err(|error| CommandError::invalid("add", a, error))?;
                 *ctx += n;
             }
             out.line(format!("ctx={ctx}"));
@@ -839,7 +900,9 @@ mod tests {
     fn dispatch_echo() {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
-        c.register(cmd("fail", "always fails", |_, _, _| anyhow::bail!("nope")));
+        c.register(cmd("fail", "always fails", |_, _, _| {
+            Err(CommandError::Usage("nope".into()))
+        }));
         let mut ctx: Ctx = 0;
 
         c.execute("echo hi");

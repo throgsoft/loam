@@ -17,6 +17,7 @@ pub use args::Args;
 pub use capture::{CaptureFormat, CaptureRequest, CaptureStage, CaptureUnavailable, PaletteMode};
 pub use environment::Environment;
 pub use host::{Bindings, HostConfig, HostError, Key};
+pub use loam_console::CommandError;
 pub use session::{
     launch, launch_with, CaptureControl, CommandSender, InputHook, PublishedHook, Redraw,
     SessionApp, SessionConsole, Submit,

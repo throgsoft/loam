@@ -1414,7 +1414,7 @@ mod tests {
             Ok(())
         })
         .command("strict", "refuse at dispatch", |_args, _submit, _out| {
-            anyhow::bail!("usage: strict <n>")
+            Err(loam_console::CommandError::Usage("strict <n>".into()))
         })
         .command("reject", "refuse at the boundary", |_args, submit, _out| {
             submit.app(Refuse);

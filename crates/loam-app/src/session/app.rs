@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 
-use loam_console::ConsoleWriter;
+use loam_console::{CommandError, ConsoleWriter};
 #[cfg(feature = "egui")]
 use loam_egui::egui;
 use loam_render::pass::{FramePass, Section};
@@ -300,7 +300,8 @@ impl<A: Stores> SessionApp<A> {
         mut self,
         name: &'static str,
         help: &'static str,
-        handler: impl FnMut(&[&str], &mut Submit<A>, &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
+        handler: impl FnMut(&[&str], &mut Submit<A>, &mut ConsoleWriter) -> Result<(), CommandError>
+            + 'static,
     ) -> Self {
         self.console.register(name, help, handler);
         self

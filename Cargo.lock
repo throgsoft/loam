@@ -1358,9 +1358,6 @@ dependencies = [
 [[package]]
 name = "loam-console"
 version = "0.1.0"
-dependencies = [
- "anyhow",
-]
 
 [[package]]
 name = "loam-egui"

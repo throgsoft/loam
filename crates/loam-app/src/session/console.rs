@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use anyhow::bail;
-use loam_console::{cmd, CommandLine, Console, ConsoleWriter, HistoryLine, LineKind};
+use loam_console::{cmd, CommandError, CommandLine, Console, ConsoleWriter, HistoryLine, LineKind};
 use loam_runtime::{
     AppCommand, Backdrop, Command, CursorPolicy, Dispatch, FreeCamera, Number, Outcome, Rejection,
     Rig, Setting, Stores, Views,
@@ -67,27 +66,27 @@ impl<A: Stores> Submit<A> {
         &mut self,
         setting: Setting<A, T>,
         args: &[&str],
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), CommandError> {
         match args {
             [] => self.submit(setting.toggle()),
             [token] => match setting.parse(token) {
                 Some(value) => self.submit(setting.set(value)),
-                None => bail!("{}", usage(setting)),
+                None => return Err(usage(setting)),
             },
-            _ => bail!("{}", usage(setting)),
+            _ => return Err(usage(setting)),
         }
         Ok(())
     }
 
     /// Parses the one argument as `f32` and submits [`Number::set`], which checks the range at the boundary.
-    pub fn number(&mut self, number: Number<A>, args: &[&str]) -> anyhow::Result<()> {
+    pub fn number(&mut self, number: Number<A>, args: &[&str]) -> Result<(), CommandError> {
         let [token] = args else {
-            bail!("usage: {} <number>", number.name);
+            return Err(CommandError::Usage(format!("{} <number>", number.name)));
         };
-        match token.parse::<f32>() {
-            Ok(value) => self.submit(number.set(value)),
-            Err(_) => bail!("{}: invalid number {token}", number.name),
-        }
+        let value = token
+            .parse::<f32>()
+            .map_err(|error| CommandError::invalid(number.name, token, error))?;
+        self.submit(number.set(value));
         Ok(())
     }
 
@@ -104,9 +103,9 @@ impl<A: Stores> Submit<A> {
     }
 }
 
-fn usage<A, T>(setting: Setting<A, T>) -> String {
+fn usage<A, T>(setting: Setting<A, T>) -> CommandError {
     let names: Vec<&str> = setting.choices().iter().map(|&(name, _)| name).collect();
-    format!("usage: {} [{}]", setting.name, names.join("|"))
+    CommandError::Usage(format!("{} [{}]", setting.name, names.join("|")))
 }
 
 struct Inspect<F> {
@@ -221,7 +220,7 @@ impl<A: Stores> SessionConsole<A> {
         &mut self,
         name: &'static str,
         help: &'static str,
-        mut handler: impl FnMut(&[&str], &mut Submit<A>, &mut ConsoleWriter) -> anyhow::Result<()>
+        mut handler: impl FnMut(&[&str], &mut Submit<A>, &mut ConsoleWriter) -> Result<(), CommandError>
             + 'static,
     ) {
         self.console
@@ -428,7 +427,7 @@ fn register_floor<A: Stores>(console: &mut Console<Submit<A>>) {
                     [] => None,
                     ["on"] => Some(true),
                     ["off"] => Some(false),
-                    _ => bail!("usage: floor [on|off]"),
+                    _ => return Err(CommandError::Usage("floor [on|off]".into())),
                 };
                 submit.commands.try_app_fn("floor", move |dispatch| {
                     let backdrop = dispatch
@@ -476,11 +475,15 @@ fn register_camera<A: Stores>(console: &mut Console<Submit<A>>) {
                         }
                     }),
                     ["speed", token] => {
-                        let speed = token.parse::<f32>().map_err(|error| {
-                            anyhow::anyhow!("camera speed: invalid `{token}`: {error}")
-                        })?;
+                        let speed = token
+                            .parse::<f32>()
+                            .map_err(|error| CommandError::invalid("camera speed", token, error))?;
                         if !speed.is_finite() || speed <= 0.0 {
-                            bail!("camera speed must be finite and positive");
+                            return Err(CommandError::OutOfRange {
+                                name: "camera speed",
+                                value: speed,
+                                expected: "a finite positive speed",
+                            });
                         }
                         submit.commands.try_app_fn("camera speed", move |dispatch| {
                             free_camera_mut(dispatch.views)?.speed = speed;
@@ -508,7 +511,13 @@ fn register_camera<A: Stores>(console: &mut Console<Submit<A>>) {
                                 Ok(Outcome::Done)
                             });
                     }
-                    _ => bail!("camera: unknown argument (try orbit|freecam|speed|cursor)"),
+                    _ => {
+                        return Err(CommandError::Unknown {
+                            name: "camera",
+                            token: args.join(" "),
+                            choices: "orbit|freecam|speed|cursor",
+                        })
+                    }
                 }
                 Ok(())
             },

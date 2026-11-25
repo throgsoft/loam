@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use loam_console::CommandError;
 use loam_render::sky_ground::{
     DEFAULT_FOG_PER_UNIT, DEFAULT_SKY, GROUND_DARK_GREY, GROUND_LIGHT_GREY,
 };
@@ -6,6 +6,7 @@ use loam_runtime::{Backdrop, Ground, Sky};
 
 // Above this the checker blends into the sky inside one body length.
 const MAX_FOG_PER_UNIT: f32 = 1.0;
+const FOG_RANGE: &str = "a density in [0, 1]";
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Environment {
@@ -80,7 +81,7 @@ impl Environment {
         }
     }
 
-    pub fn apply(&mut self, args: &[&str]) -> Result<String> {
+    pub fn apply(&mut self, args: &[&str]) -> Result<String, CommandError> {
         let Some(field) = args.first().copied() else {
             return Ok(self.report(None));
         };
@@ -97,7 +98,12 @@ impl Environment {
                 if args.len() == 1 {
                     return Ok(self.report(Some(field)));
                 }
-                let rgb = parse_rgb(field, &args[1..])?;
+                let name = if field == "dark" {
+                    "ground dark"
+                } else {
+                    "ground light"
+                };
+                let rgb = parse_rgb(name, &args[1..])?;
                 if field == "dark" {
                     self.dark = rgb;
                 } else {
@@ -112,9 +118,11 @@ impl Environment {
                 self.fog_per_unit = parse_fog(args[1])?;
                 Ok(format!("ground fog: set to {}", self.report(Some("fog"))))
             }
-            other => Err(anyhow!(
-                "ground: unknown field `{other}` (try dark|light|fog|reset)"
-            )),
+            other => Err(CommandError::Unknown {
+                name: "ground",
+                token: other.to_string(),
+                choices: "dark|light|fog|reset",
+            }),
         }
     }
 }
@@ -130,35 +138,39 @@ fn rgb_text(rgb: [f32; 3]) -> String {
     format!("{:.3} {:.3} {:.3}", rgb[0], rgb[1], rgb[2])
 }
 
-fn parse_rgb(field: &str, args: &[&str]) -> Result<[f32; 3]> {
+fn parse_rgb(name: &'static str, args: &[&str]) -> Result<[f32; 3], CommandError> {
     let [r, g, b] = args else {
-        return Err(anyhow!(
-            "usage: ground {field} <r> <g> <b>, each a float in [0, 1]"
-        ));
+        return Err(CommandError::Usage(format!(
+            "{name} <r> <g> <b>, each a float in [0, 1]"
+        )));
     };
     let mut rgb = [0.0_f32; 3];
     for (slot, token) in rgb.iter_mut().zip([r, g, b]) {
         let value: f32 = token
             .parse()
-            .map_err(|e| anyhow!("ground {field}: invalid channel `{token}`: {e}"))?;
+            .map_err(|error| CommandError::invalid(name, token, error))?;
         if !(value.is_finite() && (0.0..=1.0).contains(&value)) {
-            return Err(anyhow!(
-                "ground {field}: channel {value} out of range; expected [0, 1]"
-            ));
+            return Err(CommandError::OutOfRange {
+                name,
+                value,
+                expected: "a channel in [0, 1]",
+            });
         }
         *slot = value;
     }
     Ok(rgb)
 }
 
-fn parse_fog(token: &str) -> Result<f32> {
+fn parse_fog(token: &str) -> Result<f32, CommandError> {
     let value: f32 = token
         .parse()
-        .map_err(|e| anyhow!("ground fog: invalid density `{token}`: {e}"))?;
+        .map_err(|error| CommandError::invalid("ground fog", token, error))?;
     if !(value.is_finite() && (0.0..=MAX_FOG_PER_UNIT).contains(&value)) {
-        return Err(anyhow!(
-            "ground fog: density {value} out of range; expected [0, {MAX_FOG_PER_UNIT}]"
-        ));
+        return Err(CommandError::OutOfRange {
+            name: "ground fog",
+            value,
+            expected: FOG_RANGE,
+        });
     }
     Ok(value)
 }

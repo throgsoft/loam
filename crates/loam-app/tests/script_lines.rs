@@ -4,6 +4,7 @@ use loam_app::args::Args;
 use loam_app::host::{Bindings, HostConfig};
 use loam_app::script::{Script, ScriptDriver};
 use loam_app::session::{run_script, SessionApp};
+use loam_app::CommandError;
 use loam_runtime::{AppCommand, Dispatch, Outcome, Rejection, Session, SimConfig};
 
 loam_runtime::stores! {
@@ -43,7 +44,10 @@ fn run(source: &str) -> Run {
     let mut app =
         SessionApp::<Slots>::with_args(HostConfig::new("script", Bindings::new()), Args::default())
             .command("active", "pick a slot", |args, submit, _out| {
-                let slot: u32 = args.first().copied().unwrap_or_default().parse()?;
+                let token = args.first().copied().unwrap_or_default();
+                let slot: u32 = token
+                    .parse()
+                    .map_err(|error| CommandError::invalid("active", token, error))?;
                 submit.app(Pick(slot));
                 Ok(())
             });

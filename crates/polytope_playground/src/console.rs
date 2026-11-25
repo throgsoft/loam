@@ -1,4 +1,3 @@
-use anyhow::{anyhow, bail, Result};
 use loam::prelude::*;
 
 use crate::action::Action;
@@ -15,18 +14,22 @@ use crate::{
 
 const MAX_SEEK_SECONDS: f32 = 1.0e6;
 
-fn number(token: &str, name: &str) -> Result<f32> {
+fn number(token: &str, name: &'static str) -> Result<f32, CommandError> {
     token
         .parse()
-        .map_err(|error| anyhow!("{name}: invalid `{token}`: {error}"))
+        .map_err(|error| CommandError::invalid(name, token, error))
 }
 
-fn toggle(args: &[&str], usage: &str) -> Result<Option<bool>> {
+fn usage(form: &str) -> CommandError {
+    CommandError::Usage(form.into())
+}
+
+fn toggle(args: &[&str], form: &str) -> Result<Option<bool>, CommandError> {
     match args {
         [] => Ok(None),
         ["on"] => Ok(Some(true)),
         ["off"] => Ok(Some(false)),
-        _ => bail!("{usage}"),
+        _ => Err(usage(form)),
     }
 }
 
@@ -57,12 +60,15 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                 Ok(())
             }
             [token] => {
-                let mode = Mode::from_token(token)
-                    .ok_or_else(|| anyhow!("unknown demo `{token}` (try rotate|toybox)"))?;
+                let mode = Mode::from_token(token).ok_or_else(|| CommandError::Unknown {
+                    name: "demo",
+                    token: token.to_string(),
+                    choices: "rotate|toybox",
+                })?;
                 submit.app(Action::Mode(mode));
                 Ok(())
             }
-            _ => bail!("usage: demo [rotate|toybox]"),
+            _ => Err(usage("demo [rotate|toybox]")),
         },
     );
 
@@ -71,7 +77,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         "reset poses, rotation, and slice; shapes, view, and camera stay",
         move |args, submit, _out| {
             if !args.is_empty() {
-                bail!("usage: reset");
+                return Err(usage("reset"));
             }
             submit.app(Action::Reset);
             Ok(())
@@ -82,7 +88,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         "spin",
         "play or pause rotation; optional on | off",
         |args, submit, _out| {
-            submit.app(Action::Running(toggle(args, "usage: spin [on|off]")?));
+            submit.app(Action::Running(toggle(args, "spin [on|off]")?));
             Ok(())
         },
     );
@@ -94,11 +100,15 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         "set rotation time in seconds",
         |args, submit, _out| {
             let [token] = args else {
-                bail!("usage: seek <seconds>");
+                return Err(usage("seek <seconds>"));
             };
             let time = number(token, "seek")?;
             if !time.is_finite() || !(0.0..=MAX_SEEK_SECONDS).contains(&time) {
-                bail!("time must be between 0 and 1000000 seconds");
+                return Err(CommandError::OutOfRange {
+                    name: "seek",
+                    value: time,
+                    expected: "a time between 0 and 1000000 seconds",
+                });
             }
             submit.app(Action::Time(time));
             Ok(())
@@ -112,11 +122,11 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         "select the active shape by its slot",
         |args, submit, _out| {
             let [token] = args else {
-                bail!("usage: active <slot>");
+                return Err(usage("active <slot>"));
             };
             let slot = token
                 .parse()
-                .map_err(|error| anyhow!("active: invalid `{token}`: {error}"))?;
+                .map_err(|error| CommandError::invalid("active", token, error))?;
             submit.app(Action::Active(slot));
             Ok(())
         },
@@ -129,7 +139,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
             let single = match args {
                 ["shapes"] => false,
                 ["single"] => true,
-                _ => bail!("usage: view shapes|single"),
+                _ => return Err(usage("view shapes|single")),
             };
             submit.app(Action::View { single });
             Ok(())
@@ -138,11 +148,15 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
 
     app = app.command("slice", "set the w cross-section", |args, submit, _out| {
         let [token] = args else {
-            bail!("usage: slice <w>");
+            return Err(usage("slice <w>"));
         };
         let w = number(token, "slice")?;
         if !w.is_finite() {
-            bail!("slice must be finite");
+            return Err(CommandError::OutOfRange {
+                name: "slice",
+                value: w,
+                expected: "a finite w",
+            });
         }
         submit.app(Action::ExactSlice(w));
         Ok(())
@@ -170,7 +184,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
         "toybox debug drawing: debug [on|off]",
         |args, submit, _out| match args {
             ["debug", rest @ ..] => submit.setting(TOYBOX_DEBUG, rest),
-            _ => bail!("usage: toybox debug [on|off]"),
+            _ => Err(usage("toybox debug [on|off]")),
         },
     );
 
@@ -213,21 +227,25 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                 ["alpha", rest @ ..] => submit.number(WIREFRAME_OPACITY, rest)?,
                 ["color"] => submit.submit(WIREFRAME_COLOR.toggle()),
                 ["color", token] => {
-                    let mode = color(token).ok_or_else(|| {
-                        anyhow!("unknown color mode `{token}` (try vertex-gradient|unique-edge|w-depth)")
+                    let mode = color(token).ok_or_else(|| CommandError::Unknown {
+                        name: "wireframe color",
+                        token: token.to_string(),
+                        choices: "vertex-gradient|unique-edge|w-depth",
                     })?;
                     submit.submit(WIREFRAME_COLOR.set(mode));
                 }
                 ["perspective"] => submit.app(Action::NextProjection),
                 ["perspective", token] => {
-                    let family = projection(token).ok_or_else(|| {
-                        anyhow!("unknown projection `{token}` (try shadow|perspective|stereographic)")
+                    let family = projection(token).ok_or_else(|| CommandError::Unknown {
+                        name: "wireframe perspective",
+                        token: token.to_string(),
+                        choices: "shadow|perspective|stereographic",
                     })?;
                     submit.app(Action::Projection(family));
                 }
-                _ => bail!(
-                    "usage: wireframe [on|off|width [px]|alpha [value]|color [mode]|perspective [mode]]"
-                ),
+                _ => return Err(usage(
+                    "wireframe [on|off|width [px]|alpha [value]|color [mode]|perspective [mode]]",
+                )),
             }
             Ok(())
         },
@@ -249,7 +267,7 @@ pub(crate) fn install(mut app: SessionApp<Playground>) -> SessionApp<Playground>
                     ));
                 }),
                 ["perimeter", rest @ ..] => submit.setting(SECTION_PERIMETER, rest)?,
-                _ => bail!("usage: section perimeter [on|off]"),
+                _ => return Err(usage("section perimeter [on|off]")),
             }
             Ok(())
         },

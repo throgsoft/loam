@@ -8,8 +8,5 @@ authors.workspace = true
 repository.workspace = true
 description = "Developer console model: command registry, scrollback, tokenizer, tab completion. No UI dependency."
 
-[dependencies]
-anyhow.workspace = true
-
 [lints]
 workspace = true
