@@ -28,8 +28,8 @@ pub use loam_time::{Ease, Track};
 pub use loam_physics::body::MASK_ALL;
 #[cfg(feature = "physics")]
 pub use loam_physics::euclidean_r4::{
-    flush_halfspace4_body_r4, halfspace4_body_r4, polytope_body_r4, register_default_narrowphase,
-    regular_polytope4_inertia, regular_polytope_body_r4,
+    flush_halfspace4_body_r4, halfspace4_body_r4, polytope_body_r4, regular_polytope4_inertia,
+    regular_polytope_body_r4,
 };
 #[cfg(feature = "physics")]
 pub use loam_physics::manifold::PENETRATION_SLOP;

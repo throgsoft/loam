@@ -44,7 +44,7 @@ fn motion_speed(body: &RigidBody<EuclideanR4>) -> f32 {
 }
 
 pub(crate) fn physics_config() -> PhysicsConfig<EuclideanR4> {
-    PhysicsConfig::new(register_default_narrowphase)
+    PhysicsConfig::default()
         .gravity(Vec4::NEG_Y * GRAVITY)
         .grab(
             GrabConfig::new(GRAB_STIFFNESS, MAX_CARRY_SPEED, MAX_GRAB_ACCELERATION)
@@ -171,25 +171,10 @@ fn arena() -> [(Option<BodyDef<EuclideanR4>>, f32); 8] {
     ]
 }
 
-fn face_down(polytope: Polytope4) -> Rotor4 {
-    let topology = polytope.topology();
-    let mut centroid = Vec4::ZERO;
-    for index in topology.cells[0] {
-        centroid += topology.vertices[*index as usize];
-    }
-    Rotor4::from_rotation_arc(centroid.normalize(), -Vec4::Y)
-}
-
 pub(crate) fn pose_at(polytope: Polytope4, x: f32) -> Pose<EuclideanR4> {
-    let frame = face_down(polytope);
-    let lowest = polytope
-        .topology()
-        .vertices
-        .iter()
-        .map(|vertex| frame.apply(*vertex * BODY_SIZE).y)
-        .fold(f32::INFINITY, f32::min);
+    let (frame, reach) = polytope.resting(BODY_SIZE, -Vec4::Y);
     Pose {
-        point: Vec4::new(x, SPAWN_CLEARANCE - lowest, 0.0, 0.0),
+        point: Vec4::new(x, SPAWN_CLEARANCE + reach, 0.0, 0.0),
         frame,
     }
 }
@@ -201,10 +186,13 @@ fn asset_of(polytope: Polytope4, cards: &[Card]) -> Option<(ShapeEntry, Instance
         .and_then(|index| Some((SHAPE_CATALOG[index], cards.get(index)?.toy()?)))
 }
 
-pub(crate) fn body(polytope: Polytope4) -> Result<BodyDef<EuclideanR4>, Rejection> {
-    let body = regular_polytope_body_r4(polytope, BODY_SIZE, BODY_MASS)
-        .ok_or(Rejection::Unsupported("the toy collider"))?;
-    Ok(body.restitution(BODY_RESTITUTION)?)
+pub(crate) fn body(
+    dispatch: &Dispatch<'_, Playground>,
+    geometry: PreparedId,
+) -> Result<BodyDef<EuclideanR4>, Rejection> {
+    Ok(dispatch
+        .body_of(geometry, BODY_MASS)?
+        .restitution(BODY_RESTITUTION)?)
 }
 
 fn spawn_toy(
@@ -218,11 +206,12 @@ fn spawn_toy(
 ) -> Result<(), Rejection> {
     let centre = count.saturating_sub(1) as f32 * 0.5;
     let pose = pose_at(polytope, (at as f32 - centre) * SPAWN_SPACING);
+    let body = body(dispatch, instance.geometry)?;
     dispatch.spawn(
         SpawnBundle::new()
             .at(domain, pose)
             .instance(instance)
-            .body(body(polytope)?)
+            .body(body)
             .row(Slot {
                 index: at,
                 entry,

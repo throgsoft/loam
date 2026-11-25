@@ -172,13 +172,11 @@ pub(crate) fn boot(
         SimConfig::default(),
     );
     let domain = session.register_domain(
-        DomainBuilder::new(DOMAIN_NAME, EuclideanR4)
-            .physics(toy::physics_config())
-            .map_err(Rejection::from)?,
+        DomainBuilder::new(DOMAIN_NAME, EuclideanR4).physics(toy::physics_config())?,
     );
     let root = session.views().root_id();
 
-    let layers = session.dispatch(|d| -> Result<Layers, Rejection> {
+    let layers = session.try_dispatch(|d| {
         let cut = d.add_material(Material::lines(SECTION_COLOR, SECTION_WIDTH_PX));
         let cards: Arc<[Card]> = prepare_catalog(d, cut).into();
         for (index, entry) in row.iter().enumerate() {

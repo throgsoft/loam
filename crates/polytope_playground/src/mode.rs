@@ -186,13 +186,13 @@ pub(crate) fn set_shape(
     } else {
         None
     };
-    let body = polytope.map(toy::body).transpose()?;
     let geometry = if is_toy {
         card.toy_geometry
             .ok_or(Rejection::Unsupported("the toy has no prepared geometry"))?
     } else {
         card.geometry
     };
+    let body = is_toy.then(|| toy::body(dispatch, geometry)).transpose()?;
     let frame = dispatch
         .domains
         .typed(domain)?
