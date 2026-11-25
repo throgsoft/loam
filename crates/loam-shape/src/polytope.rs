@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
 
 use glam::{Vec3, Vec4};
+use loam_math::{Rotor as _, Rotor4};
 
 use crate::polytope_geom::{
     cell120_vertices, cell16_vertices, cell24_vertices, cell600_vertices, pentatope_vertices,
@@ -97,6 +98,22 @@ impl Polytope4 {
         }
         let inradius = inradius_sum / normals.len() as f32;
         (normals, inradius)
+    }
+
+    /// The frame that turns the first cell's outward normal onto the unit `down`, and how far the polytope at circumradius `size` then reaches along `down`.
+    pub fn resting(self, size: f32, down: Vec4) -> (Rotor4, f32) {
+        let topology = self.topology();
+        let mut centroid = Vec4::ZERO;
+        for index in topology.cells[0] {
+            centroid += topology.vertices[*index as usize];
+        }
+        let frame = Rotor4::from_rotation_arc(centroid.normalize(), down);
+        let reach = topology
+            .vertices
+            .iter()
+            .map(|vertex| frame.apply(*vertex * size).dot(down))
+            .fold(f32::NEG_INFINITY, f32::max);
+        (frame, reach)
     }
 }
 
