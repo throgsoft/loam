@@ -4,12 +4,15 @@ pub mod epa;
 pub mod epa_r4;
 pub mod gjk;
 pub mod gjk_r4;
+mod minkowski;
 mod simplex_r4;
 
 pub use crate::space::VectorOps;
-pub use epa::{epa, ContactInfo};
-pub use epa_r4::{epa_r4, ContactInfo4};
-pub use gjk::{gjk_intersect, ConvexHull, GjkResult, MinkowskiPoint, PosedHull, Sphere, SupportFn};
-pub use gjk_r4::{
-    gjk_intersect_r4, ConvexHull4, GjkResult4, MinkowskiPoint4, PosedHull4, Sphere4, SupportFn4,
+pub use epa::epa;
+pub use epa_r4::epa_r4;
+pub use gjk::gjk_intersect;
+pub use gjk_r4::gjk_intersect_r4;
+pub use minkowski::{
+    minkowski_support, ContactInfo, ConvexHull, GjkResult, MinkowskiPoint, PosedHull, Sphere,
+    SupportFn,
 };

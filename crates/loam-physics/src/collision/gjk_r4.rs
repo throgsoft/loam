@@ -2,29 +2,18 @@ use glam::Vec4;
 use loam_math::{Rotor, Rotor4};
 use loam_shape::shape::{convex_polytope4, hyper_sphere4};
 
+use super::minkowski::{
+    minkowski_support, ConvexHull, GjkResult, MinkowskiPoint, PosedHull, Sphere, SupportFn,
+};
 use super::simplex_r4::{closest_to_origin, project_origin_onto_affine_hull};
 
-pub trait SupportFn4 {
-    fn support(&self, direction: Vec4) -> Vec4;
-}
-
-pub struct ConvexHull4<'a> {
-    pub vertices: &'a [Vec4],
-}
-
-impl<'a> SupportFn4 for ConvexHull4<'a> {
+impl SupportFn<Vec4> for ConvexHull<'_, Vec4> {
     fn support(&self, direction: Vec4) -> Vec4 {
         convex_polytope4::support(self.vertices, direction)
     }
 }
 
-pub struct PosedHull4<'a> {
-    pub local: &'a [Vec4],
-    pub position: Vec4,
-    pub rotation: Rotor4,
-}
-
-impl SupportFn4 for PosedHull4<'_> {
+impl SupportFn<Vec4> for PosedHull<'_, Vec4, Rotor4> {
     fn support(&self, direction: Vec4) -> Vec4 {
         let local_dir = self.rotation.inverse().apply(direction);
         self.rotation
@@ -33,77 +22,42 @@ impl SupportFn4 for PosedHull4<'_> {
     }
 }
 
-pub struct Sphere4 {
-    pub center: Vec4,
-    pub radius: f32,
-}
-
-impl SupportFn4 for Sphere4 {
+impl SupportFn<Vec4> for Sphere<Vec4> {
     fn support(&self, direction: Vec4) -> Vec4 {
         hyper_sphere4::support(self.center, self.radius, direction)
     }
 }
 
-/// `sa` and `sb` are the contributing support points on A and B.
-#[derive(Clone, Copy, Debug)]
-pub struct MinkowskiPoint4 {
-    pub point: Vec4,
-    pub sa: Vec4,
-    pub sb: Vec4,
-}
-
-pub fn minkowski_support_r4<A: SupportFn4, B: SupportFn4>(
-    a: &A,
-    b: &B,
-    direction: Vec4,
-) -> MinkowskiPoint4 {
-    let sa = a.support(direction);
-    let sb = b.support(-direction);
-    MinkowskiPoint4 {
-        point: sa - sb,
-        sa,
-        sb,
-    }
-}
-
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub enum GjkResult4 {
-    Intersecting { simplex: [MinkowskiPoint4; 5] },
-    Separated,
-}
-
 const GJK_MAX_ITERATIONS: u32 = 48;
 const GJK_EPS: f32 = 1e-6;
 
-/// On overlap the returned 4-simplex is the seed EPA expects.
-pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
+pub fn gjk_intersect_r4<A: SupportFn<Vec4>, B: SupportFn<Vec4>>(
     a: &A,
     b: &B,
     initial_direction: Vec4,
-) -> GjkResult4 {
+) -> GjkResult<Vec4, 5> {
     let mut dir = if initial_direction.length_squared() > GJK_EPS {
         initial_direction
     } else {
         Vec4::X
     };
-    let mut simplex = [minkowski_support_r4(a, b, dir); 5];
+    let mut simplex = [minkowski_support(a, b, dir); 5];
     let mut len = 1;
     dir = -simplex[0].point;
 
     for _ in 0..GJK_MAX_ITERATIONS {
         if dir.length_squared() < GJK_EPS {
             if let Some(seed) = complete_simplex(a, b, simplex, len) {
-                return GjkResult4::Intersecting { simplex: seed };
+                return GjkResult::Intersecting { simplex: seed };
             }
         }
         let direction = dir.try_normalize().unwrap_or(Vec4::X);
-        let new_point = minkowski_support_r4(a, b, direction);
+        let new_point = minkowski_support(a, b, direction);
         if new_point.point.dot(direction) < 0.0 {
-            return GjkResult4::Separated;
+            return GjkResult::Separated;
         }
         if simplex[..len].iter().any(|p| p.point == new_point.point) {
-            return GjkResult4::Separated;
+            return GjkResult::Separated;
         }
         simplex[len] = new_point;
         len += 1;
@@ -115,19 +69,19 @@ pub fn gjk_intersect_r4<A: SupportFn4, B: SupportFn4>(
         }
         len = closest.kept().len();
         if len == 5 {
-            return GjkResult4::Intersecting { simplex };
+            return GjkResult::Intersecting { simplex };
         }
         dir = -closest.point;
     }
-    GjkResult4::Separated
+    GjkResult::Separated
 }
 
-fn complete_simplex<A: SupportFn4, B: SupportFn4>(
+fn complete_simplex<A: SupportFn<Vec4>, B: SupportFn<Vec4>>(
     a: &A,
     b: &B,
-    mut simplex: [MinkowskiPoint4; 5],
+    mut simplex: [MinkowskiPoint<Vec4>; 5],
     len: usize,
-) -> Option<[MinkowskiPoint4; 5]> {
+) -> Option<[MinkowskiPoint<Vec4>; 5]> {
     if len == 5 {
         let points = simplex.map(|p| p.point);
         let (_, weights) = project_origin_onto_affine_hull(&[0, 1, 2, 3, 4], &points)?;
@@ -138,7 +92,7 @@ fn complete_simplex<A: SupportFn4, B: SupportFn4>(
     }
     let probe = orthogonal_to_hull(&simplex[..len])?;
     for direction in [probe, -probe] {
-        let support = minkowski_support_r4(a, b, direction);
+        let support = minkowski_support(a, b, direction);
         if simplex[..len].iter().any(|p| p.point == support.point) {
             continue;
         }
@@ -150,7 +104,7 @@ fn complete_simplex<A: SupportFn4, B: SupportFn4>(
     None
 }
 
-fn orthogonal_to_hull(simplex: &[MinkowskiPoint4]) -> Option<Vec4> {
+fn orthogonal_to_hull(simplex: &[MinkowskiPoint<Vec4>]) -> Option<Vec4> {
     let mut onb = [Vec4::ZERO; 4];
     let mut rank = 0;
     for p in &simplex[1..] {
@@ -201,12 +155,12 @@ mod tests {
                 .iter()
                 .map(|v| rotation.apply(*v) + position)
                 .collect();
-            let posed = PosedHull4 {
+            let posed = PosedHull {
                 local: &local,
                 position,
                 rotation,
             };
-            let materialised = ConvexHull4 { vertices: &world };
+            let materialised = ConvexHull { vertices: &world };
             for dir in [
                 Vec4::X,
                 Vec4::W,
@@ -228,17 +182,17 @@ mod tests {
         use loam_shape::polytope_geom::tesseract_vertices;
 
         for gap in [1e-5, 1e-4, 5e-4, 1e-3] {
-            let a = Sphere4 {
+            let a = Sphere {
                 center: Vec4::ZERO,
                 radius: 1.0,
             };
-            let b = Sphere4 {
+            let b = Sphere {
                 center: Vec4::X * (2.0 + gap),
                 radius: 1.0,
             };
             for direction in [Vec4::X, -Vec4::X, Vec4::Y] {
                 assert!(
-                    matches!(gjk_intersect_r4(&a, &b, direction), GjkResult4::Separated),
+                    matches!(gjk_intersect_r4(&a, &b, direction), GjkResult::Separated),
                     "gap={gap}, direction={direction:?}"
                 );
             }
@@ -262,15 +216,15 @@ mod tests {
                 );
                 let b_vertices: Vec<_> = rotated.iter().map(|&v| v + translation).collect();
                 assert!(b_vertices.iter().all(|v| v.x > right_a));
-                let a = ConvexHull4 {
+                let a = ConvexHull {
                     vertices: &a_vertices,
                 };
-                let b = ConvexHull4 {
+                let b = ConvexHull {
                     vertices: &b_vertices,
                 };
                 for direction in [Vec4::Y, Vec4::Z, Vec4::new(0.31, -0.7, 0.5, 0.2)] {
                     assert!(
-                        matches!(gjk_intersect_r4(&a, &b, direction), GjkResult4::Separated),
+                        matches!(gjk_intersect_r4(&a, &b, direction), GjkResult::Separated),
                         "scale={scale}, gap={relative_gap}, direction={direction:?}"
                     );
                 }
@@ -282,11 +236,11 @@ mod tests {
             Vec4::new(1.1, 0.7, 0.0, 0.0),
             Vec4::new(1.1, 0.7, 0.3, 0.2),
         ] {
-            let a = Sphere4 {
+            let a = Sphere {
                 center: Vec4::ZERO,
                 radius: 2.0,
             };
-            let b = Sphere4 {
+            let b = Sphere {
                 center,
                 radius: 2.0,
             };
@@ -295,7 +249,7 @@ mod tests {
                 assert!(
                     matches!(
                         gjk_intersect_r4(&a, &b, direction),
-                        GjkResult4::Intersecting { .. }
+                        GjkResult::Intersecting { .. }
                     ),
                     "center={center:?}, direction={direction:?}"
                 );

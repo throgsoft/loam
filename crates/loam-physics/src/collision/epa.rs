@@ -1,6 +1,6 @@
 use glam::Vec3;
 
-use super::gjk::{minkowski_support, MinkowskiPoint, SupportFn};
+use super::minkowski::{minkowski_support, ContactInfo, MinkowskiPoint, SupportFn};
 
 const EPA_MAX_ITERATIONS: u32 = 48;
 
@@ -34,15 +34,6 @@ impl Thresholds {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ContactInfo {
-    /// Unit, world, from A toward B.
-    pub normal: Vec3,
-    pub penetration: f32,
-    /// Midpoint of the closest features on A and B, in world space.
-    pub point: Vec3,
-}
-
-#[derive(Clone, Copy, Debug)]
 struct Face {
     v: [usize; 3],
     normal: Vec3,
@@ -50,7 +41,7 @@ struct Face {
 }
 
 struct Polytope {
-    vertices: Vec<MinkowskiPoint>,
+    vertices: Vec<MinkowskiPoint<Vec3>>,
     faces: Vec<Face>,
     horizon: Vec<(usize, usize)>,
     interior: glam::Vec3,
@@ -58,7 +49,7 @@ struct Polytope {
 }
 
 impl Polytope {
-    fn from_tetra(tetra: [MinkowskiPoint; 4], thresholds: Thresholds) -> Self {
+    fn from_tetra(tetra: [MinkowskiPoint<Vec3>; 4], thresholds: Thresholds) -> Self {
         let vertices = tetra.to_vec();
         let interior = (tetra[0].point + tetra[1].point + tetra[2].point + tetra[3].point) * 0.25;
         let mut faces = Vec::with_capacity(4);
@@ -90,7 +81,7 @@ impl Polytope {
         Some(idx)
     }
 
-    fn expand(&mut self, support: MinkowskiPoint) {
+    fn expand(&mut self, support: MinkowskiPoint<Vec3>) {
         let new_idx = self.vertices.len();
         self.vertices.push(support);
 
@@ -127,7 +118,7 @@ impl Polytope {
 }
 
 fn build_face_vs_point(
-    verts: &[MinkowskiPoint],
+    verts: &[MinkowskiPoint<Vec3>],
     a: usize,
     b: usize,
     c: usize,
@@ -190,20 +181,20 @@ fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3, gram_floor: f32) -> (f32, f32
 }
 
 /// `scale` is the sum of the two bounding radii.
-pub fn epa<A: SupportFn, B: SupportFn>(
+pub fn epa<A: SupportFn<Vec3>, B: SupportFn<Vec3>>(
     a: &A,
     b: &B,
-    initial_simplex: [MinkowskiPoint; 4],
+    initial_simplex: [MinkowskiPoint<Vec3>; 4],
     scale: f32,
-) -> Option<ContactInfo> {
+) -> Option<ContactInfo<Vec3>> {
     let (polytope, face) = expand_to_boundary(a, b, initial_simplex, scale)?;
     Some(contact_from_face(&polytope, face))
 }
 
-fn expand_to_boundary<A: SupportFn, B: SupportFn>(
+fn expand_to_boundary<A: SupportFn<Vec3>, B: SupportFn<Vec3>>(
     a: &A,
     b: &B,
-    initial_simplex: [MinkowskiPoint; 4],
+    initial_simplex: [MinkowskiPoint<Vec3>; 4],
     scale: f32,
 ) -> Option<(Polytope, Face)> {
     let thresholds = Thresholds::for_scale(scale);
@@ -247,7 +238,7 @@ fn expand_to_boundary<A: SupportFn, B: SupportFn>(
     Some((polytope, face))
 }
 
-fn contact_from_face(polytope: &Polytope, face: Face) -> ContactInfo {
+fn contact_from_face(polytope: &Polytope, face: Face) -> ContactInfo<Vec3> {
     let v0 = polytope.vertices[face.v[0]];
     let v1 = polytope.vertices[face.v[1]];
     let v2 = polytope.vertices[face.v[2]];

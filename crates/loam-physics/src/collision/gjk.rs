@@ -1,28 +1,17 @@
 use glam::{Quat, Vec3};
 use loam_shape::shape::{convex_polytope3, sphere};
 
-pub trait SupportFn {
-    fn support(&self, direction: Vec3) -> Vec3;
-}
+use super::minkowski::{
+    minkowski_support, ConvexHull, GjkResult, MinkowskiPoint, PosedHull, Sphere, SupportFn,
+};
 
-pub struct ConvexHull<'a> {
-    pub vertices: &'a [Vec3],
-}
-
-impl<'a> SupportFn for ConvexHull<'a> {
+impl SupportFn<Vec3> for ConvexHull<'_, Vec3> {
     fn support(&self, direction: Vec3) -> Vec3 {
         convex_polytope3::support(self.vertices, direction)
     }
 }
 
-/// `rotation` must be a unit quaternion.
-pub struct PosedHull<'a> {
-    pub local: &'a [Vec3],
-    pub position: Vec3,
-    pub rotation: Quat,
-}
-
-impl SupportFn for PosedHull<'_> {
+impl SupportFn<Vec3> for PosedHull<'_, Vec3, Quat> {
     fn support(&self, direction: Vec3) -> Vec3 {
         let local_direction = self.rotation.conjugate() * direction;
         let hull = ConvexHull {
@@ -32,61 +21,27 @@ impl SupportFn for PosedHull<'_> {
     }
 }
 
-pub struct Sphere {
-    pub center: Vec3,
-    pub radius: f32,
-}
-
-impl SupportFn for Sphere {
+impl SupportFn<Vec3> for Sphere<Vec3> {
     fn support(&self, direction: Vec3) -> Vec3 {
         sphere::support(self.center, self.radius, direction)
     }
 }
 
-/// `sa` and `sb` are the contributing support points on A and B.
-#[derive(Clone, Copy, Debug)]
-pub struct MinkowskiPoint {
-    pub point: Vec3,
-    pub sa: Vec3,
-    pub sb: Vec3,
-}
-
-pub fn minkowski_support<A: SupportFn, B: SupportFn>(
-    a: &A,
-    b: &B,
-    direction: Vec3,
-) -> MinkowskiPoint {
-    let sa = a.support(direction);
-    let sb = b.support(-direction);
-    MinkowskiPoint {
-        point: sa - sb,
-        sa,
-        sb,
-    }
-}
-
-#[derive(Debug)]
-pub enum GjkResult {
-    Intersecting { simplex: [MinkowskiPoint; 4] },
-    Separated,
-}
-
 const GJK_MAX_ITERATIONS: u32 = 32;
 const GJK_EPS: f32 = 1e-6;
 
-/// On intersection the returned tetrahedron is the seed EPA expects.
-pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
+pub fn gjk_intersect<A: SupportFn<Vec3>, B: SupportFn<Vec3>>(
     a: &A,
     b: &B,
     initial_direction: Vec3,
-) -> GjkResult {
+) -> GjkResult<Vec3, 4> {
     let mut dir = if initial_direction.length_squared() > GJK_EPS {
         initial_direction
     } else {
         Vec3::X
     };
 
-    let mut simplex: [MinkowskiPoint; 4] = [MinkowskiPoint {
+    let mut simplex: [MinkowskiPoint<Vec3>; 4] = [MinkowskiPoint {
         point: Vec3::ZERO,
         sa: Vec3::ZERO,
         sb: Vec3::ZERO,
@@ -122,7 +77,7 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
 }
 
 // Newest point at `n-1` on entry; `simplex[0..new_n]` holds survivors on exit.
-fn do_simplex(simplex: &mut [MinkowskiPoint; 4], n: usize) -> (bool, usize, Vec3) {
+fn do_simplex(simplex: &mut [MinkowskiPoint<Vec3>; 4], n: usize) -> (bool, usize, Vec3) {
     match n {
         2 => do_line(simplex),
         3 => do_triangle(simplex),
@@ -131,7 +86,7 @@ fn do_simplex(simplex: &mut [MinkowskiPoint; 4], n: usize) -> (bool, usize, Vec3
     }
 }
 
-fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
+fn do_line(simplex: &mut [MinkowskiPoint<Vec3>; 4]) -> (bool, usize, Vec3) {
     let a = simplex[1].point;
     let b = simplex[0].point;
     let ab = b - a;
@@ -160,13 +115,13 @@ fn any_perpendicular(v: Vec3) -> Vec3 {
     }
 }
 
-fn fall_back_to_ab(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
+fn fall_back_to_ab(simplex: &mut [MinkowskiPoint<Vec3>; 4]) -> (bool, usize, Vec3) {
     simplex[0] = simplex[1];
     simplex[1] = simplex[2];
     do_line(simplex)
 }
 
-fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
+fn do_triangle(simplex: &mut [MinkowskiPoint<Vec3>; 4]) -> (bool, usize, Vec3) {
     let a = simplex[2].point;
     let b = simplex[1].point;
     let c = simplex[0].point;
@@ -198,7 +153,7 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
 }
 
 // Face normals use the opposite vertex; simplex pruning can change winding.
-fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
+fn do_tetrahedron(simplex: &mut [MinkowskiPoint<Vec3>; 4]) -> (bool, usize, Vec3) {
     let a = simplex[3].point;
     let b = simplex[2].point;
     let c = simplex[1].point;

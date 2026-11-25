@@ -1,18 +1,11 @@
 use glam::Vec4;
 
-use super::gjk_r4::{minkowski_support_r4, MinkowskiPoint4, SupportFn4};
+use super::minkowski::{minkowski_support, ContactInfo, MinkowskiPoint, SupportFn};
 use super::simplex_r4::project_origin_onto_affine_hull;
 
 const EPA_MAX_ITERATIONS: u32 = 96;
 
 const EPA_TOLERANCE: f32 = 1e-3;
-
-#[derive(Clone, Copy, Debug)]
-pub struct ContactInfo4 {
-    pub normal: Vec4,
-    pub penetration: f32,
-    pub point: Vec4,
-}
 
 #[derive(Clone, Copy, Debug)]
 struct Face4 {
@@ -39,7 +32,7 @@ impl Thresholds {
 }
 
 struct Polytope4 {
-    vertices: Vec<MinkowskiPoint4>,
+    vertices: Vec<MinkowskiPoint<Vec4>>,
     faces: Vec<Face4>,
     horizon: Vec<Triangle>,
     centroid: Vec4,
@@ -47,7 +40,7 @@ struct Polytope4 {
 }
 
 impl Polytope4 {
-    fn from_simplex(simplex: [MinkowskiPoint4; 5], thresholds: Thresholds) -> Self {
+    fn from_simplex(simplex: [MinkowskiPoint<Vec4>; 5], thresholds: Thresholds) -> Self {
         let vertices = simplex.to_vec();
         let centroid = (simplex[0].point
             + simplex[1].point
@@ -96,7 +89,7 @@ impl Polytope4 {
             .map(|(idx, _)| idx)
     }
 
-    fn expand(&mut self, support: MinkowskiPoint4) {
+    fn expand(&mut self, support: MinkowskiPoint<Vec4>) {
         let new_idx = self.vertices.len();
         self.vertices.push(support);
 
@@ -165,7 +158,7 @@ fn sort_triangle(t: Triangle) -> (usize, usize, usize) {
 
 // Orient against the centroid: GJK's tolerance can leave the origin on the wrong side of a face.
 fn build_face(
-    verts: &[MinkowskiPoint4],
+    verts: &[MinkowskiPoint<Vec4>],
     a: usize,
     b: usize,
     c: usize,
@@ -228,12 +221,12 @@ fn det3(
 }
 
 /// `scale` is the sum of the two bounding radii.
-pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
+pub fn epa_r4<A: SupportFn<Vec4>, B: SupportFn<Vec4>>(
     a: &A,
     b: &B,
-    initial_simplex: [MinkowskiPoint4; 5],
+    initial_simplex: [MinkowskiPoint<Vec4>; 5],
     scale: f32,
-) -> Option<ContactInfo4> {
+) -> Option<ContactInfo<Vec4>> {
     let thresholds = Thresholds::for_scale(scale);
 
     let p0 = initial_simplex[0].point;
@@ -252,7 +245,7 @@ pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
         let face_idx = polytope.closest_face()?;
         let face = polytope.faces[face_idx];
 
-        let support = minkowski_support_r4(a, b, face.normal);
+        let support = minkowski_support(a, b, face.normal);
         let new_distance = support.point.dot(face.normal);
 
         if !new_distance.is_finite() || !support.point.is_finite() {
@@ -282,7 +275,7 @@ fn det4(r0: Vec4, r1: Vec4, r2: Vec4, r3: Vec4) -> f32 {
         - r0.w * det3(r1.x, r1.y, r1.z, r2.x, r2.y, r2.z, r3.x, r3.y, r3.z)
 }
 
-fn contact_from_face(polytope: &Polytope4, face: Face4) -> ContactInfo4 {
+fn contact_from_face(polytope: &Polytope4, face: Face4) -> ContactInfo<Vec4> {
     let tetra = face.v.map(|i| polytope.vertices[i]);
 
     let closest = face.normal * face.distance;
@@ -295,7 +288,7 @@ fn contact_from_face(polytope: &Polytope4, face: Face4) -> ContactInfo4 {
         point_b += vertex.sb * w;
     }
 
-    ContactInfo4 {
+    ContactInfo {
         normal: face.normal,
         penetration: face.distance,
         point: (point_a + point_b) * 0.5,
@@ -312,7 +305,8 @@ fn face_barycentrics(points: &[Vec4; 4], closest: Vec4) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::gjk_r4::{gjk_intersect_r4, ConvexHull4, GjkResult4};
+    use super::super::gjk_r4::gjk_intersect_r4;
+    use super::super::minkowski::{ConvexHull, GjkResult};
     use super::*;
 
     #[test]
@@ -359,11 +353,11 @@ mod tests {
                     .into_iter()
                     .map(|v| v + Vec4::new(0.3 * s, 0.0, 0.0, 0.0))
                     .collect();
-                let a = ConvexHull4 { vertices: &va };
-                let b = ConvexHull4 { vertices: &vb };
+                let a = ConvexHull { vertices: &va };
+                let b = ConvexHull { vertices: &vb };
                 let simplex = match gjk_intersect_r4(&a, &b, Vec4::X) {
-                    GjkResult4::Intersecting { simplex } => simplex,
-                    GjkResult4::Separated => panic!("{name} at scale {s} should overlap"),
+                    GjkResult::Intersecting { simplex } => simplex,
+                    GjkResult::Separated => panic!("{name} at scale {s} should overlap"),
                 };
 
                 let scale = 2.0 * s;

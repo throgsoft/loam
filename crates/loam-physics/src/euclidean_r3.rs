@@ -213,7 +213,7 @@ fn sphere_halfspace_r3(
 }
 
 fn validate_contact(
-    info: &crate::collision::ContactInfo,
+    info: &crate::collision::ContactInfo<Vec3>,
     a: &RigidBody<EuclideanR3>,
     b: &RigidBody<EuclideanR3>,
 ) -> Option<Contact<EuclideanR3>> {

@@ -8,7 +8,7 @@ use loam_shape::shape::convex_polytope4;
 use loam_shape::{Shape, ShapeKind};
 
 use crate::body::{BodyDef, RigidBody};
-use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult4, PosedHull4, Sphere4 as GjkSphere4};
+use crate::collision::{epa_r4, gjk_intersect_r4, GjkResult, PosedHull, Sphere as GjkSphere};
 use crate::geometry::GeometryStore;
 use crate::manifold::PENETRATION_SLOP;
 use crate::narrowphase::Narrowphase;
@@ -260,7 +260,7 @@ fn polytope_halfspace_r4(
 }
 
 fn validate_contact4(
-    info: &crate::collision::ContactInfo4,
+    info: &crate::collision::ContactInfo<Vec4>,
     a: &RigidBody<EuclideanR4>,
     b: &RigidBody<EuclideanR4>,
 ) -> Option<Contact<EuclideanR4>> {
@@ -304,12 +304,12 @@ fn polytope_polytope_r4(
         return None;
     }
 
-    let hull_a = PosedHull4 {
+    let hull_a = PosedHull {
         local: va_local,
         position: a.position,
         rotation: a.orientation.rotation,
     };
-    let hull_b = PosedHull4 {
+    let hull_b = PosedHull {
         local: vb_local,
         position: b.position,
         rotation: b.orientation.rotation,
@@ -317,8 +317,8 @@ fn polytope_polytope_r4(
 
     let initial_dir = b.position - a.position;
     let simplex = match gjk_intersect_r4(&hull_a, &hull_b, initial_dir) {
-        GjkResult4::Intersecting { simplex } => simplex,
-        GjkResult4::Separated => return None,
+        GjkResult::Intersecting { simplex } => simplex,
+        GjkResult::Separated => return None,
     };
     let info = epa_r4(&hull_a, &hull_b, simplex, combined)?;
     validate_contact4(&info, a, b)
@@ -344,19 +344,19 @@ fn sphere_polytope_r4(
         return None;
     }
 
-    let support_a = GjkSphere4 {
+    let support_a = GjkSphere {
         center: a.position,
         radius,
     };
-    let support_b = PosedHull4 {
+    let support_b = PosedHull {
         local: vb_local,
         position: b.position,
         rotation: b.orientation.rotation,
     };
     let initial_dir = b.position - a.position;
     let simplex = match gjk_intersect_r4(&support_a, &support_b, initial_dir) {
-        GjkResult4::Intersecting { simplex } => simplex,
-        GjkResult4::Separated => return None,
+        GjkResult::Intersecting { simplex } => simplex,
+        GjkResult::Separated => return None,
     };
     let info = epa_r4(&support_a, &support_b, simplex, combined)?;
     validate_contact4(&info, a, b)
