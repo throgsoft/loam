@@ -9,6 +9,7 @@ use crate::domain::{
 use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
 use crate::image::Views;
 use crate::session::RestoreError;
+use crate::setting::OutOfRange;
 use crate::store::{Owner, StoreError};
 use crate::view::{ViewId, ViewMapping, ViewSpec};
 
@@ -30,7 +31,7 @@ impl fmt::Display for Outcome {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Rejection {
     Reserved(Entity),
     Capacity,
@@ -39,6 +40,7 @@ pub enum Rejection {
     Restore(RestoreError),
     Cancelled,
     Unsupported(&'static str),
+    OutOfRange(OutOfRange),
     /// A world-owned edit refused the command before any change.
     #[cfg(feature = "physics")]
     Edit(loam_physics::EditError),
@@ -54,6 +56,7 @@ impl fmt::Display for Rejection {
             Self::Restore(error) => fmt::Display::fmt(error, f),
             Self::Cancelled => f.write_str("cancelled by a reset"),
             Self::Unsupported(what) => write!(f, "unsupported: {what}"),
+            Self::OutOfRange(error) => fmt::Display::fmt(error, f),
             #[cfg(feature = "physics")]
             Self::Edit(error) => fmt::Display::fmt(error, f),
         }
@@ -72,6 +75,12 @@ impl From<StoreError> for Rejection {
     }
 }
 
+impl From<OutOfRange> for Rejection {
+    fn from(error: OutOfRange) -> Self {
+        Self::OutOfRange(error)
+    }
+}
+
 #[cfg(feature = "physics")]
 impl From<loam_physics::EditError> for Rejection {
     fn from(error: loam_physics::EditError) -> Self {
@@ -79,7 +88,7 @@ impl From<loam_physics::EditError> for Rejection {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CommandResult {
     pub request: RequestId,
     pub name: &'static str,

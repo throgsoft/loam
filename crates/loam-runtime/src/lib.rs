@@ -53,7 +53,7 @@ pub use relation::{Endpoints, Link, LinkId, Relation, RelationSnapshot};
 pub use session::{
     Growth, RestoreError, Session, SessionSnapshot, SimConfig, SimConfigError, DOMAIN_STEP,
 };
-pub use setting::Setting;
+pub use setting::{Number, OutOfRange, Setting};
 pub use store::{
     Change, Changes, Cursor, LogCapacity, Owner, Part, Partition, PartitionError, Parts, Removal,
     SchemaId, Store, StoreError, StoreField, StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,

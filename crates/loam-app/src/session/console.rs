@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::bail;
 use loam_console::{cmd, CommandLine, Console, ConsoleWriter, HistoryLine, LineKind};
 use loam_runtime::{
-    AppCommand, Backdrop, Command, CursorPolicy, Dispatch, FreeCamera, Outcome, Rejection, Rig,
-    Setting, Stores, Views,
+    AppCommand, Backdrop, Command, CursorPolicy, Dispatch, FreeCamera, Number, Outcome, Rejection,
+    Rig, Setting, Stores, Views,
 };
 
 use super::commands::{CommandSender, Report, Reported};
@@ -75,6 +75,18 @@ impl<A: Stores> Submit<A> {
                 None => bail!("{}", usage(setting)),
             },
             _ => bail!("{}", usage(setting)),
+        }
+        Ok(())
+    }
+
+    /// Parses the one argument as `f32` and submits [`Number::set`], which checks the range at the boundary.
+    pub fn number(&mut self, number: Number<A>, args: &[&str]) -> anyhow::Result<()> {
+        let [token] = args else {
+            bail!("usage: {} <number>", number.name);
+        };
+        match token.parse::<f32>() {
+            Ok(value) => self.submit(number.set(value)),
+            Err(_) => bail!("{}: invalid number {token}", number.name),
         }
         Ok(())
     }
@@ -233,6 +245,15 @@ impl<A: Stores> SessionConsole<A> {
             )
             .with_args(&[&names]),
         );
+    }
+
+    /// Registers a verb named after `number` that runs [`Submit::number`], so the name must be one word.
+    pub fn number(&mut self, number: Number<A>, help: &'static str) {
+        self.console.register(cmd(
+            number.name,
+            help,
+            move |args, submit: &mut Submit<A>, _out| submit.number(number, args),
+        ));
     }
 
     pub fn has(&self, name: &str) -> bool {

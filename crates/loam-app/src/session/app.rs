@@ -5,7 +5,7 @@ use loam_console::ConsoleWriter;
 use loam_egui::egui;
 use loam_render::pass::{FramePass, Section};
 use loam_runtime::{
-    ActionId, CursorPolicy, Eye, Growth, Input, Publication, Session, Setting, Stores,
+    ActionId, CursorPolicy, Eye, Growth, Input, Number, Publication, Session, Setting, Stores,
 };
 
 use super::commands::{CommandInbox, CommandSender};
@@ -312,6 +312,11 @@ impl<A: Stores> SessionApp<A> {
         help: &'static str,
     ) -> Self {
         self.console.setting(setting, help);
+        self
+    }
+
+    pub fn number(mut self, number: Number<A>, help: &'static str) -> Self {
+        self.console.number(number, help);
         self
     }
 
