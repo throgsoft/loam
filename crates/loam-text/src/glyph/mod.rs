@@ -8,6 +8,7 @@ pub use solid::{append_field_prism, GlyphSolid};
 
 use ab_glyph::{Font, FontRef, GlyphId};
 use glam::Vec2;
+use std::fmt;
 
 /// Finite so callers can still combine it with `min`/`max` without producing NaN.
 pub const BLANK_DISTANCE: f32 = 1.0e9;
@@ -15,29 +16,51 @@ pub const BLANK_DISTANCE: f32 = 1.0e9;
 /// Below this many cells per em the render bake cannot resolve a stem.
 pub const MIN_RESOLUTION: u32 = 4;
 
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GlyphError {
-    #[error("font has no glyph for {ch:?}")]
-    NoGlyph { ch: char },
-
-    #[error("{ch:?} is a control character; the glyph pipeline takes printable text only")]
-    ControlCharacter { ch: char },
-
-    #[error("outline for {ch:?} encloses no area")]
-    DegenerateOutline { ch: char },
-
-    #[error("font declares no units_per_em")]
+    NoGlyph {
+        ch: char,
+    },
+    ControlCharacter {
+        ch: char,
+    },
+    DegenerateOutline {
+        ch: char,
+    },
     NoUnitsPerEm,
-
-    #[error("GlyphParams::{field} must be finite and positive, got {value}")]
-    NonPositive { field: &'static str, value: f32 },
-
-    #[error("GlyphParams::{field} must be at least {MIN_RESOLUTION}, got {resolution}")]
+    NonPositive {
+        field: &'static str,
+        value: f32,
+    },
     Resolution {
         field: &'static str,
         resolution: u32,
     },
 }
+
+impl fmt::Display for GlyphError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoGlyph { ch } => write!(f, "font has no glyph for {ch:?}"),
+            Self::ControlCharacter { ch } => write!(
+                f,
+                "{ch:?} is a control character; the glyph pipeline takes printable text only"
+            ),
+            Self::DegenerateOutline { ch } => write!(f, "outline for {ch:?} encloses no area"),
+            Self::NoUnitsPerEm => f.write_str("font declares no units_per_em"),
+            Self::NonPositive { field, value } => write!(
+                f,
+                "GlyphParams::{field} must be finite and positive, got {value}"
+            ),
+            Self::Resolution { field, resolution } => write!(
+                f,
+                "GlyphParams::{field} must be at least {MIN_RESOLUTION}, got {resolution}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GlyphError {}
 
 /// All lengths are world units except [`Self::flatten_tolerance_em`].
 #[derive(Clone, Debug, PartialEq)]

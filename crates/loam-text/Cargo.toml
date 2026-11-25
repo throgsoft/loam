@@ -16,8 +16,6 @@ loam-render = { path = "../loam-render", version = "0.1.0" }
 wgpu       = { workspace = true }
 bytemuck   = { workspace = true }
 ab_glyph   = "0.2"
-anyhow     = { workspace = true }
-thiserror  = { workspace = true }
 glam       = { workspace = true }
 tracing    = { workspace = true }
 

@@ -11,8 +11,8 @@ use std::collections::HashMap;
 
 pub use ab_glyph;
 use ab_glyph::{Font, FontRef, Glyph, GlyphId, Point, ScaleFont};
-use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
+use std::fmt;
 use wgpu::*;
 
 const ATLAS_SIZE: u32 = 1024;
@@ -44,6 +44,36 @@ struct TextUniforms {
     _pad: [f32; 2],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextError {
+    Font(ab_glyph::InvalidFont),
+    BakeSize(f32),
+    GlyphTooLarge(char),
+    /// The char is the first glyph that did not fit.
+    AtlasFull(char),
+}
+
+impl fmt::Display for TextError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Font(error) => write!(f, "loam-text: failed to parse font: {error}"),
+            Self::BakeSize(size) => write!(
+                f,
+                "font bake size must be finite and positive, got {size}"
+            ),
+            Self::GlyphTooLarge(c) => {
+                write!(f, "glyph {c:?} exceeds the {ATLAS_SIZE} pixel atlas")
+            }
+            Self::AtlasFull(c) => write!(
+                f,
+                "loam-text: ASCII atlas exceeded {ATLAS_SIZE}x{ATLAS_SIZE} at glyph {c:?}; reduce bake_size_px or extend the packer"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TextError {}
+
 pub struct TextMetrics {
     advances: HashMap<char, f32>,
     bake_size_px: f32,
@@ -51,10 +81,9 @@ pub struct TextMetrics {
 }
 
 impl TextMetrics {
-    pub fn new(font_bytes: &[u8], bake_size_px: f32) -> Result<Self> {
+    pub fn new(font_bytes: &[u8], bake_size_px: f32) -> Result<Self, TextError> {
         validate_bake_size(bake_size_px)?;
-        let font = FontRef::try_from_slice(font_bytes)
-            .map_err(|e| anyhow!("loam-text: failed to parse font: {e}"))?;
+        let font = FontRef::try_from_slice(font_bytes).map_err(TextError::Font)?;
         Ok(Self::from_font(&font, bake_size_px))
     }
 
@@ -124,10 +153,9 @@ impl TextRenderer {
         surface_format: TextureFormat,
         font_bytes: &[u8],
         bake_size_px: f32,
-    ) -> Result<Self> {
+    ) -> Result<Self, TextError> {
         validate_bake_size(bake_size_px)?;
-        let font = FontRef::try_from_slice(font_bytes)
-            .map_err(|e| anyhow!("loam-text: failed to parse font: {e}"))?;
+        let font = FontRef::try_from_slice(font_bytes).map_err(TextError::Font)?;
 
         let atlas_tex = device.create_texture(&TextureDescriptor {
             label: Some("loam-text atlas"),
@@ -475,16 +503,14 @@ struct BakedAtlas {
     ascent_px: f32,
 }
 
-fn validate_bake_size(size: f32) -> Result<()> {
+fn validate_bake_size(size: f32) -> Result<(), TextError> {
     if !size.is_finite() || size <= 0.0 {
-        return Err(anyhow!(
-            "font bake size must be finite and positive, got {size}"
-        ));
+        return Err(TextError::BakeSize(size));
     }
     Ok(())
 }
 
-fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas> {
+fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas, TextError> {
     let scaled = font.as_scaled(bake_size_px);
 
     let mut atlas = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize];
@@ -525,7 +551,7 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                     continue;
                 }
                 if gw > ATLAS_SIZE - 2 * pad || gh > ATLAS_SIZE - 2 * pad {
-                    return Err(anyhow!("glyph {c:?} exceeds the {ATLAS_SIZE} pixel atlas"));
+                    return Err(TextError::GlyphTooLarge(c));
                 }
                 if shelf_x + gw + pad > ATLAS_SIZE {
                     shelf_y += shelf_h + pad;
@@ -533,10 +559,7 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                     shelf_h = 0;
                 }
                 if shelf_y + gh + pad > ATLAS_SIZE {
-                    return Err(anyhow!(
-                        "loam-text: ASCII atlas exceeded {ATLAS_SIZE}x{ATLAS_SIZE} at glyph {c:?}; \
-                         reduce bake_size_px or extend the packer"
-                    ));
+                    return Err(TextError::AtlasFull(c));
                 }
 
                 let dst_x = shelf_x;

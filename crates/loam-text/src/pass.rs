@@ -9,7 +9,7 @@ use loam_render::pass::{
 
 use wgpu::{CommandEncoder, Device, Queue};
 
-use crate::TextRenderer;
+use crate::{TextError, TextRenderer};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TextDraw {
@@ -24,7 +24,7 @@ struct State {
     text: String,
     draws: Vec<(Range<usize>, TextDraw)>,
     renderer: Option<TextRenderer>,
-    failure: Option<String>,
+    failure: Option<TextError>,
     device: Option<Device>,
     queue: Option<Queue>,
 }
@@ -58,8 +58,8 @@ impl TextPass {
         self.shared.borrow().renderer.is_some()
     }
 
-    pub fn failure(&self) -> Option<String> {
-        self.shared.borrow().failure.clone()
+    pub fn failure(&self) -> Option<TextError> {
+        self.shared.borrow().failure
     }
 }
 
@@ -151,9 +151,8 @@ impl FramePass for TextPass {
                 state.failure = None;
             }
             Err(error) => {
-                let failure = format!("{error:#}");
-                tracing::warn!("pass `{}` has no font: {failure}", self.name);
-                state.failure = Some(failure);
+                tracing::warn!("pass `{}` has no font: {error}", self.name);
+                state.failure = Some(error);
             }
         }
         state.device = Some(gpu.device.clone());

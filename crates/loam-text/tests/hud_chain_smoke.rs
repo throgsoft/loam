@@ -1,7 +1,7 @@
 //! Only the wgpu half needs a device, and only it is `#[ignore]`d. The
 //! `gpu_probe` suffix is what CI's software-adapter job selects on.
 
-use loam_text::TextRenderer;
+use loam_text::{TextError, TextRenderer};
 use wgpu::{Device, Queue, TextureFormat, TextureView};
 
 const TARGET_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
@@ -12,7 +12,7 @@ fn draw_hud_frame(
     queue: &Queue,
     view: &TextureView,
     font_bytes: &[u8],
-) -> anyhow::Result<()> {
+) -> Result<(), TextError> {
     let mut text = TextRenderer::new(device, queue, TARGET_FORMAT, font_bytes, 48.0)?;
     text.queue("fps 240", [16.0, 16.0], 32.0, [1.0, 1.0, 1.0, 1.0]);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
