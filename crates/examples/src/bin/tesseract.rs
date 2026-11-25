@@ -25,7 +25,7 @@ fn build(args: Args) -> Result<(Session<TesseractStores>, SessionApp<TesseractSt
 
     session.try_dispatch(|d| {
         let spin = Spin {
-            omega: Bivector4::basis(2) * SPIN_RATE,
+            omega: Plane4::Xw.unit_bivector() * SPIN_RATE,
         };
         d.spawn(
             SpawnBundle::new()

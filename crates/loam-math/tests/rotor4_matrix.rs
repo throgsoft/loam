@@ -1,16 +1,16 @@
 use std::f32::consts::FRAC_PI_2;
 
 use glam::Vec4;
-use loam_math::{Bivector, Bivector4, Rotor4};
+use loam_math::{Bivector, Plane4, Rotor4};
 
 #[test]
 fn near_half_turn_and_reflection() {
     let flip = Rotor4::from_rotation_arc(Vec4::W, -Vec4::W);
-    let tilted = |plane: usize| (Bivector4::basis(plane) * (FRAC_PI_2 * 0.05)).exp() * flip;
+    let tilted = |plane: Plane4| (plane.unit_bivector() * (FRAC_PI_2 * 0.05)).exp() * flip;
     let rotors = [
-        tilted(0),
-        tilted(1),
-        tilted(3),
+        tilted(Plane4::Xy),
+        tilted(Plane4::Xz),
+        tilted(Plane4::Yz),
         Rotor4 {
             s: -4.37e-8,
             xy: -2.19e-10,

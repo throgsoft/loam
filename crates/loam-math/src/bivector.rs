@@ -323,13 +323,6 @@ impl Bivector4 {
         }
     }
 
-    /// Panics if `i >= 6`; [`Plane4::unit_bivector`] is the typed form.
-    pub fn basis(i: usize) -> Self {
-        let mut c = [0.0_f32; 6];
-        c[i] = 1.0;
-        Self::new(c[0], c[1], c[2], c[3], c[4], c[5])
-    }
-
     pub fn magnitude_squared(self) -> f32 {
         self.xy * self.xy
             + self.xz * self.xz
@@ -441,7 +434,15 @@ impl Plane4 {
     }
 
     pub fn unit_bivector(self) -> Bivector4 {
-        Bivector4::basis(self as usize)
+        let zero = Bivector4::ZERO;
+        match self {
+            Self::Xy => Bivector4 { xy: 1.0, ..zero },
+            Self::Xz => Bivector4 { xz: 1.0, ..zero },
+            Self::Xw => Bivector4 { xw: 1.0, ..zero },
+            Self::Yz => Bivector4 { yz: 1.0, ..zero },
+            Self::Yw => Bivector4 { yw: 1.0, ..zero },
+            Self::Zw => Bivector4 { zw: 1.0, ..zero },
+        }
     }
 }
 
@@ -1082,7 +1083,7 @@ mod tests {
         let v2 = Vec4::new(0.0, 0.0, root_half, -root_half);
         let [oblique, orthogonal] = nondegenerate_plane_pairs();
         [
-            (Bivector4::basis(0), Bivector4::basis(5)),
+            (Plane4::Xy.unit_bivector(), Plane4::Zw.unit_bivector()),
             (Bivector4::wedge(u1, v1), Bivector4::wedge(v2, u2)),
             oblique,
             orthogonal,
