@@ -6,7 +6,9 @@ use wgpu::{Color, CommandEncoder, Queue, RenderPass};
 
 use super::{horizon, SkyGroundNode, SkyGroundUniforms, DEFAULT_SKY};
 use crate::device::GpuContext;
-use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
+use crate::pass::{
+    ColorLoad, FrameFormat, FramePass, FrameTarget, PassFault, PassStage, PublishedFrame,
+};
 use crate::{DepthConvention, Viewport};
 
 struct State {
@@ -102,7 +104,7 @@ impl FramePass for SkyGroundPass {
         &mut self,
         _encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let state = &mut *self.shared.borrow_mut();
         let (Some(built), Some(backdrop)) = (state.built.as_mut(), state.backdrop) else {
             return Ok(());
@@ -119,7 +121,11 @@ impl FramePass for SkyGroundPass {
         Ok(())
     }
 
-    fn draw(&mut self, pass: &mut RenderPass<'_>, target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn draw(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        target: &FrameTarget<'_>,
+    ) -> Result<(), PassFault> {
         let state = self.shared.borrow();
         if let (Some(built), Some(_)) = (state.built.as_ref(), state.backdrop) {
             built
@@ -133,7 +139,7 @@ impl FramePass for SkyGroundPass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let Some(depth) = target.depth else {
             return Ok(());
         };
@@ -150,7 +156,7 @@ impl FramePass for SkyGroundPass {
         Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         state.built = Some(Built {
             node: SkyGroundNode::new(

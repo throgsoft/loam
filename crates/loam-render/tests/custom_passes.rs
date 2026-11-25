@@ -2,7 +2,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use loam_render::device::{FeatureRequest, GpuContext};
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
+use loam_render::pass::{
+    FrameFormat, FramePass, FrameTarget, PassFault, PassStage, PublishedFrame,
+};
 use loam_render::present::Presenter;
 use wgpu::*;
 
@@ -71,9 +73,9 @@ impl FramePass for Paint {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let Some(pipeline) = self.pipeline.as_ref() else {
-            anyhow::bail!("paint recorded before attach");
+            return Err(PassFault::Unattached);
         };
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("paint"),
@@ -95,7 +97,7 @@ impl FramePass for Paint {
         Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         self.attaches.fetch_add(1, Ordering::Relaxed);
         let shader = gpu.device.create_shader_module(ShaderModuleDescriptor {
             label: Some("paint"),

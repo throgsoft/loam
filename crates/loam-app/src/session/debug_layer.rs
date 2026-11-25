@@ -6,7 +6,7 @@ use std::sync::Arc;
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use loam_egui::egui;
 use loam_render::device::GpuContext;
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassFault, PassStage};
 use loam_runtime::Stores;
 use wgpu::{
     CommandBuffer, CommandEncoder, Device, Queue, Texture, TextureFormat, TextureView,
@@ -263,10 +263,14 @@ impl Layer {
         });
     }
 
-    fn paint(&mut self, encoder: &mut CommandEncoder, target: &TextureView) -> anyhow::Result<()> {
+    fn paint(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        target: &TextureView,
+    ) -> Result<(), PassFault> {
         let view = self.view.take();
         if self.view_format.is_some() && view.is_none() {
-            anyhow::bail!("the debug layer was not aimed at this frame's texture");
+            return Err(PassFault::Unaimed);
         }
         let target = view.as_ref().unwrap_or(target);
         for (id, delta) in &self.textures.set {
@@ -314,10 +318,10 @@ fn retain_managed_texture(
     textures: &mut HashMap<egui::TextureId, ManagedTexture>,
     id: egui::TextureId,
     delta: &egui::epaint::ImageDelta,
-) -> anyhow::Result<()> {
-    if !matches!(id, egui::TextureId::Managed(_)) {
+) -> Result<(), PassFault> {
+    let egui::TextureId::Managed(managed) = id else {
         return Ok(());
-    }
+    };
     let Some(pos) = delta.pos else {
         textures.insert(
             id,
@@ -330,7 +334,7 @@ fn retain_managed_texture(
     };
     let texture = textures
         .get_mut(&id)
-        .ok_or_else(|| anyhow::anyhow!("managed texture {id:?} has no full image"))?;
+        .ok_or(PassFault::MissingImage(managed))?;
     let egui::ImageData::Color(image) = &mut texture.image;
     let egui::ImageData::Color(patch) = &delta.image;
     let end_x = pos[0]
@@ -340,7 +344,7 @@ fn retain_managed_texture(
         .checked_add(patch.size[1])
         .filter(|end| *end <= image.size[1]);
     if end_x.is_none() || end_y.is_none() {
-        anyhow::bail!("managed texture {id:?} partial update is out of bounds");
+        return Err(PassFault::ImageBounds(managed));
     }
     let image = Arc::make_mut(image);
     for row in 0..patch.size[1] {
@@ -619,11 +623,11 @@ impl FramePass for LayerPass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         self.shared.borrow_mut().paint(encoder, target.color)
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         let mut layer = self.shared.borrow_mut();
         layer.device = gpu.device.clone();
         layer.queue = gpu.queue.clone();

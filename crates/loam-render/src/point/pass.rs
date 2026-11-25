@@ -8,7 +8,7 @@ use loam_shape::PointMesh;
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassFault, PassStage, PublishedFrame};
 use crate::{DepthConvention, DepthMode, PointRasterNode};
 
 struct State {
@@ -110,7 +110,7 @@ impl FramePass for PointPass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         let State {
             eye,
@@ -141,7 +141,7 @@ impl FramePass for PointPass {
         Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         state.built = Some(Built {
             node: PointRasterNode::new(

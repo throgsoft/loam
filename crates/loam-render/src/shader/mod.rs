@@ -1,21 +1,48 @@
-#[derive(Debug, thiserror::Error)]
+use std::fmt;
+
+#[derive(Debug)]
 pub enum WgslValidationError {
-    #[error("WGSL parse error: {0}")]
-    Parse(#[from] naga::front::wgsl::ParseError),
-    #[error("WGSL validation error: {0}")]
+    Parse(naga::front::wgsl::ParseError),
     Validate(Box<naga::WithSpan<naga::valid::ValidationError>>),
-    #[error("WGSL is missing {stage:?} entry point `{name}`")]
     EntryPoint {
         stage: naga::ShaderStage,
         name: &'static str,
     },
-    #[error("WGSL binding {group}:{binding} must use {expected:?}; found {found:?}")]
     Binding {
         group: u32,
         binding: u32,
         expected: naga::AddressSpace,
         found: Option<naga::AddressSpace>,
     },
+}
+
+impl fmt::Display for WgslValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse(error) => write!(f, "WGSL parse error: {error}"),
+            Self::Validate(error) => write!(f, "WGSL validation error: {error}"),
+            Self::EntryPoint { stage, name } => {
+                write!(f, "WGSL is missing {stage:?} entry point `{name}`")
+            }
+            Self::Binding {
+                group,
+                binding,
+                expected,
+                found,
+            } => write!(
+                f,
+                "WGSL binding {group}:{binding} must use {expected:?}; found {found:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WgslValidationError {}
+
+impl From<naga::front::wgsl::ParseError> for WgslValidationError {
+    fn from(error: naga::front::wgsl::ParseError) -> Self {
+        Self::Parse(error)
+    }
 }
 
 const RAYMARCH_BINDINGS: &[(u32, u32, naga::AddressSpace)] = &[(0, 0, naga::AddressSpace::Uniform)];

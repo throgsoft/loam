@@ -10,8 +10,9 @@ use wgpu::{
 };
 
 use crate::depth::DEPTH_CLEAR;
-use crate::device::{GpuContext, LossSignal, UncapturedGpuError};
+use crate::device::{GpuContext, LossSignal, MissingGpuCapability, UncapturedGpuError};
 use crate::gpu_timer::SectionTimer;
+use crate::shader::WgslValidationError;
 use crate::DepthConvention;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -36,21 +37,80 @@ impl fmt::Display for PassPhase {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+/// Why one pass could not attach or record.
+#[derive(Debug)]
+pub enum PassFault {
+    /// The device raised an error while the pass ran.
+    Gpu(UncapturedGpuError),
+    Capability(MissingGpuCapability),
+    Shader(WgslValidationError),
+    /// The text names the buffer.
+    StagingBuffer(&'static str),
+    Unattached,
+    /// The pass was not given this frame's target before it recorded.
+    Unaimed,
+    /// The id names an image that had a partial update before any full upload.
+    MissingImage(u64),
+    /// The id names an image whose partial update falls outside it.
+    ImageBounds(u64),
+}
+
+impl fmt::Display for PassFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Gpu(error) => fmt::Display::fmt(error, f),
+            Self::Capability(error) => fmt::Display::fmt(error, f),
+            Self::Shader(error) => fmt::Display::fmt(error, f),
+            Self::StagingBuffer(buffer) => write!(f, "the {buffer} staging buffer did not map"),
+            Self::Unattached => f.write_str("the pass recorded before it attached"),
+            Self::Unaimed => f.write_str("the pass was not aimed at this frame's target"),
+            Self::MissingImage(image) => {
+                write!(f, "image {image} had a partial update before a full upload")
+            }
+            Self::ImageBounds(image) => {
+                write!(f, "a partial update of image {image} is out of bounds")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PassFault {}
+
+impl From<MissingGpuCapability> for PassFault {
+    fn from(error: MissingGpuCapability) -> Self {
+        Self::Capability(error)
+    }
+}
+
+impl From<WgslValidationError> for PassFault {
+    fn from(error: WgslValidationError) -> Self {
+        Self::Shader(error)
+    }
+}
+
+#[derive(Debug)]
 pub enum PassExecutionError {
-    #[error("pass `{pass}` failed during {phase}: {source:#}")]
     Pass {
         pass: &'static str,
         phase: PassPhase,
-        #[source]
-        source: anyhow::Error,
+        fault: PassFault,
     },
-    #[error("GPU work outside a pass failed: {source:#}")]
-    Backend {
-        #[source]
-        source: anyhow::Error,
-    },
+    /// The device raised an error between passes.
+    Backend(UncapturedGpuError),
 }
+
+impl fmt::Display for PassExecutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pass { pass, phase, fault } => {
+                write!(f, "pass `{pass}` failed during {phase}: {fault}")
+            }
+            Self::Backend(error) => write!(f, "GPU work outside a pass failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PassExecutionError {}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FrameFormat {
@@ -115,7 +175,7 @@ pub trait FramePass {
         &mut self,
         _encoder: &mut CommandEncoder,
         _target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         Ok(())
     }
 
@@ -124,7 +184,7 @@ pub trait FramePass {
         &mut self,
         _pass: &mut RenderPass<'_>,
         _target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         Ok(())
     }
 
@@ -132,9 +192,9 @@ pub trait FramePass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), PassFault>;
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()>;
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault>;
 
     /// Runs once per presented frame before it records.
     fn read(&mut self, _frame: &PublishedFrame<'_>) {}
@@ -493,30 +553,20 @@ fn run_pass<T>(
     signal: Option<&LossSignal>,
     pass: &'static str,
     phase: PassPhase,
-    body: impl FnOnce() -> anyhow::Result<T>,
+    body: impl FnOnce() -> Result<T, PassFault>,
 ) -> Result<T, PassExecutionError> {
-    if let Some(source) = signal.and_then(LossSignal::take_error) {
-        return Err(backend_error(source));
+    if let Some(error) = signal.and_then(LossSignal::take_error) {
+        return Err(PassExecutionError::Backend(error));
     }
     let outcome = body();
-    if let Some(source) = signal.and_then(LossSignal::take_error) {
+    if let Some(error) = signal.and_then(LossSignal::take_error) {
         return Err(PassExecutionError::Pass {
             pass,
             phase,
-            source: source.into(),
+            fault: PassFault::Gpu(error),
         });
     }
-    outcome.map_err(|source| PassExecutionError::Pass {
-        pass,
-        phase,
-        source,
-    })
-}
-
-fn backend_error(source: UncapturedGpuError) -> PassExecutionError {
-    PassExecutionError::Backend {
-        source: source.into(),
-    }
+    outcome.map_err(|fault| PassExecutionError::Pass { pass, phase, fault })
 }
 
 fn time_section<T>(
@@ -695,11 +745,11 @@ mod tests {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
             let shader = gpu
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -785,11 +835,11 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             Ok(())
         }
     }
@@ -836,11 +886,11 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             Ok(())
         }
     }
@@ -864,11 +914,11 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             Ok(())
         }
     }
@@ -891,15 +941,15 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             self.recorded
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             if self.fail.load(std::sync::atomic::Ordering::Relaxed) {
-                anyhow::bail!("the pass could not build its resources");
+                return Err(PassFault::Unattached);
             }
             Ok(())
         }
@@ -1049,11 +1099,11 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             Ok(())
         }
     }

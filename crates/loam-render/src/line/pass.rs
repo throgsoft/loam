@@ -6,7 +6,7 @@ use loam_runtime::{Eye, SegmentRecord};
 use wgpu::{CommandEncoder, Device, Queue, RenderPass};
 
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassFault, PassStage, PublishedFrame};
 use crate::{DepthConvention, DepthMode, LineRasterNode};
 
 struct State {
@@ -98,7 +98,7 @@ impl FramePass for LinePass {
         &mut self,
         _encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         let State {
             eye,
@@ -126,7 +126,11 @@ impl FramePass for LinePass {
         Ok(())
     }
 
-    fn draw(&mut self, pass: &mut RenderPass<'_>, _target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn draw(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        _target: &FrameTarget<'_>,
+    ) -> Result<(), PassFault> {
         if let Some(built) = self.shared.borrow().built.as_ref() {
             built.node.draw(pass, None);
         }
@@ -137,7 +141,7 @@ impl FramePass for LinePass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let Some(depth) = target.depth else {
             return Ok(());
         };
@@ -148,7 +152,7 @@ impl FramePass for LinePass {
         Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         state.built = Some(Built {
             node: LineRasterNode::new(

@@ -8,7 +8,9 @@ use super::{
     hyperslice_ground_wgsl, shape_id, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
 };
 use crate::device::GpuContext;
-use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
+use crate::pass::{
+    ColorLoad, FrameFormat, FramePass, FrameTarget, PassFault, PassStage, PublishedFrame,
+};
 use crate::sky_ground::DEFAULT_SKY;
 use crate::{DepthConvention, DepthMode, Viewport};
 
@@ -127,7 +129,7 @@ impl FramePass for HyperslicePass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         let State {
             uniforms,
@@ -167,7 +169,7 @@ impl FramePass for HyperslicePass {
         Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         crate::shader::validate_hyperslice_wgsl(&state.source)?;
         let module = gpu

@@ -5,7 +5,9 @@ use wgpu::{CommandEncoder, Queue};
 
 use super::{RayMarchNode, RayMarchUniforms};
 use crate::device::GpuContext;
-use crate::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
+use crate::pass::{
+    ColorLoad, FrameFormat, FramePass, FrameTarget, PassFault, PassStage, PublishedFrame,
+};
 use crate::Viewport;
 
 struct State {
@@ -57,7 +59,7 @@ impl FramePass for RaymarchPass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         let State {
             uniforms, built, ..
@@ -87,7 +89,7 @@ impl FramePass for RaymarchPass {
         };
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         crate::shader::validate_raymarch_wgsl(&state.source)?;
         let module = gpu

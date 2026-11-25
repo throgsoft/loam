@@ -19,7 +19,7 @@ pub use hyperslice::HyperslicePass;
 pub use line::{LinePass, LineRasterNode, LineRasterUniforms};
 pub use pass::{
     ColorLoad, FrameFormat, FramePass, FrameTarget, GpuTime, PassError, PassExecutionError,
-    PassPhase, PassSchedule, PassStage, Section,
+    PassFault, PassPhase, PassSchedule, PassStage, Section,
 };
 pub use point::{PointInstance, PointPass, PointRasterNode, PointRasterUniforms};
 pub use present::Presenter;

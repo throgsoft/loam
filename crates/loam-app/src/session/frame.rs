@@ -657,7 +657,7 @@ mod tests {
     use glam::Vec4;
     use loam_math::EuclideanR4;
     use loam_render::device::FeatureRequest;
-    use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+    use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassFault, PassStage};
     use loam_runtime::{
         ActionId, Command, DomainBuilder, FreeCamera, LogCapacity, Material, Phase, PointerPhase,
         Pose, PreparedGeometry, Rig, Section4, SimConfig, SpawnBundle, Tick, ViewSpec,
@@ -702,12 +702,12 @@ mod tests {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             self.recorded.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             self.rebuilt.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }

@@ -1393,7 +1393,6 @@ dependencies = [
 name = "loam-render"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bytemuck",
  "glam",
  "loam-math",
@@ -1402,7 +1401,6 @@ dependencies = [
  "loam-time",
  "naga",
  "pollster",
- "thiserror 1.0.69",
  "tracing",
  "web-time",
  "wgpu",

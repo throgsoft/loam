@@ -3,7 +3,9 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use loam_render::device::GpuContext;
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage, PublishedFrame};
+use loam_render::pass::{
+    FrameFormat, FramePass, FrameTarget, PassFault, PassStage, PublishedFrame,
+};
 
 use wgpu::{CommandEncoder, Device, Queue};
 
@@ -98,7 +100,7 @@ impl FramePass for TextPass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         if state.draws.is_empty() {
             return Ok(());
@@ -134,7 +136,7 @@ impl FramePass for TextPass {
         Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         state.renderer = None;
         match TextRenderer::new(

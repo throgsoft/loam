@@ -3,13 +3,12 @@ mod polytope_data;
 pub use pass::HyperslicePass;
 pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
 
-use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use loam_math::Rotor4;
 use std::fmt::Write;
 use wgpu::*;
 
-use crate::pass::ColorLoad;
+use crate::pass::{ColorLoad, PassFault};
 
 pub fn shape_id(shape: loam_shape::FieldShape) -> u32 {
     use loam_shape::polytope::Polytope4;
@@ -525,7 +524,7 @@ impl Hyperslice4DNode {
         view: &wgpu::TextureView,
         cells: &[(crate::Viewport, f32, BodyUniform)],
         load: ColorLoad,
-    ) -> Result<()> {
+    ) -> Result<(), PassFault> {
         let drawn = cells
             .iter()
             .filter(|(viewport, _, _)| viewport.width != 0 && viewport.height != 0)
@@ -547,14 +546,14 @@ impl Hyperslice4DNode {
         let strip = self
             .strip_cells
             .as_ref()
-            .context("missing strip uniform storage")?;
+            .expect("the strip storage was sized just above");
 
         {
             let upload_size = BufferSize::new(drawn as u64 * strip.stride)
-                .context("empty strip uniform storage")?;
+                .expect("a drawn strip has at least one cell of nonzero stride");
             let mut staging = queue
                 .write_buffer_with(&strip.buffer, 0, upload_size)
-                .context("mapping the filmstrip's per-cell uniform staging buffer")?;
+                .ok_or(PassFault::StagingBuffer("filmstrip cell uniform"))?;
             let mut slot = 0usize;
             for (viewport, w_slice, _) in cells {
                 if viewport.width == 0 || viewport.height == 0 {
@@ -569,11 +568,11 @@ impl Hyperslice4DNode {
         }
 
         {
-            let upload_size =
-                BufferSize::new(drawn as u64 * BODY_SIZE).context("empty strip body storage")?;
+            let upload_size = BufferSize::new(drawn as u64 * BODY_SIZE)
+                .expect("a drawn strip has at least one body of nonzero size");
             let mut staging = queue
                 .write_buffer_with(&strip.bodies, 0, upload_size)
-                .context("mapping the filmstrip's per-cell body staging buffer")?;
+                .ok_or(PassFault::StagingBuffer("filmstrip cell body"))?;
             let mut slot = 0usize;
             for (viewport, _, body) in cells {
                 if viewport.width == 0 || viewport.height == 0 {

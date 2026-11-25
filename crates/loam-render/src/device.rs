@@ -1,4 +1,3 @@
-use anyhow::Result;
 use std::fmt;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
@@ -29,7 +28,7 @@ impl FeatureRequest {
         &self,
         adapter_features: Features,
         adapter_limits: &Limits,
-    ) -> std::result::Result<Features, MissingGpuCapability> {
+    ) -> Result<Features, MissingGpuCapability> {
         let missing = self.required_features - adapter_features;
         if !missing.is_empty() {
             return Err(MissingGpuCapability::Feature(missing));
@@ -83,6 +82,44 @@ impl fmt::Display for MissingGpuCapability {
 }
 
 impl std::error::Error for MissingGpuCapability {}
+
+/// Why a GPU context could not be made or remade.
+#[derive(Debug)]
+pub enum GpuSetupError {
+    Adapter(RequestAdapterError),
+    Capability(MissingGpuCapability),
+    Device(RequestDeviceError),
+}
+
+impl fmt::Display for GpuSetupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Adapter(error) => write!(f, "no GPU adapter: {error}"),
+            Self::Capability(error) => fmt::Display::fmt(error, f),
+            Self::Device(error) => write!(f, "the GPU device request failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for GpuSetupError {}
+
+impl From<RequestAdapterError> for GpuSetupError {
+    fn from(error: RequestAdapterError) -> Self {
+        Self::Adapter(error)
+    }
+}
+
+impl From<MissingGpuCapability> for GpuSetupError {
+    fn from(error: MissingGpuCapability) -> Self {
+        Self::Capability(error)
+    }
+}
+
+impl From<RequestDeviceError> for GpuSetupError {
+    fn from(error: RequestDeviceError) -> Self {
+        Self::Device(error)
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn noop_context() -> GpuContext {
@@ -181,7 +218,7 @@ impl GpuContext {
         instance: Instance,
         request: FeatureRequest,
         compatible_surface: Option<&Surface<'_>>,
-    ) -> Result<Self> {
+    ) -> Result<Self, GpuSetupError> {
         let adapter = instance
             .request_adapter(&RequestAdapterOptions {
                 compatible_surface,
@@ -213,7 +250,7 @@ impl GpuContext {
     }
 
     /// A new device from the same adapter and request; the old device's work is cancelled and its late callbacks are ignored.
-    pub async fn recover(&mut self) -> Result<()> {
+    pub async fn recover(&mut self) -> Result<(), GpuSetupError> {
         let (device, queue, loss) = request_device(&self.adapter, &self.request).await?;
         self.device.destroy();
         self.device = device;
@@ -226,7 +263,7 @@ impl GpuContext {
 async fn request_device(
     adapter: &Adapter,
     request: &FeatureRequest,
-) -> Result<(Device, Queue, Arc<LossSignal>)> {
+) -> Result<(Device, Queue, Arc<LossSignal>), GpuSetupError> {
     let resolved = request.resolve(adapter.features(), &adapter.limits())?;
     let (device, queue) = adapter
         .request_device(&DeviceDescriptor {
@@ -359,7 +396,7 @@ impl RenderDevice {
         }
     }
 
-    pub async fn recover(&mut self) -> Result<()> {
+    pub async fn recover(&mut self) -> Result<(), GpuSetupError> {
         self.context.recover().await?;
         self.presentation.rebuild(&self.context.device, self.size);
         Ok(())

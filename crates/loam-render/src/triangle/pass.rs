@@ -9,7 +9,7 @@ use wgpu::{CommandEncoder, Device, Queue, RenderPass};
 
 use crate::depth::root_view_projection;
 use crate::device::GpuContext;
-use crate::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use crate::pass::{FrameFormat, FramePass, FrameTarget, PassFault, PassStage};
 use crate::{DepthConvention, DepthMode, FragmentShading, TriangleRasterNode};
 
 #[derive(Default)]
@@ -106,7 +106,7 @@ impl FramePass for TrianglePass {
         &mut self,
         _encoder: &mut CommandEncoder,
         _target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let Some(built) = self.built.as_mut() else {
             return Ok(());
         };
@@ -127,7 +127,11 @@ impl FramePass for TrianglePass {
         Ok(())
     }
 
-    fn draw(&mut self, pass: &mut RenderPass<'_>, _target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn draw(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        _target: &FrameTarget<'_>,
+    ) -> Result<(), PassFault> {
         let Some(built) = self.built.as_ref() else {
             return Ok(());
         };
@@ -139,7 +143,7 @@ impl FramePass for TrianglePass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let Some(depth) = target.depth else {
             return Ok(());
         };
@@ -153,7 +157,7 @@ impl FramePass for TrianglePass {
         Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         let triangles = TriangleRasterNode::new(
             gpu,
             frame.color,

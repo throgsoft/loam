@@ -10,8 +10,8 @@ use crate::depth::DEPTH_FORMAT;
 use crate::device::GpuContext;
 use crate::line::LinePass;
 use crate::pass::{
-    FrameFormat, FramePass, FrameTarget, PassError, PassExecutionError, PassSchedule, PassStage,
-    PublishedFrame, Section,
+    FrameFormat, FramePass, FrameTarget, PassError, PassExecutionError, PassFault, PassSchedule,
+    PassStage, PublishedFrame, Section,
 };
 use crate::point::PointPass;
 use crate::sky_ground::SkyGroundPass;
@@ -102,7 +102,11 @@ impl FramePass for PublishedLines {
         true
     }
 
-    fn draw(&mut self, pass: &mut RenderPass<'_>, _target: &FrameTarget<'_>) -> anyhow::Result<()> {
+    fn draw(
+        &mut self,
+        pass: &mut RenderPass<'_>,
+        _target: &FrameTarget<'_>,
+    ) -> Result<(), PassFault> {
         let views = self.views.borrow();
         for slot in views.iter() {
             slot.opaque.draw(pass, None);
@@ -117,7 +121,7 @@ impl FramePass for PublishedLines {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let Some(depth) = target.depth else {
             return Ok(());
         };
@@ -132,7 +136,7 @@ impl FramePass for PublishedLines {
         Ok(())
     }
 
-    fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
         Ok(())
     }
 }
@@ -583,7 +587,7 @@ mod tests {
             &mut self,
             encoder: &mut CommandEncoder,
             target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             encoder.begin_render_pass(&RenderPassDescriptor {
                 label: Some("paint"),
                 color_attachments: &[Some(RenderPassColorAttachment {
@@ -602,7 +606,7 @@ mod tests {
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             Ok(())
         }
     }
