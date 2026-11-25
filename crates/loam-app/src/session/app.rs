@@ -14,7 +14,10 @@ use super::cursor::CursorCapture;
 use super::pacing::Pacer;
 use crate::args::Args;
 use crate::capture::{CaptureRequest, CaptureUnavailable};
-use crate::host::{HostConfig, HostError};
+use crate::host::{HostConfig, HostError, Key};
+
+const PAUSE: ActionId = ActionId("pause");
+const RESET: ActionId = ActionId("reset");
 
 /// Runs before the frame boundary with read-only session input.
 #[non_exhaustive]
@@ -257,6 +260,16 @@ impl<A: Stores> SessionApp<A> {
     pub fn recover_on_fault(mut self, action: ActionId) -> Self {
         self.fault_recovery = Some(action);
         self
+    }
+
+    /// Adds systems to `session` so Space toggles pause and R resets, and resets after a fault; a key the program bound first keeps its binding.
+    pub fn pause_and_reset(mut self, session: &mut Session<A>) -> Self {
+        session.pause_on(PAUSE);
+        session.reset_on(RESET);
+        self.config.bindings = std::mem::take(&mut self.config.bindings)
+            .key(Key::Space, PAUSE)
+            .key(Key::Letter('r'), RESET);
+        self.recover_on_fault(RESET)
     }
 
     pub fn sender(&self) -> CommandSender<A> {
