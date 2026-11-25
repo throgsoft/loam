@@ -1,7 +1,7 @@
 use loam_render::depth::DEPTH_FORMAT;
 use loam_render::device::{FeatureRequest, GpuContext};
 use loam_render::hyperslice::{
-    polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, HYPERSLICE_KERNEL_WGSL,
+    hyperslice_kernel_wgsl, polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode,
 };
 use loam_render::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget};
 use loam_render::sky_ground::SKY_HORIZON;
@@ -167,9 +167,10 @@ fn strip_cells(count: u32) -> Vec<(Viewport, f32, BodyUniform)> {
 
 fn probe_source() -> String {
     format!(
-        "{HYPERSLICE_KERNEL_WGSL}
+        "{}
 {}
 {FLOOR_SCENE_WGSL}",
+        hyperslice_kernel_wgsl(),
         polytope_stub_sdfs_wgsl()
     )
 }
