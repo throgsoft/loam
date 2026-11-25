@@ -13,7 +13,7 @@ use crate::manifold::{Manifold, DEFAULT_PGS_ITERS, RESTITUTION_THRESHOLD};
 use crate::narrowphase::Narrowphase;
 use crate::response::Contact;
 use crate::space::{integrate_body, PhysicsSpace, VectorOps};
-use crate::state::WorldState;
+use crate::state::{StateError, WorldState};
 
 mod broadphase;
 mod islands;
@@ -329,7 +329,7 @@ impl<S: PhysicsSpace> World<S> {
         mask: u32,
     ) -> Result<(), EditError> {
         if self.fields.iter().any(|field| field.anchor == id) && (group != 0 || mask != 0) {
-            return Err(EditError::InvalidFieldBinding);
+            return Err(EditError::FieldAnchorFilter);
         }
         let Some(body) = self.bodies.get_mut(id) else {
             return Err(EditError::StaleHandle);
@@ -466,16 +466,10 @@ impl<S: PhysicsSpace> World<S> {
         }
     }
 
-    pub fn check_restore(&self, state: &WorldState<S>) -> Result<(), EditError>
+    pub fn check_restore(&self, state: &WorldState<S>) -> Result<(), StateError>
     where
         S::AngVel: PartialEq,
     {
-        if self
-            .gravity
-            .is_some_and(|gravity| !self.space.valid_vector(gravity))
-        {
-            return Err(EditError::InvalidGravity);
-        }
         let field_registrations = self.field_narrowphase.registrations();
         if self.narrowphase.registrations() != state.registrations
             || field_registrations.len() != state.field_registrations.len()
@@ -484,7 +478,7 @@ impl<S: PhysicsSpace> World<S> {
                 .iter()
                 .any(|kind| !field_registrations.contains(kind))
         {
-            return Err(EditError::RegistrationMismatch);
+            return Err(StateError::RegistrationMismatch);
         }
         if self.fields.len() != state.field_anchors.len()
             || self
@@ -493,22 +487,22 @@ impl<S: PhysicsSpace> World<S> {
                 .zip(&state.field_anchors)
                 .any(|(entry, &anchor)| entry.anchor != anchor)
         {
-            return Err(EditError::FieldMismatch);
+            return Err(StateError::FieldMismatch);
         }
         if !state.time.is_finite() || state.time < 0.0 {
-            return Err(EditError::InvalidTime);
+            return Err(StateError::InvalidTime);
         }
         state.bodies.validate(&self.space, &state.geometry)?;
         for (&anchor, entry) in state.field_anchors.iter().zip(&self.fields) {
             let Some(body) = state.bodies.get(anchor) else {
-                return Err(EditError::InvalidFieldBinding);
+                return Err(StateError::InvalidFieldBinding);
             };
             if entry.anchor != anchor
                 || !body.is_static()
                 || body.collision_group != 0
                 || body.collision_mask != 0
             {
-                return Err(EditError::InvalidFieldBinding);
+                return Err(StateError::InvalidFieldBinding);
             }
         }
         if state
@@ -516,23 +510,23 @@ impl<S: PhysicsSpace> World<S> {
             .windows(2)
             .any(|pair| pair[0] >= pair[1])
         {
-            return Err(EditError::InvalidFieldBinding);
+            return Err(StateError::InvalidFieldBinding);
         }
         for &(body, field) in &state.field_bindings {
             let Some(entry) = self.fields.get(field.0 as usize) else {
-                return Err(EditError::InvalidFieldBinding);
+                return Err(StateError::InvalidFieldBinding);
             };
             if body == entry.anchor || state.bodies.get(body).is_none() {
-                return Err(EditError::InvalidFieldBinding);
+                return Err(StateError::InvalidFieldBinding);
             }
         }
         for (&key, manifold) in &state.manifolds {
             let (Some(body_a), Some(body_b)) = (state.bodies.get(key.0), state.bodies.get(key.1))
             else {
-                return Err(EditError::InvalidManifold);
+                return Err(StateError::InvalidManifold);
             };
             if key.0 >= key.1 || manifold.body_a != key.0 || manifold.body_b != key.1 {
-                return Err(EditError::InvalidManifold);
+                return Err(StateError::InvalidManifold);
             }
             let field_pair = state.field_bindings.iter().any(|&(body, field)| {
                 let anchor = self.fields[field.0 as usize].anchor;
@@ -550,14 +544,14 @@ impl<S: PhysicsSpace> World<S> {
                 && body_a.collision_mask & body_b.collision_group != 0
                 && body_b.collision_mask & body_a.collision_group != 0;
             if (!field_pair && !body_pair) || !manifold.is_valid(&self.space, body_a, body_b) {
-                return Err(EditError::InvalidManifold);
+                return Err(StateError::InvalidManifold);
             }
         }
         Ok(())
     }
 
     /// Refuses, unchanged, whatever `check_restore` refuses.
-    pub fn restore(&mut self, state: &WorldState<S>) -> Result<(), EditError>
+    pub fn restore(&mut self, state: &WorldState<S>) -> Result<(), StateError>
     where
         S::AngVel: PartialEq,
     {
@@ -1582,7 +1576,7 @@ mod tests {
         let mut unregistered = World::new(EuclideanR3);
         assert_eq!(
             unregistered.restore(&state),
-            Err(EditError::RegistrationMismatch),
+            Err(StateError::RegistrationMismatch),
             "restore accepted a world whose dispatch table cannot serve the snapshot"
         );
         assert_eq!(unregistered.bodies.len(), 0);

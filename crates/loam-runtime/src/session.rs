@@ -113,7 +113,7 @@ pub enum RestoreError {
     Domain(DomainId),
     /// A domain's world refused its snapshot before anything was touched.
     #[cfg(feature = "physics")]
-    Edit(loam_physics::EditError),
+    World(loam_physics::StateError),
 }
 
 impl std::fmt::Display for RestoreError {
@@ -126,7 +126,7 @@ impl std::fmt::Display for RestoreError {
             Self::Schema(schema) => write!(f, "no stored snapshot for {}", schema.name()),
             Self::Domain(domain) => write!(f, "{domain} refused the snapshot"),
             #[cfg(feature = "physics")]
-            Self::Edit(error) => std::fmt::Display::fmt(error, f),
+            Self::World(error) => std::fmt::Display::fmt(error, f),
         }
     }
 }

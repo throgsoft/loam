@@ -1020,7 +1020,7 @@ where
             .ok_or_else(|| RestoreError::Schema(SchemaId::of::<PhysicsSnapshot<S>>()))?;
         self.world
             .check_restore(&from.world)
-            .map_err(RestoreError::Edit)
+            .map_err(RestoreError::World)
     }
 
     fn restore(&mut self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
@@ -1029,7 +1029,7 @@ where
             .ok_or_else(|| RestoreError::Schema(SchemaId::of::<PhysicsSnapshot<S>>()))?;
         self.world
             .restore(&from.world)
-            .map_err(RestoreError::Edit)?;
+            .map_err(RestoreError::World)?;
         self.to_entity.clear();
         self.to_entity.extend_from_slice(&from.to_entity);
         self.rests.clear();

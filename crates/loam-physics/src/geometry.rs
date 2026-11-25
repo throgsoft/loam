@@ -4,7 +4,7 @@ use std::hash::Hasher;
 
 use loam_shape::{Shape, ShapeKind};
 
-use crate::error::EditError;
+use crate::state::StateError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct GeometryId(u32);
@@ -158,28 +158,28 @@ impl GeometryStore {
     pub(crate) fn validate(
         &self,
         colliders: impl Iterator<Item = ColliderRef>,
-    ) -> Result<(), EditError> {
+    ) -> Result<(), StateError> {
         if self.buckets.iter().any(|bucket| !bucket.is_empty()) {
-            return Err(EditError::InvalidGeometry);
+            return Err(StateError::InvalidGeometry);
         }
         let mut free = vec![false; self.entries.len()];
         for &slot in &self.free {
             let Some(entry) = self.entries.get(slot as usize) else {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             };
             if free[slot as usize] || entry.shape.is_some() || entry.uses != 0 {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             }
             free[slot as usize] = true;
         }
         let mut indexed = vec![false; self.entries.len()];
         for (&hash, bucket) in &self.index {
             if bucket.is_empty() {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             }
             for &id in bucket {
                 let Some(entry) = self.entries.get(id.0 as usize) else {
-                    return Err(EditError::InvalidGeometry);
+                    return Err(StateError::InvalidGeometry);
                 };
                 if indexed[id.0 as usize]
                     || entry.hash != hash
@@ -189,7 +189,7 @@ impl GeometryStore {
                         .as_ref()
                         .is_some_and(|shape| shape_hash(shape) != hash)
                 {
-                    return Err(EditError::InvalidGeometry);
+                    return Err(StateError::InvalidGeometry);
                 }
                 indexed[id.0 as usize] = true;
             }
@@ -197,29 +197,29 @@ impl GeometryStore {
         let mut uses = vec![0_u32; self.entries.len()];
         for collider in colliders {
             let Some(entry) = self.entries.get(collider.geometry.id.0 as usize) else {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             };
             if entry.version != collider.geometry.version
                 || entry.shape.as_ref().map(Shape::kind) != Some(collider.kind)
             {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             }
             let Some(count) = uses[collider.geometry.id.0 as usize].checked_add(1) else {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             };
             uses[collider.geometry.id.0 as usize] = count;
         }
         for (slot, entry) in self.entries.iter().enumerate() {
             if entry.shape.is_some() {
                 if free[slot] || !indexed[slot] || entry.uses == 0 || uses[slot] != entry.uses {
-                    return Err(EditError::InvalidGeometry);
+                    return Err(StateError::InvalidGeometry);
                 }
             } else if entry.uses != 0
                 || indexed[slot]
                 || uses[slot] != 0
                 || (entry.version != u32::MAX && !free[slot])
             {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             }
         }
         Ok(())

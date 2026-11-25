@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 
 use loam_shape::ShapeKind;
 
@@ -18,3 +19,34 @@ pub struct WorldState<S: PhysicsSpace> {
     pub(crate) registrations: Vec<(ShapeKind, ShapeKind)>,
     pub(crate) field_registrations: Vec<ShapeKind>,
 }
+
+/// Why a world refuses a snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StateError {
+    RegistrationMismatch,
+    FieldMismatch,
+    InvalidTime,
+    InvalidBodyArena,
+    InvalidBody,
+    InvalidGeometry,
+    InvalidFieldBinding,
+    InvalidManifold,
+}
+
+impl fmt::Display for StateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self {
+            Self::RegistrationMismatch => "the narrowphase registrations are not the snapshot's",
+            Self::FieldMismatch => "the world's field anchors are not the snapshot's",
+            Self::InvalidTime => "the world time is negative or not finite",
+            Self::InvalidBodyArena => "the body arena is inconsistent",
+            Self::InvalidBody => "a body has invalid state",
+            Self::InvalidGeometry => "the geometry store is inconsistent",
+            Self::InvalidFieldBinding => "a field binding is invalid",
+            Self::InvalidManifold => "a contact manifold is invalid",
+        };
+        f.write_str(text)
+    }
+}
+
+impl std::error::Error for StateError {}

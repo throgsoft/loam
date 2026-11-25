@@ -6,6 +6,7 @@ use loam_shape::{Shape, ShapeKind};
 use crate::error::EditError;
 use crate::geometry::{ColliderRef, GeometryStore};
 use crate::space::{PhysicsSpace, VectorOps};
+use crate::state::StateError;
 
 pub struct RigidBody<S: PhysicsSpace> {
     pub position: S::Point,
@@ -430,26 +431,26 @@ impl<S: PhysicsSpace> BodyArena<S> {
         &mut self.dense
     }
 
-    pub(crate) fn validate(&self, space: &S, geometry: &GeometryStore) -> Result<(), EditError>
+    pub(crate) fn validate(&self, space: &S, geometry: &GeometryStore) -> Result<(), StateError>
     where
         S::AngVel: PartialEq,
     {
         if self.dense.len() != self.ids.len() {
-            return Err(EditError::InvalidBodyArena);
+            return Err(StateError::InvalidBodyArena);
         }
         let mut occupied = vec![false; self.slots.len()];
         for (dense, (&id, body)) in self.ids.iter().zip(&self.dense).enumerate() {
             let Ok(dense_index) = u32::try_from(dense) else {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             };
             let Some(slot) = self.slots.get(id.slot as usize) else {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             };
             if occupied[id.slot as usize]
                 || slot.generation != id.generation
                 || slot.dense != Some(dense_index)
             {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             }
             occupied[id.slot as usize] = true;
             let expected_inv_mass = if body.mass > 0.0 {
@@ -458,7 +459,7 @@ impl<S: PhysicsSpace> BodyArena<S> {
                 0.0
             };
             let Some(collider) = geometry.get(body.collider) else {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             };
             if !valid_mass(body.mass)
                 || body.inv_mass != expected_inv_mass
@@ -474,16 +475,16 @@ impl<S: PhysicsSpace> BodyArena<S> {
                 || body.collider.kind() != collider.kind()
                 || check_collider(space, collider, body.mass).is_err()
             {
-                return Err(EditError::InvalidBody);
+                return Err(StateError::InvalidBody);
             }
         }
         let mut free = vec![false; self.slots.len()];
         for &slot in &self.free {
             let Some(entry) = self.slots.get(slot as usize) else {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             };
             if free[slot as usize] || entry.dense.is_some() || occupied[slot as usize] {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             }
             free[slot as usize] = true;
         }
@@ -491,7 +492,7 @@ impl<S: PhysicsSpace> BodyArena<S> {
             if occupied[slot] != entry.dense.is_some()
                 || (!occupied[slot] && entry.generation != u32::MAX && !free[slot])
             {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             }
         }
         geometry.validate(self.dense.iter().map(|body| body.collider))

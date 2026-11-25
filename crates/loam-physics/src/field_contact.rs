@@ -195,6 +195,7 @@ mod tests {
     use crate::error::EditError;
     use crate::euclidean_r3::{halfspace_body_r3, sphere_body_r3};
     use crate::manifold::PENETRATION_SLOP;
+    use crate::state::StateError;
     use crate::world::{FieldId, World};
     use loam_shape::Shape;
     use loam_time::par::Sequential;
@@ -367,7 +368,7 @@ mod tests {
             .expect("field handle");
         let height = world.bodies[ball].position.y;
 
-        assert_eq!(world.restore(&saved), Err(EditError::FieldMismatch));
+        assert_eq!(world.restore(&saved), Err(StateError::FieldMismatch));
         assert_eq!(world.bodies[ball].position.y, height);
         assert_eq!(world.field_bindings().len(), 1);
     }
