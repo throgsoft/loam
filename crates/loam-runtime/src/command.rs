@@ -422,6 +422,11 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         self.assets.add_material(material)
     }
 
+    #[cfg(feature = "physics")]
+    pub(crate) fn prepared(&self, id: PreparedId) -> Option<&PreparedGeometry> {
+        self.assets.prepared(id)
+    }
+
     pub fn spawn(&mut self, bundle: SpawnBundle<A>) -> Result<Entity, Rejection> {
         let entity = match bundle.reserved {
             Some(entity) if self.entities.is_reserved(entity) => entity,

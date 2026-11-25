@@ -19,6 +19,8 @@ use crate::session::RestoreError;
 use crate::store::{Owner, SchemaId, Store};
 use crate::view::{Vec3, ViewMapping};
 
+mod euclidean_r4;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GrabHold {
     /// Pulls the body's center, so carrying adds no spin.
