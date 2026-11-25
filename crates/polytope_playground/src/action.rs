@@ -120,6 +120,14 @@ impl AppCommand<Playground> for Action {
             }
             Action::Reset => mode::reset(dispatch, domain, &cards)?,
             Action::Time(time) => {
+                if !time.is_finite() || time < 0.0 {
+                    return Err(Rejection::Unsupported(
+                        "playback time must be finite and nonnegative",
+                    ));
+                }
+                if *dispatch.app.mode.get() == Mode::Toybox {
+                    return Err(Rejection::Unsupported("playback belongs to Rotate"));
+                }
                 display::seek(dispatch.app, dispatch.domains, domain, time)
                     .map_err(Rejection::Domain)?;
             }

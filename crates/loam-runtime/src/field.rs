@@ -1,3 +1,5 @@
+use std::fmt;
+
 use bytemuck::{Pod, Zeroable};
 
 use crate::domain::{DomainError, DomainSpace, Field, FieldKind, FieldProgram, Pose};
@@ -101,6 +103,25 @@ pub enum FieldError {
     StackUnderflow,
     PoseDepth,
     Primitive(u32),
+    ProgramSize,
+    CurvedChart,
+    Dimension,
+}
+
+impl fmt::Display for FieldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Opcode(op) => write!(f, "the field program has an unknown opcode {op}"),
+            Self::Truncated => f.write_str("the field program ends inside an instruction"),
+            Self::StackOverflow => f.write_str("the field program overflows its stack"),
+            Self::StackUnderflow => f.write_str("the field program underflows its stack"),
+            Self::PoseDepth => f.write_str("the field transforms nest too deep"),
+            Self::Primitive(index) => write!(f, "the field program has no primitive {index}"),
+            Self::ProgramSize => f.write_str("the field program is too large"),
+            Self::CurvedChart => f.write_str("fields need a flat chart"),
+            Self::Dimension => f.write_str("a field primitive has the wrong dimension"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1374,7 +1395,7 @@ impl FieldCompiler {
                     self.push_instruction(OP_PUSH_POSE, record)?;
                     pose_depth += 1;
                     if pose_depth > MAX_POSE_DEPTH {
-                        return Err(DomainError::Unsupported("field pose depth"));
+                        return Err(DomainError::Field(FieldError::PoseDepth));
                     }
                 }
                 if (cursor as usize) < op.operands() {
@@ -1438,7 +1459,7 @@ impl FieldCompiler {
             }
         }
         if peak as usize > MAX_STACK {
-            return Err(DomainError::Unsupported("field stack depth"));
+            return Err(DomainError::Field(FieldError::StackOverflow));
         }
         self.program.stack = peak;
         self.program.kind = self.kinds.pop().unwrap_or(FieldKind::ConservativeBound);
@@ -1519,7 +1540,7 @@ impl FieldCompiler {
 
     fn push_instruction(&mut self, op: u32, argument: u32) -> Result<(), DomainError> {
         if self.program.program.len() + 2 > MAX_PROGRAM_WORDS {
-            return Err(DomainError::Unsupported("field program size"));
+            return Err(DomainError::Field(FieldError::ProgramSize));
         }
         self.program.program.push(op);
         self.program.program.push(argument);
@@ -1534,7 +1555,7 @@ impl FieldCompiler {
     ) -> Result<FieldCost, DomainError> {
         if !space.is_chart_flat() {
             self.compiled = false;
-            return Err(DomainError::Unsupported("curved field chart"));
+            return Err(DomainError::Field(FieldError::CurvedChart));
         }
         let dimension = space.chart_dimension();
         let structural = fields.changed_since(&mut self.fields_cursor);
@@ -1551,7 +1572,7 @@ impl FieldCompiler {
                 )
             })
         {
-            return Err(DomainError::Unsupported("field primitive dimension"));
+            return Err(DomainError::Field(FieldError::Dimension));
         }
 
         let mut cost = FieldCost::default();

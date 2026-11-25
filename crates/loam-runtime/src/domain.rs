@@ -10,7 +10,7 @@ use loam_time::par::Executor;
 use crate::assets::{Library, PreparedGeometry};
 use crate::command::{Outcome, Rejection};
 use crate::entity::{Entity, RuntimeId, SceneId};
-use crate::field::FieldCost;
+use crate::field::{FieldCost, FieldError};
 use crate::image::{ImageRay, Views};
 use crate::phase::Step;
 use crate::publication::{Stamp, ViewRecords};
@@ -118,7 +118,11 @@ pub enum DomainError {
     NoPhysics(DomainId),
     #[cfg(feature = "physics")]
     NoBody(Entity),
-    Unsupported(&'static str),
+    UnknownChart(ChartId),
+    /// The named view mapping cannot lift that image point back into the domain.
+    NoLift(&'static str),
+    NoFields(DomainId),
+    Field(FieldError),
     FieldCycle(Entity),
     FieldArity(Entity),
     Restore(RestoreError),
@@ -147,7 +151,12 @@ impl fmt::Display for DomainError {
             Self::NoPhysics(domain) => write!(f, "{domain} has no physics"),
             #[cfg(feature = "physics")]
             Self::NoBody(entity) => write!(f, "{entity} has no body"),
-            Self::Unsupported(what) => write!(f, "unsupported: {what}"),
+            Self::UnknownChart(chart) => write!(f, "no chart {} in this domain", chart.0),
+            Self::NoLift(mapping) => {
+                write!(f, "the {mapping} view cannot lift that image point")
+            }
+            Self::NoFields(domain) => write!(f, "{domain} has no fields"),
+            Self::Field(error) => fmt::Display::fmt(error, f),
             Self::FieldCycle(entity) => write!(f, "{entity} closes a field cycle"),
             Self::FieldArity(entity) => write!(f, "{entity} has the wrong operand count"),
             Self::Restore(error) => fmt::Display::fmt(error, f),
@@ -352,7 +361,7 @@ impl<S: DomainSpace> TypedDomain<S> {
         if !self.poses.contains(entity) {
             return Err(StoreError::Missing(entity).into());
         }
-        self.fields.attach(entity, field)
+        self.fields.attach(self.id, entity, field)
     }
 
     /// Inside a tick the move is drawn blended across that tick; outside one it is drawn at once.
@@ -429,8 +438,8 @@ impl<S: DomainSpace> TypedDomain<S> {
         self.views.get(id)?.subject
     }
 
-    pub fn view_mut(&mut self, id: ViewId) -> Option<&mut ViewStyle<S>> {
-        self.views.style_mut(id)
+    pub fn view_mut(&mut self, id: ViewId) -> Result<&mut ViewStyle<S>, DomainError> {
+        self.views.style_mut(id).ok_or(DomainError::UnknownView(id))
     }
 
     pub fn set_view_eye(&mut self, id: ViewId, eye: Entity) -> Result<(), DomainError> {
@@ -541,7 +550,7 @@ impl<S: DomainSpace> Domain for TypedDomain<S> {
     }
 
     fn compile_fields(&mut self) -> Result<FieldCost, DomainError> {
-        self.fields.compile(&self.space, &self.poses)
+        self.fields.compile(self.id, &self.space, &self.poses)
     }
 
     fn field_program(&self) -> &FieldProgram {

@@ -13,6 +13,9 @@ pub enum DragError {
     NotGrabbed,
     /// The pointer ray runs parallel to the drag plane, so no point on it is nearer than another.
     Ambiguous(&'static str),
+    /// The pick hit the entity but its view cannot lift the hit into the domain.
+    Unlifted,
+    NoRay(ImageSpaceId),
     Domain(DomainError),
 }
 
@@ -167,7 +170,7 @@ impl Manipulation {
         let plane = pick.image_point;
         let normal = eye.forward;
         let depth = (Vec3::from(plane) - Vec3::from(eye.position)).dot(Vec3::from(normal));
-        let hit = pick.hit.ok_or(DomainError::Unsupported("view ray lift"))?;
+        let hit = pick.hit.ok_or(DragError::Unlifted)?;
         if let Some(held) = self.drag.take() {
             commands.submit(Command::Chart(
                 held.domain,
@@ -218,7 +221,7 @@ impl Manipulation {
             .name;
         let ray = views
             .ray(drag.image, ndc)
-            .ok_or(DomainError::Unsupported("image space"))?;
+            .ok_or(DragError::NoRay(drag.image))?;
         let eye = views.root().eye;
         let forward = eye.forward;
         let plane = drag.plane_at(eye.position, forward);

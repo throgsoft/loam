@@ -113,7 +113,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             .style
             .mapping
             .lift(&eye, ray)
-            .ok_or(DomainError::Unsupported(spec.style.mapping.name()))?;
+            .ok_or(DomainError::NoLift(spec.style.mapping.name()))?;
         self.space.check(lifted.origin)?;
         Ok(self.space.chart_point(lifted.origin))
     }
@@ -132,7 +132,7 @@ impl<S: DomainSpace> TypedDomain<S> {
             .style
             .mapping
             .lift_tangent(&eye, at, tangent)
-            .ok_or(DomainError::Unsupported(spec.style.mapping.name()))?;
+            .ok_or(DomainError::NoLift(spec.style.mapping.name()))?;
         Ok(self.space.chart_tangent(lifted))
     }
 }

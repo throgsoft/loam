@@ -120,7 +120,9 @@ impl std::fmt::Display for RestoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Pending => f.write_str("deferred mutation is still pending"),
-            Self::Unfinished(phase) => write!(f, "the {phase:?} phase is unfinished"),
+            Self::Unfinished(phase) => {
+                write!(f, "the {phase:?} phase is unfinished and needs a restore")
+            }
             Self::NoInitial => f.write_str("no initial snapshot was captured"),
             Self::ForeignRuntime => f.write_str("the snapshot belongs to another runtime"),
             Self::Schema(schema) => write!(f, "no stored snapshot for {}", schema.name()),
@@ -267,7 +269,7 @@ impl<A: Stores> Session<A> {
             Progress::Idle => None,
             Progress::Running(phase) => Some(PhaseError::unnamed(
                 phase,
-                DomainError::Unsupported("unfinished phase requires restore"),
+                DomainError::Restore(RestoreError::Unfinished(phase)),
             )),
             Progress::Faulted(error) => Some(error),
         }

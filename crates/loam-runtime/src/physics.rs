@@ -754,14 +754,14 @@ where
         let mut linear = body.velocity;
         let mut angular = body.angular_velocity;
         if grab.hold == GrabHold::Center {
-            let unsupported = || DomainError::Unsupported(mapping.name());
+            let unlifted = || DomainError::NoLift(mapping.name());
             let at = mapping
                 .image_point(eye, body.position)
-                .ok_or_else(unsupported)?;
+                .ok_or_else(unlifted)?;
             let shown = mapping
                 .image_tangent(eye, body.position, body.velocity)
                 .and_then(|image| mapping.lift_tangent(eye, at, image))
-                .ok_or_else(unsupported)?;
+                .ok_or_else(unlifted)?;
             let thrown = flick * throw.gain;
             let capped = thrown * (throw.max_speed / thrown.length().max(throw.max_speed));
             linear = capped + (body.velocity - shown);

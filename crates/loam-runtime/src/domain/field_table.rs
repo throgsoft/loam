@@ -1,6 +1,6 @@
 use loam_shape::field::{DistanceField, FieldKind};
 
-use super::{put_row, DomainError, DomainSpace, Pose};
+use super::{put_row, DomainError, DomainId, DomainSpace, Pose};
 use crate::command::Rejection;
 use crate::entity::{Entity, SceneId};
 use crate::field::{
@@ -104,23 +104,23 @@ impl Fields {
             .remove(entity)
     }
 
-    pub(super) fn attach(&mut self, entity: Entity, field: Field) -> Result<(), Rejection> {
-        let store = self
-            .store
-            .as_mut()
-            .ok_or(Rejection::Unsupported("fields"))?;
+    pub(super) fn attach(
+        &mut self,
+        domain: DomainId,
+        entity: Entity,
+        field: Field,
+    ) -> Result<(), Rejection> {
+        let store = self.store.as_mut().ok_or(DomainError::NoFields(domain))?;
         put_row(store, entity, field)
     }
 
     pub(super) fn compile<S: DomainSpace>(
         &mut self,
+        domain: DomainId,
         space: &S,
         poses: &Store<Pose<S>>,
     ) -> Result<FieldCost, DomainError> {
-        let store = self
-            .store
-            .as_ref()
-            .ok_or(DomainError::Unsupported("fields"))?;
+        let store = self.store.as_ref().ok_or(DomainError::NoFields(domain))?;
         self.compiler.compile(space, store, poses)
     }
 

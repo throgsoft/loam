@@ -108,14 +108,6 @@ pub(crate) fn seek(
     domain: DomainHandle<EuclideanR4>,
     time: f32,
 ) -> Result<(), DomainError> {
-    if !time.is_finite() || time < 0.0 {
-        return Err(DomainError::Unsupported(
-            "playback time must be finite and nonnegative",
-        ));
-    }
-    if *app.mode.get() == Mode::Toybox {
-        return Err(DomainError::Unsupported("playback belongs to Rotate"));
-    }
     let before = rotor_at(app, *app.time.get());
     let after = rotor_at(app, time);
     apply_turn(app, domains, domain, after * before.inverse())?;

@@ -29,7 +29,7 @@ fn latest_value_system() {
     session.publish_value("frames", |ctx, value: &mut Vec<u32>| {
         let frames = *ctx.app.frames.get();
         if frames == 3 {
-            return Err(DomainError::Unsupported("injected"));
+            return Err(DomainError::InvalidFrame);
         }
         value.clear();
         value.push(frames);
@@ -49,7 +49,7 @@ fn latest_value_system() {
     let failure = PhaseError {
         phase: Phase::Publication,
         system: Some("frames"),
-        cause: DomainError::Unsupported("injected"),
+        cause: DomainError::InvalidFrame,
     };
     assert_eq!(session.publish(&mut publication, 1.0), Err(failure));
     assert_eq!(

@@ -81,7 +81,7 @@ impl ChartCommand {
 pub(super) fn single_chart(chart: ChartId) -> Result<(), DomainError> {
     (chart == ChartId(0))
         .then_some(())
-        .ok_or(DomainError::Unsupported("chart id"))
+        .ok_or(DomainError::UnknownChart(chart))
 }
 
 pub(super) fn finite(values: [f32; 4]) -> Result<(), DomainError> {

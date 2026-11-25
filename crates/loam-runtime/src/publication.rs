@@ -268,8 +268,7 @@ mod tests {
             .dispatch(|d| -> Result<(), Rejection> {
                 d.domains
                     .typed(r4)?
-                    .view_mut(view)
-                    .ok_or(Rejection::Unsupported("view"))?
+                    .view_mut(view)?
                     .set_mapping(Section4 { w: LIFT });
                 Ok(())
             })

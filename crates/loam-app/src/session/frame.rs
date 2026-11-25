@@ -1103,7 +1103,7 @@ mod tests {
             "trip",
             move |_ctx: loam_runtime::Ctx<'_, Bare>| {
                 if trip.swap(false, Ordering::Relaxed) {
-                    return Err(loam_runtime::DomainError::Unsupported("injected"));
+                    return Err(loam_runtime::DomainError::InvalidFrame);
                 }
                 Ok(())
             },
@@ -1206,7 +1206,7 @@ mod tests {
             "trip",
             move |_ctx: loam_runtime::Ctx<'_, Bare>| {
                 if trip.swap(false, Ordering::Relaxed) {
-                    return Err(loam_runtime::DomainError::Unsupported("injected"));
+                    return Err(loam_runtime::DomainError::InvalidFrame);
                 }
                 Ok(())
             },

@@ -313,7 +313,7 @@ impl Facility<EuclideanR4> for RejectStep {
         _executor: &dyn Executor,
         _owner: Owner,
     ) -> Result<(), DomainError> {
-        Err(DomainError::Unsupported("injected"))
+        Err(DomainError::InvalidFrame)
     }
 
     fn snapshot(&self, _owner: Owner) -> Box<dyn Any + Send> {
@@ -345,7 +345,7 @@ fn failed_cpu_phase() {
     let failure = PhaseError {
         phase: Phase::Simulation,
         system: Some(DOMAIN_STEP),
-        cause: DomainError::Unsupported("injected"),
+        cause: DomainError::InvalidFrame,
     };
     assert_eq!(session.tick(&Sequential), Err(failure));
     assert_eq!(session.current_tick(), Tick(0));

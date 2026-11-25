@@ -376,9 +376,7 @@ fn install_systems(
         move |ctx| {
             let w = *ctx.app.slice.get();
             let r4 = ctx.domains.typed(domain)?;
-            let spec = r4
-                .view_mut(layers.section)
-                .ok_or(DomainError::Unsupported("section view"))?;
+            let spec = r4.view_mut(layers.section)?;
             spec.set_mapping(Section4 { w });
             Ok(())
         },
@@ -413,17 +411,13 @@ fn install_systems(
             let r4 = ctx.domains.typed(domain)?;
             r4.set_view_subject(layers.section, subject)?;
             r4.set_view_subject(layers.projection, subject)?;
-            let spec = r4
-                .view_mut(layers.section)
-                .ok_or(DomainError::Unsupported("section view"))?;
+            let spec = r4.view_mut(layers.section)?;
             spec.enabled = !strip;
             spec.edges = false;
             spec.section_edges = display.wireframe && display.section_perimeter;
             spec.section_faces = display.surface == Surface::Raster;
             spec.fields = display.surface != Surface::Off;
-            let spec = r4
-                .view_mut(layers.projection)
-                .ok_or(DomainError::Unsupported("projection view"))?;
+            let spec = r4.view_mut(layers.projection)?;
             spec.enabled = display.wireframe && !strip;
             spec.section_edges = false;
             spec.section_faces = false;
@@ -453,9 +447,7 @@ fn install_systems(
             let family = *ctx.app.projection.get();
             let slice = *ctx.app.slice.get();
             let r4 = ctx.domains.typed(domain)?;
-            let spec = r4
-                .view_mut(layers.projection)
-                .ok_or(DomainError::Unsupported("projection view"))?;
+            let spec = r4.view_mut(layers.projection)?;
             spec.set_mapping(family.mapping(slice));
             Ok(())
         },
