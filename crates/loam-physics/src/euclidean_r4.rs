@@ -11,6 +11,7 @@ use crate::body::{BodyDef, RigidBody};
 use crate::collision::{
     epa_r4, gjk_intersect_r4, ContactInfo, GjkResult, PosedHull, Sphere, SupportFn,
 };
+use crate::error::EditError;
 use crate::euclidean::{register_pairs, Euclidean};
 use crate::manifold::PENETRATION_SLOP;
 use crate::narrowphase::Narrowphase;
@@ -239,7 +240,7 @@ pub fn sphere_body_r4(
     velocity: Vec4,
     radius: f32,
     mass: f32,
-) -> Option<BodyDef<EuclideanR4>> {
+) -> Result<BodyDef<EuclideanR4>, EditError> {
     BodyDef::new(
         position,
         velocity,
@@ -251,8 +252,8 @@ pub fn sphere_body_r4(
 }
 
 /// The solid occupies `dot(p, normalize(normal)) <= offset`.
-pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<EuclideanR4>> {
-    let normal = normal.try_normalize()?;
+pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> Result<BodyDef<EuclideanR4>, EditError> {
+    let normal = normal.normalize_or_zero();
     BodyDef::fixed(
         Vec4::ZERO,
         Shape::HalfSpace4D { normal, offset },
@@ -262,7 +263,10 @@ pub fn halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<Euclidean
 }
 
 /// A halfspace raised along `normal` so that a body resting on it under 9.8 gravity with substeps of 1/240 s or shorter sits no lower than the plane at `offset`.
-pub fn flush_halfspace4_body_r4(normal: Vec4, offset: f32) -> Option<BodyDef<EuclideanR4>> {
+pub fn flush_halfspace4_body_r4(
+    normal: Vec4,
+    offset: f32,
+) -> Result<BodyDef<EuclideanR4>, EditError> {
     // Baumgarte rest depth is slop + g h^2 / beta, under twice the slop at those bounds.
     halfspace4_body_r4(normal, offset + 2.0 * PENETRATION_SLOP)
 }
@@ -272,7 +276,7 @@ pub fn regular_polytope_body_r4(
     shape: Polytope4,
     circumradius: f32,
     mass: f32,
-) -> Option<BodyDef<EuclideanR4>> {
+) -> Result<BodyDef<EuclideanR4>, EditError> {
     let vertices = shape
         .topology()
         .vertices
@@ -295,7 +299,7 @@ pub fn polytope_body_r4(
     velocity: Vec4,
     vertices: Vec<Vec4>,
     mass: f32,
-) -> Option<BodyDef<EuclideanR4>> {
+) -> Result<BodyDef<EuclideanR4>, EditError> {
     let bounding_r_sq = vertices
         .iter()
         .map(|v| v.length_squared())

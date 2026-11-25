@@ -2,7 +2,7 @@ use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{
     flush_halfspace4_body_r4, register_default_narrowphase, regular_polytope_body_r4,
 };
-use loam_physics::{BodyDef, EditError};
+use loam_physics::BodyDef;
 
 use super::PhysicsConfig;
 use crate::app_state::Stores;
@@ -28,8 +28,7 @@ impl<A: Stores> Dispatch<'_, A> {
     ) -> Result<BodyDef<EuclideanR4>, Rejection> {
         match self.prepared(geometry) {
             Some(&PreparedGeometry::Polytope4 { polytope, scale }) => {
-                regular_polytope_body_r4(polytope, scale, mass)
-                    .ok_or(Rejection::Edit(EditError::InvalidBody))
+                regular_polytope_body_r4(polytope, scale, mass).map_err(Rejection::from)
             }
             _ => Err(Rejection::Unsupported("a body needs polytope geometry")),
         }
@@ -41,8 +40,7 @@ impl<A: Stores> Dispatch<'_, A> {
         domain: DomainHandle<EuclideanR4>,
         backdrop: Backdrop,
     ) -> Result<Entity, Rejection> {
-        let body =
-            flush_halfspace4_body_r4(Vec4::Y, backdrop.ground.y).ok_or(EditError::NotFinite)?;
+        let body = flush_halfspace4_body_r4(Vec4::Y, backdrop.ground.y)?;
         let floor = self.spawn(
             SpawnBundle::new()
                 .at(domain, Pose::at(Vec4::ZERO))

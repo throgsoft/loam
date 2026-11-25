@@ -55,14 +55,18 @@ impl<S: PhysicsSpace> BodyDef<S> {
         mass: f32,
         inertia: S::Inertia,
         space: &S,
-    ) -> Option<Self> {
-        if !valid_mass(mass)
-            || !space.valid_initial_state(position, velocity, inertia)
-            || !valid_collider(space, &collider, mass)
-        {
-            return None;
+    ) -> Result<Self, EditError> {
+        if !valid_mass(mass) {
+            return Err(EditError::InvalidMass);
         }
-        Some(Self {
+        if !space.valid_point(position) || !space.valid_vector(velocity) {
+            return Err(EditError::NotFinite);
+        }
+        if !space.valid_inertia(inertia) {
+            return Err(EditError::InvalidInertia);
+        }
+        check_collider(space, &collider, mass)?;
+        Ok(Self {
             position,
             velocity,
             angular_velocity: <S::AngVel as Bivector>::zero(),
@@ -81,7 +85,7 @@ impl<S: PhysicsSpace> BodyDef<S> {
         collider: Shape,
         inertia: S::Inertia,
         space: &S,
-    ) -> Option<Self> {
+    ) -> Result<Self, EditError> {
         Self::new(position, VectorOps::zero(), collider, 0.0, inertia, space)
     }
 
@@ -226,12 +230,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
         collider: Shape,
         inertia: S::Inertia,
     ) -> Result<(), EditError> {
-        if self.mass > 0.0 && is_halfspace_kind(collider.kind()) {
-            return Err(EditError::DynamicHalfSpace);
-        }
-        if !valid_collider(space, &collider, self.mass) {
-            return Err(EditError::UnsupportedCollider);
-        }
+        check_collider(space, &collider, self.mass)?;
         let replacement = geometry.prepare(collider);
         geometry.release(self.collider);
         self.collider = replacement;
@@ -271,18 +270,26 @@ fn is_halfspace_kind(kind: ShapeKind) -> bool {
     matches!(kind, ShapeKind::HalfSpace | ShapeKind::HalfSpace4D)
 }
 
-pub(crate) fn valid_collider<S: PhysicsSpace>(space: &S, collider: &Shape, mass: f32) -> bool {
-    if !space.supports_collider(collider.kind())
-        || (mass > 0.0 && is_halfspace_kind(collider.kind()))
-    {
-        return false;
+fn check_collider<S: PhysicsSpace>(
+    space: &S,
+    collider: &Shape,
+    mass: f32,
+) -> Result<(), EditError> {
+    if mass > 0.0 && is_halfspace_kind(collider.kind()) {
+        return Err(EditError::DynamicHalfSpace);
+    }
+    if !space.supports_collider(collider.kind()) {
+        return Err(EditError::UnsupportedCollider);
     }
     if let Shape::Sphere { center, .. } = collider {
         if *center != glam::Vec3::ZERO {
-            return false;
+            return Err(EditError::OffCentreSphere);
         }
     }
-    collider.is_well_formed()
+    if !collider.is_well_formed() {
+        return Err(EditError::MalformedCollider);
+    }
+    Ok(())
 }
 
 /// A body handle is valid only in its owning arena and is ordered by slot, then generation.
@@ -465,7 +472,7 @@ impl<S: PhysicsSpace> BodyArena<S> {
                 || !body.restitution.is_finite()
                 || body.restitution < 0.0
                 || body.collider.kind() != collider.kind()
-                || !valid_collider(space, collider, body.mass)
+                || check_collider(space, collider, body.mass).is_err()
             {
                 return Err(EditError::InvalidBody);
             }
@@ -551,7 +558,7 @@ mod tests {
             1.0,
             &EuclideanR3
         )
-        .is_none());
+        .is_err());
         assert!(BodyDef::new(
             Vec4::ZERO,
             Vec4::ZERO,
@@ -563,7 +570,7 @@ mod tests {
             1.0,
             &EuclideanR4
         )
-        .is_none());
+        .is_err());
 
         for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             for (position, velocity, inertia) in [
@@ -579,7 +586,7 @@ mod tests {
                     inertia,
                     &EuclideanR3
                 )
-                .is_none());
+                .is_err());
             }
         }
 
@@ -605,7 +612,7 @@ mod tests {
                 1.0,
                 &EuclideanR3
             )
-            .is_none());
+            .is_err());
             assert!(world.set_collider(id, collider, 1.0).is_err());
             let kept = world.collider(&world.bodies[id]);
             assert!(matches!(kept, Some(Shape::Sphere { radius, .. }) if *radius == 0.5));

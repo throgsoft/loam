@@ -352,8 +352,7 @@ fn spawn_drop(
     position: Vec4,
     tumble: Bivector4,
 ) -> Result<Entity, Rejection> {
-    let body = regular_polytope_body_r4(polytope, RAIN_SIZE, RAIN_MASS)
-        .ok_or(DomainError::Unsupported("drop collider"))?
+    let body = regular_polytope_body_r4(polytope, RAIN_SIZE, RAIN_MASS)?
         .restitution(RESTITUTION)?
         .velocity(
             Vec4::new(0.0, -RAIN_ENTRY_SPEED, 0.0, 0.0),
@@ -461,9 +460,7 @@ fn build() -> Result<Session<HeroStores>, HostError> {
             let entry = letter.entry;
             d.spawn(SpawnBundle::new().at(r4, Pose::at(entry)).row(letter))?;
         }
-        let floor = halfspace4_body_r4(Vec4::Y, FLOOR_Y)
-            .ok_or(DomainError::Unsupported("floor collider"))?
-            .restitution(RESTITUTION)?;
+        let floor = halfspace4_body_r4(Vec4::Y, FLOOR_Y)?.restitution(RESTITUTION)?;
         d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)).body(floor))?;
         d.domains.physics(r4)?.set_solver_iterations(PILE_PGS_ITERS);
         Ok(())
@@ -506,10 +503,13 @@ fn build() -> Result<Session<HeroStores>, HostError> {
             }
             if now.fires(ASSEMBLE) {
                 for (entity, letter) in ctx.app.letters.iter() {
-                    let body =
-                        polytope_body_r4(letter.mark, Vec4::ZERO, letter.hull.clone(), LETTER_MASS)
-                            .ok_or(DomainError::Unsupported("letter collider"))?
-                            .restitution(RESTITUTION)?;
+                    let body = polytope_body_r4(
+                        letter.mark,
+                        Vec4::ZERO,
+                        letter.hull.clone(),
+                        LETTER_MASS,
+                    )?
+                    .restitution(RESTITUTION)?;
                     domain.spawn_body(entity, body)?;
                 }
                 return Ok(());

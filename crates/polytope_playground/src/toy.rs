@@ -158,7 +158,7 @@ pub(crate) fn fill_depth_bands(
     out.sort_by_key(|band| band.index);
 }
 
-fn arena() -> [(Option<BodyDef<EuclideanR4>>, f32); 8] {
+fn arena() -> [(Result<BodyDef<EuclideanR4>, EditError>, f32); 8] {
     [
         (flush_halfspace4_body_r4(Vec4::Y, FLOOR_Y), BODY_RESTITUTION),
         (halfspace4_body_r4(-Vec4::Y, -ARENA_TOP), WALL_RESTITUTION),
@@ -227,9 +227,7 @@ fn spawn_walls(
     domain: DomainHandle<EuclideanR4>,
 ) -> Result<(), Rejection> {
     for (plane, restitution) in arena() {
-        let plane = plane
-            .ok_or(Rejection::Unsupported("the wall collider"))?
-            .restitution(restitution)?;
+        let plane = plane?.restitution(restitution)?;
         dispatch.spawn(
             SpawnBundle::new()
                 .at(domain, Pose::at(Vec4::ZERO))

@@ -6,6 +6,7 @@ use loam_shape::{Shape, ShapeKind};
 
 use crate::body::{BodyDef, RigidBody};
 use crate::collision::{epa, gjk_intersect, ContactInfo, GjkResult, PosedHull, Sphere, SupportFn};
+use crate::error::EditError;
 use crate::euclidean::{register_pairs, Euclidean};
 use crate::narrowphase::Narrowphase;
 use crate::space::{BroadphaseBound, PhysicsSpace};
@@ -216,7 +217,7 @@ pub fn sphere_body_r3(
     velocity: Vec3,
     radius: f32,
     mass: f32,
-) -> Option<BodyDef<EuclideanR3>> {
+) -> Result<BodyDef<EuclideanR3>, EditError> {
     BodyDef::new(
         position,
         velocity,
@@ -228,8 +229,8 @@ pub fn sphere_body_r3(
 }
 
 /// `normal` points to the side the world is on; the plane is `dot(p, normal) = offset`.
-pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> Option<BodyDef<EuclideanR3>> {
-    let n = normal.try_normalize()?;
+pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> Result<BodyDef<EuclideanR3>, EditError> {
+    let n = normal.normalize_or_zero();
     BodyDef::fixed(
         Vec3::ZERO,
         Shape::HalfSpace { normal: n, offset },
@@ -266,7 +267,7 @@ pub fn box_body(
     velocity: Vec3,
     half_extents: Vec3,
     mass: f32,
-) -> Option<BodyDef<EuclideanR3>> {
+) -> Result<BodyDef<EuclideanR3>, EditError> {
     BodyDef::new(
         position,
         velocity,
@@ -285,7 +286,7 @@ pub fn polytope_body(
     velocity: Vec3,
     vertices: Vec<Vec3>,
     mass: f32,
-) -> Option<BodyDef<EuclideanR3>> {
+) -> Result<BodyDef<EuclideanR3>, EditError> {
     let bounding_r_sq = vertices
         .iter()
         .map(|v| v.length_squared())
