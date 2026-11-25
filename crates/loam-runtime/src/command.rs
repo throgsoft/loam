@@ -41,9 +41,6 @@ pub enum Rejection {
     Cancelled,
     Unsupported(&'static str),
     OutOfRange(OutOfRange),
-    /// A world-owned edit refused the command before any change.
-    #[cfg(feature = "physics")]
-    Edit(loam_physics::EditError),
 }
 
 impl fmt::Display for Rejection {
@@ -57,8 +54,6 @@ impl fmt::Display for Rejection {
             Self::Cancelled => f.write_str("cancelled by a reset"),
             Self::Unsupported(what) => write!(f, "unsupported: {what}"),
             Self::OutOfRange(error) => fmt::Display::fmt(error, f),
-            #[cfg(feature = "physics")]
-            Self::Edit(error) => fmt::Display::fmt(error, f),
         }
     }
 }
@@ -84,7 +79,7 @@ impl From<OutOfRange> for Rejection {
 #[cfg(feature = "physics")]
 impl From<loam_physics::EditError> for Rejection {
     fn from(error: loam_physics::EditError) -> Self {
-        Self::Edit(error)
+        Self::Domain(DomainError::Physics(error))
     }
 }
 

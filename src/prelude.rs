@@ -14,7 +14,9 @@ pub use loam_runtime::{
     MOVE_UP,
 };
 #[cfg(feature = "physics")]
-pub use loam_runtime::{GrabConfig, GrabHold, Physics, PhysicsConfig, RestConfig, ThrowConfig};
+pub use loam_runtime::{
+    GrabConfig, GrabHold, Physics, PhysicsConfig, PhysicsConfigError, RestConfig, ThrowConfig,
+};
 pub use loam_shape::polytope::{
     polytope_section_faces_append, vertex_color_by_position, Polytope4, Polytope4Topology,
     SectionScratch,

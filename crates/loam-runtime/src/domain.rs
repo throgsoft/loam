@@ -112,6 +112,12 @@ pub enum DomainError {
     InvalidFrame,
     #[cfg(feature = "physics")]
     Physics(loam_physics::EditError),
+    #[cfg(feature = "physics")]
+    PhysicsConfig(crate::physics::PhysicsConfigError),
+    #[cfg(feature = "physics")]
+    NoPhysics(DomainId),
+    #[cfg(feature = "physics")]
+    NoBody(Entity),
     Unsupported(&'static str),
     FieldCycle(Entity),
     FieldArity(Entity),
@@ -135,6 +141,12 @@ impl fmt::Display for DomainError {
             Self::InvalidFrame => f.write_str("the frame is not orthonormal"),
             #[cfg(feature = "physics")]
             Self::Physics(error) => fmt::Display::fmt(error, f),
+            #[cfg(feature = "physics")]
+            Self::PhysicsConfig(error) => fmt::Display::fmt(error, f),
+            #[cfg(feature = "physics")]
+            Self::NoPhysics(domain) => write!(f, "{domain} has no physics"),
+            #[cfg(feature = "physics")]
+            Self::NoBody(entity) => write!(f, "{entity} has no body"),
             Self::Unsupported(what) => write!(f, "unsupported: {what}"),
             Self::FieldCycle(entity) => write!(f, "{entity} closes a field cycle"),
             Self::FieldArity(entity) => write!(f, "{entity} has the wrong operand count"),

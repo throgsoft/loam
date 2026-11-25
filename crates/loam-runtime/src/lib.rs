@@ -43,7 +43,9 @@ pub use image::{
 pub use input::{ActionEvent, ActionId, HostMessages, Input, Pointer, PointerButton, PointerPhase};
 pub use phase::{Ctx, Moment, Order, Phase, PhaseError, Step, SystemEntry, Tick};
 #[cfg(feature = "physics")]
-pub use physics::{GrabConfig, GrabHold, Physics, PhysicsConfig, RestConfig, ThrowConfig};
+pub use physics::{
+    GrabConfig, GrabHold, Physics, PhysicsConfig, PhysicsConfigError, RestConfig, ThrowConfig,
+};
 pub use publication::{
     FieldRecord, InstanceRecord, Overlay, PointRecord, Publication, PublishedView, RecordBuffer,
     RefusalSource, SegmentRecord, Stamp, TextRecord, TriangleRecord, ViewRecords, ViewRefusal,

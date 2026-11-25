@@ -17,10 +17,11 @@ where
             .find_map(|facility| (facility.as_ref() as &dyn Any).downcast_ref::<Physics<S>>())
     }
 
-    pub fn physics_mut(&mut self) -> Option<&mut Physics<S>> {
+    pub fn physics_mut(&mut self) -> Result<&mut Physics<S>, DomainError> {
         self.facilities
             .iter_mut()
             .find_map(|facility| (facility.as_mut() as &mut dyn Any).downcast_mut::<Physics<S>>())
+            .ok_or(DomainError::NoPhysics(self.id))
     }
 
     pub fn spawn_body(&mut self, entity: Entity, body: BodyDef<S>) -> Result<BodyId, DomainError> {
@@ -29,7 +30,7 @@ where
             .facilities
             .iter_mut()
             .find_map(|facility| (facility.as_mut() as &mut dyn Any).downcast_mut::<Physics<S>>())
-            .ok_or(DomainError::Unsupported("physics"))?;
+            .ok_or(DomainError::NoPhysics(self.id))?;
         physics.check_pose(pose)?;
         let id = physics.spawn(entity, body);
         let pushed = *physics
@@ -38,6 +39,7 @@ where
             .expect("a body that was just pushed is live");
         let placed = physics
             .replace_pose(id, pose, &mut self.poses)
+            .map_err(DomainError::from)
             .and_then(|()| {
                 if pushed.is_sleeping() {
                     physics.sleep_body(entity)
@@ -47,7 +49,7 @@ where
             });
         if let Err(error) = placed {
             let _ = physics.despawn(entity);
-            return Err(error.into());
+            return Err(error);
         }
         physics.restart_rest(id);
         Ok(id)

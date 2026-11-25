@@ -304,7 +304,7 @@ fn refused_bundle() {
         )
     });
     assert!(
-        matches!(refused, Err(Rejection::Domain(DomainError::Unsupported(_)))),
+        matches!(refused, Err(Rejection::Domain(DomainError::NoPhysics(_)))),
         "a domain without physics took a body: {refused:?}"
     );
     assert!(session.domains().read(plain).unwrap().poses().is_empty());
