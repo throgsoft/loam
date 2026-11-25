@@ -14,14 +14,15 @@ pub(crate) fn run<A: Stores>(
     app: &mut SessionApp<A>,
 ) -> Result<(), HostError> {
     if !app.args.has_bare_flag("records") {
-        return Err(HostError::Host("a headless run needs --records".into()));
+        return Err(HostError::NoRecords);
     }
-    let script =
-        driver_from_args(&app.args).map_err(|error| HostError::Host(format!("{error:#}")))?;
+    let script = driver_from_args(&app.args)?;
     let mut driver = script.unwrap_or_else(|| ScriptDriver::new(Script::default()));
     if let Some(raw) = app.args.flag_value("headless") {
-        let frames = raw.parse::<NonZeroU64>().map_err(|_| {
-            HostError::Host(format!("--headless {raw:?} is not a positive frame count"))
+        let frames = raw.parse::<NonZeroU64>().map_err(|_| HostError::Flag {
+            flag: "headless",
+            value: raw.to_string(),
+            expected: "a positive frame count",
         })?;
         driver = driver.with_frames(frames);
     }
@@ -39,7 +40,7 @@ pub(crate) fn run<A: Stores>(
                     .as_mut()
                     .map_or(Ok(()), |extra| extra(session, &mut dump))
             })
-            .map_err(|_| HostError::Host("the record dump failed".into()))
+            .map_err(|_| HostError::RecordDump)
     })?;
     print!("{dump}");
     Ok(())

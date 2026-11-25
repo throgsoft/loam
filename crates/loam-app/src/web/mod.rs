@@ -2,6 +2,7 @@
 //! the page itself in Firefox, which copies a worker's canvas back on every page repaint.
 
 mod animation;
+mod error;
 #[cfg(feature = "egui")]
 pub mod keymap;
 pub mod launch;
@@ -10,10 +11,10 @@ mod metrics;
 pub mod page;
 mod session;
 
+pub use error::WebError;
 pub(crate) use page::{launch_page, InPage};
 pub use session::{launch, launch_with};
 
-use anyhow::{anyhow, Result};
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{DedicatedWorkerGlobalScope, MessagePort, Window};
 
@@ -23,10 +24,10 @@ pub fn is_worker_context() -> bool {
         .is_ok()
 }
 
-pub(crate) fn worker_scope() -> Result<DedicatedWorkerGlobalScope> {
+pub(crate) fn worker_scope() -> Result<DedicatedWorkerGlobalScope, WebError> {
     js_sys::global()
         .dyn_into::<DedicatedWorkerGlobalScope>()
-        .map_err(|_| anyhow!("not running in a DedicatedWorkerGlobalScope"))
+        .map_err(|_| WebError::NotWorker)
 }
 
 #[derive(Clone)]

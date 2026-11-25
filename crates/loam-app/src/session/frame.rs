@@ -36,10 +36,6 @@ pub struct Target<'a> {
     pub size: (u32, u32),
 }
 
-pub(crate) fn failed(error: impl std::fmt::Display) -> HostError {
-    HostError::Host(error.to_string())
-}
-
 #[derive(Clone, Copy, Default, PartialEq)]
 struct Shown {
     content: u64,
@@ -98,12 +94,11 @@ impl<A: Stores> Frame<A> {
             (app.font.take(), app)
         };
         let sim = session.config();
-        sim.check().map_err(failed)?;
+        sim.check()?;
         let timestep = sim
             .dt()
             .map(|_| FixedTimestep::new(sim.fixed_hz).with_max_catch_up(sim.max_ticks_per_frame));
         let script = driver_from_args(&app.args)
-            .map_err(|error| failed(format!("{error:#}")))
             .and_then(|driver| {
                 driver
                     .map(|driver| ScriptRun::new(driver, &app.console))
@@ -265,13 +260,13 @@ impl<A: Stores> Frame<A> {
         size: (u32, u32),
         scale: f32,
     ) -> Result<(), HostError> {
-        let mut presenter = Presenter::new(format).map_err(failed)?;
+        let mut presenter = Presenter::new(format)?;
         for pass in self.state.app.passes.drain(..) {
-            presenter.register_pass(pass).map_err(failed)?;
+            presenter.register_pass(pass)?;
         }
         #[cfg(feature = "text")]
         if let Some(text) = self.state.text.pass() {
-            presenter.register_pass(Box::new(text)).map_err(failed)?;
+            presenter.register_pass(Box::new(text))?;
         }
         if self.state.app.debug_layer {
             if let Some(pass) = self.state.layer.attach(
@@ -283,10 +278,10 @@ impl<A: Stores> Frame<A> {
                 size,
                 scale,
             ) {
-                presenter.register_pass(pass).map_err(failed)?;
+                presenter.register_pass(pass)?;
             }
         }
-        presenter.attach(gpu).map_err(failed)?;
+        presenter.attach(gpu)?;
         self.presenter = Some(presenter);
         self.resize(size.0, size.1, scale);
         Ok(())
@@ -295,7 +290,7 @@ impl<A: Stores> Frame<A> {
     pub(crate) fn recover(&mut self, gpu: &GpuContext) -> Result<(), HostError> {
         self.invalidate();
         if let Some(presenter) = self.presenter.as_mut() {
-            presenter.attach(gpu).map_err(failed)?;
+            presenter.attach(gpu)?;
         }
         Ok(())
     }
@@ -330,10 +325,10 @@ impl<A: Stores> Frame<A> {
         let polled = gpu
             .device
             .poll(wgpu::PollType::Poll)
-            .map_err(failed)
+            .map_err(HostError::from)
             .and_then(|_| {
                 gpu.take_uncaptured_error()
-                    .map_or(Ok(()), |error| Err(failed(error)))
+                    .map_or(Ok(()), |error| Err(HostError::from(error)))
             });
         let outcome = match (polled, self.presenter.as_mut()) {
             (Err(error), _) => Err(error),
@@ -616,24 +611,20 @@ impl<A: Stores> LoopState<A> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("loam-app::session"),
             });
-        presenter
-            .record_scene(
-                &gpu.device,
-                &mut encoder,
-                target.view,
-                target.size,
-                self.app.background,
-            )
-            .map_err(failed)?;
+        presenter.record_scene(
+            &gpu.device,
+            &mut encoder,
+            target.view,
+            target.size,
+            self.app.background,
+        )?;
         if shot.wants(true) {
             finish(&mut encoder);
             self.capture
                 .record(&mut shot, true, &gpu.device, &mut encoder, target);
         }
         self.layer.aim(target.texture);
-        presenter
-            .record_overlays(&mut encoder, target.view, target.size)
-            .map_err(failed)?;
+        presenter.record_overlays(&mut encoder, target.view, target.size)?;
         finish(&mut encoder);
         self.capture
             .record(&mut shot, false, &gpu.device, &mut encoder, target);

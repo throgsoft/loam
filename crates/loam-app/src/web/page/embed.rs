@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Result};
 use std::rc::Rc;
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
 use super::Link;
+use crate::web::error::{js, listener, WebError};
 use crate::web::messages::Kind;
 
 // Dispatched on `document` when an embed activates; detail = host id.
@@ -23,13 +23,17 @@ pub(super) fn dispatch_embed_activated(host_id: &str) {
     }
 }
 
-pub(super) fn install_embed_lifecycle(worker: &Link, host_id: &str, button_id: &str) -> Result<()> {
+pub(super) fn install_embed_lifecycle(
+    worker: &Link,
+    host_id: &str,
+    button_id: &str,
+) -> Result<(), WebError> {
     let document = web_sys::window()
         .and_then(|w| w.document())
-        .ok_or_else(|| anyhow!("no document on global window"))?;
+        .ok_or(WebError::NoDocument)?;
     let host_el = document
         .get_element_by_id(host_id)
-        .ok_or_else(|| anyhow!("no host element with id '{host_id}'"))?;
+        .ok_or_else(|| WebError::NoElement(host_id.to_string()))?;
     let active: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
 
     let worker_for_resume = worker.clone();
@@ -94,7 +98,7 @@ pub(super) fn install_embed_lifecycle(worker: &Link, host_id: &str, button_id: &
             EMBED_ACTIVATED_EVENT,
             on_activated.as_ref().unchecked_ref(),
         )
-        .map_err(|e| anyhow!("addEventListener('{EMBED_ACTIVATED_EVENT}'): {e:?}"))?;
+        .map_err(listener(EMBED_ACTIVATED_EVENT))?;
     on_activated.forget();
 
     let active_for_ptr = active.clone();
@@ -118,7 +122,7 @@ pub(super) fn install_embed_lifecycle(worker: &Link, host_id: &str, button_id: &
             on_pointerdown.as_ref().unchecked_ref(),
             true,
         )
-        .map_err(|e| anyhow!("addEventListener('pointerdown'): {e:?}"))?;
+        .map_err(js("addEventListener('pointerdown')"))?;
     on_pointerdown.forget();
 
     Ok(())

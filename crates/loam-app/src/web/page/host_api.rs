@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -8,6 +7,7 @@ use web_sys::{Element, MessageEvent};
 
 use super::{set_msg_string, Link};
 use crate::session::input::queue::MESSAGE_QUEUE_CAPACITY;
+use crate::web::error::{js, listener, WebError};
 use crate::web::messages::Kind;
 
 const HOST_CONTROL_EVENT: &str = "loam-control";
@@ -98,7 +98,7 @@ pub(super) fn install_host_channel(
     worker: &Link,
     host: &Element,
     channel: &Rc<RefCell<HostChannel>>,
-) -> Result<()> {
+) -> Result<(), WebError> {
     {
         let channel = channel.clone();
         let callback = Closure::wrap(Box::new(move |event: web_sys::CustomEvent| {
@@ -121,7 +121,7 @@ pub(super) fn install_host_channel(
             HOST_MESSAGE_EVENT,
             callback.as_ref().unchecked_ref(),
         )
-        .map_err(|error| anyhow!("addEventListener('{HOST_MESSAGE_EVENT}'): {error:?}"))?;
+        .map_err(listener(HOST_MESSAGE_EVENT))?;
         callback.forget();
     }
 
@@ -153,7 +153,7 @@ pub(super) fn install_host_channel(
     }) as Box<dyn FnMut(MessageEvent)>);
     worker
         .add_event_listener_with_callback("message", callback.as_ref().unchecked_ref())
-        .map_err(|error| anyhow!("worker.addEventListener('message') for posts: {error:?}"))?;
+        .map_err(js("worker.addEventListener('message') for posts"))?;
     callback.forget();
     Ok(())
 }
@@ -162,7 +162,7 @@ pub(super) fn install_page_control(
     worker: &Link,
     host: &Element,
     channel: &Rc<RefCell<HostChannel>>,
-) -> Result<()> {
+) -> Result<(), WebError> {
     let worker = worker.clone();
     let channel = channel.clone();
     let callback = Closure::wrap(Box::new(move |event: web_sys::CustomEvent| {
@@ -189,7 +189,7 @@ pub(super) fn install_page_control(
         }
     }) as Box<dyn FnMut(web_sys::CustomEvent)>);
     host.add_event_listener_with_callback(HOST_CONTROL_EVENT, callback.as_ref().unchecked_ref())
-        .map_err(|error| anyhow!("addEventListener('{HOST_CONTROL_EVENT}'): {error:?}"))?;
+        .map_err(listener(HOST_CONTROL_EVENT))?;
     callback.forget();
     Ok(())
 }

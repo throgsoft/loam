@@ -60,7 +60,7 @@ fn recovery_scheduling() {
     lifecycle = Lifecycle::Ready;
     assert!(matches!(
         animation::frame(false, &mut lifecycle, false, || Err(
-            loam_app::host::HostError::Host("stopped".into())
+            loam_app::host::HostError::SurfaceMemory
         )),
         Next::Failed(_)
     ));

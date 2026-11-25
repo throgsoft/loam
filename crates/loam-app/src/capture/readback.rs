@@ -1,9 +1,10 @@
-use anyhow::{Context as _, Result};
 use wgpu::{
     Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Extent3d, MapMode, Origin3d,
     PollType, TexelCopyBufferInfo, TexelCopyBufferLayout, TexelCopyTextureInfo, Texture,
     TextureAspect, TextureFormat,
 };
+
+use super::error::CaptureError;
 
 // Row-major RGBA8, already R/B-swapped from BGRA sources.
 pub(super) struct RawImage {
@@ -28,8 +29,8 @@ pub(super) fn record_texture_rgba(
     width: u32,
     height: u32,
     format: TextureFormat,
-) -> Result<TextureReadback> {
-    let unpadded_bpr = width.checked_mul(4).context("width * 4 overflows u32")?;
+) -> Result<TextureReadback, CaptureError> {
+    let unpadded_bpr = width.checked_mul(4).ok_or(CaptureError::RowBytes(width))?;
     let padded_bpr = unpadded_bpr.next_multiple_of(256);
     let buffer_size = (padded_bpr as u64) * (height as u64);
 
@@ -72,7 +73,7 @@ pub(super) fn record_texture_rgba(
 }
 
 impl TextureReadback {
-    pub(super) fn read(self, device: &Device) -> Result<RawImage> {
+    pub(super) fn read(self, device: &Device) -> Result<RawImage, CaptureError> {
         let Self {
             buffer,
             width,
@@ -92,12 +93,12 @@ impl TextureReadback {
                 submission_index: None,
                 timeout: None,
             })
-            .context("device.poll on capture readback failed")?;
+            .map_err(CaptureError::Poll)?;
 
         mapped_rx
             .recv()
-            .context("capture map callback dropped")?
-            .context("capture buffer mapping failed")?;
+            .map_err(|_| CaptureError::MapDropped)?
+            .map_err(CaptureError::Map)?;
         let data = slice.get_mapped_range();
         let mut rgba = Vec::with_capacity((unpadded_bpr * height) as usize);
         for row in 0..height as usize {

@@ -1324,7 +1324,6 @@ dependencies = [
 name = "loam-app"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "color_quant",
  "console_error_panic_hook",
  "egui-wgpu",
@@ -2074,7 +2073,6 @@ checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
 name = "polytope_playground"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "glam",
  "loam",
  "loam-egui",

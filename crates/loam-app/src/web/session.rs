@@ -2,7 +2,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use anyhow::{anyhow, Context, Result};
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlCanvasElement, MessageEvent, OffscreenCanvas};
@@ -15,11 +14,12 @@ use loam_time::par::Sequential;
 use web_time::Instant;
 
 use super::animation::{self, Lifecycle, Next};
+use super::error::{js, listener, WebError};
 use super::messages::{self, Kind};
 use super::{install_logging_idempotent, post_failure, worker_scope, Endpoint};
 use crate::host::HostError;
 use crate::session::app::SessionApp;
-use crate::session::frame::{failed, Frame};
+use crate::session::frame::Frame;
 use crate::session::input::message::{InputMessage, PointerPhase};
 use crate::session::input::queue;
 #[cfg(feature = "egui")]
@@ -39,14 +39,13 @@ pub fn launch_with<A: Stores>(
 ) -> Result<(), HostError> {
     install_logging_idempotent();
     if super::is_worker_context() {
-        return worker_scope()
-            .and_then(|scope| listen(Endpoint::Worker(scope), None, factory))
-            .map_err(|error| failed(format!("{error:#}")));
+        let scope = worker_scope()?;
+        return listen(Endpoint::Worker(scope), None, factory);
     }
     let in_page: super::InPage = Box::new(move |port, window, canvas| {
         listen(Endpoint::Page(port, window), Some(canvas), factory)
     });
-    super::launch_page(&wasm, in_page).map_err(|error| failed(format!("{error:#}")))
+    super::launch_page(&wasm, in_page)
 }
 
 type Pending<F> = Rc<RefCell<Option<F>>>;
@@ -67,7 +66,7 @@ fn listen<A: Stores, F>(
     endpoint: Endpoint,
     page_canvas: Option<HtmlCanvasElement>,
     factory: F,
-) -> Result<()>
+) -> Result<(), HostError>
 where
     F: FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
 {
@@ -76,14 +75,14 @@ where
     let handler_endpoint = endpoint.clone();
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         if let Err(error) = on_message(&handler_endpoint, event, &pending, &page_canvas) {
-            let message = format!("message handler failed: {error:#}");
+            let message = format!("message handler failed: {error}");
             tracing::error!("loam_app::web::session: {message}");
             post_failure(&handler_endpoint, &message);
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     endpoint
         .listen(on_message.as_ref().unchecked_ref())
-        .map_err(|error| anyhow!("addEventListener('message'): {error:?}"))?;
+        .map_err(listener("message"))?;
     on_message.forget();
     post(&endpoint, Kind::Ready);
     Ok(())
@@ -167,7 +166,7 @@ fn on_message<A: Stores, F>(
     event: MessageEvent,
     pending: &Pending<F>,
     page_canvas: &RefCell<Option<HtmlCanvasElement>>,
-) -> Result<()>
+) -> Result<(), HostError>
 where
     F: FnOnce(Args) -> Result<(Session<A>, SessionApp<A>), HostError> + 'static,
 {
@@ -208,17 +207,15 @@ where
         }
         Some(Kind::Init) => {
             let Some(factory) = pending.borrow_mut().take() else {
-                return Err(anyhow!("a second init reached the session worker"));
+                return Err(WebError::SecondInit.into());
             };
             let canvas = match page_canvas.borrow_mut().take() {
                 Some(canvas) => Canvas::Page(canvas),
                 None => Canvas::Offscreen(
                     js_sys::Reflect::get(&data, &JsValue::from_str("canvas"))
-                        .map_err(|error| anyhow!("init missing 'canvas': {error:?}"))?
+                        .map_err(js("init missing 'canvas'"))?
                         .dyn_into::<OffscreenCanvas>()
-                        .map_err(|error| {
-                            anyhow!("init 'canvas' is not an OffscreenCanvas: {error:?}")
-                        })?,
+                        .map_err(js("init 'canvas' is not an OffscreenCanvas"))?,
                 ),
             };
             let read_u32 = |key: &str| {
@@ -240,8 +237,7 @@ where
             HIDDEN.with(|hidden| hidden.set(!visible));
             crate::args::set_query_override(read_str("search"), read_str("hash"));
             let args = Args::current();
-            let (mut session, app) = factory(args.clone())
-                .map_err(|error| anyhow!("session factory failed: {error:?}"))?;
+            let (mut session, app) = factory(args.clone())?;
             session.capture_initial();
             let width = read_u32("width").unwrap_or(800);
             let height = read_u32("height").unwrap_or(600);
@@ -251,7 +247,7 @@ where
             wasm_bindgen_futures::spawn_local(async move {
                 let started = start(endpoint, session, app, canvas, (width, height), dpr).await;
                 if let Err(error) = started {
-                    let message = format!("initialization failed: {error:#}");
+                    let message = format!("initialization failed: {error}");
                     tracing::error!("loam_app::web::session: {message}");
                     post_failure(&failure_endpoint, &message);
                 }
@@ -283,33 +279,26 @@ async fn start<A: Stores>(
     canvas: Canvas,
     size: (u32, u32),
     dpr: f32,
-) -> Result<()> {
+) -> Result<(), HostError> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
         backends: wgpu::Backends::BROWSER_WEBGPU,
         ..Default::default()
     });
-    let surface = instance
-        .create_surface(canvas.target())
-        .context("create_surface")?;
+    let surface = instance.create_surface(canvas.target())?;
     let request = FeatureRequest {
         optional_features: wgpu::Features::empty(),
         ..FeatureRequest::default()
     };
-    let (surface, rd) = SurfaceHost::new(instance, surface, size, request)
-        .await
-        .context("SurfaceHost::new")?;
+    let (surface, rd) = SurfaceHost::new(instance, surface, size, request).await?;
 
-    let mut frame =
-        Frame::new(session, app, Box::new(Sequential)).map_err(|error| anyhow!("{error:?}"))?;
-    frame
-        .attach(
-            &rd.context,
-            rd.target_format(),
-            surface.view_format(),
-            size,
-            dpr,
-        )
-        .map_err(|error| anyhow!("{error:?}"))?;
+    let mut frame = Frame::new(session, app, Box::new(Sequential))?;
+    frame.attach(
+        &rd.context,
+        rd.target_format(),
+        surface.view_format(),
+        size,
+        dpr,
+    )?;
     let worker = Rc::new(RefCell::new(Some(Worker {
         frame,
         surface,
@@ -347,7 +336,7 @@ fn install_animation_frame<A: Stores>(endpoint: Endpoint, worker: Rc<RefCell<Opt
             let next = animation::frame(idle, &mut state, loss.is_some(), || {
                 let mut held = worker_for_closure.borrow_mut();
                 let Some(worker) = held.as_mut() else {
-                    return Err(failed("the session worker is unavailable"));
+                    return Err(WebError::WorkerUnavailable.into());
                 };
                 worker.animate()?;
                 Ok(())
@@ -461,7 +450,7 @@ async fn recover<A: Stores>(
     };
     let outcome = if let Err(error) = active.rd.recover().await {
         Err(format!(
-            "GPU device lost ({:?}: {}); the device was not rebuilt: {error:#}",
+            "GPU device lost ({:?}: {}); the device was not rebuilt: {error}",
             loss.reason, loss.message
         ))
     } else {
@@ -469,7 +458,7 @@ async fn recover<A: Stores>(
         active
             .frame
             .recover(&active.rd.context)
-            .map_err(|error| format!("presentation recovery failed: {error:?}"))
+            .map_err(|error| format!("presentation recovery failed: {error}"))
     };
     *worker.borrow_mut() = Some(active);
     outcome

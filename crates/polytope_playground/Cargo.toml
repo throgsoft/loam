@@ -11,7 +11,6 @@ keywords = ["4d", "polytope", "rotation", "demo", "wgpu"]
 categories = ["game-development", "graphics", "visualization"]
 
 [dependencies]
-anyhow.workspace = true
 glam.workspace = true
 
 loam = { path = "../..", version = "0.1.0", default-features = false, features = ["app", "egui", "physics", "render", "text"] }

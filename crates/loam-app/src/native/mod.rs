@@ -16,7 +16,7 @@ pub mod par;
 use crate::args::Args;
 use crate::host::HostError;
 use crate::session::app::SessionApp;
-use crate::session::frame::{failed, Frame};
+use crate::session::frame::Frame;
 use crate::session::input::message::wheel_lines;
 use crate::session::surface::{Attempt, SurfaceHost};
 use crate::WasmConfig;
@@ -69,10 +69,10 @@ fn run<A: Stores>(
         return crate::session::records::run(&mut session, &mut app);
     }
     session.capture_initial();
-    let event_loop = EventLoop::new().map_err(failed)?;
+    let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut host = Host::new(session, app)?;
-    event_loop.run_app(&mut host).map_err(failed)?;
+    event_loop.run_app(&mut host)?;
     match host.failure {
         Some(error) => Err(error),
         None => Ok(()),
@@ -135,7 +135,7 @@ impl<A: Stores> Host<A> {
 
         if let Some(loss) = device.take_device_loss() {
             tracing::warn!("device lost ({:?}): {}", loss.reason, loss.message);
-            pollster::block_on(device.recover()).map_err(|error| failed(format!("{error:#}")))?;
+            pollster::block_on(device.recover())?;
             surface.reconfigure(&device.context.device);
             return frame.recover(&device.context);
         }
@@ -216,12 +216,12 @@ impl<A: Stores> ApplicationHandler for Host<A> {
         let attributes = WindowAttributes::default().with_title(self.frame.config().title);
         let window = match elwt.create_window(attributes) {
             Ok(window) => Arc::new(window),
-            Err(error) => return self.stop(elwt, failed(error)),
+            Err(error) => return self.stop(elwt, error.into()),
         };
         let instance = wgpu::Instance::default();
         let surface = match instance.create_surface(window.clone()) {
             Ok(surface) => surface,
-            Err(error) => return self.stop(elwt, failed(error)),
+            Err(error) => return self.stop(elwt, error.into()),
         };
         let size = window.inner_size();
         let attached = pollster::block_on(SurfaceHost::new(
@@ -232,7 +232,7 @@ impl<A: Stores> ApplicationHandler for Host<A> {
         ));
         let (surface, device) = match attached {
             Ok(attached) => attached,
-            Err(error) => return self.stop(elwt, failed(format!("{error:#}"))),
+            Err(error) => return self.stop(elwt, error),
         };
         let attached = self.frame.attach(
             &device.context,

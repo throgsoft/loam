@@ -1,6 +1,8 @@
 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
 mod apng;
 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+mod error;
+#[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
 mod gif;
 #[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
 mod readback;

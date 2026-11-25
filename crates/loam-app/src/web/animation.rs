@@ -32,7 +32,7 @@ pub(crate) fn frame(
         Ok(()) => Next::Frame,
         Err(error) => {
             *lifecycle = Lifecycle::Failed;
-            Next::Failed(format!("frame failed: {error:?}"))
+            Next::Failed(format!("frame failed: {error}"))
         }
     }
 }

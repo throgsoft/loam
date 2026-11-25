@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 use std::cell::Cell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::Closure;
@@ -6,16 +5,17 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{HtmlCanvasElement, MessageEvent};
 
 use super::{set_msg_bool, Link};
+use crate::web::error::{js, listener, WebError};
 use crate::web::messages::Kind;
 
 pub(super) fn install_cursor_control(
     worker: &Link,
     canvas: &HtmlCanvasElement,
     background: bool,
-) -> Result<()> {
+) -> Result<(), WebError> {
     let document = web_sys::window()
         .and_then(|window| window.document())
-        .ok_or_else(|| anyhow!("no document on global window"))?;
+        .ok_or(WebError::NoDocument)?;
     let wanted = Rc::new(Cell::new(false));
 
     {
@@ -51,7 +51,7 @@ pub(super) fn install_cursor_control(
         }) as Box<dyn FnMut(MessageEvent)>);
         worker
             .add_event_listener_with_callback("message", callback.as_ref().unchecked_ref())
-            .map_err(|error| anyhow!("cursor lock message listener: {error:?}"))?;
+            .map_err(js("cursor lock message listener"))?;
         callback.forget();
     }
 
@@ -77,7 +77,7 @@ pub(super) fn install_cursor_control(
         }) as Box<dyn FnMut()>);
         document
             .add_event_listener_with_callback(event_name, callback.as_ref().unchecked_ref())
-            .map_err(|error| anyhow!("{event_name} listener: {error:?}"))?;
+            .map_err(listener(event_name))?;
         callback.forget();
     }
 
@@ -97,7 +97,7 @@ pub(super) fn install_cursor_control(
         }) as Box<dyn FnMut()>);
         canvas
             .add_event_listener_with_callback("mousedown", callback.as_ref().unchecked_ref())
-            .map_err(|error| anyhow!("cursor lock mousedown listener: {error:?}"))?;
+            .map_err(js("cursor lock mousedown listener"))?;
         callback.forget();
     }
 
@@ -116,7 +116,7 @@ pub(super) fn install_cursor_control(
         }) as Box<dyn FnMut()>);
         document
             .add_event_listener_with_callback("keydown", callback.as_ref().unchecked_ref())
-            .map_err(|error| anyhow!("cursor lock keydown listener: {error:?}"))?;
+            .map_err(js("cursor lock keydown listener"))?;
         callback.forget();
     }
 

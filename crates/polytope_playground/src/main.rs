@@ -519,12 +519,17 @@ fn main() -> Result<(), HostError> {
 }
 
 fn interactive(args: Args) -> Result<(Session<Playground>, SessionApp<Playground>), HostError> {
-    let row = catalog::parse_row(&args).map_err(|error| HostError::Host(format!("{error:#}")))?;
+    let row = catalog::parse_row(&args)?;
     let (mut session, _) = boot(&row)?;
     if let Some(token) = args.flag_value("surface") {
-        session.app.display.get_mut().surface = display::SURFACE.parse(token).ok_or_else(|| {
-            HostError::Host(format!("--surface {token:?} is not raster, sdf or off"))
-        })?;
+        session.app.display.get_mut().surface =
+            display::SURFACE
+                .parse(token)
+                .ok_or_else(|| HostError::Flag {
+                    flag: "surface",
+                    value: token.to_string(),
+                    expected: "raster, sdf or off",
+                })?;
     }
     let frame = Frame::new();
     let config = HostConfig::new("polytope playground", bindings());

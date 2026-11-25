@@ -7,8 +7,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use anyhow::{anyhow, Context as _, Result};
-
+use super::error::{create, CaptureError};
 use super::scale::scaled_dims;
 
 pub(super) struct ApngWorker {
@@ -29,14 +28,14 @@ pub(super) struct ApngFrame {
 const APNG_CHANNEL_CAPACITY: usize = 16;
 
 impl ApngWorker {
-    pub(super) fn spawn(path: PathBuf) -> Result<Self> {
+    pub(super) fn spawn(path: PathBuf) -> Result<Self, CaptureError> {
         let (tx, rx) = sync_channel::<ApngFrame>(APNG_CHANNEL_CAPACITY);
         let frame_count = Arc::new(AtomicU32::new(0));
         let frame_count_for_worker = frame_count.clone();
         let handle = thread::Builder::new()
             .name("loam-app::apng-encoder".into())
             .spawn(move || apng_encoder_loop(path, rx, frame_count_for_worker))
-            .context("spawn apng encoder thread")?;
+            .map_err(CaptureError::Thread)?;
         Ok(Self {
             tx: Some(tx),
             handle: Some(handle),
@@ -81,42 +80,37 @@ fn apng_encoder_loop(path: PathBuf, rx: Receiver<ApngFrame>, frame_count: Arc<At
         return;
     }
     if let Err(e) = write_apng(&path, frames) {
-        tracing::error!("capture: apng write failed: {e:#}");
+        tracing::error!("capture: apng write failed: {e}");
         return;
     }
     tracing::info!("capture: apng file finalised at {}", path.display());
 }
 
-fn write_apng(path: &Path, frames: Vec<ApngFrame>) -> Result<()> {
+fn write_apng(path: &Path, frames: Vec<ApngFrame>) -> Result<(), CaptureError> {
     let (out_w, out_h) = scaled_dims(frames[0].src_width, frames[0].src_height, frames[0].scale)?;
-    let file =
-        File::create(path).with_context(|| format!("create apng output {}", path.display()))?;
+    let file = File::create(path).map_err(create("apng output", path.to_path_buf()))?;
     let mut encoder = png::Encoder::new(BufWriter::new(file), out_w, out_h);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     // num_plays=0 loops infinitely.
-    encoder
-        .set_animated(frames.len() as u32, 0)
-        .context("apng set_animated")?;
-    let mut writer = encoder.write_header().context("apng write_header")?;
+    encoder.set_animated(frames.len() as u32, 0)?;
+    let mut writer = encoder.write_header()?;
 
     let mut last_captured_at: Option<Instant> = None;
     for frame in frames {
         let (fw, fh) = scaled_dims(frame.src_width, frame.src_height, frame.scale)?;
         if fw != out_w || fh != out_h {
-            return Err(anyhow!(
-                "apng frame dims {fw}x{fh} != first frame {out_w}x{out_h}"
-            ));
+            return Err(CaptureError::FrameSize {
+                size: (fw, fh),
+                first: (out_w, out_h),
+            });
         }
         let rgba = if frame.scale.is_some() {
             let src: ::image::RgbaImage =
                 ::image::ImageBuffer::from_raw(frame.src_width, frame.src_height, frame.rgba)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "RGBA size mismatch at {}x{}",
-                            frame.src_width,
-                            frame.src_height
-                        )
+                    .ok_or(CaptureError::RgbaSize {
+                        width: frame.src_width,
+                        height: frame.src_height,
                     })?;
             ::image::imageops::resize(&src, out_w, out_h, ::image::imageops::FilterType::Lanczos3)
                 .into_raw()
@@ -134,13 +128,9 @@ fn write_apng(path: &Path, frames: Vec<ApngFrame>) -> Result<()> {
         };
         last_captured_at = Some(frame.captured_at);
 
-        writer
-            .set_frame_delay(delay_ms, 1000)
-            .context("apng set_frame_delay")?;
-        writer
-            .write_image_data(&rgba)
-            .context("apng write_image_data")?;
+        writer.set_frame_delay(delay_ms, 1000)?;
+        writer.write_image_data(&rgba)?;
     }
-    writer.finish().context("apng finish")?;
+    writer.finish()?;
     Ok(())
 }

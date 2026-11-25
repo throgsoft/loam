@@ -7,8 +7,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use anyhow::{anyhow, Context as _, Result};
-
+use super::error::{create, CaptureError};
 use super::scale::scaled_dims;
 
 pub(super) struct GifWorker {
@@ -31,13 +30,13 @@ pub(super) struct GifFrame {
 const GIF_CHANNEL_CAPACITY: usize = 8;
 
 impl GifWorker {
-    pub(super) fn spawn(path: PathBuf) -> Result<Self> {
+    pub(super) fn spawn(path: PathBuf) -> Result<Self, CaptureError> {
         let (tx, rx) = sync_channel::<GifFrame>(GIF_CHANNEL_CAPACITY);
         let dropped = Arc::new(AtomicU32::new(0));
         let handle = thread::Builder::new()
             .name("loam-app::gif-encoder".into())
             .spawn(move || gif_encoder_loop(path, rx))
-            .context("spawn gif encoder thread")?;
+            .map_err(CaptureError::Thread)?;
         Ok(Self {
             tx: Some(tx),
             handle: Some(handle),
@@ -88,7 +87,7 @@ fn gif_encoder_loop(path: PathBuf, rx: Receiver<GifFrame>) {
     let mut last_captured_at: Option<Instant> = None;
     for frame in rx {
         if let Err(e) = encode_one_frame(&path, &mut encoder, &mut last_captured_at, frame) {
-            tracing::error!("capture: gif encode error: {e:#}");
+            tracing::error!("capture: gif encode error: {e}");
             return;
         }
     }
@@ -101,25 +100,27 @@ fn encode_one_frame(
     encoder: &mut Option<gif::Encoder<BufWriter<File>>>,
     last_captured_at: &mut Option<Instant>,
     frame: GifFrame,
-) -> Result<()> {
+) -> Result<(), CaptureError> {
     let (out_w, out_h) = scaled_dims(frame.src_width, frame.src_height, frame.scale)?;
-    let w_u16: u16 = out_w.try_into().context("gif width > 65535")?;
-    let h_u16: u16 = out_h.try_into().context("gif height > 65535")?;
+    let too_large = |_| CaptureError::GifSize {
+        width: out_w,
+        height: out_h,
+    };
+    let w_u16: u16 = out_w.try_into().map_err(too_large)?;
+    let h_u16: u16 = out_h.try_into().map_err(too_large)?;
 
     let enc = match encoder {
         Some(e) => e,
         None => {
-            let file = File::create(path)
-                .with_context(|| format!("create gif output {}", path.display()))?;
+            let file = File::create(path).map_err(create("gif output", path.to_path_buf()))?;
             let global_palette_bytes: Vec<u8> = frame
                 .global_palette
                 .as_ref()
                 .map(|nq| nq.color_map_rgb())
                 .unwrap_or_default();
             let mut e =
-                gif::Encoder::new(BufWriter::new(file), w_u16, h_u16, &global_palette_bytes)
-                    .context("init gif encoder")?;
-            e.set_repeat(gif::Repeat::Infinite).context("gif repeat")?;
+                gif::Encoder::new(BufWriter::new(file), w_u16, h_u16, &global_palette_bytes)?;
+            e.set_repeat(gif::Repeat::Infinite)?;
             tracing::info!(
                 "capture: gif encoder opened {}x{} target {}cs/frame ({} fps); \
                  palette={}; actual delays computed from wall-clock per-frame",
@@ -153,14 +154,12 @@ fn encode_one_frame(
 
     let mut buf: Vec<u8> = if frame.scale.is_some() {
         let src: ::image::RgbaImage =
-            ::image::ImageBuffer::from_raw(frame.src_width, frame.src_height, frame.rgba)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "RGBA size mismatch at {}x{}",
-                        frame.src_width,
-                        frame.src_height
-                    )
-                })?;
+            ::image::ImageBuffer::from_raw(frame.src_width, frame.src_height, frame.rgba).ok_or(
+                CaptureError::RgbaSize {
+                    width: frame.src_width,
+                    height: frame.src_height,
+                },
+            )?;
         let dst =
             ::image::imageops::resize(&src, out_w, out_h, ::image::imageops::FilterType::Lanczos3);
         dst.into_raw()
@@ -192,6 +191,6 @@ fn encode_one_frame(
     gif_frame.delay = delay_cs;
     // `Background` disposal flashes between frames.
     gif_frame.dispose = gif::DisposalMethod::Any;
-    enc.write_frame(&gif_frame).context("gif encode")?;
+    enc.write_frame(&gif_frame)?;
     Ok(())
 }

@@ -31,8 +31,7 @@ pub fn run_script<A: Stores>(
     let mut publication = Publication::default();
     loop {
         let frame = script.frame();
-        let step = u32::try_from(frame)
-            .map_err(|_| HostError::Host(format!("frame {frame} is past the last step")))?;
+        let step = u32::try_from(frame).map_err(|_| HostError::FramePastEnd(frame))?;
         input.fix_clock(f64::from(step) * dt);
         advance_session(
             session,
@@ -53,8 +52,8 @@ pub fn run_script<A: Stores>(
         let advanced = script.advance(&mut input, &app.config.bindings, &mut app.console);
         let refused = echo(&mut app.console);
         let (status, _) = advanced?;
-        if let Some(error) = refused {
-            return Err(HostError::Host(format!("frame {frame}: {error}")));
+        if let Some(line) = refused {
+            return Err(HostError::Console { frame, line });
         }
         if status == ScriptStatus::Finished {
             return Ok(publication);

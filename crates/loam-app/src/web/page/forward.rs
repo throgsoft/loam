@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use wasm_bindgen::prelude::Closure;
@@ -11,6 +10,7 @@ use super::{
     is_visible, set_msg_bool, set_msg_f32, set_msg_f64, set_msg_string, set_msg_u32, Link,
 };
 use crate::session::input::message::wheel_lines;
+use crate::web::error::{js, listener, WebError};
 use crate::web::messages::Kind;
 
 type Pending<T> = Rc<RefCell<Option<T>>>;
@@ -22,11 +22,9 @@ pub(super) fn install_dom_input_forwarders(
     max_pixels: Option<u32>,
     background: bool,
     channel: &Rc<RefCell<HostChannel>>,
-) -> Result<()> {
-    let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
-    let document = window
-        .document()
-        .ok_or_else(|| anyhow!("no document on window"))?;
+) -> Result<(), WebError> {
+    let window = web_sys::window().ok_or(WebError::NoWindow)?;
+    let document = window.document().ok_or(WebError::NoDocument)?;
 
     const RESIZE_DEBOUNCE_FRAMES: u32 = 6;
     {
@@ -50,9 +48,9 @@ pub(super) fn install_dom_input_forwarders(
         }) as Box<dyn FnMut()>);
         window
             .add_event_listener_with_callback("resize", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("window resize listener: {e:?}"))?;
+            .map_err(js("window resize listener"))?;
         let observer = web_sys::ResizeObserver::new(cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("ResizeObserver::new: {e:?}"))?;
+            .map_err(js("ResizeObserver::new"))?;
         observer.observe(canvas);
         cb.forget();
 
@@ -105,7 +103,7 @@ pub(super) fn install_dom_input_forwarders(
             if let Some(first) = first_cb.as_ref() {
                 window
                     .request_animation_frame(first.as_ref().unchecked_ref())
-                    .map_err(|e| anyhow!("resize rAF init: {e:?}"))?;
+                    .map_err(js("resize rAF init"))?;
             }
         }
     }
@@ -130,7 +128,7 @@ pub(super) fn install_dom_input_forwarders(
         }) as Box<dyn FnMut(web_sys::MouseEvent)>);
         canvas
             .add_event_listener_with_callback("mousemove", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("mousemove listener: {e:?}"))?;
+            .map_err(js("mousemove listener"))?;
         cb.forget();
 
         let worker_for_raf = worker.clone();
@@ -161,7 +159,7 @@ pub(super) fn install_dom_input_forwarders(
             if let Some(first) = first_cb.as_ref() {
                 window
                     .request_animation_frame(first.as_ref().unchecked_ref())
-                    .map_err(|e| anyhow!("mousemove rAF init: {e:?}"))?;
+                    .map_err(js("mousemove rAF init"))?;
             }
         }
     }
@@ -187,7 +185,7 @@ pub(super) fn install_dom_input_forwarders(
         }) as Box<dyn FnMut(web_sys::MouseEvent)>);
         canvas
             .add_event_listener_with_callback(event_name, cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("{event_name} listener: {e:?}"))?;
+            .map_err(listener(event_name))?;
         cb.forget();
     }
 
@@ -214,7 +212,7 @@ pub(super) fn install_dom_input_forwarders(
         }) as Box<dyn FnMut(web_sys::PointerEvent)>);
         canvas
             .add_event_listener_with_callback(event_name, cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("{event_name} listener: {e:?}"))?;
+            .map_err(listener(event_name))?;
         cb.forget();
     }
 
@@ -229,7 +227,7 @@ pub(super) fn install_dom_input_forwarders(
         }) as Box<dyn FnMut(web_sys::Event)>);
         canvas
             .add_event_listener_with_callback("contextmenu", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("contextmenu listener: {e:?}"))?;
+            .map_err(js("contextmenu listener"))?;
         cb.forget();
     }
 
@@ -250,7 +248,7 @@ pub(super) fn install_dom_input_forwarders(
         }) as Box<dyn FnMut(web_sys::WheelEvent)>);
         canvas
             .add_event_listener_with_callback("wheel", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("wheel listener: {e:?}"))?;
+            .map_err(js("wheel listener"))?;
         cb.forget();
     }
 
@@ -288,7 +286,7 @@ pub(super) fn install_dom_input_forwarders(
         }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
         document
             .add_event_listener_with_callback(event_name, cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("{event_name} listener: {e:?}"))?;
+            .map_err(listener(event_name))?;
         cb.forget();
     }
 
@@ -299,7 +297,7 @@ fn install_focus_and_visibility(
     worker: &Link,
     window: &web_sys::Window,
     document: &web_sys::Document,
-) -> Result<()> {
+) -> Result<(), WebError> {
     for (event_name, focused) in [("focus", true), ("blur", false)] {
         let worker = worker.clone();
         let cb = Closure::wrap(Box::new(move || {
@@ -309,7 +307,7 @@ fn install_focus_and_visibility(
         }) as Box<dyn FnMut()>);
         window
             .add_event_listener_with_callback(event_name, cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("{event_name} listener: {e:?}"))?;
+            .map_err(listener(event_name))?;
         cb.forget();
     }
 
@@ -323,7 +321,7 @@ fn install_focus_and_visibility(
         }) as Box<dyn FnMut()>);
         document
             .add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref())
-            .map_err(|e| anyhow!("visibilitychange listener: {e:?}"))?;
+            .map_err(js("visibilitychange listener"))?;
         cb.forget();
     }
 

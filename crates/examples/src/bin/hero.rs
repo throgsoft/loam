@@ -153,10 +153,6 @@ fn fps() -> NonZeroU32 {
     NonZeroU32::new(TICK_HZ).unwrap_or(NonZeroU32::MIN)
 }
 
-fn refused(what: impl std::fmt::Display) -> HostError {
-    HostError::Host(what.to_string())
-}
-
 #[derive(Clone)]
 struct MorphField {
     letters: Vec<Vec<f32>>,
@@ -437,12 +433,12 @@ fn compose(
 }
 
 fn build() -> Result<Session<HeroStores>, HostError> {
-    let font = FontRef::try_from_slice(FONT).map_err(refused)?;
+    let font = FontRef::try_from_slice(FONT)?;
     let params = GlyphParams::default();
-    let solids = layout_word(&font, WORD, &params).map_err(refused)?;
-    let letters = letters_of(&solids).ok_or_else(|| refused("a letter has no convex hull"))?;
+    let solids = layout_word(&font, WORD, &params)?;
+    let letters = letters_of(&solids).expect("every letter of the bundled word has a convex hull");
     let mut morph = MorphField::new(&solids, params.em_size / params.resolution as f32)
-        .ok_or_else(|| refused("the word laid out with no ink to morph"))?;
+        .expect("the bundled word lays out with ink to morph");
     let centre = word_centre(&letters);
     let half_depth = 0.5 * params.depth;
 

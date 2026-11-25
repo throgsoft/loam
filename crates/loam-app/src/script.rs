@@ -1,6 +1,7 @@
+use std::fmt;
+use std::io;
+use std::num::ParseIntError;
 use std::path::Path;
-
-use anyhow::{anyhow, bail, Context as _, Result};
 
 use loam_console::{render_line, CommandLine};
 use loam_runtime::{PointerButton, Stores};
@@ -21,6 +22,47 @@ pub struct ScriptStep {
     pub command: CommandLine,
 }
 
+/// Why a script did not load; a line number counts from 1.
+#[derive(Debug)]
+pub enum ScriptError {
+    Read(io::Error),
+    NoCommand {
+        line: usize,
+        text: String,
+    },
+    BadFrame {
+        line: usize,
+        token: String,
+        error: ParseIntError,
+    },
+    OutOfOrder {
+        line: usize,
+        frame: u64,
+        previous: u64,
+    },
+}
+
+impl fmt::Display for ScriptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(error) => write!(f, "cannot read: {error}"),
+            Self::NoCommand { line, text } => {
+                write!(f, "line {line}: `{text}` names a frame and no command")
+            }
+            Self::BadFrame { line, token, error } => {
+                write!(f, "line {line}: `{token}` is not a frame index: {error}")
+            }
+            Self::OutOfOrder {
+                line,
+                frame,
+                previous,
+            } => write!(f, "line {line}: frame {frame} precedes frame {previous}"),
+        }
+    }
+}
+
+impl std::error::Error for ScriptError {}
+
 /// Equal frame indices preserve file order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Script {
@@ -29,7 +71,7 @@ pub struct Script {
 
 impl Script {
     /// Skips blank and `#` lines; a mid-line `#` belongs to the command.
-    pub fn parse(source: &str) -> Result<Self> {
+    pub fn parse(source: &str) -> Result<Self, ScriptError> {
         let mut steps: Vec<ScriptStep> = Vec::new();
         for (index, raw) in source.lines().enumerate() {
             let number = index + 1;
@@ -37,38 +79,39 @@ impl Script {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
+            let no_command = || ScriptError::NoCommand {
+                line: number,
+                text: line.to_string(),
+            };
             let (frame_token, rest) = line
                 .split_once(char::is_whitespace)
-                .ok_or_else(|| anyhow!("line {number}: `{line}` names a frame and no command"))?;
-            let frame: u64 = frame_token
-                .parse()
-                .map_err(|e| anyhow!("line {number}: `{frame_token}` is not a frame index: {e}"))?;
-            let command = rest.trim();
-            if command.is_empty() {
-                bail!("line {number}: `{line}` names a frame and no command");
-            }
+                .ok_or_else(no_command)?;
+            let frame: u64 = frame_token.parse().map_err(|error| ScriptError::BadFrame {
+                line: number,
+                token: frame_token.to_string(),
+                error,
+            })?;
             if let Some(previous) = steps.last() {
                 if frame < previous.frame {
-                    bail!(
-                        "line {number}: frame {frame} precedes frame {}",
-                        previous.frame
-                    );
+                    return Err(ScriptError::OutOfOrder {
+                        line: number,
+                        frame,
+                        previous: previous.frame,
+                    });
                 }
             }
             steps.push(ScriptStep {
                 line: number,
                 frame,
-                command: CommandLine::parse(command)
-                    .ok_or_else(|| anyhow!("line {number}: no command tokens"))?,
+                command: CommandLine::parse(rest.trim()).ok_or_else(no_command)?,
             });
         }
         Ok(Self { steps })
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
-        let source = std::fs::read_to_string(path)
-            .with_context(|| format!("reading script {}", path.display()))?;
-        Self::parse(&source).with_context(|| format!("parsing script {}", path.display()))
+    pub fn load(path: &Path) -> Result<Self, ScriptError> {
+        let source = std::fs::read_to_string(path).map_err(ScriptError::Read)?;
+        Self::parse(&source)
     }
 
     pub fn last_frame(&self) -> u64 {
@@ -135,14 +178,21 @@ impl ScriptDriver {
     }
 }
 
-pub(crate) fn driver_from_args(args: &Args) -> Result<Option<ScriptDriver>> {
+pub(crate) fn driver_from_args(args: &Args) -> Result<Option<ScriptDriver>, HostError> {
     if args.has_bare_flag("script") {
-        bail!("--script needs its path attached: --script=path/to/file.script");
+        return Err(HostError::Detached {
+            flag: "script",
+            example: "--script=path/to/file.script",
+        });
     }
-    match args.get("script") {
-        Some(path) => Ok(Some(ScriptDriver::new(Script::load(Path::new(path))?))),
-        None => Ok(None),
-    }
+    let Some(path) = args.get("script") else {
+        return Ok(None);
+    };
+    let script = Script::load(Path::new(path)).map_err(|error| HostError::Script {
+        path: path.into(),
+        error,
+    })?;
+    Ok(Some(ScriptDriver::new(script)))
 }
 
 // Windowed and headless hosts both run a script through this, with its lines checked against the console up front.
@@ -159,7 +209,7 @@ impl ScriptRun {
         let lines = driver
             .steps()
             .iter()
-            .map(|step| parse(console, &step.command).map_err(|error| refused(step, &error)))
+            .map(|step| parse(console, &step.command).map_err(|error| refused(step, error)))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { driver, lines })
     }
@@ -179,7 +229,7 @@ impl ScriptRun {
         let mut ran = false;
         let mut failed = console
             .take_refused()
-            .map(|(number, error)| HostError::Host(format!("script line {number}: {error}")));
+            .map(|(line, result)| HostError::ScriptRefused { line, result });
         let status = self.driver.advance_with(|index, step| {
             ran = true;
             match &lines[index] {
@@ -188,7 +238,7 @@ impl ScriptRun {
                     let text = render_line(&step.command.name, &step.command.arg_refs());
                     let error = console.dispatch_script_line(&text, step.line);
                     if failed.is_none() {
-                        failed = error.map(|error| refused(step, &error));
+                        failed = error.map(|error| refused(step, error));
                     }
                 }
             }
@@ -255,9 +305,12 @@ fn parse<A: Stores>(
     Ok(Line::Input(event))
 }
 
-fn refused(step: &ScriptStep, error: &str) -> HostError {
-    let text = render_line(&step.command.name, &step.command.arg_refs());
-    HostError::Host(format!("script line {}: `{text}`: {error}", step.line))
+fn refused(step: &ScriptStep, reason: String) -> HostError {
+    HostError::ScriptLine {
+        line: step.line,
+        text: render_line(&step.command.name, &step.command.arg_refs()),
+        reason,
+    }
 }
 
 fn pressed(edge: &str) -> std::result::Result<bool, String> {

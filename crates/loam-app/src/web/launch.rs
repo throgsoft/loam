@@ -1,5 +1,6 @@
-use anyhow::{anyhow, Result};
 use wasm_bindgen::JsCast;
+
+use super::error::{js, WebError};
 use web_sys::{HtmlButtonElement, HtmlStyleElement};
 
 const LAUNCH_OVERLAY_CSS: &str = r#"
@@ -56,11 +57,14 @@ const OVERLAY_STYLE_ID: &str = "loam-launch-overlay-styles";
 
 /// No state class: CSS shows only the blurred backdrop until the worker's
 /// `preview_ready` adds `.ready`.
-pub fn inject_launch_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonElement> {
+pub fn inject_launch_overlay(
+    host_id: &str,
+    button_id: &str,
+) -> Result<HtmlButtonElement, WebError> {
     overlay_button(host_id, button_id, "loam-demo-launch", "Launch demo")
 }
 
-pub fn show_resume_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonElement> {
+pub fn show_resume_overlay(host_id: &str, button_id: &str) -> Result<HtmlButtonElement, WebError> {
     overlay_button(
         host_id,
         button_id,
@@ -74,50 +78,49 @@ fn overlay_button(
     button_id: &str,
     class_name: &str,
     aria_label: &str,
-) -> Result<HtmlButtonElement> {
-    let window = web_sys::window().ok_or_else(|| anyhow!("no global window"))?;
-    let document = window
-        .document()
-        .ok_or_else(|| anyhow!("no document on window"))?;
+) -> Result<HtmlButtonElement, WebError> {
+    let window = web_sys::window().ok_or(WebError::NoWindow)?;
+    let document = window.document().ok_or(WebError::NoDocument)?;
     let host = document
         .get_element_by_id(host_id)
-        .ok_or_else(|| anyhow!("no host element with id '{host_id}'"))?;
+        .ok_or_else(|| WebError::NoElement(host_id.to_string()))?;
 
     if document.get_element_by_id(OVERLAY_STYLE_ID).is_none() {
-        let head = document
-            .head()
-            .ok_or_else(|| anyhow!("no <head> element"))?;
+        let head = document.head().ok_or(WebError::NoHead)?;
         let style = document
             .create_element("style")
-            .map_err(|e| anyhow!("create <style>: {e:?}"))?
+            .map_err(js("create <style>"))?
             .dyn_into::<HtmlStyleElement>()
-            .map_err(|_| anyhow!("created element is not HtmlStyleElement"))?;
+            .map_err(|_| WebError::Created("HtmlStyleElement"))?;
         style.set_id(OVERLAY_STYLE_ID);
         style.set_text_content(Some(LAUNCH_OVERLAY_CSS));
-        head.append_child(&style)
-            .map_err(|e| anyhow!("append <style>: {e:?}"))?;
+        head.append_child(&style).map_err(js("append <style>"))?;
     }
 
     if let Some(existing) = document.get_element_by_id(button_id) {
-        let button = existing
-            .dyn_into::<HtmlButtonElement>()
-            .map_err(|_| anyhow!("element '{button_id}' is not a button"))?;
+        let button =
+            existing
+                .dyn_into::<HtmlButtonElement>()
+                .map_err(|_| WebError::WrongElement {
+                    id: button_id.to_string(),
+                    kind: "button",
+                })?;
         button.set_class_name(class_name);
         return Ok(button);
     }
 
     let button = document
         .create_element("button")
-        .map_err(|e| anyhow!("create <button>: {e:?}"))?
+        .map_err(js("create <button>"))?
         .dyn_into::<HtmlButtonElement>()
-        .map_err(|_| anyhow!("created element is not HtmlButtonElement"))?;
+        .map_err(|_| WebError::Created("HtmlButtonElement"))?;
     button.set_id(button_id);
     button.set_class_name(class_name);
     button.set_type("button");
     button
         .set_attribute("aria-label", aria_label)
-        .map_err(|e| anyhow!("set aria-label: {e:?}"))?;
+        .map_err(js("set aria-label"))?;
     host.append_child(&button)
-        .map_err(|e| anyhow!("append button to host: {e:?}"))?;
+        .map_err(js("append button to host"))?;
     Ok(button)
 }

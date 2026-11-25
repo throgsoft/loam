@@ -17,7 +17,6 @@ egui = ["dep:loam-egui", "dep:egui-wgpu", "dep:egui-winit"]
 text = ["dep:loam-text"]
 
 [dependencies]
-anyhow.workspace = true
 glam.workspace = true
 tracing.workspace = true
 wgpu.workspace = true

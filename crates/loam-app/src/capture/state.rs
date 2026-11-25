@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as _, Result};
 use wgpu::{CommandEncoder, Device};
 
 use super::apng::{ApngFrame, ApngWorker};
+use super::error::{create, CaptureError};
 use super::gif::{GifFrame, GifWorker};
 use super::readback::{record_texture_rgba, TextureReadback};
 use super::types::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
@@ -145,7 +145,7 @@ impl Capture {
                     palette,
                 } => match self.start_sequence(format, stage, dir, name, fps, scale, palette) {
                     Ok(msg) => log.push(msg),
-                    Err(e) => log.push(format!("capture: failed to start sequence: {e:#}")),
+                    Err(e) => log.push(format!("capture: failed to start sequence: {e}")),
                 },
                 CaptureRequest::Stop => self.stop(&mut log),
                 CaptureRequest::Toggle {
@@ -162,7 +162,7 @@ impl Capture {
                     } else {
                         match self.start_sequence(format, stage, dir, name, fps, scale, palette) {
                             Ok(msg) => log.push(msg),
-                            Err(e) => log.push(format!("capture: failed to start sequence: {e:#}")),
+                            Err(e) => log.push(format!("capture: failed to start sequence: {e}")),
                         }
                     }
                 }
@@ -181,7 +181,7 @@ impl Capture {
         fps: Option<u16>,
         scale: Option<u32>,
         palette: PaletteMode,
-    ) -> Result<String> {
+    ) -> Result<String, CaptureError> {
         let dir = dir.unwrap_or_else(|| self.default_dir.clone());
         let name = name.unwrap_or_else(default_name);
         let fps = fps.or_else(|| format.default_fps());
@@ -193,15 +193,14 @@ impl Capture {
         let writer = match format {
             CaptureFormat::Png => {
                 let dir = dir.join(&name);
-                std::fs::create_dir_all(&dir)
-                    .with_context(|| format!("create png sequence dir {}", dir.display()))?;
+                std::fs::create_dir_all(&dir).map_err(create("png sequence dir", dir.clone()))?;
                 SequenceWriter::Png { dir }
             }
             CaptureFormat::Gif => {
                 let path = dir.join(format!("{name}.gif"));
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)
-                        .with_context(|| format!("create gif parent dir {}", parent.display()))?;
+                        .map_err(create("gif parent dir", parent.to_path_buf()))?;
                 }
                 let default_delay_cs = fps_to_centiseconds(fps.unwrap_or(30));
                 let worker = GifWorker::spawn(path.clone())?;
@@ -225,7 +224,7 @@ impl Capture {
                 let path = dir.join(format!("{name}.apng"));
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)
-                        .with_context(|| format!("create apng parent dir {}", parent.display()))?;
+                        .map_err(create("apng parent dir", parent.to_path_buf()))?;
                 }
                 let worker = ApngWorker::spawn(path.clone())?;
                 SequenceWriter::Apng {
@@ -370,7 +369,7 @@ impl Capture {
         width: u32,
         height: u32,
         captured_at: Instant,
-    ) -> Result<()> {
+    ) -> Result<(), CaptureError> {
         match &mut self.state {
             CaptureState::Idle => Ok(()),
             CaptureState::OneShot {
@@ -496,7 +495,7 @@ impl Capture {
         ) {
             Ok(readback) => Slot::Recorded(readback),
             Err(error) => {
-                tracing::error!("capture: copy failed: {error:#}");
+                tracing::error!("capture: copy failed: {error}");
                 Slot::Skipped
             }
         };
@@ -513,10 +512,10 @@ impl Capture {
                     if let Err(error) =
                         self.consume_frame(is_pre, image.rgba, image.width, image.height, now)
                     {
-                        tracing::error!("capture: write failed: {error:#}");
+                        tracing::error!("capture: write failed: {error}");
                     }
                 }
-                Err(error) => tracing::error!("capture: readback failed: {error:#}"),
+                Err(error) => tracing::error!("capture: readback failed: {error}"),
             }
         }
         self.advance_frame(now);
@@ -539,7 +538,7 @@ impl SequenceWriter {
         width: u32,
         height: u32,
         captured_at: Instant,
-    ) -> Result<()> {
+    ) -> Result<(), CaptureError> {
         match self {
             SequenceWriter::Png { dir } => {
                 let label = if is_pre { "pre" } else { "post" };
@@ -659,10 +658,9 @@ fn default_name() -> String {
     format!("capture_{unix}")
 }
 
-fn write_png_bytes(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<()> {
+fn write_png_bytes(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<(), CaptureError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create capture dir {}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(create("capture dir", parent.to_path_buf()))?;
     }
     ::image::save_buffer_with_format(
         path,
@@ -672,7 +670,10 @@ fn write_png_bytes(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<
         ::image::ColorType::Rgba8,
         ::image::ImageFormat::Png,
     )
-    .with_context(|| format!("write png {}", path.display()))?;
+    .map_err(|error| CaptureError::Image {
+        path: path.to_path_buf(),
+        error,
+    })?;
     Ok(())
 }
 

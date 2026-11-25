@@ -1,13 +1,19 @@
-use anyhow::{anyhow, Result};
+use super::error::CaptureError;
 
-pub(super) fn scaled_dims(width: u32, height: u32, scale: Option<u32>) -> Result<(u32, u32)> {
+pub(super) fn scaled_dims(
+    width: u32,
+    height: u32,
+    scale: Option<u32>,
+) -> Result<(u32, u32), CaptureError> {
     let Some(target_w) = scale else {
         return Ok((width, height));
     };
     if target_w == 0 || width == 0 || height == 0 {
-        return Err(anyhow!(
-            "invalid scale: target_w={target_w}, src={width}x{height}"
-        ));
+        return Err(CaptureError::Scale {
+            target: target_w,
+            width,
+            height,
+        });
     }
     let h = ((target_w as u64 * height as u64 + (width as u64) / 2) / width as u64) as u32;
     Ok((target_w, h.max(1)))

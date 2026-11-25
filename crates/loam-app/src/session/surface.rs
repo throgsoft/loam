@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 use loam_render::device::{FeatureRequest, GpuContext, RenderDevice};
 use loam_runtime::Stores;
 use web_time::Instant;
@@ -9,7 +8,7 @@ use wgpu::{
 };
 
 use super::app::Redraw;
-use super::frame::{failed, Frame, Target};
+use super::frame::{Frame, Target};
 use super::pacing::Pace;
 use crate::host::HostError;
 
@@ -34,7 +33,7 @@ impl SurfaceHost {
         surface: Surface<'static>,
         size: (u32, u32),
         request: FeatureRequest,
-    ) -> Result<(Self, RenderDevice)> {
+    ) -> Result<(Self, RenderDevice), HostError> {
         let context = GpuContext::new(instance, request, Some(&surface)).await?;
         let caps = surface.get_capabilities(&context.adapter);
         let format = caps
@@ -43,7 +42,7 @@ impl SurfaceHost {
             .copied()
             .find(TextureFormat::is_srgb)
             .or(caps.formats.first().copied())
-            .ok_or_else(|| anyhow!("the surface advertises no texture format"))?;
+            .ok_or(HostError::NoSurfaceFormat)?;
         tracing::info!(
             "surface picked format={format:?} (advertised={:?})",
             caps.formats
@@ -54,7 +53,7 @@ impl SurfaceHost {
             .copied()
             .find(|mode| *mode == CompositeAlphaMode::Opaque)
             .or(caps.alpha_modes.first().copied())
-            .ok_or_else(|| anyhow!("the surface advertises no alpha mode"))?;
+            .ok_or(HostError::NoAlphaMode)?;
         let downlevel = context.adapter.get_downlevel_capabilities().flags;
         let view_format = surface_view_format(format, downlevel);
         let configured_size = (size.0.max(1), size.1.max(1));
@@ -100,9 +99,7 @@ impl SurfaceHost {
         self.reconfigure(device);
     }
 
-    fn begin_frame(
-        &self,
-    ) -> std::result::Result<(SurfaceTexture, TextureView), wgpu::SurfaceError> {
+    fn begin_frame(&self) -> Result<(SurfaceTexture, TextureView), wgpu::SurfaceError> {
         let frame = self.surface.get_current_texture()?;
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
         Ok((frame, view))
@@ -114,7 +111,7 @@ impl SurfaceHost {
         frame: &mut Frame<A>,
         now: Instant,
         after_step: impl FnOnce(&mut Frame<A>, bool),
-    ) -> std::result::Result<Attempt, HostError> {
+    ) -> Result<Attempt, HostError> {
         if let Some(enabled) = frame.app_mut().vsync.take() {
             self.set_vsync(&device.context.device, enabled);
             frame.invalidate();
@@ -152,8 +149,8 @@ impl SurfaceHost {
             &mut Frame<A>,
             &Target<'_>,
             &mut dyn FnMut(&mut CommandEncoder),
-        ) -> std::result::Result<(), HostError>,
-    ) -> std::result::Result<Attempt, HostError> {
+        ) -> Result<(), HostError>,
+    ) -> Result<Attempt, HostError> {
         let (surface_frame, swap_view) = match self.begin_frame() {
             Ok(acquired) => acquired,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -166,7 +163,7 @@ impl SurfaceHost {
                 return Ok(Attempt::SkippedSurface);
             }
             Err(wgpu::SurfaceError::OutOfMemory) => {
-                return Err(failed("surface ran out of memory"));
+                return Err(HostError::SurfaceMemory);
             }
             Err(wgpu::SurfaceError::Other) => {
                 tracing::warn!("surface frame failed");

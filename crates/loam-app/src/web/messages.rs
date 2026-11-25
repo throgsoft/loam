@@ -1,7 +1,7 @@
-use anyhow::Result;
 use std::time::Duration;
 use wasm_bindgen::{JsCast, JsValue};
 
+use super::error::WebError;
 use crate::session::input::message::{InputMessage, PointerPhase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,9 +106,8 @@ impl Kind {
 }
 
 /// `Ok(None)` covers the kinds that carry no input, which the caller handles, and unknown kinds, which are dropped.
-pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>> {
-    let name = read_string_field(data, "kind")
-        .ok_or_else(|| anyhow::anyhow!("postMessage missing 'kind' field"))?;
+pub fn parse_non_init(data: &JsValue) -> Result<Option<InputMessage>, WebError> {
+    let name = read_string_field(data, "kind").ok_or(WebError::NoMessageKind)?;
     let Some(kind) = Kind::parse(&name) else {
         return Ok(None);
     };

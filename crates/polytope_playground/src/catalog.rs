@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Result};
 use loam::prelude::*;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -159,15 +158,15 @@ pub(crate) fn shape_catalog_menu(ui: &mut loam::app::egui::Ui, mut choose: impl 
     }
 }
 
-pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
+fn parse_shape_name(name: &str) -> Option<ShapeEntry> {
     let n = name.to_lowercase();
     let needle: &str = n.as_str();
     for entry in SHAPE_CATALOG {
         if needle == entry.label.to_lowercase() || needle == entry.long_name.to_lowercase() {
-            return Ok(*entry);
+            return Some(*entry);
         }
     }
-    Ok(match needle {
+    Some(match needle {
         "5cell" | "pentatope" | "tetrahedron" => SHAPE_CATALOG[0],
         "8cell" | "hypercube" | "cube" => SHAPE_CATALOG[1],
         "16cell" | "octahedron" => SHAPE_CATALOG[2],
@@ -178,32 +177,40 @@ pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
         "duocylinder" => SHAPE_CATALOG[7],
         "clifford" | "clifford-torus" | "torus" => SHAPE_CATALOG[8],
         "spherinder" => SHAPE_CATALOG[9],
-        _ => {
-            return Err(anyhow!(
-                "unknown shape name {name:?}; valid: 5-cell, 8-cell, \
-                 16-cell, 24-cell, 120-cell, 600-cell, 3-sphere, \
-                 duocyl, clifford, spherinder (plus Platonic aliases: \
-                 tetrahedron, cube, octahedron, cuboctahedron, \
-                 dodecahedron, icosahedron)"
-            ));
-        }
+        _ => return None,
     })
 }
 
-pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>> {
+const SHAPE_NAMES: &str = "a shape name: 5-cell, 8-cell, 16-cell, 24-cell, 120-cell, 600-cell, \
+     3-sphere, duocyl, clifford, spherinder (plus Platonic aliases: tetrahedron, cube, \
+     octahedron, cuboctahedron, dodecahedron, icosahedron)";
+
+pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>, HostError> {
     if args.has_bare_flag("shapes") {
-        return Err(anyhow!(
-            "`--shapes` needs its value attached with `=`, as in \
-             `--shapes=24-cell,8-cell` (comma-separated for several \
-             shapes); the space-separated form drops the value"
-        ));
+        return Err(HostError::Detached {
+            flag: "shapes",
+            example: "--shapes=24-cell,8-cell",
+        });
     }
     let Some(raw) = args.get("shapes") else {
         return Ok(DEFAULT_ROW.to_vec());
     };
     let names = args.get_many("shapes");
     if names.is_empty() {
-        return Err(anyhow!("shapes={raw:?} listed no shape names"));
+        return Err(HostError::Flag {
+            flag: "shapes",
+            value: raw.to_string(),
+            expected: "a comma-separated list of shape names",
+        });
     }
-    names.into_iter().map(parse_shape_name).collect()
+    names
+        .into_iter()
+        .map(|name| {
+            parse_shape_name(name).ok_or_else(|| HostError::Flag {
+                flag: "shapes",
+                value: name.to_string(),
+                expected: SHAPE_NAMES,
+            })
+        })
+        .collect()
 }
