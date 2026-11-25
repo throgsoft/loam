@@ -417,6 +417,13 @@ impl<A: Stores> Session<A> {
         result
     }
 
+    pub fn try_dispatch<R>(
+        &mut self,
+        f: impl FnOnce(&mut Dispatch<'_, A>) -> Result<R, Rejection>,
+    ) -> Result<R, Rejection> {
+        self.dispatch(f)
+    }
+
     pub fn dragging(&self) -> Option<Drag> {
         self.manipulation.dragging()
     }
