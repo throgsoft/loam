@@ -5,7 +5,7 @@ use loam_render::device::{GpuSetupError, UncapturedGpuError};
 use loam_render::pass::{PassError, PassExecutionError};
 use loam_runtime::{ActionId, DomainError, PhaseError, Rejection, RestoreError, SimConfigError};
 
-use crate::script::ScriptError;
+use crate::headless::script::ScriptError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {

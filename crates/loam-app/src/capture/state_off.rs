@@ -2,7 +2,7 @@ use web_time::Instant;
 use wgpu::{CommandEncoder, Device};
 
 use super::types::CaptureRequest;
-use crate::session::Target;
+use crate::frame::Target;
 
 pub(crate) struct Capture;
 

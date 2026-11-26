@@ -17,9 +17,9 @@ use winit::event::WindowEvent;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::window::Window;
 
-use super::console::SessionConsole;
+use crate::console::SessionConsole;
 #[cfg(any(target_arch = "wasm32", test))]
-use super::input::TouchCapture;
+use crate::input::TouchCapture;
 
 pub const DEBUG_LAYER: &str = "debug-layer";
 
@@ -287,7 +287,7 @@ impl Layer {
         ));
         {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("loam-app::session::debug-layer"),
+                label: Some("loam-app::frame::debug-layer"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     depth_slice: None,
@@ -654,7 +654,7 @@ mod tests {
     use loam_render::device::FeatureRequest;
     use wgpu::{BackendOptions, Backends, Instance, InstanceDescriptor, NoopBackendOptions};
 
-    use crate::session::input::message::PointerPhase;
+    use crate::input::message::PointerPhase;
 
     use super::*;
 

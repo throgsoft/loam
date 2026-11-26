@@ -17,14 +17,14 @@ use super::animation::{self, Lifecycle, Next};
 use super::error::{js, listener, WebError};
 use super::messages::{self, Kind};
 use super::{install_logging_idempotent, post_failure, worker_scope, Endpoint};
+use crate::app::SessionApp;
+use crate::frame::surface::{Attempt, SurfaceHost};
+use crate::frame::Frame;
 use crate::host::HostError;
-use crate::session::app::SessionApp;
-use crate::session::frame::Frame;
-use crate::session::input::message::{InputMessage, PointerPhase};
-use crate::session::input::queue;
+use crate::input::message::{InputMessage, PointerPhase};
+use crate::input::queue;
 #[cfg(feature = "egui")]
-use crate::session::input::TouchCapture;
-use crate::session::surface::{Attempt, SurfaceHost};
+use crate::input::TouchCapture;
 use crate::{args::Args, WasmConfig};
 
 pub fn launch<A: Stores>(
@@ -466,7 +466,7 @@ async fn recover<A: Stores>(
 
 #[cfg(feature = "egui")]
 fn feed_layer(
-    layer: &crate::session::DebugLayer,
+    layer: &crate::frame::debug_layer::DebugLayer,
     touches: &mut TouchCapture,
     message: &InputMessage,
 ) -> bool {

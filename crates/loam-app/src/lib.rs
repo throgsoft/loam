@@ -1,11 +1,15 @@
+pub mod app;
 pub mod args;
 pub mod capture;
+mod commands;
+pub mod console;
 pub mod environment;
+pub mod frame;
+pub mod headless;
 pub mod host;
+pub mod input;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
-pub mod script;
-pub mod session;
 pub mod trace;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
@@ -13,15 +17,18 @@ pub mod web;
 #[cfg(feature = "egui")]
 pub use loam_egui::egui;
 
+pub use app::{CaptureControl, InputHook, PublishedHook, Redraw, SessionApp};
 pub use args::Args;
 pub use capture::{CaptureFormat, CaptureRequest, CaptureStage, CaptureUnavailable, PaletteMode};
+pub use commands::CommandSender;
+pub use console::{SessionConsole, Submit};
 pub use environment::Environment;
 pub use host::{Bindings, HostConfig, HostError, Key};
 pub use loam_console::CommandError;
-pub use session::{
-    launch, launch_with, CaptureControl, CommandSender, InputHook, PublishedHook, Redraw,
-    SessionApp, SessionConsole, Submit,
-};
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{launch, launch_with};
+#[cfg(target_arch = "wasm32")]
+pub use web::{launch, launch_with};
 
 /// `Background` starts at load with no overlay and leaves keys, wheel, and page scrolling to the page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

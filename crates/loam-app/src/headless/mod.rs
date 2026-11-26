@@ -1,15 +1,19 @@
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod records;
+pub mod script;
+
 use loam_console::LineKind;
 use loam_runtime::{Publication, Session, Stores};
 use loam_time::par::Sequential;
 
-use super::app::SessionApp;
-use super::console::SessionConsole;
-use super::cursor::CursorCapture;
-use super::debug_layer::LayerSlot;
-use super::frame::advance_session;
-use super::input::InputMap;
+use crate::app::SessionApp;
+use crate::console::SessionConsole;
+use crate::frame::advance_session;
+use crate::frame::cursor::CursorCapture;
+use crate::frame::debug_layer::LayerSlot;
 use crate::host::HostError;
-use crate::script::{ScriptDriver, ScriptRun, ScriptStatus};
+use crate::input::InputMap;
+use script::{ScriptDriver, ScriptRun, ScriptStatus};
 
 // A 720p canvas, so pointer deltas and the eye aspect match a common windowed run.
 const FRAME: (u32, u32) = (1280, 720);

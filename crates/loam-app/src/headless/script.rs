@@ -7,9 +7,9 @@ use loam_console::{render_line, CommandLine};
 use loam_runtime::{PointerButton, Stores};
 
 use crate::args::Args;
+use crate::console::SessionConsole;
 use crate::host::{Bindings, HostError, Key};
-use crate::session::input::{dom_key, InputMap};
-use crate::session::SessionConsole;
+use crate::input::{dom_key, InputMap};
 
 // Captures must finish after the last scripted frame presents.
 const SETTLE_FRAMES: u64 = 60;

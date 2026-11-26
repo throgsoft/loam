@@ -6,7 +6,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{Element, MessageEvent};
 
 use super::{set_msg_string, Link};
-use crate::session::input::queue::MESSAGE_QUEUE_CAPACITY;
+use crate::input::queue::MESSAGE_QUEUE_CAPACITY;
 use crate::web::error::{js, listener, WebError};
 use crate::web::messages::Kind;
 

@@ -2,7 +2,7 @@ use std::time::Duration;
 use wasm_bindgen::{JsCast, JsValue};
 
 use super::error::WebError;
-use crate::session::input::message::{InputMessage, PointerPhase};
+use crate::input::message::{InputMessage, PointerPhase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {

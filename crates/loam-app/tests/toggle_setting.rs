@@ -2,7 +2,7 @@
 
 use loam_app::args::Args;
 use loam_app::host::{Bindings, HostConfig};
-use loam_app::session::SessionApp;
+use loam_app::SessionApp;
 use loam_console::LineKind;
 use loam_runtime::{ActionEvent, ActionId, Input, Number, Session, Setting, SimConfig};
 

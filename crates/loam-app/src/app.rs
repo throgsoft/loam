@@ -10,10 +10,10 @@ use loam_runtime::{
 
 use super::commands::{CommandInbox, CommandSender};
 use super::console::{SessionConsole, Submit};
-use super::cursor::CursorCapture;
-use super::pacing::Pacer;
 use crate::args::Args;
 use crate::capture::{CaptureRequest, CaptureUnavailable};
+use crate::frame::cursor::CursorCapture;
+use crate::frame::pacing::Pacer;
 use crate::host::{HostConfig, HostError, Key};
 
 // Namespaced so a program's own "pause" or "reset" action never shares these systems.

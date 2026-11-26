@@ -1,6 +1,6 @@
-use loam_app::session::input::message::{InputMessage, PointerPhase};
-use loam_app::session::input::queue::{drain_messages_into, enqueue, MESSAGE_QUEUE_CAPACITY};
-use loam_app::session::input::{apply, InputMap};
+use loam_app::input::message::{InputMessage, PointerPhase};
+use loam_app::input::queue::{drain_messages_into, enqueue, MESSAGE_QUEUE_CAPACITY};
+use loam_app::input::{apply, InputMap};
 use loam_runtime::PointerPhase as RuntimePointerPhase;
 use std::collections::VecDeque;
 use std::time::Duration;

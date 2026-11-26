@@ -13,12 +13,12 @@ use loam_runtime::{PointerButton, Session, Stores};
 pub mod keys;
 pub mod par;
 
+use crate::app::SessionApp;
 use crate::args::Args;
+use crate::frame::surface::{Attempt, SurfaceHost};
+use crate::frame::Frame;
 use crate::host::HostError;
-use crate::session::app::SessionApp;
-use crate::session::frame::Frame;
-use crate::session::input::message::wheel_lines;
-use crate::session::surface::{Attempt, SurfaceHost};
+use crate::input::message::wheel_lines;
 use crate::WasmConfig;
 use keys::{winit_alt, winit_key};
 use par::ScopedThreads;
@@ -66,7 +66,7 @@ fn run<A: Stores>(
     let headless = args.has_bare_flag("headless") || args.get("headless").is_some();
     let (mut session, mut app) = factory(args)?;
     if headless {
-        return crate::session::records::run(&mut session, &mut app);
+        return crate::headless::records::run(&mut session, &mut app);
     }
     session.capture_initial();
     let event_loop = EventLoop::new()?;

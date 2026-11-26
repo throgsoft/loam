@@ -7,9 +7,9 @@ use wgpu::{
     TextureViewDescriptor,
 };
 
-use super::app::Redraw;
-use super::frame::{Frame, Target};
 use super::pacing::Pace;
+use super::{Frame, Target};
+use crate::app::Redraw;
 use crate::host::HostError;
 
 pub(crate) enum Attempt {

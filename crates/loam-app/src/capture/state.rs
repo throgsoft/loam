@@ -10,7 +10,7 @@ use super::error::{create, CaptureError};
 use super::gif::{GifFrame, GifWorker};
 use super::readback::{record_texture_rgba, TextureReadback};
 use super::types::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
-use crate::session::Target;
+use crate::frame::Target;
 
 impl CaptureStage {
     fn wants_pre(self) -> bool {

@@ -551,9 +551,9 @@ mod tests {
     };
 
     use super::*;
+    use crate::app::SessionApp;
     use crate::args::Args;
     use crate::host::{Bindings, HostConfig};
-    use crate::session::SessionApp;
 
     loam_runtime::stores! {
         #[derive(Default)]

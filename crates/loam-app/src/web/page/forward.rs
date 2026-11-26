@@ -9,7 +9,7 @@ use super::host_api::HostChannel;
 use super::{
     is_visible, set_msg_bool, set_msg_f32, set_msg_f64, set_msg_string, set_msg_u32, Link,
 };
-use crate::session::input::message::wheel_lines;
+use crate::input::message::wheel_lines;
 use crate::web::error::{js, listener, WebError};
 use crate::web::messages::Kind;
 

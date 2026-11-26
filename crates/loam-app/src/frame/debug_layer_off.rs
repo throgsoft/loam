@@ -8,7 +8,7 @@ use wgpu::{CommandBuffer, Texture, TextureFormat};
 #[cfg(not(target_arch = "wasm32"))]
 use winit::window::Window;
 
-use super::console::SessionConsole;
+use crate::console::SessionConsole;
 
 #[derive(Default)]
 pub(crate) struct LayerSlot;

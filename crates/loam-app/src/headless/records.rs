@@ -3,10 +3,10 @@ use std::num::NonZeroU64;
 
 use loam_runtime::{Publication, Session, Stores};
 
-use super::app::SessionApp;
-use super::headless::run_script;
+use super::run_script;
+use super::script::{driver_from_args, Script, ScriptDriver};
+use crate::app::SessionApp;
 use crate::host::HostError;
-use crate::script::{driver_from_args, Script, ScriptDriver};
 
 // Runs `session` as `--headless [frames]`, `--records` and `--script=path` ask and prints the record dump to stdout.
 pub(crate) fn run<A: Stores>(
