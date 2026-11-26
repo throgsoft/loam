@@ -10,8 +10,9 @@ use winit::window::Window;
 
 use crate::console::SessionConsole;
 
+// Braced so both twins are built with `LayerSlot::default()`.
 #[derive(Default)]
-pub(crate) struct LayerSlot;
+pub(crate) struct LayerSlot {}
 
 impl LayerSlot {
     pub(crate) fn attach(

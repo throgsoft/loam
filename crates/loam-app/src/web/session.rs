@@ -21,7 +21,9 @@ use crate::app::SessionApp;
 use crate::frame::surface::{Attempt, SurfaceHost};
 use crate::frame::Frame;
 use crate::host::HostError;
-use crate::input::message::{InputMessage, PointerPhase};
+use crate::input::message::InputMessage;
+#[cfg(feature = "egui")]
+use crate::input::message::PointerPhase;
 use crate::input::queue;
 #[cfg(feature = "egui")]
 use crate::input::TouchCapture;
