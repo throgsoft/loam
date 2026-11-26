@@ -58,7 +58,7 @@ pub use session::{
 pub use setting::{Number, OutOfRange, Setting};
 pub use store::{
     Change, Changes, Cursor, LogCapacity, Owner, Part, Partition, PartitionError, Parts, Removal,
-    SchemaId, Store, StoreError, StoreField, StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,
+    SchemaId, Store, StoreColumn, StoreError, StoreSnapshot, Version, DEFAULT_LOG_CAPACITY,
 };
 pub use value::Value;
 pub use view::{

@@ -103,7 +103,7 @@ macro_rules! stores {
 
         const _: () = {
             pub struct Snapshot {
-                $( pub $field : <$crate::$kind<$row> as $crate::StoreField>::Snapshot, )*
+                $( pub $field : <$crate::$kind<$row> as $crate::StoreColumn>::Snapshot, )*
             }
 
             impl $crate::Stores for $name {
@@ -111,20 +111,20 @@ macro_rules! stores {
                 type Published = $crate::__stores_published!($($published)?);
 
                 fn bind(&mut self, _scene: $crate::SceneId, _owner: $crate::Owner) {
-                    $( $crate::StoreField::bind(&mut self.$field, _scene, _owner); )*
+                    $( $crate::StoreColumn::bind(&mut self.$field, _scene, _owner); )*
                 }
 
                 fn boundary(&mut self, _owner: $crate::Owner) {
-                    $( $crate::StoreField::boundary(&mut self.$field, _owner); )*
+                    $( $crate::StoreColumn::boundary(&mut self.$field, _owner); )*
                 }
 
                 fn release(&mut self, _entity: $crate::Entity, _owner: $crate::Owner) {
-                    $( $crate::StoreField::release(&mut self.$field, _entity, _owner); )*
+                    $( $crate::StoreColumn::release(&mut self.$field, _entity, _owner); )*
                 }
 
                 fn snapshot(&self) -> Snapshot {
                     Snapshot {
-                        $( $field : $crate::StoreField::snapshot(&self.$field), )*
+                        $( $field : $crate::StoreColumn::snapshot(&self.$field), )*
                     }
                 }
 
@@ -134,7 +134,7 @@ macro_rules! stores {
                     _scene: $crate::SceneId,
                     _owner: $crate::Owner,
                 ) {
-                    $( $crate::StoreField::restore(&mut self.$field, &_from.$field, _scene, _owner); )*
+                    $( $crate::StoreColumn::restore(&mut self.$field, &_from.$field, _scene, _owner); )*
                 }
             }
 

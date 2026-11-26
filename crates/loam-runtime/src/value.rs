@@ -1,7 +1,7 @@
 use std::ops::Deref;
 
 use crate::entity::SceneId;
-use crate::store::{Owner, StoreField, Version};
+use crate::store::{Owner, StoreColumn, Version};
 
 pub struct Value<T> {
     value: T,
@@ -48,7 +48,7 @@ impl<T: Default> Default for Value<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> StoreField for Value<T> {
+impl<T: Clone + Send + 'static> StoreColumn for Value<T> {
     type Snapshot = T;
 
     fn bind(&mut self, _scene: SceneId, _owner: Owner) {}

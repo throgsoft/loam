@@ -6,7 +6,7 @@ use crate::entity::{Entity, SceneId};
 use crate::field::{
     self, FieldCompiler, FieldCost, FieldError, FieldNode, FieldOp, FieldPrimitive,
 };
-use crate::store::{Owner, Store, StoreError, StoreField, StoreSnapshot};
+use crate::store::{Owner, Store, StoreColumn, StoreError, StoreSnapshot};
 
 #[derive(Clone, Debug)]
 pub struct Field {
@@ -136,12 +136,12 @@ impl Fields {
 
     pub(super) fn release(&mut self, entity: Entity) {
         if let Some(store) = &mut self.store {
-            StoreField::release(store, entity, Owner::new());
+            StoreColumn::release(store, entity, Owner::new());
         }
     }
 
     pub(super) fn snapshot(&self) -> Option<StoreSnapshot<Field>> {
-        self.store.as_ref().map(StoreField::snapshot)
+        self.store.as_ref().map(StoreColumn::snapshot)
     }
 
     pub(super) fn restore(
@@ -151,7 +151,7 @@ impl Fields {
         scene: SceneId,
     ) {
         if let (Some(store), Some(snapshot)) = (&mut self.store, snapshot) {
-            StoreField::restore(store, snapshot, scene, Owner::new());
+            StoreColumn::restore(store, snapshot, scene, Owner::new());
             for field in store.rows_mut_untracked() {
                 for operand in &mut field.operands {
                     if operand.scene() == from {

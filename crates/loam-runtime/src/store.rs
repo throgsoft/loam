@@ -223,8 +223,8 @@ impl Owner {
     }
 }
 
-/// A storage-field contract; only `Stores` implementations call its lifetime hooks.
-pub trait StoreField: Send + 'static {
+/// A store-column contract; only `Stores` implementations call its lifetime hooks.
+pub trait StoreColumn: Send + 'static {
     type Snapshot: Send + 'static;
 
     fn bind(&mut self, scene: SceneId, owner: Owner);
@@ -692,7 +692,7 @@ impl<T> Store<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> StoreField for Store<T> {
+impl<T: Clone + Send + 'static> StoreColumn for Store<T> {
     type Snapshot = StoreSnapshot<T>;
 
     fn bind(&mut self, scene: SceneId, _owner: Owner) {
@@ -767,7 +767,7 @@ pub(crate) mod tests {
     fn filled(count: u32, capacity: Option<LogCapacity>) -> (Entities, Store<u32>, Vec<Entity>) {
         let entities = entities();
         let mut store = capacity.map_or_else(Store::untracked, Store::tracked);
-        StoreField::bind(&mut store, entities.scene(), Owner::new());
+        StoreColumn::bind(&mut store, entities.scene(), Owner::new());
         let mut entities = entities;
         let spawned: Vec<Entity> = (0..count)
             .map(|value| {
@@ -880,7 +880,7 @@ pub(crate) mod tests {
 
         entities.restore(&snapshot);
         let scene = entities.scene();
-        StoreField::restore(&mut store, &rows, scene, Owner::new());
+        StoreColumn::restore(&mut store, &rows, scene, Owner::new());
         let rebased: Vec<Entity> = e
             .iter()
             .map(|entity| Entity::new(scene, entity.key()))

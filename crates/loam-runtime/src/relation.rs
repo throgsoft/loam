@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::entity::{Entities, Entity, SceneId};
-use crate::store::{Owner, StoreError, StoreField};
+use crate::store::{Owner, StoreColumn, StoreError};
 
 /// Resolves to its original link or fails: after unlink, after a restore, in another session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -284,7 +284,7 @@ impl<T> RelationSnapshot<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> StoreField for Relation<T> {
+impl<T: Clone + Send + 'static> StoreColumn for Relation<T> {
     type Snapshot = RelationSnapshot<T>;
 
     fn bind(&mut self, scene: SceneId, _owner: Owner) {
@@ -376,7 +376,7 @@ mod tests {
             epoch: Epoch::default(),
         });
         let mut relation = Relation::new();
-        StoreField::bind(&mut relation, entities.scene(), Owner::new());
+        StoreColumn::bind(&mut relation, entities.scene(), Owner::new());
         let [a, b, c] = [(); 3].map(|()| entities.spawn());
         let ab = relation.link(&entities, a, b, "ab").unwrap();
         let ac = relation.link(&entities, a, c, "ac").unwrap();

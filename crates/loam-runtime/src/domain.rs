@@ -15,7 +15,7 @@ use crate::image::{ImageRay, Views};
 use crate::phase::Step;
 use crate::publication::{Stamp, ViewRecords};
 use crate::session::RestoreError;
-use crate::store::{Owner, Store, StoreError, StoreField, StoreSnapshot};
+use crate::store::{Owner, Store, StoreColumn, StoreError, StoreSnapshot};
 use crate::view::{Pick, ViewId, ViewSpec, ViewStyle, ViewSummary, ViewTarget};
 
 mod blend;
@@ -604,16 +604,16 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
             facility.release(entity, Owner::new());
         }
         self.blend.release(entity, &self.poses);
-        StoreField::release(&mut self.poses, entity, Owner::new());
-        StoreField::release(&mut self.instances, entity, Owner::new());
+        StoreColumn::release(&mut self.poses, entity, Owner::new());
+        StoreColumn::release(&mut self.instances, entity, Owner::new());
         self.fields.release(entity);
     }
 
     fn snapshot(&self) -> DomainSnapshot {
         DomainSnapshot(Box::new(TypedSnapshot::<S> {
             scene: self.scene,
-            poses: StoreField::snapshot(&self.poses),
-            instances: StoreField::snapshot(&self.instances),
+            poses: StoreColumn::snapshot(&self.poses),
+            instances: StoreColumn::snapshot(&self.instances),
             fields: self.fields.snapshot(),
             facilities: self
                 .facilities
@@ -653,8 +653,8 @@ impl<S: DomainSpace> DomainOwner for TypedDomain<S> {
         }
         self.scene = scene;
         self.blend.clear();
-        StoreField::restore(&mut self.poses, &from.poses, scene, Owner::new());
-        StoreField::restore(&mut self.instances, &from.instances, scene, Owner::new());
+        StoreColumn::restore(&mut self.poses, &from.poses, scene, Owner::new());
+        StoreColumn::restore(&mut self.instances, &from.instances, scene, Owner::new());
         self.fields.restore(from.fields.as_ref(), from.scene, scene);
         self.views
             .restore(&from.views, &from.targets, from.scene, scene);
