@@ -45,7 +45,7 @@ pub trait IsometryGroup: Space {
 
     fn iso_identity(&self) -> Self::Iso;
 
-    /// `a ∘ b`, apply `b` first, then `a`.
+    /// `a` composed with `b`: apply `b` first, then `a`.
     fn iso_compose(&self, a: Self::Iso, b: Self::Iso) -> Self::Iso;
 
     fn iso_inverse(&self, a: Self::Iso) -> Self::Iso;

@@ -104,7 +104,7 @@ impl Stage {
         W_SLICE + SLICE_SWEEP_RANGE * (std::f32::consts::TAU * swept).sin()
     }
 
-    // xorshift64*, Vigna 2016 §4.
+    // xorshift64*, Vigna 2016, sec. 4.
     fn draw(&mut self) -> u64 {
         self.rng ^= self.rng >> 12;
         self.rng ^= self.rng << 25;

@@ -11,7 +11,7 @@ const TRANSPORT_DENOM_MIN: f32 = 1e-7;
 
 const UNIT_POINT_TOLERANCE: f32 = 1e-4;
 
-/// S³ with unit Vec4 points and ambient tangents; methods assume unit points.
+/// S3 with unit Vec4 points and ambient tangents; methods assume unit points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SphericalS3Embedded;
 
@@ -116,7 +116,7 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
     }
 
     fn tessellate_segment(p0: Vec4, p1: Vec4, samples: usize, mut emit: impl FnMut(Vec4)) {
-        // Absil, Mahony and Sepulchre, Optimization Algorithms on Matrix Manifolds, 2008, §3.6.
+        // Absil, Mahony and Sepulchre, Optimization Algorithms on Matrix Manifolds, 2008, sec. 3.6.
         // Shoemake, Animating Rotation with Quaternion Curves, 1985.
         let dot = p0.dot(p1).clamp(-1.0, 1.0);
         let half_chord = (p0 - p1).length() * 0.5;
@@ -138,7 +138,7 @@ impl RasterizableSpace<4> for SphericalS3Embedded {
     }
 }
 
-// do Carmo, Differential Geometry of Curves and Surfaces, 1976, §1.4.
+// do Carmo, Differential Geometry of Curves and Surfaces, 1976, sec. 1.4.
 fn deterministic_perp(p0: Vec4) -> Vec4 {
     let a = p0.abs();
 

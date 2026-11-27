@@ -1,6 +1,6 @@
-//! `R = exp(B/2)`, so a bivector of magnitude θ in plane `e_i ∧ e_j` rotates
-//! by θ from `e_i` toward `e_j`. Rotor application is the sandwich
-//! `v' = R̃ · v · R`.
+//! `R = exp(B/2)`, so a bivector of magnitude `theta` in plane `e_i ^ e_j` rotates
+//! by `theta` from `e_i` toward `e_j`. Rotor application is the sandwich
+//! `v' = ~R * v * R`, where `~R` is the reverse of `R`.
 
 use std::ops::{Add, Mul};
 
@@ -28,7 +28,7 @@ pub trait Rotor: Copy + Mul<Output = Self> {
 
     fn apply(&self, v: Self::Vector) -> Self::Vector;
 
-    /// Inverse of [`Bivector::exp`]; [`Rotor4`] takes the shorter rotation, so its result may generate `−self`.
+    /// Inverse of [`Bivector::exp`]; [`Rotor4`] takes the shorter rotation, so its result may generate `-self`.
     fn log(self) -> Self::Bivector;
 }
 
@@ -69,7 +69,7 @@ impl Bivector for Bivector2 {
     }
 }
 
-/// Unit complex number `a + b·e1e2` with `a = cos(θ/2)`, `b = sin(θ/2)`.
+/// Unit complex number `a + b*e1e2` with `a = cos(theta/2)`, `b = sin(theta/2)`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Rotor2 {
     pub a: f32,
@@ -332,7 +332,7 @@ impl Bivector4 {
             + self.zw * self.zw
     }
 
-    /// `sqrt(θ₁² + θ₂²)` over the invariant planes; the angle only when simple.
+    /// `sqrt(theta_1^2 + theta_2^2)` over the invariant planes; the angle only when simple.
     pub fn magnitude(self) -> f32 {
         self.magnitude_squared().sqrt()
     }
@@ -369,7 +369,7 @@ impl Bivector4 {
             + self.zw * other.zw
     }
 
-    /// Pseudoscalar coefficient of `B ∧ B`; zero iff `B` is simple.
+    /// Pseudoscalar coefficient of `B ^ B`; zero iff `B` is simple.
     pub fn wedge_self_coeff(self) -> f32 {
         2.0 * (self.xy * self.zw - self.xz * self.yw + self.xw * self.yz)
     }
@@ -385,7 +385,7 @@ impl Bivector4 {
         }
     }
 
-    /// Left contraction `B ⌋ v`, the grade-1 part of `B·v`: `e_xy ⌋ e_x = −e_y`.
+    /// Left contraction `B _| v`, the grade-1 part of `B * v`: `e_xy _| e_x = -e_y`.
     pub fn contract_vec(self, v: Vec4) -> Vec4 {
         Vec4::new(
             self.xy * v.y + self.xz * v.z + self.xw * v.w,
@@ -537,7 +537,7 @@ impl Bivector for Bivector4 {
             };
         }
 
-        // Press et al., Numerical Recipes, 3rd ed., §5.6.
+        // Press et al., Numerical Recipes, 3rd ed., sec. 5.6.
         let t1 = ((s + disc) * 0.5).max(0.0).sqrt();
         let t2 = delta / (2.0 * t1);
 
@@ -664,7 +664,7 @@ impl From<Rotor4> for [f32; 8] {
 }
 
 impl Rotor4 {
-    // Hestenes, New Foundations for Classical Mechanics, 2nd ed., §2.5.
+    // Hestenes, New Foundations for Classical Mechanics, 2nd ed., sec. 2.5.
     /// Column-major, matching glam's `Mat4` and WGSL's `mat4x4<f32>`.
     pub fn to_mat4(&self) -> [[f32; 4]; 4] {
         let c0 = <Self as Rotor>::apply(self, Vec4::new(1.0, 0.0, 0.0, 0.0));
@@ -719,7 +719,7 @@ fn arc_holding(from: Vec4, to: Vec4, held: &[Vec4]) -> Rotor4 {
     (plane * (angle / plane.magnitude())).exp().normalize()
 }
 
-// Parlett, The Symmetric Eigenvalue Problem, 1980, §6.9: Gram-Schmidt run twice is enough.
+// Parlett, The Symmetric Eigenvalue Problem, 1980, sec. 6.9: Gram-Schmidt run twice is enough.
 fn beside(v: Vec4, from: Vec4, held: &[Vec4]) -> Vec4 {
     let mut residual = v;
     for _ in 0..2 {

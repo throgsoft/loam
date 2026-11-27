@@ -148,7 +148,7 @@ fn spherinder_sdf_local(p: vec4<f32>) -> f32 {
     return outside + inside;
 }
 
-// Outside 1.5× the circumradius the ball SDF is a Lipschitz-1 lower bound; skips the rotor inverse.
+// Outside 1.5x the circumradius the ball SDF is a Lipschitz-1 lower bound; skips the rotor inverse.
 fn body_polytope_sdf_4d(p4: vec4<f32>, b: BodyUniform) -> f32 {
     let size = max(b.polytope_size, 1.0e-6);
     let world_v = p4 - b.position;

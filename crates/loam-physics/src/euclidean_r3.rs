@@ -452,11 +452,11 @@ mod tests {
         let proj_omega = world.bodies[projectile_id].angular_velocity.magnitude();
         assert!(
             target_omega > 1e-3,
-            "target gained no angular velocity: ω mag = {target_omega}"
+            "target gained no angular velocity: omega mag = {target_omega}"
         );
         assert!(
             proj_omega > 1e-3,
-            "projectile gained no angular velocity: ω mag = {proj_omega}"
+            "projectile gained no angular velocity: omega mag = {proj_omega}"
         );
     }
 
@@ -476,7 +476,7 @@ mod tests {
         let residual = (after - (before + omega_cross_r(omega, before) * dt)).length();
         assert!(
             residual < 1e-5,
-            "integrated orientation left the world-frame field ω⌋r: residual \
+            "integrated orientation left the world-frame field omega _| r: residual \
              {residual} over a step of {}",
             (after - before).length()
         );

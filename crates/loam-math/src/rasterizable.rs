@@ -8,7 +8,7 @@ const PROJECTION_DENOM_EPSILON: f32 = 1e-4;
 /// Floor on `1 - dot(p, pole)` at the projection singularity.
 pub const STEREOGRAPHIC_POLE_EPSILON: f32 = 1e-4;
 
-// do Carmo, Differential Geometry of Curves and Surfaces, 1976, §1.4.
+// do Carmo, Differential Geometry of Curves and Surfaces, 1976, sec. 1.4.
 fn perp_frame(n: Vec4) -> (Vec4, Vec4, Vec4) {
     let ax = n.x.abs();
     let ay = n.y.abs();
@@ -70,7 +70,7 @@ pub enum Projection<const N: usize> {
     Perspective4D { focal_distance: f32 },
 
     // Wikipedia, Stereographic projection.
-    /// Projects unit S³ from a unit pole into its perpendicular 3-flat.
+    /// Projects unit S3 from a unit pole into its perpendicular 3-flat.
     Stereographic {
         /// Unit pole; `Vec4::W` gives the usual xyz readout.
         pole: Vec4,
