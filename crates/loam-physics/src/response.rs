@@ -1,4 +1,4 @@
-use crate::integrator::PhysicsSpace;
+use crate::space::PhysicsSpace;
 
 pub const FRICTION_COEFF: f32 = 0.35;
 

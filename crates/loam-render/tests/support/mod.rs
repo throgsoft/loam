@@ -12,7 +12,7 @@ pub async fn request_device() -> (wgpu::Device, wgpu::Queue) {
         .expect("wgpu adapter");
     adapter
         .request_device(&wgpu::DeviceDescriptor {
-            label: Some("flat-torus-room probe"),
+            label: Some("compute probe"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             memory_hints: wgpu::MemoryHints::default(),

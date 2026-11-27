@@ -1,12 +1,18 @@
 use std::fmt;
+use std::num::NonZeroU32;
 
-use crate::bridge::{Drag, DragError, DragRelease};
+use loam_time::par::Executor;
+
+use crate::app_state::Stores;
+use crate::assets::PreparedGeometry;
 use crate::command::{CommandResult, Commands};
 use crate::domain::{ChartPoint, DomainError, Domains};
-use crate::input::Input;
-use crate::session::{Manipulation, PreparedGeometry};
-use crate::stores::Stores;
-use crate::view::{Pick, Views};
+use crate::drag::{Drag, DragError, DragRelease, Manipulation};
+use crate::entity::{Entity, SceneId};
+use crate::image::Views;
+use crate::input::{Input, PointerButton};
+use crate::publication::Overlay;
+use crate::view::Pick;
 
 /// Fixed order; dispatch runs while paused and is the only phase where capacity grows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -17,8 +23,6 @@ pub enum Phase {
 }
 
 impl Phase {
-    pub const ALL: [Phase; 3] = [Phase::Dispatch, Phase::Simulation, Phase::Publication];
-
     fn index(self) -> usize {
         self as usize
     }
@@ -37,6 +41,67 @@ pub struct Tick(pub u64);
 pub struct Step {
     pub tick: Tick,
     pub dt: f32,
+    /// Ticks per second, zero while the simulation is stopped.
+    pub hz: u32,
+}
+
+impl Step {
+    pub fn start(&self) -> Moment {
+        Moment::at(self.tick.0, self.hz)
+    }
+
+    /// The time a simulation entry ordered after the domain step has reached.
+    pub fn end(&self) -> Moment {
+        Moment::at(self.tick.0 + 1, self.hz)
+    }
+}
+
+/// A simulated time held as a tick count and a rate, which defaults to time zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Moment {
+    tick: u64,
+    hz: NonZeroU32,
+}
+
+impl Default for Moment {
+    fn default() -> Self {
+        Self {
+            tick: 0,
+            hz: NonZeroU32::MIN,
+        }
+    }
+}
+
+impl Moment {
+    fn at(tick: u64, hz: u32) -> Self {
+        NonZeroU32::new(hz).map_or_else(Self::default, |hz| Self { tick, hz })
+    }
+
+    pub fn seconds(self) -> f32 {
+        self.tick as f32 / self.hz.get() as f32
+    }
+
+    /// Whole frames of `1 / fps` seconds elapsed, which `Track::sample` takes.
+    pub fn frame(self, fps: NonZeroU32) -> u32 {
+        let frame = self.tick.saturating_mul(u64::from(fps.get())) / u64::from(self.hz.get());
+        u32::try_from(frame).unwrap_or(u32::MAX)
+    }
+
+    /// True from the first tick at or after `seconds`.
+    pub fn reached(self, seconds: f32) -> bool {
+        self.tick >= self.due(seconds)
+    }
+
+    /// True on the first tick at or after `seconds` and on no other, so a simulation system acts on it once.
+    pub fn fires(self, seconds: f32) -> bool {
+        self.tick == self.due(seconds)
+    }
+
+    fn due(self, seconds: f32) -> u64 {
+        // An f32 sum of seconds can sit a few parts in 1e8 past its tick, and this pulls it back.
+        const SLACK: f64 = 1.0e-6;
+        (f64::from(seconds) * f64::from(self.hz.get()) * (1.0 - SLACK)).ceil() as u64
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +153,31 @@ pub struct Ctx<'a, A> {
     pub input: &'a Input,
     pub prepared: &'a [PreparedGeometry],
     pub step: Step,
+    /// The publication's clamped alpha in the publication phase and 1 in the others.
+    pub alpha: f32,
+    /// Cleared before the publication phase, so only a publication system's lines and points reach the screen.
+    pub overlay: &'a mut Overlay,
+    pub(crate) executor: &'a dyn Executor,
     pub(crate) manipulation: &'a mut Manipulation,
+}
+
+impl<A> Ctx<'_, A> {
+    fn reborrow(&mut self) -> Ctx<'_, A> {
+        Ctx {
+            app: self.app,
+            domains: self.domains,
+            views: self.views,
+            commands: self.commands,
+            results: self.results,
+            input: self.input,
+            prepared: self.prepared,
+            step: self.step,
+            alpha: self.alpha,
+            overlay: self.overlay,
+            executor: self.executor,
+            manipulation: self.manipulation,
+        }
+    }
 }
 
 impl<A: Stores> Ctx<'_, A> {
@@ -117,28 +206,39 @@ impl<A: Stores> Ctx<'_, A> {
     }
 
     pub fn release(&mut self) -> Option<DragRelease> {
-        self.manipulation.release(self.commands)
+        self.manipulation.release(self.domains, self.commands)
     }
 
     pub fn release_at(&mut self, time: f64) -> Option<DragRelease> {
-        self.manipulation.release_at(self.commands, time)
+        self.manipulation
+            .release_at(self.domains, self.commands, time)
     }
 
     pub fn cancel_drag(&mut self) -> Option<DragRelease> {
         self.manipulation.cancel(self.commands)
     }
-}
 
-pub trait System<A>: Send + 'static {
-    fn run(&mut self, ctx: Ctx<'_, A>) -> Result<(), DomainError>;
-}
-
-impl<A: 'static, F> System<A> for F
-where
-    F: FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
-{
-    fn run(&mut self, ctx: Ctx<'_, A>) -> Result<(), DomainError> {
-        self(ctx)
+    /// Carries entities that `allow` accepts with `button` and returns this boundary's last release.
+    pub fn carry(
+        &mut self,
+        button: PointerButton,
+        mut allow: impl FnMut(&A, Entity) -> bool,
+    ) -> Option<DragRelease> {
+        let app = &*self.app;
+        if self
+            .manipulation
+            .dragging()
+            .is_some_and(|drag| !allow(app, drag.entity))
+        {
+            self.manipulation.cancel(self.commands);
+        }
+        let (domains, views, prepared) = (&*self.domains, &*self.views, self.prepared);
+        self.manipulation
+            .carry(domains, views, self.commands, self.input, button, |ndc| {
+                domains
+                    .pick_lifted(views, prepared, ndc)
+                    .filter(|pick| allow(app, pick.entity))
+            })
     }
 }
 
@@ -150,12 +250,38 @@ pub struct SystemEntry<A> {
 }
 
 impl<A: 'static> SystemEntry<A> {
-    pub(crate) fn new(name: &'static str, system: impl System<A>) -> Self {
-        let mut system = system;
+    pub(crate) fn new(
+        name: &'static str,
+        system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+    ) -> Self {
         Self {
             name,
-            run: Box::new(move |ctx| system.run(ctx)),
+            run: Box::new(system),
         }
+    }
+}
+
+impl<A: Stores> SystemEntry<A> {
+    pub(crate) fn on_change<K: PartialEq + Send + 'static>(
+        name: &'static str,
+        watch: impl Fn(&A) -> K + Send + 'static,
+        mut system: impl FnMut(Ctx<'_, A>) -> Result<(), DomainError> + Send + 'static,
+    ) -> Self {
+        // A restore advances the scene's epoch, so keying on the scene runs the system again after one.
+        let mut seen: Option<(SceneId, K)> = None;
+        Self::new(name, move |mut ctx: Ctx<'_, A>| {
+            let scene = ctx.commands.entities().scene();
+            let key = watch(ctx.app);
+            if seen
+                .as_ref()
+                .is_some_and(|(held_scene, held)| *held_scene == scene && *held == key)
+            {
+                return Ok(());
+            }
+            system(ctx.reborrow())?;
+            seen = Some((scene, watch(ctx.app)));
+            Ok(())
+        })
     }
 }
 

@@ -1,6 +1,4 @@
-use std::sync::{Mutex, OnceLock};
-
-use thiserror::Error;
+use std::sync::Mutex;
 
 pub trait ChunkSource {
     fn run_next(&self) -> bool;
@@ -22,26 +20,6 @@ impl Executor for Sequential {
 
     fn for_each_chunk(&self, _workers: usize, chunks: &(dyn ChunkSource + Sync)) {
         while chunks.run_next() {}
-    }
-}
-
-#[derive(Debug, Error)]
-#[error("a parallel executor is already installed")]
-pub struct AlreadyInstalled;
-
-static INSTALLED: OnceLock<Box<dyn Executor>> = OnceLock::new();
-
-static SEQUENTIAL: Sequential = Sequential;
-
-/// Once per process; before it, and after a refusal, [`executor`] is [`Sequential`].
-pub fn install(executor: Box<dyn Executor>) -> Result<(), AlreadyInstalled> {
-    INSTALLED.set(executor).map_err(|_| AlreadyInstalled)
-}
-
-pub fn executor() -> &'static dyn Executor {
-    match INSTALLED.get() {
-        Some(installed) => installed.as_ref(),
-        None => &SEQUENTIAL,
     }
 }
 
@@ -71,9 +49,13 @@ impl<T: Send, F: Fn(&mut [T]) + Sync> ChunkSource for Chunks<'_, T, F> {
 }
 
 /// Runs `task` on disjoint chunks of `data` in no fixed order.
-pub fn for_each_chunk<T: Send>(data: &mut [T], chunk: usize, task: impl Fn(&mut [T]) + Sync) {
+pub fn for_each_chunk<T: Send>(
+    executor: &dyn Executor,
+    data: &mut [T],
+    chunk: usize,
+    task: impl Fn(&mut [T]) + Sync,
+) {
     let chunk = chunk.max(1);
-    let executor = executor();
     let workers = executor
         .parallelism()
         .min(data.len().div_ceil(chunk))

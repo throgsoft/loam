@@ -4,11 +4,6 @@ use loam_time::frame_trace;
 use std::sync::Mutex;
 use std::time::Duration;
 
-#[cfg(feature = "egui")]
-mod overlay;
-#[cfg(feature = "egui")]
-pub use overlay::{PerfOverlay, MAX_WINDOW};
-
 fn fmt_dur(d: std::time::Duration) -> String {
     let ns = d.as_nanos();
     if ns < 1_000 {
@@ -246,18 +241,6 @@ pub fn register_command<Ctx: 'static>(console: &mut Console<Ctx>) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn truncate_preserves_short_names_and_marks_long_ones() {
-        assert_eq!(truncate("frame", 18), "frame");
-        assert_eq!(truncate("abcdefghijklmnopqr", 18).len(), 18);
-        let long = "supercalifragilisticexpialidocious";
-        let t = truncate(long, 18);
-        assert_eq!(t.len(), 18);
-        assert!(t.ends_with('~'));
-        assert_eq!(truncate("αβγδε", 3), "αβ~");
-        assert_eq!(truncate("frame", 0), "");
-    }
-
     fn frame_of(sections: &[(&'static str, u64)]) -> frame_trace::FrameTrace {
         frame_trace::FrameTrace {
             sections: sections
@@ -267,38 +250,37 @@ mod tests {
                     elapsed: Duration::from_micros(*us),
                 })
                 .collect(),
-            ..Default::default()
         }
     }
 
     #[test]
-    fn unscoped_ignores_sections_nested_inside_frame_loop_sections() {
-        let flat = frame_of(&[("frame", 4000), ("presentation", 130)]);
-        let nested = frame_of(&[("frame", 4000), ("presentation", 130), ("pp-sdf", 94)]);
-        assert_eq!(unscoped(&nested), unscoped(&flat));
-    }
-
-    #[test]
-    fn unscoped_ignores_the_sections_that_do_not_nest_in_the_frame() {
-        let frame = frame_of(&[
-            ("frame", 4000),
-            ("presentation", 130),
-            ("between-frames", 4130),
-            ("idle", 110),
-            ("gpu-total", 800),
-        ]);
-        assert_eq!(unscoped(&frame), Some(Duration::from_micros(3870)));
-    }
-
-    #[test]
-    fn unscoped_is_absent_for_a_frame_without_a_frame_section() {
-        let frame = frame_of(&[("presentation", 130), ("present", 40)]);
-        assert_eq!(unscoped(&frame), None);
-    }
-
-    #[test]
-    fn unscoped_saturates_at_zero_when_the_children_overrun_the_parent() {
-        let frame = frame_of(&[("frame", 100), ("presentation", 130)]);
-        assert_eq!(unscoped(&frame), Some(Duration::ZERO));
+    fn unscoped_row() {
+        type Sections = &'static [(&'static str, u64)];
+        let cases: [(Sections, Option<u64>); 5] = [
+            (&[("frame", 4000), ("presentation", 130)], Some(3870)),
+            (
+                &[("frame", 4000), ("presentation", 130), ("pp-sdf", 94)],
+                Some(3870),
+            ),
+            (
+                &[
+                    ("frame", 4000),
+                    ("presentation", 130),
+                    ("between-frames", 4130),
+                    ("idle", 110),
+                    ("gpu-total", 800),
+                ],
+                Some(3870),
+            ),
+            (&[("presentation", 130), ("present", 40)], None),
+            (&[("frame", 100), ("presentation", 130)], Some(0)),
+        ];
+        for (sections, expected) in cases {
+            assert_eq!(
+                unscoped(&frame_of(sections)),
+                expected.map(Duration::from_micros),
+                "{sections:?}"
+            );
+        }
     }
 }

@@ -1,9 +1,7 @@
-use std::borrow::Cow;
-
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
+use crate::space::{IsometryGroup, Space};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3 {
@@ -101,69 +99,5 @@ impl IsometryGroup for EuclideanR3 {
 
     fn iso_transport(&self, iso: Iso3, _at: Vec3, v: Vec3) -> Vec3 {
         iso.rotation * v
-    }
-}
-
-impl WgslSpace for EuclideanR3 {
-    fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Owned(format!(
-            "const LOAM_MAX_ARC: f32 = {FLAT_CHART_MAX_ARC:?};{WGSL_IMPL}"
-        ))
-    }
-
-    fn wgsl_accuracy(&self) -> WgslAccuracy {
-        WgslAccuracy::Exact
-    }
-}
-
-// `from` is a WGSL reserved keyword (WGSL spec §3.2); use `p_from`/`p_to`.
-const WGSL_IMPL: &str = r#"
-// loam-math :: EuclideanR3 (v0 Space WGSL ABI)
-fn loam_distance(a: vec3<f32>, b: vec3<f32>) -> f32 { return length(a - b); }
-fn loam_origin_distance(p: vec3<f32>) -> f32 { return length(p); }
-fn loam_exp(at: vec3<f32>, v: vec3<f32>) -> vec3<f32> { return at + v; }
-fn loam_log(p_from: vec3<f32>, p_to: vec3<f32>) -> vec3<f32> { return p_to - p_from; }
-struct LoamGeodesicStep { p: vec3<f32>, v: vec3<f32> }
-fn loam_geodesic_step(p: vec3<f32>, v: vec3<f32>, s: f32) -> LoamGeodesicStep {
-    return LoamGeodesicStep(loam_exp(p, v * s), v);
-}
-"#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-
-    fn r3() -> EuclideanR3 {
-        EuclideanR3
-    }
-
-    #[test]
-    fn parallel_transport_along_default_impl_is_identity_in_flat_space() {
-        let s = r3();
-        let v = Vec3::new(1.7, -0.3, 0.5);
-        assert_eq!(s.parallel_transport_along(&[], v), v);
-        assert_eq!(s.parallel_transport_along(&[Vec3::ZERO], v), v);
-        let path = [
-            Vec3::ZERO,
-            Vec3::new(1.0, 0.0, 0.0),
-            Vec3::new(1.0, 1.0, 0.0),
-            Vec3::new(2.0, 3.0, -1.0),
-        ];
-        let transported = s.parallel_transport_along(&path, v);
-        assert_relative_eq!(transported.x, v.x);
-        assert_relative_eq!(transported.y, v.y);
-        assert_relative_eq!(transported.z, v.z);
-    }
-
-    #[test]
-    fn iso_transport_ignores_translation() {
-        let s = r3();
-        let iso = Iso3::from_translation(Vec3::new(100.0, -50.0, 7.0));
-        let v = Vec3::new(1.0, 0.0, 0.0);
-        let transported = s.iso_transport(iso, Vec3::ZERO, v);
-        assert_relative_eq!(transported.x, v.x);
-        assert_relative_eq!(transported.y, v.y);
-        assert_relative_eq!(transported.z, v.z);
     }
 }

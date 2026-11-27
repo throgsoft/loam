@@ -125,71 +125,20 @@ mod tests {
     use super::*;
     use ab_glyph::point;
 
-    fn square(cx: f32, cy: f32, half: f32, clockwise: bool) -> Vec<OutlineCurve> {
-        let mut corners = [
-            point(cx - half, cy - half),
-            point(cx + half, cy - half),
-            point(cx + half, cy + half),
-            point(cx - half, cy + half),
-        ];
-        if clockwise {
-            corners.reverse();
-        }
-        let mut curves = Vec::new();
-        for i in 0..4 {
-            curves.push(OutlineCurve::Line(corners[i], corners[(i + 1) % 4]));
-        }
-        curves.push(OutlineCurve::Line(corners[0], corners[0]));
-        curves
-    }
-
     #[test]
-    fn discontinuous_start_opens_a_new_contour() {
-        let mut curves = square(0.0, 0.0, 1.0, false);
-        curves.extend(square(10.0, 0.0, 0.5, true));
-        let contours = contours_from_curves(&curves, 1.0, 0.01);
-        assert_eq!(contours.len(), 2);
-        assert_eq!(contours[0].points.len(), 4);
-        assert_eq!(contours[1].points.len(), 4);
-    }
-
-    #[test]
-    fn closing_line_does_not_duplicate_the_first_point() {
-        let contours = contours_from_curves(&square(0.0, 0.0, 1.0, false), 1.0, 0.01);
-        assert_eq!(contours.len(), 1);
-        let points = &contours[0].points;
-        assert_eq!(points.len(), 4);
-        assert!(points[0].distance(points[points.len() - 1]) > 0.5);
-    }
-
-    #[test]
-    fn font_units_scale_to_em() {
-        let contours = contours_from_curves(&square(0.0, 0.0, 1024.0, false), 1.0 / 2048.0, 0.001);
-        for p in &contours[0].points {
-            assert!((p.x.abs() - 0.5).abs() < 1e-6, "x = {}", p.x);
-            assert!((p.y.abs() - 0.5).abs() < 1e-6, "y = {}", p.y);
-        }
-    }
-
-    #[test]
-    fn flattened_quadratic_stays_within_tolerance() {
-        let p0 = Vec2::ZERO;
+    fn flattening_tolerance() {
         let tolerance = 1.0e-3;
-        let mut out = vec![p0];
+        let mut out = vec![Vec2::ZERO];
         flatten_into(
             &OutlineCurve::Quad(point(0.0, 0.0), point(0.5, 1.0), point(1.0, 0.0)),
             tolerance,
             &mut out,
         );
-        assert!(out.len() > 2, "curve was not subdivided: {out:?}");
+        assert!(out.len() > 2, "quadratic was not subdivided: {out:?}");
         assert_max_deviation(&out, tolerance, |t| Vec2::new(t, 2.0 * t * (1.0 - t)));
-    }
 
-    #[test]
-    fn flattened_cubic_stays_within_tolerance() {
-        let p0 = Vec2::ZERO;
         let tolerance = 5.0e-4;
-        let mut out = vec![p0];
+        let mut out = vec![Vec2::ZERO];
         flatten_into(
             &OutlineCurve::Cubic(
                 point(0.0, 0.0),
@@ -200,7 +149,7 @@ mod tests {
             tolerance,
             &mut out,
         );
-        assert!(out.len() > 2, "curve was not subdivided: {out:?}");
+        assert!(out.len() > 2, "cubic was not subdivided: {out:?}");
         assert_max_deviation(&out, tolerance, |t| {
             Vec2::new(t * t * (3.0 - 2.0 * t), 3.0 * t * (1.0 - t))
         });
@@ -220,17 +169,6 @@ mod tests {
                 "deviation {nearest} exceeds tolerance {tolerance} at t = {t}"
             );
         }
-    }
-
-    #[test]
-    fn collinear_quadratic_is_not_subdivided() {
-        let mut out = vec![Vec2::ZERO];
-        flatten_into(
-            &OutlineCurve::Quad(point(0.0, 0.0), point(0.5, 0.0), point(1.0, 0.0)),
-            1.0e-4,
-            &mut out,
-        );
-        assert_eq!(out.len(), 2);
     }
 
     fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {

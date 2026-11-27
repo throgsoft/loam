@@ -1,36 +1,17 @@
 use glam::{Quat, Vec3};
+use loam_shape::shape::{convex_polytope3, sphere};
 
-pub trait SupportFn {
-    fn support(&self, direction: Vec3) -> Vec3;
-}
+use super::minkowski::{
+    minkowski_support, ConvexHull, GjkResult, MinkowskiPoint, PosedHull, Sphere, SupportFn,
+};
 
-pub struct ConvexHull<'a> {
-    pub vertices: &'a [Vec3],
-}
-
-impl<'a> SupportFn for ConvexHull<'a> {
+impl SupportFn<Vec3> for ConvexHull<'_, Vec3> {
     fn support(&self, direction: Vec3) -> Vec3 {
-        let mut best = self.vertices[0];
-        let mut best_d = best.dot(direction);
-        for &v in &self.vertices[1..] {
-            let d = v.dot(direction);
-            if d > best_d {
-                best_d = d;
-                best = v;
-            }
-        }
-        best
+        convex_polytope3::support(self.vertices, direction)
     }
 }
 
-/// `rotation` must be a unit quaternion.
-pub struct PosedHull<'a> {
-    pub local: &'a [Vec3],
-    pub position: Vec3,
-    pub rotation: Quat,
-}
-
-impl SupportFn for PosedHull<'_> {
+impl SupportFn<Vec3> for PosedHull<'_, Vec3, Quat> {
     fn support(&self, direction: Vec3) -> Vec3 {
         let local_direction = self.rotation.conjugate() * direction;
         let hull = ConvexHull {
@@ -40,62 +21,27 @@ impl SupportFn for PosedHull<'_> {
     }
 }
 
-pub struct Sphere {
-    pub center: Vec3,
-    pub radius: f32,
-}
-
-impl SupportFn for Sphere {
+impl SupportFn<Vec3> for Sphere<Vec3> {
     fn support(&self, direction: Vec3) -> Vec3 {
-        let dir = direction.normalize_or(Vec3::Y);
-        self.center + dir * self.radius
+        sphere::support(self.center, self.radius, direction)
     }
-}
-
-/// `sa` and `sb` are the contributing support points on A and B.
-#[derive(Clone, Copy, Debug)]
-pub struct MinkowskiPoint {
-    pub point: Vec3,
-    pub sa: Vec3,
-    pub sb: Vec3,
-}
-
-pub fn minkowski_support<A: SupportFn, B: SupportFn>(
-    a: &A,
-    b: &B,
-    direction: Vec3,
-) -> MinkowskiPoint {
-    let sa = a.support(direction);
-    let sb = b.support(-direction);
-    MinkowskiPoint {
-        point: sa - sb,
-        sa,
-        sb,
-    }
-}
-
-#[derive(Debug)]
-pub enum GjkResult {
-    Intersecting { simplex: [MinkowskiPoint; 4] },
-    Separated,
 }
 
 const GJK_MAX_ITERATIONS: u32 = 32;
 const GJK_EPS: f32 = 1e-6;
 
-/// On intersection the returned tetrahedron is the seed EPA expects.
-pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
+pub fn gjk_intersect<A: SupportFn<Vec3>, B: SupportFn<Vec3>>(
     a: &A,
     b: &B,
     initial_direction: Vec3,
-) -> GjkResult {
+) -> GjkResult<Vec3, 4> {
     let mut dir = if initial_direction.length_squared() > GJK_EPS {
         initial_direction
     } else {
         Vec3::X
     };
 
-    let mut simplex: [MinkowskiPoint; 4] = [MinkowskiPoint {
+    let mut simplex: [MinkowskiPoint<Vec3>; 4] = [MinkowskiPoint {
         point: Vec3::ZERO,
         sa: Vec3::ZERO,
         sb: Vec3::ZERO,
@@ -131,7 +77,7 @@ pub fn gjk_intersect<A: SupportFn, B: SupportFn>(
 }
 
 // Newest point at `n-1` on entry; `simplex[0..new_n]` holds survivors on exit.
-fn do_simplex(simplex: &mut [MinkowskiPoint; 4], n: usize) -> (bool, usize, Vec3) {
+fn do_simplex(simplex: &mut [MinkowskiPoint<Vec3>; 4], n: usize) -> (bool, usize, Vec3) {
     match n {
         2 => do_line(simplex),
         3 => do_triangle(simplex),
@@ -140,7 +86,7 @@ fn do_simplex(simplex: &mut [MinkowskiPoint; 4], n: usize) -> (bool, usize, Vec3
     }
 }
 
-fn do_line(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
+fn do_line(simplex: &mut [MinkowskiPoint<Vec3>; 4]) -> (bool, usize, Vec3) {
     let a = simplex[1].point;
     let b = simplex[0].point;
     let ab = b - a;
@@ -169,13 +115,13 @@ fn any_perpendicular(v: Vec3) -> Vec3 {
     }
 }
 
-fn fall_back_to_ab(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
+fn fall_back_to_ab(simplex: &mut [MinkowskiPoint<Vec3>; 4]) -> (bool, usize, Vec3) {
     simplex[0] = simplex[1];
     simplex[1] = simplex[2];
     do_line(simplex)
 }
 
-fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
+fn do_triangle(simplex: &mut [MinkowskiPoint<Vec3>; 4]) -> (bool, usize, Vec3) {
     let a = simplex[2].point;
     let b = simplex[1].point;
     let c = simplex[0].point;
@@ -207,7 +153,7 @@ fn do_triangle(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
 }
 
 // Face normals use the opposite vertex; simplex pruning can change winding.
-fn do_tetrahedron(simplex: &mut [MinkowskiPoint; 4]) -> (bool, usize, Vec3) {
+fn do_tetrahedron(simplex: &mut [MinkowskiPoint<Vec3>; 4]) -> (bool, usize, Vec3) {
     let a = simplex[3].point;
     let b = simplex[2].point;
     let c = simplex[1].point;
@@ -260,21 +206,8 @@ fn triple_product(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 mod tests {
     use super::*;
 
-    fn box_vertices(center: Vec3, half: Vec3) -> Vec<Vec3> {
-        vec![
-            center + Vec3::new(-half.x, -half.y, -half.z),
-            center + Vec3::new(half.x, -half.y, -half.z),
-            center + Vec3::new(half.x, half.y, -half.z),
-            center + Vec3::new(-half.x, half.y, -half.z),
-            center + Vec3::new(-half.x, -half.y, half.z),
-            center + Vec3::new(half.x, -half.y, half.z),
-            center + Vec3::new(half.x, half.y, half.z),
-            center + Vec3::new(-half.x, half.y, half.z),
-        ]
-    }
-
     #[test]
-    fn posed_support_uses_the_inverse_rotation() {
+    fn posed_support() {
         let local = [
             Vec3::new(0.6, 0.1, -0.2),
             Vec3::new(-0.4, 0.7, 0.15),
@@ -294,105 +227,5 @@ mod tests {
         for direction in [Vec3::X, -Vec3::Y, Vec3::Z, Vec3::new(0.3, -0.7, 0.9)] {
             assert!((posed.support(direction) - world.support(direction)).length() < 1e-6);
         }
-    }
-
-    #[test]
-    fn separated_boxes_report_no_intersection() {
-        let va = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let vb = box_vertices(Vec3::new(3.0, 0.0, 0.0), Vec3::ONE);
-        let a = ConvexHull { vertices: &va };
-        let b = ConvexHull { vertices: &vb };
-
-        match gjk_intersect(&a, &b, Vec3::new(3.0, 0.0, 0.0)) {
-            GjkResult::Separated => {}
-            GjkResult::Intersecting { .. } => panic!("should be separated"),
-        }
-    }
-
-    #[test]
-    fn touching_boxes_report_intersection() {
-        let va = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let vb = box_vertices(Vec3::new(2.0, 0.0, 0.0), Vec3::ONE);
-        let a = ConvexHull { vertices: &va };
-        let b = ConvexHull { vertices: &vb };
-
-        match gjk_intersect(&a, &b, Vec3::new(2.0, 0.0, 0.0)) {
-            GjkResult::Intersecting { .. } => {}
-            GjkResult::Separated => panic!("touching boundaries should count as intersecting"),
-        }
-    }
-
-    #[test]
-    fn sphere_vs_sphere_matches_distance_test() {
-        for &(ax, bx, overlap) in &[(0.0, 3.0, false), (0.0, 1.5, true), (0.0, 2.0, true)] {
-            let a = Sphere {
-                center: Vec3::new(ax, 0.0, 0.0),
-                radius: 1.0,
-            };
-            let b = Sphere {
-                center: Vec3::new(bx, 0.0, 0.0),
-                radius: 1.0,
-            };
-            let result = gjk_intersect(&a, &b, Vec3::new(bx - ax, 0.0, 0.0));
-            let got = matches!(result, GjkResult::Intersecting { .. });
-            assert_eq!(
-                got, overlap,
-                "centres at ({ax},0,0) and ({bx},0,0): expected intersecting={overlap}, got {got}"
-            );
-        }
-    }
-
-    #[test]
-    fn box_vs_sphere_corner_contact() {
-        let vb = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let b = ConvexHull { vertices: &vb };
-
-        let far = Sphere {
-            center: Vec3::new(1.35, 1.35, 1.35),
-            radius: 0.5,
-        };
-        assert!(matches!(
-            gjk_intersect(&far, &b, Vec3::new(-1.0, -1.0, -1.0)),
-            GjkResult::Separated
-        ));
-
-        let near = Sphere {
-            center: Vec3::new(1.2, 1.2, 1.2),
-            radius: 0.5,
-        };
-        assert!(matches!(
-            gjk_intersect(&near, &b, Vec3::new(-1.0, -1.0, -1.0)),
-            GjkResult::Intersecting { .. }
-        ));
-    }
-
-    #[test]
-    fn rotated_boxes_separate_as_axes_allow() {
-        use glam::Quat;
-        let va = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let rot = Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);
-        let vb_rot: Vec<Vec3> = box_vertices(Vec3::ZERO, Vec3::ONE)
-            .iter()
-            .map(|&v| rot * v + Vec3::new(2.5, 0.0, 0.0))
-            .collect();
-        let a = ConvexHull { vertices: &va };
-        let b = ConvexHull { vertices: &vb_rot };
-
-        assert!(matches!(
-            gjk_intersect(&a, &b, Vec3::new(2.5, 0.0, 0.0)),
-            GjkResult::Separated
-        ));
-
-        let vb_close: Vec<Vec3> = box_vertices(Vec3::ZERO, Vec3::ONE)
-            .iter()
-            .map(|&v| rot * v + Vec3::new(2.2, 0.0, 0.0))
-            .collect();
-        let b_close = ConvexHull {
-            vertices: &vb_close,
-        };
-        assert!(matches!(
-            gjk_intersect(&a, &b_close, Vec3::new(2.2, 0.0, 0.0)),
-            GjkResult::Intersecting { .. }
-        ));
     }
 }

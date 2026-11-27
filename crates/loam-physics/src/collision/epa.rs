@@ -1,6 +1,6 @@
 use glam::Vec3;
 
-use super::gjk::{minkowski_support, MinkowskiPoint, SupportFn};
+use super::minkowski::{minkowski_support, ContactInfo, MinkowskiPoint, SupportFn};
 
 const EPA_MAX_ITERATIONS: u32 = 48;
 
@@ -34,15 +34,6 @@ impl Thresholds {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ContactInfo {
-    /// Unit, world, from A toward B.
-    pub normal: Vec3,
-    pub penetration: f32,
-    /// Midpoint of the closest features on A and B, in world space.
-    pub point: Vec3,
-}
-
-#[derive(Clone, Copy, Debug)]
 struct Face {
     v: [usize; 3],
     normal: Vec3,
@@ -50,7 +41,7 @@ struct Face {
 }
 
 struct Polytope {
-    vertices: Vec<MinkowskiPoint>,
+    vertices: Vec<MinkowskiPoint<Vec3>>,
     faces: Vec<Face>,
     horizon: Vec<(usize, usize)>,
     interior: glam::Vec3,
@@ -58,7 +49,7 @@ struct Polytope {
 }
 
 impl Polytope {
-    fn from_tetra(tetra: [MinkowskiPoint; 4], thresholds: Thresholds) -> Self {
+    fn from_tetra(tetra: [MinkowskiPoint<Vec3>; 4], thresholds: Thresholds) -> Self {
         let vertices = tetra.to_vec();
         let interior = (tetra[0].point + tetra[1].point + tetra[2].point + tetra[3].point) * 0.25;
         let mut faces = Vec::with_capacity(4);
@@ -90,7 +81,7 @@ impl Polytope {
         Some(idx)
     }
 
-    fn expand(&mut self, support: MinkowskiPoint) {
+    fn expand(&mut self, support: MinkowskiPoint<Vec3>) {
         let new_idx = self.vertices.len();
         self.vertices.push(support);
 
@@ -127,7 +118,7 @@ impl Polytope {
 }
 
 fn build_face_vs_point(
-    verts: &[MinkowskiPoint],
+    verts: &[MinkowskiPoint<Vec3>],
     a: usize,
     b: usize,
     c: usize,
@@ -190,20 +181,20 @@ fn barycentric(a: Vec3, b: Vec3, c: Vec3, p: Vec3, gram_floor: f32) -> (f32, f32
 }
 
 /// `scale` is the sum of the two bounding radii.
-pub fn epa<A: SupportFn, B: SupportFn>(
+pub fn epa<A: SupportFn<Vec3>, B: SupportFn<Vec3>>(
     a: &A,
     b: &B,
-    initial_simplex: [MinkowskiPoint; 4],
+    initial_simplex: [MinkowskiPoint<Vec3>; 4],
     scale: f32,
-) -> Option<ContactInfo> {
+) -> Option<ContactInfo<Vec3>> {
     let (polytope, face) = expand_to_boundary(a, b, initial_simplex, scale)?;
     Some(contact_from_face(&polytope, face))
 }
 
-fn expand_to_boundary<A: SupportFn, B: SupportFn>(
+fn expand_to_boundary<A: SupportFn<Vec3>, B: SupportFn<Vec3>>(
     a: &A,
     b: &B,
-    initial_simplex: [MinkowskiPoint; 4],
+    initial_simplex: [MinkowskiPoint<Vec3>; 4],
     scale: f32,
 ) -> Option<(Polytope, Face)> {
     let thresholds = Thresholds::for_scale(scale);
@@ -247,7 +238,7 @@ fn expand_to_boundary<A: SupportFn, B: SupportFn>(
     Some((polytope, face))
 }
 
-fn contact_from_face(polytope: &Polytope, face: Face) -> ContactInfo {
+fn contact_from_face(polytope: &Polytope, face: Face) -> ContactInfo<Vec3> {
     let v0 = polytope.vertices[face.v[0]];
     let v1 = polytope.vertices[face.v[1]];
     let v2 = polytope.vertices[face.v[2]];
@@ -269,373 +260,5 @@ fn contact_from_face(polytope: &Polytope, face: Face) -> ContactInfo {
         normal: face.normal,
         penetration: face.distance,
         point: (point_a + point_b) * 0.5,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::gjk::{gjk_intersect, ConvexHull, GjkResult, Sphere};
-    use super::*;
-
-    fn box_vertices(center: Vec3, half: Vec3) -> Vec<Vec3> {
-        vec![
-            center + Vec3::new(-half.x, -half.y, -half.z),
-            center + Vec3::new(half.x, -half.y, -half.z),
-            center + Vec3::new(half.x, half.y, -half.z),
-            center + Vec3::new(-half.x, half.y, -half.z),
-            center + Vec3::new(-half.x, -half.y, half.z),
-            center + Vec3::new(half.x, -half.y, half.z),
-            center + Vec3::new(half.x, half.y, half.z),
-            center + Vec3::new(-half.x, half.y, half.z),
-        ]
-    }
-
-    fn run(a: &impl SupportFn, b: &impl SupportFn, d: Vec3, scale: f32) -> ContactInfo {
-        match gjk_intersect(a, b, d) {
-            GjkResult::Intersecting { simplex } => {
-                epa(a, b, simplex, scale).expect("EPA should converge")
-            }
-            GjkResult::Separated => panic!("GJK says separated, EPA can't run"),
-        }
-    }
-
-    fn box_radius(half: f32) -> f32 {
-        half * 3.0_f32.sqrt()
-    }
-
-    fn assert_close(a: f32, b: f32, tol: f32) {
-        assert!(
-            (a - b).abs() <= tol,
-            "expected {a} close to {b} (tol {tol})"
-        );
-    }
-
-    #[test]
-    fn sphere_sphere_penetration_matches_distance() {
-        let a = Sphere {
-            center: Vec3::ZERO,
-            radius: 1.0,
-        };
-        let b = Sphere {
-            center: Vec3::new(1.5, 0.0, 0.0),
-            radius: 1.0,
-        };
-        let info = run(&a, &b, Vec3::new(1.5, 0.0, 0.0), 2.0);
-        assert_close(info.penetration, 0.5, 1e-3);
-        assert!(info.normal.dot(Vec3::X) > 0.99, "normal: {:?}", info.normal);
-    }
-
-    #[test]
-    fn box_box_axis_aligned_overlap_penetration_matches_axis() {
-        let va = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let vb = box_vertices(Vec3::new(1.5, 0.0, 0.0), Vec3::ONE);
-        let a = ConvexHull { vertices: &va };
-        let b = ConvexHull { vertices: &vb };
-
-        let info = run(&a, &b, Vec3::new(1.5, 0.0, 0.0), 2.0 * box_radius(1.0));
-        assert!(
-            info.normal.dot(Vec3::X) > 0.99,
-            "normal must run from A toward B along +x, got {:?}",
-            info.normal
-        );
-        assert_close(info.penetration, 0.5, 1e-3);
-    }
-
-    #[test]
-    fn sphere_box_corner_penetration_points_outward() {
-        let vb = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let b = ConvexHull { vertices: &vb };
-        let s = Sphere {
-            center: Vec3::new(1.2, 1.2, 1.2),
-            radius: 0.5,
-        };
-
-        let info = run(&b, &s, Vec3::new(1.0, 1.0, 1.0), box_radius(1.0) + 0.5);
-        let expected = Vec3::new(1.0, 1.0, 1.0).normalize();
-        assert!(
-            info.normal.dot(expected) > 0.95,
-            "normal {:?} not aligned with {:?}",
-            info.normal,
-            expected
-        );
-        assert_close(info.penetration, 0.5 - 3.0_f32.sqrt() * 0.2, 1e-2);
-    }
-
-    const SPHERE_PAIR_SCALE: f32 = 2.0;
-
-    fn seed(points: [Vec3; 4]) -> [MinkowskiPoint; 4] {
-        points.map(|point| MinkowskiPoint {
-            point,
-            sa: point,
-            sb: Vec3::ZERO,
-        })
-    }
-
-    fn seed_of_height(h: f32) -> [MinkowskiPoint; 4] {
-        seed([
-            Vec3::new(-1.0, -1.0, 0.0),
-            Vec3::new(1.0, -1.0, 0.0),
-            Vec3::new(0.0, 1.0, 0.0),
-            Vec3::new(0.0, 0.0, h),
-        ])
-    }
-
-    #[test]
-    fn seeds_across_the_volume_floor_resolve_finitely_or_not_at_all() {
-        let a = Sphere {
-            center: Vec3::ZERO,
-            radius: 1.0,
-        };
-        let b = Sphere {
-            center: Vec3::new(0.5, 0.0, 0.0),
-            radius: 1.0,
-        };
-
-        assert!(
-            epa(&a, &b, seed_of_height(0.0), SPHERE_PAIR_SCALE).is_none(),
-            "a seed with no 3-volume has no interior to orient against"
-        );
-        for h in [1e-6, 1e-4, 1e-2, 1.0] {
-            let contact = epa(&a, &b, seed_of_height(h), SPHERE_PAIR_SCALE)
-                .unwrap_or_else(|| panic!("seed of height {h} clears the volume floor"));
-            assert!(
-                contact.normal.is_finite()
-                    && contact.point.is_finite()
-                    && contact.penetration.is_finite(),
-                "seed of height {h} resolved to {contact:?}"
-            );
-            assert!(
-                contact.penetration >= 0.0,
-                "seed of height {h}: negative depth"
-            );
-        }
-    }
-
-    #[test]
-    fn the_seed_volume_floor_admits_the_same_seed_shapes_at_every_size() {
-        fn resized(seed: [MinkowskiPoint; 4], s: f32) -> [MinkowskiPoint; 4] {
-            seed.map(|p| MinkowskiPoint {
-                point: p.point * s,
-                sa: p.sa * s,
-                sb: p.sb * s,
-            })
-        }
-
-        for s in [1e-3_f32, 1.0, 1e3] {
-            let a = Sphere {
-                center: Vec3::ZERO,
-                radius: s,
-            };
-            let b = Sphere {
-                center: Vec3::new(0.5 * s, 0.0, 0.0),
-                radius: s,
-            };
-            let scale = SPHERE_PAIR_SCALE * s;
-            assert!(
-                epa(&a, &b, resized(seed_of_height(1e-9), s), scale).is_none(),
-                "at size {s} a seed 20x under the volume floor resolved a contact"
-            );
-            assert!(
-                epa(&a, &b, resized(seed_of_height(1e-6), s), scale).is_some(),
-                "at size {s} a seed 50x over the volume floor resolved to nothing"
-            );
-        }
-    }
-
-    #[test]
-    fn collinear_and_repeated_vertex_seeds_are_rejected_rather_than_resolved() {
-        let a = Sphere {
-            center: Vec3::ZERO,
-            radius: 1.0,
-        };
-        let b = Sphere {
-            center: Vec3::new(0.5, 0.0, 0.0),
-            radius: 1.0,
-        };
-        let collinear = seed([
-            Vec3::new(-1.0, 0.0, 0.0),
-            Vec3::new(-0.5, 0.0, 0.0),
-            Vec3::new(0.5, 0.0, 0.0),
-            Vec3::new(1.0, 0.0, 0.0),
-        ]);
-        let repeated = seed([
-            Vec3::new(-1.0, -1.0, -1.0),
-            Vec3::new(1.0, -1.0, -1.0),
-            Vec3::new(1.0, -1.0, -1.0),
-            Vec3::new(0.0, 1.0, 1.0),
-        ]);
-        assert!(epa(&a, &b, collinear, SPHERE_PAIR_SCALE).is_none());
-        assert!(epa(&a, &b, repeated, SPHERE_PAIR_SCALE).is_none());
-    }
-
-    #[test]
-    fn deeply_nested_boxes_contact_matches_shallowest_axis() {
-        let va = box_vertices(Vec3::ZERO, Vec3::ONE);
-        let vb = box_vertices(Vec3::new(0.3, 0.1, 0.2), Vec3::ONE);
-        let a = ConvexHull { vertices: &va };
-        let b = ConvexHull { vertices: &vb };
-        let info = run(&a, &b, Vec3::new(0.3, 0.1, 0.2), 2.0 * box_radius(1.0));
-        assert_close(info.penetration, 2.0 - 0.3, EPA_TOLERANCE);
-        assert!(
-            info.normal.dot(Vec3::X) > 0.999,
-            "normal must run from A toward B along +x, got {:?}",
-            info.normal
-        );
-    }
-
-    #[test]
-    fn flush_box_contacts_resolve_against_a_difference_body_facet() {
-        let cases: [(f32, Vec3, &[Vec3]); 5] = [
-            (1.0, Vec3::new(0.1, 0.1, 0.0), &[Vec3::X, Vec3::Y]),
-            (1.0, Vec3::new(0.1, 0.05, 0.0), &[Vec3::X]),
-            (1.0, Vec3::new(0.0, 0.05, 0.1), &[Vec3::Z]),
-            (0.1, Vec3::new(0.002, 0.0, 0.0), &[Vec3::X]),
-            (0.1, Vec3::new(0.0, 0.0, -0.002), &[Vec3::NEG_Z]),
-        ];
-
-        for (half, offset, admissible) in cases {
-            let va = box_vertices(Vec3::ZERO, Vec3::splat(half));
-            let vb = box_vertices(offset, Vec3::splat(half));
-            let a = ConvexHull { vertices: &va };
-            let b = ConvexHull { vertices: &vb };
-
-            let info = run(&a, &b, offset, 2.0 * box_radius(half));
-            assert_close(
-                info.penetration,
-                2.0 * half - offset.abs().max_element(),
-                EPA_TOLERANCE,
-            );
-            let alignment = admissible.iter().fold(f32::NEG_INFINITY, |best, &axis| {
-                best.max(info.normal.dot(axis))
-            });
-            assert!(
-                alignment > 0.999,
-                "half {half}, offset {offset:?}: normal {:?} on none of {admissible:?}",
-                info.normal
-            );
-        }
-    }
-
-    #[test]
-    fn two_axis_flush_expansion_terminates_with_a_bounded_face_count() {
-        let offset = Vec3::new(0.0, 0.0, -0.01);
-        let va = box_vertices(Vec3::ZERO, Vec3::splat(0.1));
-        let vb = box_vertices(offset, Vec3::splat(0.1));
-        let a = ConvexHull { vertices: &va };
-        let b = ConvexHull { vertices: &vb };
-
-        let simplex = match gjk_intersect(&a, &b, offset) {
-            GjkResult::Intersecting { simplex } => simplex,
-            GjkResult::Separated => panic!("boxes overlap; GJK must report intersecting"),
-        };
-        let (polytope, face) = expand_to_boundary(&a, &b, simplex, 2.0 * box_radius(0.1))
-            .expect("EPA should converge");
-
-        assert!(
-            polytope.faces.len() <= 24,
-            "expansion left {} faces",
-            polytope.faces.len()
-        );
-
-        let info = contact_from_face(&polytope, face);
-        assert_close(info.penetration, 0.19, EPA_TOLERANCE);
-        assert!(
-            info.normal.dot(Vec3::NEG_Z) > 0.999,
-            "normal must run from A toward B along -z, got {:?}",
-            info.normal
-        );
-    }
-
-    #[test]
-    fn epa_contact_is_equivariant_under_uniform_scaling() {
-        fn scaled(simplex: [MinkowskiPoint; 4], s: f32) -> [MinkowskiPoint; 4] {
-            simplex.map(|p| MinkowskiPoint {
-                point: p.point * s,
-                sa: p.sa * s,
-                sb: p.sb * s,
-            })
-        }
-
-        fn seed_at_unit_scale(
-            a: &impl SupportFn,
-            b: &impl SupportFn,
-            d: Vec3,
-        ) -> [MinkowskiPoint; 4] {
-            match gjk_intersect(a, b, d) {
-                GjkResult::Intersecting { simplex } => simplex,
-                GjkResult::Separated => panic!("unit-scale fixture must overlap"),
-            }
-        }
-
-        let box_offsets = [Vec3::new(0.3, 0.1, 0.2), Vec3::new(0.1, 0.05, 0.0)];
-        let unit_seeds: Vec<[MinkowskiPoint; 4]> = box_offsets
-            .iter()
-            .map(|&offset| {
-                let va = box_vertices(Vec3::ZERO, Vec3::ONE);
-                let vb = box_vertices(offset, Vec3::ONE);
-                seed_at_unit_scale(
-                    &ConvexHull { vertices: &va },
-                    &ConvexHull { vertices: &vb },
-                    offset,
-                )
-            })
-            .collect();
-        let sphere_seed = seed_at_unit_scale(
-            &Sphere {
-                center: Vec3::ZERO,
-                radius: 1.0,
-            },
-            &Sphere {
-                center: Vec3::new(1.5, 0.0, 0.0),
-                radius: 1.0,
-            },
-            Vec3::X,
-        );
-
-        for s in [1e-3_f32, 1e-2, 1.0, 1e2, 1e3] {
-            let sphere_a = Sphere {
-                center: Vec3::ZERO,
-                radius: s,
-            };
-            let sphere_b = Sphere {
-                center: Vec3::new(1.5 * s, 0.0, 0.0),
-                radius: s,
-            };
-            let scale = 2.0 * s;
-            let contact = epa(&sphere_a, &sphere_b, scaled(sphere_seed, s), scale)
-                .unwrap_or_else(|| panic!("spheres at scale {s} resolved to no contact"));
-            assert!(
-                (contact.penetration - 0.5 * s).abs() <= EPA_TOLERANCE * scale,
-                "spheres at scale {s}: depth {} is not {}",
-                contact.penetration,
-                0.5 * s
-            );
-            assert!(
-                contact.normal.dot(Vec3::X) > 0.999,
-                "spheres at scale {s}: normal {:?}",
-                contact.normal
-            );
-
-            for (&offset, &unit_seed) in box_offsets.iter().zip(unit_seeds.iter()) {
-                let va = box_vertices(Vec3::ZERO, Vec3::splat(s));
-                let vb = box_vertices(offset * s, Vec3::splat(s));
-                let a = ConvexHull { vertices: &va };
-                let b = ConvexHull { vertices: &vb };
-                let scale = 2.0 * box_radius(s);
-                let contact = epa(&a, &b, scaled(unit_seed, s), scale)
-                    .unwrap_or_else(|| panic!("boxes {offset:?} at scale {s}: no contact"));
-                let want = (2.0 - offset.abs().max_element()) * s;
-                assert!(
-                    (contact.penetration - want).abs() <= EPA_TOLERANCE * scale,
-                    "boxes {offset:?} at scale {s}: depth {} is not {want}",
-                    contact.penetration
-                );
-                assert!(
-                    contact.normal.dot(Vec3::X) > 0.999,
-                    "boxes {offset:?} at scale {s}: normal {:?}",
-                    contact.normal
-                );
-            }
-        }
     }
 }

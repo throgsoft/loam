@@ -1,77 +1,8 @@
 //! A user shader for [`RayMarchNode`] exports `vs_fullscreen(@builtin(vertex_index))` and
 //! `fs_main(@builtin(position))` and binds [`RayMarchUniforms`] at group 0, binding 0.
 
-mod hyperslice4d;
-mod polytope_data;
-pub mod scene;
-pub use hyperslice4d::{
-    BodyKind, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms, HYPERSLICE_KERNEL_WGSL,
-    SHAPE_120CELL, SHAPE_16CELL, SHAPE_24CELL, SHAPE_3SPHERE, SHAPE_600CELL, SHAPE_CLIFFORD_TORUS,
-    SHAPE_DUOCYLINDER, SHAPE_PENTATOPE, SHAPE_SPHERINDER, SHAPE_TESSERACT,
-};
-pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
-
-/// `None` for the smooth-surface SDFs.
-pub fn polytope4_from_shape_id(shape: u32) -> Option<loam_shape::polytope::Polytope4> {
-    use loam_shape::polytope::Polytope4;
-    Some(match shape {
-        s if s == SHAPE_PENTATOPE => Polytope4::Pentatope,
-        s if s == SHAPE_TESSERACT => Polytope4::Tesseract,
-        s if s == SHAPE_16CELL => Polytope4::Cell16,
-        s if s == SHAPE_24CELL => Polytope4::Cell24,
-        s if s == SHAPE_120CELL => Polytope4::Cell120,
-        s if s == SHAPE_600CELL => Polytope4::Cell600,
-        _ => return None,
-    })
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum RaymarchShape {
-    Polytope(loam_shape::polytope::Polytope4),
-    ThreeSphere,
-    Duocylinder,
-    CliffordTorus,
-    Spherinder,
-}
-
-impl RaymarchShape {
-    pub fn shape_id(&self) -> u32 {
-        use loam_shape::polytope::Polytope4;
-        match self {
-            RaymarchShape::Polytope(p) => match p {
-                Polytope4::Pentatope => SHAPE_PENTATOPE,
-                Polytope4::Tesseract => SHAPE_TESSERACT,
-                Polytope4::Cell16 => SHAPE_16CELL,
-                Polytope4::Cell24 => SHAPE_24CELL,
-                Polytope4::Cell120 => SHAPE_120CELL,
-                Polytope4::Cell600 => SHAPE_600CELL,
-            },
-            RaymarchShape::ThreeSphere => SHAPE_3SPHERE,
-            RaymarchShape::Duocylinder => SHAPE_DUOCYLINDER,
-            RaymarchShape::CliffordTorus => SHAPE_CLIFFORD_TORUS,
-            RaymarchShape::Spherinder => SHAPE_SPHERINDER,
-        }
-    }
-
-    pub fn polytope4(&self) -> Option<loam_shape::polytope::Polytope4> {
-        match self {
-            RaymarchShape::Polytope(p) => Some(*p),
-            _ => None,
-        }
-    }
-}
-
-impl From<loam_shape::polytope::Polytope4> for RaymarchShape {
-    fn from(p: loam_shape::polytope::Polytope4) -> Self {
-        RaymarchShape::Polytope(p)
-    }
-}
-
-impl From<RaymarchShape> for u32 {
-    fn from(s: RaymarchShape) -> u32 {
-        s.shape_id()
-    }
-}
+mod pass;
+pub use pass::RaymarchPass;
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::*;
@@ -93,11 +24,11 @@ pub struct RayMarchUniforms {
     pub tick: f32,
     /// Four scalar knobs; semantics are up to the user shader.
     pub params: [f32; 4],
-    /// Inverse of the eye's isometry on the domain's embedding; the view map composes it first.
-    pub eye_inverse: [[f32; 4]; 4],
-    /// Near distance of the root projection; see [`crate::view`].
+    /// Near distance of the root projection; see [`crate::depth`].
     pub near: f32,
-    pub _pad3: [f32; 3],
+    /// Width over height of the projection, which is the eye's and may differ from the target's.
+    pub aspect: f32,
+    pub _pad3: [f32; 2],
 }
 
 impl Default for RayMarchUniforms {
@@ -115,9 +46,25 @@ impl Default for RayMarchUniforms {
             time: 0.0,
             tick: 0.0,
             params: [0.0; 4],
-            eye_inverse: glam::Mat4::IDENTITY.to_cols_array_2d(),
             near: 0.05,
-            _pad3: [0.0; 3],
+            aspect: 1.0,
+            _pad3: [0.0; 2],
+        }
+    }
+}
+
+impl RayMarchUniforms {
+    /// Every field the eye does not set keeps its default.
+    pub fn from_eye(eye: &loam_runtime::Eye) -> Self {
+        Self {
+            camera_pos: eye.position,
+            camera_forward: eye.forward,
+            camera_right: eye.right,
+            camera_up: eye.up,
+            fov_y_tan: (eye.fov_y * 0.5).tan(),
+            near: eye.near,
+            aspect: eye.aspect,
+            ..Self::default()
         }
     }
 }
@@ -136,7 +83,7 @@ impl RayMarchNode {
         Self::with_depth(device, surface_format, shader, crate::DepthMode::Off)
     }
 
-    /// The user's `fs_main` writes [`crate::view`]'s projective depth as `frag_depth`.
+    /// The user's `fs_main` writes [`crate::depth`]'s projective depth as `frag_depth`.
     pub fn with_depth(
         device: &Device,
         surface_format: TextureFormat,
@@ -205,7 +152,7 @@ impl RayMarchNode {
             depth_stencil: depth.format().map(|format| DepthStencilState {
                 format,
                 depth_write_enabled: depth.writes(),
-                depth_compare: crate::view::DEPTH_COMPARE,
+                depth_compare: crate::depth::DEPTH_COMPARE,
                 stencil: StencilState::default(),
                 bias: DepthBiasState::default(),
             }),
@@ -227,17 +174,8 @@ impl RayMarchNode {
         }
     }
 
-    pub fn uniforms(&self) -> &RayMarchUniforms {
-        &self.uniforms
-    }
-
     pub fn uniforms_mut(&mut self) -> &mut RayMarchUniforms {
         &mut self.uniforms
-    }
-
-    pub fn set_uniforms(&mut self, queue: &Queue, uniforms: RayMarchUniforms) {
-        self.uniforms = uniforms;
-        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
     }
 
     pub fn flush_uniforms(&self, queue: &Queue) {
@@ -246,17 +184,7 @@ impl RayMarchNode {
 }
 
 impl RayMarchNode {
-    /// Clears the whole attachment before shading the viewport.
-    pub fn record_in_viewport(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
-        viewport: crate::Viewport,
-    ) {
-        self.record(encoder, view, None, viewport);
-    }
-
-    /// Clears both attachments; depth clears to [`crate::view::DEPTH_CLEAR`].
+    /// Clears both attachments; depth clears to [`crate::depth::DEPTH_CLEAR`].
     pub fn record(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -276,7 +204,7 @@ impl RayMarchNode {
         let depth_stencil_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
             view: dv,
             depth_ops: Some(Operations {
-                load: LoadOp::Clear(crate::view::DEPTH_CLEAR),
+                load: LoadOp::Clear(crate::depth::DEPTH_CLEAR),
                 store: StoreOp::Store,
             }),
             stencil_ops: None,

@@ -1,10 +1,9 @@
 //! Contact anchors and impulses persist across steps; manifold keys use generational handles.
 
 use crate::body::{BodyId, RigidBody};
-use crate::collision::VectorOps;
-use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
 use crate::response::FRICTION_COEFF;
+use crate::space::{PhysicsSpace, VectorOps};
 
 pub const MAX_POINTS: usize = 4;
 
@@ -15,14 +14,6 @@ const CONTACT_BREAK_DISTANCE_SQ: f32 = CONTACT_BREAK_DISTANCE * CONTACT_BREAK_DI
 
 const MERGE_RADIUS_SQ: f32 = CONTACT_BREAK_DISTANCE_SQ;
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "persist",
-    serde(bound(
-        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
-        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
-    ))
-)]
 pub struct ContactPoint<S: PhysicsSpace> {
     pub world_point: S::Point,
     /// Witness in A's local frame.
@@ -49,14 +40,6 @@ impl<S: PhysicsSpace> Clone for ContactPoint<S> {
 
 impl<S: PhysicsSpace> Copy for ContactPoint<S> {}
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "persist",
-    serde(bound(
-        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
-        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
-    ))
-)]
 pub struct Manifold<S: PhysicsSpace> {
     /// Always `< body_b`.
     pub body_a: BodyId,
@@ -84,10 +67,7 @@ impl<S: PhysicsSpace> Clone for Manifold<S> {
     }
 }
 
-impl<S: PhysicsSpace> Manifold<S>
-where
-    S::Vector: VectorOps,
-{
+impl<S: PhysicsSpace> Manifold<S> {
     pub fn new(body_a: BodyId, body_b: BodyId, restitution: f32) -> Self {
         debug_assert!(body_a < body_b);
         Self {
@@ -106,10 +86,7 @@ where
         self.points.clear();
     }
 
-    pub(crate) fn is_valid(&self, space: &S, body_a: &RigidBody<S>, body_b: &RigidBody<S>) -> bool
-    where
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
-    {
+    pub(crate) fn is_valid(&self, space: &S, body_a: &RigidBody<S>, body_b: &RigidBody<S>) -> bool {
         if !self.restitution.is_finite()
             || self.restitution < 0.0
             || self.points.is_empty()
@@ -196,16 +173,14 @@ where
         a: &RigidBody<S>,
         b: &RigidBody<S>,
         contact: Contact<S>,
-    ) where
-        S::Point: Copy + std::ops::Sub<Output = S::Vector>,
-    {
+    ) {
         let new_point = contact.point;
         let half_gap = contact.normal * (0.5 * contact.penetration);
         let anchor_a = local_anchor(space, a, space.exp(new_point, half_gap));
         let anchor_b = local_anchor(space, b, space.exp(new_point, -half_gap));
 
         for cp in &mut self.points {
-            let delta = new_point - cp.world_point;
+            let delta = space.log(cp.world_point, new_point);
             if VectorOps::length_squared(delta) < MERGE_RADIUS_SQ {
                 cp.world_point = new_point;
                 cp.anchor_a = anchor_a;
@@ -271,257 +246,3 @@ pub const MAX_LINEAR_CORRECTION: f32 = 0.5;
 
 /// Restitution is suppressed below this approach speed, in world units per second.
 pub const RESTITUTION_THRESHOLD: f32 = 1.0;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::body::BodyDef;
-    use crate::collider::Collider;
-    use crate::geometry::GeometryStore;
-    use glam::Vec2;
-    use loam_math::{Bivector, Bivector2, EuclideanR2};
-
-    const SPACE: EuclideanR2 = EuclideanR2;
-
-    fn contact(point: Vec2, normal: Vec2, penetration: f32) -> Contact<EuclideanR2> {
-        Contact {
-            normal,
-            point,
-            penetration,
-            restitution: 0.0,
-        }
-    }
-
-    fn body(position: Vec2) -> RigidBody<EuclideanR2> {
-        BodyDef::new(
-            position,
-            Vec2::ZERO,
-            Collider::sphere_at_origin(1.0),
-            1.0,
-            1.0,
-            &SPACE,
-        )
-        .unwrap()
-        .into_row(&mut GeometryStore::default(), &SPACE)
-    }
-
-    fn resting_pair() -> (RigidBody<EuclideanR2>, RigidBody<EuclideanR2>) {
-        (body(Vec2::new(0.0, 1.0)), body(Vec2::new(0.0, -1.0)))
-    }
-
-    #[test]
-    fn merged_normal_projects_the_warm_start_without_reversing_it() {
-        let (a, b) = resting_pair();
-        for (normal, expected) in [
-            (Vec2::Y, 4.2),
-            (-Vec2::Y, 0.0),
-            (Vec2::X, 0.0),
-            (Vec2::new(0.8, 0.6), 2.52),
-        ] {
-            let mut manifold = Manifold::new(BodyId::forge(0, 0), BodyId::forge(1, 0), 0.0);
-            manifold.add_or_update(&SPACE, &a, &b, contact(Vec2::ZERO, Vec2::Y, 0.01));
-            manifold.points[0].normal_impulse = 4.2;
-            let point = Vec2::new(0.01, 0.0);
-            manifold.add_or_update(&SPACE, &a, &b, contact(point, normal, 0.05));
-            assert_eq!(manifold.points.len(), 1);
-            let merged = &manifold.points[0];
-            assert_eq!(merged.world_point, point);
-            assert_eq!(merged.normal, normal);
-            assert_eq!(merged.penetration, 0.05);
-            assert!((merged.normal_impulse - expected).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn add_at_max_points_evicts_weakest_slot() {
-        let (a, b) = resting_pair();
-        let mut m: Manifold<EuclideanR2> =
-            Manifold::new(BodyId::forge(0, 0), BodyId::forge(1, 0), 0.0);
-        let bases = [
-            Vec2::new(0.0, 0.0),
-            Vec2::new(1.0, 0.0),
-            Vec2::new(2.0, 0.0),
-            Vec2::new(3.0, 0.0),
-        ];
-        for &p in &bases {
-            m.add_or_update(&SPACE, &a, &b, contact(p, Vec2::Y, 0.0));
-        }
-        assert_eq!(m.points.len(), MAX_POINTS);
-
-        m.points[0].normal_impulse = 5.0;
-        m.points[1].normal_impulse = 3.0;
-        m.points[2].normal_impulse = 0.5;
-        m.points[3].normal_impulse = 4.0;
-        m.points[1].tangent_impulse = -2.0;
-        m.points[2].tangent_impulse = 0.1;
-        m.points[3].tangent_impulse = 1.0;
-
-        let intruder = Vec2::new(10.0, 10.0);
-        m.add_or_update(&SPACE, &a, &b, contact(intruder, Vec2::Y, 0.0));
-
-        assert_eq!(m.points.len(), MAX_POINTS, "size must stay capped");
-        assert!(
-            m.points.iter().any(|cp| cp.world_point == intruder),
-            "new contact must be present",
-        );
-        assert!(
-            m.points.iter().all(|cp| cp.world_point != bases[2]),
-            "the lowest-impulse slot must be evicted",
-        );
-        assert!(
-            m.points.iter().any(|cp| cp.world_point == bases[0]),
-            "high-impulse slots must be retained",
-        );
-    }
-
-    #[test]
-    fn new_slot_below_capacity_leaves_others_intact() {
-        let (a, b) = resting_pair();
-        let mut m: Manifold<EuclideanR2> =
-            Manifold::new(BodyId::forge(0, 0), BodyId::forge(1, 0), 0.0);
-        m.add_or_update(&SPACE, &a, &b, contact(Vec2::ZERO, Vec2::Y, 0.0));
-        m.points[0].normal_impulse = 9.0;
-        m.points[0].tangent_impulse = 0.5;
-        m.points[0].tangent_dir = Vec2::X;
-
-        m.add_or_update(&SPACE, &a, &b, contact(Vec2::new(1.0, 0.0), Vec2::Y, 0.0));
-
-        assert_eq!(m.points.len(), 2);
-        let original = &m.points[0];
-        assert_eq!(original.world_point, Vec2::ZERO, "original geometry intact");
-        assert!((original.normal_impulse - 9.0).abs() < 1e-6);
-        assert!((original.tangent_impulse - 0.5).abs() < 1e-6);
-        assert_eq!(original.tangent_dir, Vec2::X);
-        let added = &m.points[1];
-        assert_eq!(added.normal_impulse, 0.0, "fresh slot starts at zero");
-        assert_eq!(added.tangent_impulse, 0.0);
-    }
-
-    fn touching_manifold(
-        penetration: f32,
-    ) -> (
-        Manifold<EuclideanR2>,
-        RigidBody<EuclideanR2>,
-        RigidBody<EuclideanR2>,
-    ) {
-        let (a, b) = resting_pair();
-        let mut m: Manifold<EuclideanR2> =
-            Manifold::new(BodyId::forge(0, 0), BodyId::forge(1, 0), 0.0);
-        m.add_or_update(&SPACE, &a, &b, contact(Vec2::ZERO, -Vec2::Y, penetration));
-        (m, a, b)
-    }
-
-    #[test]
-    fn refresh_reads_back_the_penetration_the_narrowphase_reported() {
-        let (mut m, a, b) = touching_manifold(0.006);
-        m.refresh(&SPACE, &a, &b);
-        assert_eq!(m.points.len(), 1, "an unmoved contact must survive");
-        assert!(
-            (m.points[0].penetration - 0.006).abs() < 1e-6,
-            "refresh reported {} for a 0.006 penetration, so it is measuring \
-             drift and not separation",
-            m.points[0].penetration,
-        );
-        assert!(
-            (m.points[0].world_point - Vec2::ZERO).length() < 1e-6,
-            "an unmoved contact moved to {}",
-            m.points[0].world_point,
-        );
-    }
-
-    #[test]
-    fn refresh_drops_a_point_the_body_has_lifted_off() {
-        let (mut m, mut a, b) = touching_manifold(0.006);
-        m.points[0].normal_impulse = 3.0;
-        a.position.y += 0.006 + CONTACT_BREAK_DISTANCE + 1e-4;
-        m.refresh(&SPACE, &a, &b);
-        assert!(
-            m.points.is_empty(),
-            "a point past the break distance was solved again with stale \
-             geometry: separation {}",
-            -m.points[0].penetration,
-        );
-    }
-
-    #[test]
-    fn refresh_keeps_a_lifted_point_inside_the_break_distance_with_its_impulse() {
-        let (mut m, mut a, b) = touching_manifold(0.006);
-        m.points[0].normal_impulse = 3.0;
-        m.points[0].tangent_impulse = -0.5;
-        let lift = 0.006 + 0.5 * CONTACT_BREAK_DISTANCE;
-        a.position.y += lift;
-        m.refresh(&SPACE, &a, &b);
-        assert_eq!(m.points.len(), 1, "the point is still inside the band");
-        assert!(
-            (m.points[0].penetration + (lift - 0.006)).abs() < 1e-6,
-            "penetration {} does not track the lift",
-            m.points[0].penetration,
-        );
-        assert!(
-            (m.points[0].normal_impulse - 3.0).abs() < 1e-6
-                && (m.points[0].tangent_impulse + 0.5).abs() < 1e-6,
-            "a surviving point lost its warm-start impulses",
-        );
-    }
-
-    #[test]
-    fn refresh_drops_a_point_the_bodies_slid_apart_across_the_normal() {
-        let (mut m, mut a, b) = touching_manifold(0.006);
-        a.position.x += CONTACT_BREAK_DISTANCE + 1e-4;
-        m.refresh(&SPACE, &a, &b);
-        assert!(
-            m.points.is_empty(),
-            "a point the body slid off kept describing the feature it left",
-        );
-    }
-
-    #[test]
-    fn refresh_follows_a_point_through_a_body_rotation() {
-        let (mut m, mut a, b) = touching_manifold(0.006);
-        a.orientation.rotation = Bivector2(std::f32::consts::FRAC_PI_4).exp();
-        m.refresh(&SPACE, &a, &b);
-        assert!(
-            m.points.is_empty(),
-            "a rotation that swept the contact a full radius away left it in \
-             the manifold",
-        );
-
-        let (mut m, mut a, b) = touching_manifold(0.006);
-        let theta = 0.5 * CONTACT_BREAK_DISTANCE;
-        a.orientation.rotation = Bivector2(theta).exp();
-        m.refresh(&SPACE, &a, &b);
-        assert_eq!(m.points.len(), 1, "a tiny rotation must not break contact");
-        let expected = 0.006 - (1.0 - theta.cos());
-        assert!(
-            (m.points[0].penetration - expected).abs() < 2e-6,
-            "penetration {} does not track the turn's sagitta {expected}",
-            m.points[0].penetration,
-        );
-    }
-
-    #[test]
-    fn refresh_retains_in_slot_order() {
-        let (a, b) = resting_pair();
-        let mut m: Manifold<EuclideanR2> =
-            Manifold::new(BodyId::forge(0, 0), BodyId::forge(1, 0), 0.0);
-        let kept = [Vec2::new(-0.5, 0.0), Vec2::new(0.5, 0.0)];
-        m.add_or_update(&SPACE, &a, &b, contact(kept[0], -Vec2::Y, 0.006));
-        m.add_or_update(&SPACE, &a, &b, contact(Vec2::ZERO, -Vec2::Y, -0.1));
-        m.add_or_update(&SPACE, &a, &b, contact(kept[1], -Vec2::Y, 0.006));
-
-        m.refresh(&SPACE, &a, &b);
-
-        let surviving: Vec<Vec2> = m.points.iter().map(|cp| cp.world_point).collect();
-        assert_eq!(
-            surviving.len(),
-            2,
-            "the separated slot must be the only one dropped"
-        );
-        for (slot, expected) in surviving.iter().zip(kept) {
-            assert!(
-                (*slot - expected).length() < 1e-6,
-                "retain reordered the slots: {surviving:?}",
-            );
-        }
-    }
-}

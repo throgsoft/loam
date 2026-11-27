@@ -1,0 +1,15 @@
+# The record scenario: spin with the wireframe on, then the toybox, a flick of the center toy toward its neighbour and the wireframe off.
+# Each line is `frame verb args`. A line runs after its frame publishes and lands at the next boundary.
+
+0 spin on
+19 wireframe on
+59 demo toybox
+
+# Grab the center toy and fling it right.
+89 pointer 0 0.03 down
+91 pointer 0.05 0.05 move
+93 pointer 0.12 0.08 move
+95 pointer 0.2 0.1 move
+96 pointer 0.2 0.1 up
+
+139 wireframe off

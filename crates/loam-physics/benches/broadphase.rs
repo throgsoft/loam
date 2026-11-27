@@ -4,12 +4,13 @@ use std::time::Instant;
 use glam::Vec3;
 use loam_math::{EuclideanR3, Space};
 use loam_physics::body::BodyId;
-use loam_physics::collider::Collider;
 use loam_physics::euclidean_r3::{
     box_body, halfspace_body_r3, register_default_narrowphase, sphere_body_r3,
 };
 use loam_physics::world::PairKey;
 use loam_physics::World;
+use loam_shape::Shape;
+use loam_time::par::Sequential;
 
 const BODY_COUNTS: [usize; 3] = [100, 200, 400];
 const SPREAD_AT_100: f32 = 6.0;
@@ -67,22 +68,9 @@ fn settled_scene(count: usize) -> World<EuclideanR3> {
         world.set_restitution(id, 0.0).unwrap();
     }
     for _ in 0..SETTLE_STEPS {
-        world.step(DT).unwrap();
+        world.step(DT, &Sequential).unwrap();
     }
     world
-}
-
-fn bounding_radius(collider: Option<&Collider>) -> f32 {
-    match collider {
-        Some(Collider::Sphere { radius, .. }) => *radius,
-        Some(Collider::ConvexPolytope3D { vertices }) => vertices
-            .iter()
-            .map(|v| v.length_squared())
-            .fold(0.0_f32, f32::max)
-            .sqrt(),
-        Some(Collider::HalfSpace { .. }) => f32::INFINITY,
-        other => unreachable!("the scene builds spheres, boxes and one half-space, not {other:?}"),
-    }
 }
 
 fn scan(world: &World<EuclideanR3>, radii: &mut Vec<f32>, pairs: &mut Vec<PairKey>) {
@@ -91,7 +79,7 @@ fn scan(world: &World<EuclideanR3>, radii: &mut Vec<f32>, pairs: &mut Vec<PairKe
         world
             .bodies()
             .iter()
-            .map(|body| bounding_radius(world.collider(body))),
+            .map(|body| world.collider(body).map_or(0.0, Shape::bounding_radius)),
     );
     pairs.clear();
     let n = world.bodies().len();
@@ -131,11 +119,18 @@ fn median_nanos(mut body: impl FnMut()) -> f64 {
 }
 
 fn main() {
+    // cargo test runs a bench without --bench, where one small case proves it builds and runs.
+    let full = std::env::args().any(|arg| arg == "--bench");
+    let counts = if full {
+        &BODY_COUNTS[..]
+    } else {
+        &BODY_COUNTS[..1]
+    };
     println!("bodies pairs sweep_ns scan_ns");
     let mut radii = Vec::new();
     let mut scan_out = Vec::new();
     let mut sweep_out = Vec::new();
-    for count in BODY_COUNTS {
+    for &count in counts {
         let mut world = settled_scene(count);
         world.broadphase_into(&mut sweep_out);
         scan(&world, &mut radii, &mut scan_out);

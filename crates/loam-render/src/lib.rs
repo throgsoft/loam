@@ -1,44 +1,37 @@
 pub mod composite;
 pub mod depth;
 pub mod device;
-pub mod gizmo;
 pub mod gpu_timer;
 pub mod hypergimbal;
-pub mod lattice;
-pub mod line_raster;
-pub mod line_raster_static_r4;
-pub mod material;
+pub mod hyperslice;
+pub mod line;
 pub mod pass;
-pub mod passes;
-pub mod point_raster;
+pub mod point;
 pub mod present;
 pub mod raymarch;
 pub mod shader;
 pub mod sky_ground;
-pub mod triangle_pass;
-pub mod triangle_raster;
-pub mod view;
+pub mod triangle;
+pub mod viewport;
 
-pub use depth::DepthBuffer;
-pub use lattice::Viewport;
-pub use line_raster::{LineRasterNode, LineRasterUniforms};
-pub use line_raster_static_r4::{LineRasterStaticR4Node, LineRasterStaticR4Uniforms};
-pub use material::{MaterialPipeline, MaterialSpec};
+pub use depth::{root_projection, root_view_projection, DepthBuffer};
+pub use hyperslice::HyperslicePass;
+pub use line::{LinePass, LineRasterNode, LineRasterUniforms};
 pub use pass::{
     ColorLoad, FrameFormat, FramePass, FrameTarget, GpuTime, PassError, PassExecutionError,
-    PassPhase, PassSchedule, PassStage, Section,
+    PassFault, PassPhase, PassSchedule, PassStage, Section,
 };
-pub use passes::{HyperslicePass, LinePass, PointPass, RaymarchPass, SkyGroundPass};
-pub use point_raster::{PointInstance, PointRasterNode, PointRasterUniforms};
+pub use point::{PointInstance, PointPass, PointRasterNode, PointRasterUniforms};
 pub use present::Presenter;
-pub use raymarch::{RayMarchNode, RayMarchUniforms};
-pub use sky_ground::{Ground, Sky, SkyGroundNode, SkyGroundUniforms};
-pub use triangle_pass::{GroundLocked, TriangleFeed};
-pub use triangle_raster::{
-    FragmentShading, TriangleRasterNode, TriangleRasterUniforms, TriangleVertex,
+pub use raymarch::{RayMarchNode, RayMarchUniforms, RaymarchPass};
+pub use sky_ground::{SkyGroundNode, SkyGroundPass, SkyGroundUniforms};
+pub use triangle::{
+    FragmentShading, MaterialPipeline, MaterialSpec, TriangleFeed, TriangleRasterNode,
+    TriangleRasterUniforms, TriangleVertex,
 };
+pub use viewport::Viewport;
 
-/// `ReversedZ` follows the [`view`] depth contract; `StandardZ` serves a standard perspective matrix.
+/// `ReversedZ` follows the [`depth`] contract; `StandardZ` serves a standard perspective matrix.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DepthConvention {
     StandardZ,
@@ -49,7 +42,7 @@ impl DepthConvention {
     pub fn compare(self, standard_z: wgpu::CompareFunction) -> wgpu::CompareFunction {
         match self {
             Self::StandardZ => standard_z,
-            Self::ReversedZ => view::DEPTH_COMPARE,
+            Self::ReversedZ => depth::DEPTH_COMPARE,
         }
     }
 }
@@ -75,20 +68,5 @@ impl DepthMode {
 
     pub fn writes(&self) -> bool {
         matches!(self, DepthMode::ReadWrite { .. })
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn depth_passes(compare: wgpu::CompareFunction, incoming: f32, stored: f32) -> bool {
-    use wgpu::CompareFunction;
-    match compare {
-        CompareFunction::Never => false,
-        CompareFunction::Less => incoming < stored,
-        CompareFunction::Equal => incoming == stored,
-        CompareFunction::LessEqual => incoming <= stored,
-        CompareFunction::Greater => incoming > stored,
-        CompareFunction::NotEqual => incoming != stored,
-        CompareFunction::GreaterEqual => incoming >= stored,
-        CompareFunction::Always => true,
     }
 }

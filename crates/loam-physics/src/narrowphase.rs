@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
+use loam_shape::ShapeKind;
+
 use crate::body::RigidBody;
-use crate::collider::ColliderKind;
 use crate::geometry::GeometryStore;
-use crate::integrator::PhysicsSpace;
 use crate::response::Contact;
+use crate::space::PhysicsSpace;
 
 /// Always called with `a.kind()` matching the key's first component.
 pub type NarrowphaseFn<S> = fn(
@@ -14,22 +15,9 @@ pub type NarrowphaseFn<S> = fn(
     space: &S,
 ) -> Option<Contact<S>>;
 
-fn kind_rank(kind: ColliderKind) -> u8 {
-    match kind {
-        ColliderKind::Sphere => 0,
-        ColliderKind::HalfSpace => 1,
-        ColliderKind::HalfSpace4D => 2,
-        ColliderKind::Box3 => 3,
-        ColliderKind::Polygon2D => 4,
-        ColliderKind::ConvexPolytope3D => 5,
-        ColliderKind::ConvexPolytope4D => 6,
-        ColliderKind::HyperSphere4D => 7,
-    }
-}
-
 pub struct Narrowphase<S: PhysicsSpace> {
-    dispatch: HashMap<(ColliderKind, ColliderKind), NarrowphaseFn<S>>,
-    order: Vec<(ColliderKind, ColliderKind)>,
+    dispatch: HashMap<(ShapeKind, ShapeKind), NarrowphaseFn<S>>,
+    order: Vec<(ShapeKind, ShapeKind)>,
 }
 
 impl<S: PhysicsSpace> Default for Narrowphase<S> {
@@ -46,18 +34,18 @@ impl<S: PhysicsSpace> Narrowphase<S> {
         Self::default()
     }
 
-    pub fn register(&mut self, a: ColliderKind, b: ColliderKind, f: NarrowphaseFn<S>) {
+    pub fn register(&mut self, a: ShapeKind, b: ShapeKind, f: NarrowphaseFn<S>) {
         if self.dispatch.insert((a, b), f).is_some() {
             return;
         }
-        let key = (kind_rank(a), kind_rank(b));
+        let key = (a.index(), b.index());
         let at = self
             .order
-            .partition_point(|&(x, y)| (kind_rank(x), kind_rank(y)) < key);
+            .partition_point(|&(x, y)| (x.index(), y.index()) < key);
         self.order.insert(at, (a, b));
     }
 
-    pub fn registrations(&self) -> &[(ColliderKind, ColliderKind)] {
+    pub fn registrations(&self) -> &[(ShapeKind, ShapeKind)] {
         &self.order
     }
 
@@ -67,10 +55,7 @@ impl<S: PhysicsSpace> Narrowphase<S> {
         b: &RigidBody<S>,
         geometry: &GeometryStore,
         space: &S,
-    ) -> Option<Contact<S>>
-    where
-        S::Vector: std::ops::Mul<f32, Output = S::Vector>,
-    {
+    ) -> Option<Contact<S>> {
         let key = (a.collider().kind(), b.collider().kind());
         if let Some(&f) = self.dispatch.get(&key) {
             return f(a, b, geometry, space);

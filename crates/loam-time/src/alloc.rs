@@ -119,7 +119,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delta_handles_dealloc_dominant() {
+    fn dealloc_dominant_delta() {
         let start = AllocSnapshot {
             alloc_bytes: 1_000,
             dealloc_bytes: 200,

@@ -1,9 +1,5 @@
 use glam::Vec3;
-use loam::math::{Rotor, Rotor4};
-use loam::render::gizmo::{Handle, HandleDrag, HandleId};
-use loam::render::hypergimbal::{Hypergimbal, RingStyle};
-use loam::runtime::{ImageRay, SegmentRecord};
-use loam::shape::LineMesh;
+use loam::prelude::*;
 
 const SCALE: f32 = 0.55;
 
@@ -16,15 +12,14 @@ const RING_WIDTH_PX: f32 = 1.8;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Gimbal {
     pub(crate) enabled: bool,
-    drag: Option<HandleDrag>,
+    drag: Option<RingDrag>,
     applied: Rotor4,
-    hover: Option<HandleId>,
+    hover: Option<Plane4>,
 }
 
 #[derive(Default)]
 pub(crate) struct GimbalRenderer {
     mesh: LineMesh<3>,
-    segments: Vec<SegmentRecord>,
 }
 
 pub(crate) fn widget(center: Vec3) -> Hypergimbal {
@@ -39,17 +34,15 @@ impl Gimbal {
         let (origin, direction) = (Vec3::from(ray.origin), Vec3::from(ray.direction));
         self.drag = widget(center)
             .pick(origin, direction, PICK_TOLERANCE)
-            .and_then(|ring| HandleDrag::press(Handle::Rotate(ring), origin, direction));
+            .and_then(|ring| RingDrag::press(ring, origin, direction));
         self.applied = Rotor4::IDENTITY;
-        self.hover = self.drag.map(|drag| drag.id());
+        self.hover = self.drag.map(|drag| drag.ring.plane);
         self.drag.is_some()
     }
 
     pub(crate) fn turn(&mut self, ray: &ImageRay) -> Option<Rotor4> {
         let drag = self.drag?;
-        let total = drag
-            .delta(Vec3::from(ray.origin), Vec3::from(ray.direction))?
-            .rotor();
+        let total = drag.rotor(Vec3::from(ray.origin), Vec3::from(ray.direction))?;
         let step = total * self.applied.inverse();
         self.applied = total;
         Some(step.normalize())
@@ -75,19 +68,18 @@ impl Gimbal {
                     Vec3::from(ray.direction),
                     PICK_TOLERANCE,
                 )
-                .map(|ring| HandleId::Rotate(ring.plane))
+                .map(|ring| ring.plane)
         });
     }
 }
 
 impl GimbalRenderer {
-    pub(crate) fn rings(&mut self, gimbal: &Gimbal, center: Vec3) -> &[SegmentRecord] {
-        self.segments.clear();
+    pub(crate) fn rings(&mut self, gimbal: &Gimbal, center: Vec3, out: &mut Vec<SegmentRecord>) {
         if !gimbal.enabled {
-            return &self.segments;
+            return;
         }
         let mut style = RingStyle::default();
-        if let Some(HandleId::Rotate(plane)) = gimbal.hover {
+        if let Some(plane) = gimbal.hover {
             style.colors[plane as usize] = HIGHLIGHT;
         }
         style.width_px = RING_WIDTH_PX;
@@ -101,7 +93,7 @@ impl GimbalRenderer {
             .iter()
             .zip(mesh.colors.iter().zip(mesh.widths.iter()))
         {
-            self.segments.push(SegmentRecord {
+            out.push(SegmentRecord {
                 start: *start,
                 _pad0: 0.0,
                 end: *end,
@@ -112,6 +104,5 @@ impl GimbalRenderer {
                 _pad2: [0.0; 3],
             });
         }
-        &self.segments
     }
 }

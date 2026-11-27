@@ -1,0 +1,901 @@
+use web_time::Instant;
+
+use loam_runtime::{
+    ActionEvent, Input, Pointer, PointerButton, PointerPhase as RuntimePointerPhase,
+};
+
+use crate::host::{Bindings, Key};
+
+pub mod message;
+pub mod queue;
+
+use message::{InputMessage, PointerPhase};
+
+pub struct InputMap {
+    input: Input,
+    spare: Input,
+    held_keys: Vec<(Key, loam_runtime::ActionId)>,
+    width: u32,
+    height: u32,
+    scale: f32,
+    display: Option<[f32; 2]>,
+    cursor: [f32; 2],
+    look: [f32; 2],
+    cursor_locked: bool,
+    mouse_buttons: [bool; 3],
+    active_touches: Vec<u32>,
+    clock: Clock,
+    latest_time: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Clock {
+    Wall { started: Instant, offset: f64 },
+    Fixed(f64),
+}
+
+#[cfg(any(all(target_arch = "wasm32", feature = "egui"), test))]
+pub(crate) struct TouchCapture {
+    active: Vec<CapturedTouch>,
+    pointer: Option<u64>,
+}
+
+#[cfg(any(all(target_arch = "wasm32", feature = "egui"), test))]
+struct CapturedTouch {
+    id: u64,
+    captured: bool,
+    pos: [f32; 2],
+}
+
+#[cfg(any(all(target_arch = "wasm32", feature = "egui"), test))]
+impl Default for TouchCapture {
+    fn default() -> Self {
+        Self {
+            active: Vec::with_capacity(8),
+            pointer: None,
+        }
+    }
+}
+
+#[cfg(any(all(target_arch = "wasm32", feature = "egui"), test))]
+impl TouchCapture {
+    pub(crate) fn route(
+        &mut self,
+        id: u64,
+        phase: PointerPhase,
+        over_ui: bool,
+        pos: [f32; 2],
+    ) -> bool {
+        match phase {
+            PointerPhase::Down => {
+                if let Some(touch) = self.active.iter_mut().find(|touch| touch.id == id) {
+                    touch.pos = pos;
+                    return touch.captured;
+                }
+                if over_ui && self.pointer.is_none() {
+                    self.pointer = Some(id);
+                }
+                self.active.push(CapturedTouch {
+                    id,
+                    captured: over_ui,
+                    pos,
+                });
+                over_ui
+            }
+            PointerPhase::Move => {
+                let Some(touch) = self.active.iter_mut().find(|touch| touch.id == id) else {
+                    return false;
+                };
+                touch.pos = pos;
+                touch.captured
+            }
+            PointerPhase::Up | PointerPhase::Cancel => {
+                let captured = self
+                    .active
+                    .iter()
+                    .position(|touch| touch.id == id)
+                    .map(|index| self.active.remove(index).captured)
+                    .unwrap_or(false);
+                if self.pointer == Some(id) {
+                    self.pointer = None;
+                }
+                captured
+            }
+        }
+    }
+
+    #[cfg(feature = "egui")]
+    pub(super) fn cancel_all(&mut self) -> impl Iterator<Item = (u64, [f32; 2])> + '_ {
+        self.pointer = None;
+        self.active
+            .drain(..)
+            .filter_map(|touch| touch.captured.then_some((touch.id, touch.pos)))
+    }
+
+    #[cfg(feature = "egui")]
+    pub(crate) fn is_pointer(&self, id: u64) -> bool {
+        self.pointer == Some(id)
+    }
+}
+
+impl Default for InputMap {
+    fn default() -> Self {
+        Self {
+            input: Input::default(),
+            spare: Input::default(),
+            held_keys: Vec::new(),
+            width: 1,
+            height: 1,
+            scale: 1.0,
+            display: None,
+            cursor: [0.0; 2],
+            look: [0.0; 2],
+            cursor_locked: false,
+            mouse_buttons: [false; 3],
+            active_touches: Vec::with_capacity(8),
+            clock: Clock::Wall {
+                started: Instant::now(),
+                offset: 0.0,
+            },
+            latest_time: 0.0,
+        }
+    }
+}
+
+impl InputMap {
+    pub fn resize(&mut self, width: u32, height: u32, scale: f32) {
+        self.width = width.max(1);
+        self.height = height.max(1);
+        if scale.is_finite() && scale > 0.0 {
+            self.scale = scale;
+        }
+    }
+
+    /// The CSS size the canvas is shown at, which leads the physical size while a resize settles.
+    pub fn set_display(&mut self, width: f32, height: f32) {
+        if width.is_finite() && height.is_finite() && width >= 1.0 && height >= 1.0 {
+            self.display = Some([width, height]);
+        }
+    }
+
+    pub fn display_aspect(&self) -> Option<f32> {
+        self.display.map(|[width, height]| width / height)
+    }
+
+    fn css_size(&self) -> [f32; 2] {
+        self.display.unwrap_or([
+            self.width as f32 / self.scale,
+            self.height as f32 / self.scale,
+        ])
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    pub fn cursor(&self) -> [f32; 2] {
+        self.cursor
+    }
+
+    pub fn cursor_locked(&self) -> bool {
+        self.cursor_locked
+    }
+
+    pub fn set_cursor_locked(&mut self, locked: bool) {
+        if self.cursor_locked == locked {
+            return;
+        }
+        self.cursor_locked = locked;
+        self.look = [0.0; 2];
+        self.release_pointers();
+    }
+
+    pub fn ndc(&self, physical_x: f64, physical_y: f64) -> [f32; 2] {
+        [
+            (physical_x as f32 / self.width as f32) * 2.0 - 1.0,
+            1.0 - (physical_y as f32 / self.height as f32) * 2.0,
+        ]
+    }
+
+    pub fn css_ndc(&self, css_x: f32, css_y: f32) -> [f32; 2] {
+        let [width, height] = self.css_size();
+        [css_x / width * 2.0 - 1.0, 1.0 - css_y / height * 2.0]
+    }
+
+    pub fn action(&mut self, bindings: &Bindings, key: Key, pressed: bool) {
+        let held = self.held_keys.iter().position(|(held, _)| *held == key);
+        if pressed {
+            if held.is_some() {
+                return;
+            }
+            let Some(action) = bindings.action(key) else {
+                return;
+            };
+            let starts_action = !self
+                .held_keys
+                .iter()
+                .any(|(_, held_action)| *held_action == action);
+            self.held_keys.push((key, action));
+            if starts_action {
+                self.input.actions.push(ActionEvent {
+                    action,
+                    pressed: true,
+                });
+            }
+        } else {
+            let Some(held) = held else {
+                return;
+            };
+            let (_, action) = self.held_keys.remove(held);
+            if !self
+                .held_keys
+                .iter()
+                .any(|(_, held_action)| *held_action == action)
+            {
+                self.input.actions.push(ActionEvent {
+                    action,
+                    pressed: false,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn host_action(
+        &mut self,
+        bindings: &Bindings,
+        key: Key,
+        pressed: bool,
+        consumed: bool,
+    ) {
+        if !consumed || !pressed {
+            self.action(bindings, key, pressed);
+        }
+    }
+
+    pub fn release_all(&mut self) {
+        while let Some((_, action)) = self.held_keys.pop() {
+            if !self
+                .held_keys
+                .iter()
+                .any(|(_, held_action)| *held_action == action)
+            {
+                self.input.actions.push(ActionEvent {
+                    action,
+                    pressed: false,
+                });
+            }
+        }
+        self.release_pointers();
+    }
+
+    fn now(&self) -> f64 {
+        let time = match self.clock {
+            Clock::Wall { started, offset } => started.elapsed().as_secs_f64() + offset,
+            Clock::Fixed(time) => time,
+        };
+        time.max(self.latest_time)
+    }
+
+    fn sync_clock(&mut self, time: f64) {
+        if let Clock::Wall { started, offset } = &mut self.clock {
+            *offset = time - started.elapsed().as_secs_f64();
+        }
+    }
+
+    // A scripted run stamps events with step time, so its dump is the same on every run.
+    pub(crate) fn fix_clock(&mut self, seconds: f64) {
+        self.clock = Clock::Fixed(seconds);
+    }
+
+    fn release_pointers(&mut self) {
+        let time = self.now();
+        for button in [
+            PointerButton::Primary,
+            PointerButton::Secondary,
+            PointerButton::Middle,
+        ] {
+            let index = Self::button_index(button);
+            if self.mouse_buttons[index] {
+                self.push(
+                    self.cursor,
+                    [0.0; 2],
+                    Some(button),
+                    RuntimePointerPhase::Cancelled,
+                    time,
+                );
+            }
+        }
+        self.mouse_buttons = [false; 3];
+        for id in std::mem::take(&mut self.active_touches) {
+            self.push_with(
+                id,
+                self.cursor,
+                [0.0; 2],
+                Some(PointerButton::Primary),
+                RuntimePointerPhase::Cancelled,
+                time,
+            );
+        }
+    }
+
+    pub fn raw_motion(&mut self, physical_dx: f32, physical_dy: f32) {
+        if !self.cursor_locked {
+            return;
+        }
+        self.look[0] += physical_dx / self.scale;
+        self.look[1] -= physical_dy / self.scale;
+    }
+
+    pub fn moved(&mut self, ndc: [f32; 2]) {
+        self.moved_at(ndc, self.now());
+    }
+
+    fn moved_at(&mut self, ndc: [f32; 2], time: f64) {
+        let delta = [ndc[0] - self.cursor[0], ndc[1] - self.cursor[1]];
+        self.cursor = ndc;
+        let mut moved = false;
+        for button in [
+            PointerButton::Primary,
+            PointerButton::Secondary,
+            PointerButton::Middle,
+        ] {
+            if self.mouse_buttons[Self::button_index(button)] {
+                self.push(ndc, delta, Some(button), RuntimePointerPhase::Moved, time);
+                moved = true;
+            }
+        }
+        if !moved {
+            self.push(ndc, delta, None, RuntimePointerPhase::Moved, time);
+        }
+    }
+
+    pub fn sync_mouse_buttons(&mut self, buttons: u8) {
+        self.mouse_buttons = [buttons & 1 != 0, buttons & 2 != 0, buttons & 4 != 0];
+    }
+
+    pub fn button(&mut self, ndc: [f32; 2], button: PointerButton, pressed: bool) {
+        self.button_at(ndc, button, pressed, self.now());
+    }
+
+    fn button_at(&mut self, ndc: [f32; 2], button: PointerButton, pressed: bool, time: f64) {
+        self.cursor = ndc;
+        self.mouse_buttons[Self::button_index(button)] = pressed;
+        let phase = if pressed {
+            RuntimePointerPhase::Began
+        } else {
+            RuntimePointerPhase::Ended
+        };
+        self.push(ndc, [0.0; 2], Some(button), phase, time);
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), test))]
+    pub(crate) fn host_button(
+        &mut self,
+        ndc: [f32; 2],
+        button: PointerButton,
+        pressed: bool,
+        consumed: bool,
+    ) {
+        let held = self.mouse_buttons[Self::button_index(button)];
+        if !consumed || (!pressed && held) {
+            self.button(ndc, button, pressed);
+        }
+    }
+
+    pub fn touch(&mut self, id: u32, ndc: [f32; 2], phase: RuntimePointerPhase) {
+        self.touch_at(id, ndc, phase, self.now());
+    }
+
+    fn touch_at(&mut self, id: u32, ndc: [f32; 2], phase: RuntimePointerPhase, time: f64) {
+        let delta = match phase {
+            RuntimePointerPhase::Moved => [ndc[0] - self.cursor[0], ndc[1] - self.cursor[1]],
+            _ => [0.0; 2],
+        };
+        self.cursor = ndc;
+        self.push_with(id, ndc, delta, Some(PointerButton::Primary), phase, time);
+    }
+
+    fn host_touch_at(
+        &mut self,
+        id: u32,
+        ndc: [f32; 2],
+        phase: RuntimePointerPhase,
+        consumed: bool,
+        time: f64,
+    ) {
+        let held = self.active_touches.contains(&id);
+        match phase {
+            RuntimePointerPhase::Began if !consumed => {
+                if !held {
+                    self.active_touches.push(id);
+                }
+                self.touch_at(id, ndc, phase, time);
+            }
+            RuntimePointerPhase::Moved if !consumed => self.touch_at(id, ndc, phase, time),
+            RuntimePointerPhase::Ended | RuntimePointerPhase::Cancelled if !consumed || held => {
+                self.active_touches.retain(|active| *active != id);
+                self.touch_at(id, ndc, phase, time);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn wheel(&mut self, delta: [f32; 2]) {
+        self.input.scroll[0] += delta[0];
+        self.input.scroll[1] += delta[1];
+    }
+
+    pub fn host_message(&mut self, topic: &str, values: &[f32]) {
+        self.input.host.push(topic, values);
+    }
+
+    fn button_index(button: PointerButton) -> usize {
+        match button {
+            PointerButton::Primary => 0,
+            PointerButton::Secondary => 1,
+            PointerButton::Middle => 2,
+        }
+    }
+
+    fn push(
+        &mut self,
+        ndc: [f32; 2],
+        delta: [f32; 2],
+        button: Option<PointerButton>,
+        phase: RuntimePointerPhase,
+        time: f64,
+    ) {
+        self.push_with(0, ndc, delta, button, phase, time);
+    }
+
+    fn push_with(
+        &mut self,
+        id: u32,
+        ndc: [f32; 2],
+        delta: [f32; 2],
+        button: Option<PointerButton>,
+        phase: RuntimePointerPhase,
+        time: f64,
+    ) {
+        self.latest_time = self.latest_time.max(time);
+        let [width, height] = self.css_size();
+        self.input.pointers.push(Pointer {
+            id,
+            button,
+            ndc,
+            delta: [delta[0] * width / 2.0, delta[1] * height / 2.0],
+            phase,
+            time,
+        });
+    }
+
+    pub fn take(&mut self) -> Input {
+        self.input.held.clear();
+        for (_, action) in &self.held_keys {
+            if !self.input.held.contains(action) {
+                self.input.held.push(*action);
+            }
+        }
+        self.input.look = std::mem::take(&mut self.look);
+        self.input.cursor_locked = self.cursor_locked;
+        self.input.time = self.now();
+        std::mem::replace(&mut self.input, std::mem::take(&mut self.spare))
+    }
+
+    pub fn reclaim(&mut self, mut reclaimed: Input) {
+        reclaimed.pointers.clear();
+        reclaimed.actions.clear();
+        reclaimed.held.clear();
+        reclaimed.scroll = [0.0; 2];
+        reclaimed.look = [0.0; 2];
+        reclaimed.cursor_locked = false;
+        reclaimed.time = 0.0;
+        reclaimed.host.clear();
+        self.spare = reclaimed;
+    }
+}
+
+pub fn dom_key(code: &str) -> Option<Key> {
+    match code {
+        "Space" => Some(Key::Space),
+        "Escape" => Some(Key::Escape),
+        _ => {
+            let digit = code
+                .strip_prefix("Digit")
+                .or_else(|| code.strip_prefix("Numpad"));
+            if let Some(digit) = digit.and_then(|rest| rest.parse::<u8>().ok()) {
+                return Some(Key::Digit(digit));
+            }
+            let mut letters = code.strip_prefix("Key")?.chars();
+            let letter = letters.next().filter(char::is_ascii_alphabetic)?;
+            letters
+                .next()
+                .is_none()
+                .then(|| Key::Letter(letter.to_ascii_lowercase()))
+        }
+    }
+}
+
+fn dom_phase(phase: PointerPhase) -> RuntimePointerPhase {
+    match phase {
+        PointerPhase::Down => RuntimePointerPhase::Began,
+        PointerPhase::Move => RuntimePointerPhase::Moved,
+        PointerPhase::Up => RuntimePointerPhase::Ended,
+        PointerPhase::Cancel => RuntimePointerPhase::Cancelled,
+    }
+}
+
+pub fn apply(map: &mut InputMap, bindings: &Bindings, message: &InputMessage, consumed: bool) {
+    match message {
+        InputMessage::Resize { width, height, dpr } => map.resize(*width, *height, *dpr),
+        InputMessage::Viewport { width, height } => map.set_display(*width, *height),
+        InputMessage::MouseMove {
+            x,
+            y,
+            buttons,
+            dx,
+            dy,
+            time,
+        } => {
+            map.sync_clock(time.as_secs_f64());
+            if consumed {
+                return;
+            }
+            if map.cursor_locked() {
+                map.raw_motion(*dx * map.scale(), *dy * map.scale());
+            } else {
+                let ndc = map.css_ndc(*x, *y);
+                map.sync_mouse_buttons(*buttons);
+                map.moved_at(ndc, time.as_secs_f64());
+            }
+        }
+        InputMessage::MouseButton {
+            x,
+            y,
+            button,
+            pressed,
+            time,
+        } => {
+            map.sync_clock(time.as_secs_f64());
+            let button = match button {
+                0 => Some(PointerButton::Primary),
+                1 => Some(PointerButton::Middle),
+                2 => Some(PointerButton::Secondary),
+                _ => None,
+            };
+            if let Some(button) = button {
+                let ndc = map.css_ndc(*x, *y);
+                let held = map.mouse_buttons[InputMap::button_index(button)];
+                if !consumed || (!pressed && held) {
+                    map.button_at(ndc, button, *pressed, time.as_secs_f64());
+                }
+            }
+        }
+        InputMessage::Key { code, pressed, .. } => {
+            if let Some(key) = dom_key(code) {
+                map.host_action(bindings, key, *pressed, consumed);
+            }
+        }
+        InputMessage::Focus(false) => map.release_all(),
+        InputMessage::Pointer {
+            id,
+            x,
+            y,
+            phase,
+            time,
+        } => {
+            map.sync_clock(time.as_secs_f64());
+            let ndc = map.css_ndc(*x, *y);
+            map.host_touch_at(
+                *id as u32,
+                ndc,
+                dom_phase(*phase),
+                consumed,
+                time.as_secs_f64(),
+            );
+        }
+        InputMessage::MouseWheel { dx, dy } if !consumed => map.wheel([-*dx, -*dy]),
+        InputMessage::MouseWheel { .. } => {}
+        InputMessage::Host { topic, values } => map.host_message(topic, values),
+        InputMessage::Focus(true)
+        | InputMessage::Visibility(_)
+        | InputMessage::Start
+        | InputMessage::PointerLockChanged { .. } => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use loam_runtime::{ActionId, Ctx, Phase, Session, SimConfig};
+    use loam_time::par::Sequential;
+
+    use super::*;
+
+    #[global_allocator]
+    static COUNTING_ALLOCATOR: loam_time::alloc::CountingAllocator<std::alloc::System> =
+        loam_time::alloc::CountingAllocator::new(std::alloc::System);
+
+    const WALK: ActionId = ActionId("walk");
+
+    loam_runtime::stores! {
+        #[derive(Default)]
+        pub struct Watched {
+            walked: Value<bool>,
+        }
+    }
+
+    fn key_message(code: &str, pressed: bool) -> InputMessage {
+        InputMessage::Key {
+            code: code.to_string(),
+            key: code.to_lowercase(),
+            pressed,
+            repeat: false,
+            ctrl: false,
+            shift: false,
+            alt: false,
+            meta: false,
+        }
+    }
+
+    #[test]
+    fn browser_key_message() {
+        let bindings = Bindings::new().key(Key::Letter('w'), WALK);
+        let mut session = Session::new(Watched::default(), SimConfig::default());
+        session.system(Phase::Dispatch, "watch", |ctx: Ctx<'_, Watched>| {
+            if ctx.input.pressed(WALK) {
+                ctx.app.walked.set(true);
+            }
+            Ok(())
+        });
+
+        let mut map = InputMap::default();
+        apply(
+            &mut map,
+            &bindings,
+            &InputMessage::Resize {
+                width: 800,
+                height: 600,
+                dpr: 2.0,
+            },
+            false,
+        );
+        apply(&mut map, &bindings, &key_message("KeyW", true), false);
+        session.boundary(map.take()).expect("boundary");
+
+        assert!(
+            *session.app.walked.get(),
+            "the DOM key code never became the action bound to it"
+        );
+    }
+
+    #[test]
+    fn boundary_stamp() {
+        let bindings = Bindings::new();
+        let mut map = InputMap::default();
+        map.resize(800, 600, 1.0);
+        apply(
+            &mut map,
+            &bindings,
+            &InputMessage::MouseMove {
+                x: 10.0,
+                y: 10.0,
+                buttons: 0,
+                dx: 0.0,
+                dy: 0.0,
+                time: std::time::Duration::from_secs(100),
+            },
+            false,
+        );
+        let input = map.take();
+        let pointer = input.pointers[0].time;
+        assert!(
+            pointer == 100.0 && input.time >= pointer && input.time < pointer + 1.0,
+            "the boundary was stamped {} on a clock where the pointer read {pointer}",
+            input.time
+        );
+    }
+
+    #[test]
+    fn warm_frame_allocation() {
+        let bindings = Bindings::new().key(Key::Letter('w'), WALK);
+        let mut session = Session::new(Watched::default(), SimConfig::default());
+        let mut map = InputMap::default();
+        map.resize(800, 600, 1.0);
+        let cycle = |map: &mut InputMap, session: &mut Session<Watched>| {
+            map.action(&bindings, Key::Letter('w'), true);
+            map.button([0.1, 0.2], PointerButton::Primary, true);
+            map.moved([0.2, 0.2]);
+            map.button([0.2, 0.2], PointerButton::Primary, false);
+            map.action(&bindings, Key::Letter('w'), false);
+            map.host_message("scroll", &[0.5]);
+            let input = map.take();
+            session.boundary(input).expect("boundary");
+            session.tick(&Sequential).expect("tick");
+            map.reclaim(session.take_input());
+        };
+        for _ in 0..8 {
+            cycle(&mut map, &mut session);
+        }
+
+        let bytes = loam_time::alloc::bytes_allocated_by(|| {
+            for _ in 0..16 {
+                cycle(&mut map, &mut session);
+            }
+        })
+        .expect("the counting allocator is installed");
+        assert_eq!(
+            bytes, 0,
+            "16 warmed frames of input asked the allocator for {bytes} bytes"
+        );
+    }
+
+    #[test]
+    fn reclaimed_input() {
+        let mut map = InputMap::default();
+        map.host_message("reset", &[]);
+        let first = map.take();
+        assert_eq!(first.host.iter().count(), 1);
+
+        map.reclaim(first);
+        let second = map.take();
+        map.reclaim(second);
+        let reused = map.take();
+        assert!(reused.host.iter().next().is_none());
+    }
+
+    #[test]
+    fn lagging_canvas_size() {
+        let mut map = InputMap::default();
+        map.resize(1600, 900, 1.0);
+        map.set_display(2560.0, 900.0);
+        assert_eq!(map.css_ndc(2560.0, 450.0), [1.0, 0.0]);
+        assert_eq!(map.css_ndc(640.0, 0.0), [-0.5, 1.0]);
+        assert_eq!(map.display_aspect(), Some(2560.0 / 900.0));
+    }
+
+    #[test]
+    fn camera_turn_across_viewports() {
+        let turns = [(640, 480, 1.0), (1280, 480, 1.0), (1280, 960, 2.0)].map(
+            |(width, height, scale): (u32, u32, f32)| {
+                let mut map = InputMap::default();
+                map.resize(width, height, scale);
+                map.button(map.css_ndc(50.0, 50.0), PointerButton::Secondary, true);
+                map.moved(map.css_ndc(70.0, 70.0));
+                let input = map.take();
+                let mut orbit = loam_runtime::Orbit::around([0.0; 3], 5.0);
+                orbit.drag(input.drag(PointerButton::Secondary));
+
+                map.set_cursor_locked(true);
+                map.raw_motion(20.0 * scale, 20.0 * scale);
+                let mut camera = loam_runtime::FreeCamera::default();
+                camera.look(map.take().look);
+                let [x, y, z] = camera.eye.forward;
+                [orbit.yaw, orbit.pitch, (-x).atan2(-z), y.asin()]
+            },
+        );
+        assert!(
+            turns[0].iter().all(|turn| turn.abs() > 1e-3),
+            "the drag turned nothing: {turns:?}"
+        );
+        for turn in &turns[1..] {
+            for (got, want) in turn.iter().zip(turns[0]) {
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "a 20 px drag turned the camera differently on another viewport: {turns:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raw_look() {
+        let mut map = InputMap::default();
+        map.resize(800, 400, 2.0);
+        map.raw_motion(20.0, 10.0);
+        map.set_cursor_locked(true);
+        map.raw_motion(20.0, 10.0);
+
+        let first = map.take();
+        assert_eq!(first.look, [10.0, -5.0]);
+        assert!(first.cursor_locked);
+
+        map.raw_motion(40.0, -20.0);
+        map.reclaim(first);
+        let second = map.take();
+        assert_eq!(second.look, [20.0, 10.0]);
+    }
+
+    #[test]
+    fn release_consumed_by_overlay() {
+        let bindings = Bindings::new().key(Key::Letter('w'), WALK);
+        let mut map = InputMap::default();
+        map.host_action(&bindings, Key::Letter('w'), true, false);
+        let first = map.take();
+
+        map.host_action(&bindings, Key::Letter('w'), false, true);
+        map.reclaim(first);
+        let second = map.take();
+
+        assert!(second
+            .actions
+            .iter()
+            .any(|event| event.action == WALK && !event.pressed));
+        assert!(!second.held.contains(&WALK));
+        map.reclaim(second);
+
+        map.host_button([0.0; 2], PointerButton::Primary, true, false);
+        let first = map.take();
+        map.reclaim(first);
+
+        map.host_button([0.0; 2], PointerButton::Primary, false, true);
+        let released = map.take();
+
+        assert_eq!(released.pointers.len(), 1);
+        assert_eq!(released.pointers[0].phase, RuntimePointerPhase::Ended);
+    }
+
+    #[test]
+    fn browser_touch_capture() {
+        let bindings = Bindings::new();
+        let mut map = InputMap::default();
+        map.resize(800, 600, 1.0);
+        let mut capture = TouchCapture::default();
+
+        for (message, over_ui) in [
+            (touch_message(7, PointerPhase::Down, 100, 40.0), true),
+            (touch_message(7, PointerPhase::Move, 120, 50.0), false),
+            (touch_message(7, PointerPhase::Up, 140, 60.0), false),
+        ] {
+            let InputMessage::Pointer {
+                id, x, y, phase, ..
+            } = &message
+            else {
+                unreachable!();
+            };
+            let consumed = capture.route(*id, *phase, over_ui, [*x, *y]);
+            apply(&mut map, &bindings, &message, consumed);
+        }
+        assert!(map.take().pointers.is_empty());
+
+        for (message, over_ui) in [
+            (touch_message(8, PointerPhase::Down, 200, 100.0), false),
+            (touch_message(8, PointerPhase::Move, 225, 110.0), true),
+            (touch_message(8, PointerPhase::Up, 250, 120.0), true),
+        ] {
+            let InputMessage::Pointer {
+                id, x, y, phase, ..
+            } = &message
+            else {
+                unreachable!();
+            };
+            let consumed = capture.route(*id, *phase, over_ui, [*x, *y]);
+            apply(&mut map, &bindings, &message, consumed);
+        }
+        let pointers = map.take().pointers;
+        assert_eq!(pointers.len(), 3);
+        assert_eq!(pointers[0].phase, RuntimePointerPhase::Began);
+        assert_eq!(pointers[1].phase, RuntimePointerPhase::Moved);
+        assert_eq!(pointers[2].phase, RuntimePointerPhase::Ended);
+        assert_eq!(
+            pointers
+                .iter()
+                .map(|pointer| pointer.time)
+                .collect::<Vec<_>>(),
+            [0.2, 0.225, 0.25]
+        );
+    }
+
+    fn touch_message(id: u64, phase: PointerPhase, millis: u64, x: f32) -> InputMessage {
+        InputMessage::Pointer {
+            id,
+            x,
+            y: 20.0,
+            phase,
+            time: std::time::Duration::from_millis(millis),
+        }
+    }
+}

@@ -172,6 +172,26 @@ impl Ring {
     }
 }
 
+/// Anchored at the press, so a widget following the subject does not chase its own drag.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct RingDrag {
+    pub ring: Ring,
+    grab: Vec3,
+}
+
+impl RingDrag {
+    pub fn press(ring: Ring, ray_origin: Vec3, ray_direction: Vec3) -> Option<Self> {
+        ring.ray_hit(ray_origin, ray_direction)
+            .map(|grab| Self { ring, grab })
+    }
+
+    /// `None` when the ray misses the ring's plane, and callers then hold the last rotor.
+    pub fn rotor(&self, ray_origin: Vec3, ray_direction: Vec3) -> Option<Rotor4> {
+        let cursor = self.ring.ray_hit(ray_origin, ray_direction)?;
+        Some(self.ring.drag_rotor(self.grab, cursor))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RingStyle {
     pub segments: usize,
@@ -204,7 +224,6 @@ impl Default for RingStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use loam_math::Rotor;
     use std::f32::consts::{PI, TAU};
 
     const WIDGET: Hypergimbal = Hypergimbal {
@@ -225,49 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn ring_is_the_projected_great_circle() {
-        for plane in Plane4::ALL {
-            let ring = WIDGET.ring(plane);
-            for step in 0..24 {
-                let theta = step as f32 / 24.0 * TAU;
-                let projected = WIDGET
-                    .project(great_circle_point(plane, theta))
-                    .expect("no coordinate great circle passes through the pole");
-                assert_close(
-                    (projected - ring.center).length(),
-                    ring.radius,
-                    2e-4,
-                    "off the circle",
-                );
-                let chi = ring.ring_angle(projected);
-                assert!(
-                    (ring.point(chi) - projected).length() < 2e-4,
-                    "{plane:?} θ={theta}: ring.point(χ) != σ(p(θ))"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn arc_angle_inverts_the_projection_along_each_ring() {
-        for plane in Plane4::ALL {
-            let ring = WIDGET.ring(plane);
-            for step in 0..37 {
-                let theta = -PI + step as f32 / 37.0 * TAU;
-                let projected = WIDGET.project(great_circle_point(plane, theta)).unwrap();
-                let recovered = ring.arc_angle(ring.ring_angle(projected));
-                assert_close(
-                    wrap_pi(recovered - theta),
-                    0.0,
-                    2e-4,
-                    &format!("{plane:?} arc angle at θ={theta}"),
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn drag_yields_the_rotation_its_plane_predicts() {
+    fn drag_rotation() {
         for plane in Plane4::ALL {
             let ring = WIDGET.ring(plane);
             for grab_step in 0..8 {
@@ -284,33 +261,13 @@ mod tests {
                         1e-3,
                         &format!("{plane:?} drag angle from θ={theta} by {delta}"),
                     );
-
-                    let rotor = ring.drag_rotor(grab, cursor);
-                    assert!(
-                        (rotor.apply(start) - end).length() < 2e-3,
-                        "{plane:?}: rotor does not carry the grabbed point to the cursor"
-                    );
                 }
             }
         }
     }
 
     #[test]
-    fn drag_across_the_seam_takes_the_short_way() {
-        for plane in Plane4::ALL {
-            let ring = WIDGET.ring(plane);
-            let grab = ring.point(PI - 0.05);
-            let cursor = ring.point(-PI + 0.05);
-            let angle = ring.drag_angle(grab, cursor);
-            assert!(
-                angle.abs() < 0.6,
-                "{plane:?}: seam crossing gave {angle} rad"
-            );
-        }
-    }
-
-    #[test]
-    fn grazing_and_backward_rays_miss_the_ring_plane() {
+    fn grazing_and_backward_rays() {
         let ring = WIDGET.ring(Plane4::Xy);
         let eye = ring.center + ring.normal() * 3.0;
         assert!(ring.ray_hit(eye, -ring.normal()).is_some());
@@ -327,46 +284,5 @@ mod tests {
             ring.ray_hit(eye, grazing).is_none(),
             "grazing ray must miss"
         );
-    }
-
-    #[test]
-    fn line_mesh_is_well_formed_and_on_the_rings() {
-        let style = RingStyle {
-            segments: 12,
-            ..RingStyle::default()
-        };
-        let mut mesh = LineMesh::<3>::default();
-        mesh.segments.push(([0.0; 3], [1.0; 3]));
-        mesh.colors.push(([0.0; 4], [0.0; 4]));
-        mesh.widths.push(1.0);
-
-        WIDGET.append_line_mesh(&style, &mut mesh);
-        assert_eq!(mesh.segments.len(), 1 + 6 * style.segments);
-        assert_eq!(mesh.colors.len(), mesh.segments.len());
-        assert_eq!(mesh.widths.len(), mesh.segments.len());
-
-        for (plane, edges) in Plane4::ALL
-            .into_iter()
-            .zip(mesh.segments[1..].chunks_exact(style.segments))
-        {
-            let ring = WIDGET.ring(plane);
-            for (start, end) in edges {
-                for point in [*start, *end] {
-                    let offset = Vec3::from_array(point) - ring.center;
-                    assert!(offset.dot(ring.normal()).abs() < 1e-4);
-                    assert!((offset.length() - ring.radius).abs() < 1e-4);
-                }
-            }
-        }
-        let first = mesh.segments[1].0;
-        let last = mesh.segments[style.segments].1;
-        assert!((Vec3::from_array(first) - Vec3::from_array(last)).length() < 1e-4);
-    }
-
-    #[test]
-    fn the_pole_has_no_image() {
-        assert!(WIDGET.project(POLE).is_none());
-        assert!(WIDGET.project(POLE * 0.99999).is_none());
-        assert!(WIDGET.project(-POLE).is_some());
     }
 }

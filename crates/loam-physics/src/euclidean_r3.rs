@@ -1,14 +1,15 @@
 use glam::{Quat, Vec3};
 
 use loam_math::{Bivector, Bivector3, EuclideanR3, Iso3};
+use loam_shape::shape::convex_polytope3;
+use loam_shape::{Shape, ShapeKind};
 
 use crate::body::{BodyDef, RigidBody};
-use crate::collider::{Collider, ColliderKind};
-use crate::collision::{epa, gjk_intersect, GjkResult, PosedHull, Sphere as GjkSphere};
-use crate::geometry::GeometryStore;
-use crate::integrator::{BroadphaseBound, PhysicsSpace};
+use crate::collision::{epa, gjk_intersect, ContactInfo, GjkResult, PosedHull, Sphere, SupportFn};
+use crate::error::EditError;
+use crate::euclidean::{register_pairs, Euclidean};
 use crate::narrowphase::Narrowphase;
-use crate::response::Contact;
+use crate::space::{BroadphaseBound, PhysicsSpace};
 
 // `(s, xy, yz, zx)` maps to `(w, z, x, y)`, matching `Rotor3::apply`.
 fn rotor_to_quat(r: loam_math::Rotor3) -> Quat {
@@ -51,10 +52,10 @@ impl PhysicsSpace for EuclideanR3 {
         BroadphaseBound::Certified
     }
 
-    fn supports_collider(&self, kind: ColliderKind) -> bool {
+    fn supports_collider(&self, kind: ShapeKind) -> bool {
         matches!(
             kind,
-            ColliderKind::Sphere | ColliderKind::ConvexPolytope3D | ColliderKind::HalfSpace
+            ShapeKind::Sphere | ShapeKind::ConvexPolytope3D | ShapeKind::HalfSpace
         )
     }
 
@@ -147,247 +148,64 @@ impl PhysicsSpace for EuclideanR3 {
     }
 }
 
-fn sphere_sphere_r3(
-    a: &RigidBody<EuclideanR3>,
-    b: &RigidBody<EuclideanR3>,
-    geometry: &GeometryStore,
-    space: &EuclideanR3,
-) -> Option<Contact<EuclideanR3>> {
-    let Some(&Collider::Sphere { radius: ra, .. }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(&Collider::Sphere { radius: rb, .. }) = geometry.get(b.collider()) else {
-        return None;
-    };
+impl Euclidean for EuclideanR3 {
+    const POLYTOPE: ShapeKind = ShapeKind::ConvexPolytope3D;
+    const HALFSPACE: ShapeKind = ShapeKind::HalfSpace;
+    const COINCIDENT_NORMAL: Vec3 = Vec3::Y;
 
-    use loam_math::Space;
-    let d = space.distance(a.position, b.position);
-    let combined = ra + rb;
-    if d >= combined {
-        return None;
-    }
-    let log = space.log(a.position, b.position);
-    let len = log.length();
-    let normal = if len > 1e-8 { log / len } else { Vec3::Y };
+    type Hull<'a> = PosedHull<'a, Vec3, Quat>;
+    type Ball = Sphere<Vec3>;
 
-    let surface_a = a.position + normal * ra;
-    let surface_b = b.position - normal * rb;
-    let point = (surface_a + surface_b) * 0.5;
-
-    Some(Contact {
-        normal,
-        point,
-        penetration: combined - d,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
-}
-
-fn sphere_halfspace_r3(
-    a: &RigidBody<EuclideanR3>,
-    b: &RigidBody<EuclideanR3>,
-    geometry: &GeometryStore,
-    _space: &EuclideanR3,
-) -> Option<Contact<EuclideanR3>> {
-    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(&Collider::HalfSpace { normal, offset }) = geometry.get(b.collider()) else {
-        return None;
-    };
-    let normal = b.orientation.rotation * normal;
-    let offset = offset + normal.dot(b.position);
-    let signed = a.position.dot(normal) - offset;
-    let penetration = radius - signed;
-    if penetration <= 0.0 {
-        return None;
-    }
-    let contact_normal = -normal;
-    let point = a.position - normal * radius;
-    Some(Contact {
-        normal: contact_normal,
-        point,
-        penetration,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
-}
-
-fn validate_contact(
-    info: &crate::collision::ContactInfo,
-    a: &RigidBody<EuclideanR3>,
-    b: &RigidBody<EuclideanR3>,
-) -> Option<Contact<EuclideanR3>> {
-    if !info.penetration.is_finite()
-        || info.penetration <= 0.0
-        || !info.normal.is_finite()
-        || !info.point.is_finite()
-    {
-        return None;
-    }
-    let n2 = info.normal.length_squared();
-    if !(0.5..=1.5).contains(&n2) {
-        return None;
-    }
-    Some(Contact {
-        normal: info.normal,
-        point: info.point,
-        penetration: info.penetration,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
-}
-
-fn polytope_bounding_radius(local_vertices: &[Vec3]) -> f32 {
-    local_vertices
-        .iter()
-        .map(|v| v.length_squared())
-        .fold(0.0_f32, f32::max)
-        .sqrt()
-}
-
-fn polytope_polytope_r3(
-    a: &RigidBody<EuclideanR3>,
-    b: &RigidBody<EuclideanR3>,
-    geometry: &GeometryStore,
-    _space: &EuclideanR3,
-) -> Option<Contact<EuclideanR3>> {
-    let Some(Collider::ConvexPolytope3D { vertices: va_local }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(Collider::ConvexPolytope3D { vertices: vb_local }) = geometry.get(b.collider()) else {
-        return None;
-    };
-
-    let ra = polytope_bounding_radius(va_local);
-    let rb = polytope_bounding_radius(vb_local);
-    let center_dist_sq = (b.position - a.position).length_squared();
-    let combined = ra + rb;
-    if center_dist_sq > combined * combined {
-        return None;
-    }
-
-    let hull_a = PosedHull {
-        local: va_local,
-        position: a.position,
-        rotation: a.orientation.rotation,
-    };
-    let hull_b = PosedHull {
-        local: vb_local,
-        position: b.position,
-        rotation: b.orientation.rotation,
-    };
-
-    let initial_dir = b.position - a.position;
-    let simplex = match gjk_intersect(&hull_a, &hull_b, initial_dir) {
-        GjkResult::Intersecting { simplex } => simplex,
-        GjkResult::Separated => return None,
-    };
-    let info = epa(&hull_a, &hull_b, simplex, combined)?;
-    validate_contact(&info, a, b)
-}
-
-fn sphere_polytope_r3(
-    a: &RigidBody<EuclideanR3>,
-    b: &RigidBody<EuclideanR3>,
-    geometry: &GeometryStore,
-    _space: &EuclideanR3,
-) -> Option<Contact<EuclideanR3>> {
-    let Some(&Collider::Sphere { radius, .. }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(Collider::ConvexPolytope3D { vertices: vb_local }) = geometry.get(b.collider()) else {
-        return None;
-    };
-
-    let rb = polytope_bounding_radius(vb_local);
-    let center_dist_sq = (b.position - a.position).length_squared();
-    let combined = radius + rb;
-    if center_dist_sq > combined * combined {
-        return None;
-    }
-
-    let support_a = GjkSphere {
-        center: a.position,
-        radius,
-    };
-    let support_b = PosedHull {
-        local: vb_local,
-        position: b.position,
-        rotation: b.orientation.rotation,
-    };
-
-    let initial_dir = b.position - a.position;
-    let simplex = match gjk_intersect(&support_a, &support_b, initial_dir) {
-        GjkResult::Intersecting { simplex } => simplex,
-        GjkResult::Separated => return None,
-    };
-    let info = epa(&support_a, &support_b, simplex, combined)?;
-    validate_contact(&info, a, b)
-}
-
-fn polytope_halfspace_r3(
-    a: &RigidBody<EuclideanR3>,
-    b: &RigidBody<EuclideanR3>,
-    geometry: &GeometryStore,
-    _space: &EuclideanR3,
-) -> Option<Contact<EuclideanR3>> {
-    let Some(Collider::ConvexPolytope3D { vertices: va_local }) = geometry.get(a.collider()) else {
-        return None;
-    };
-    let Some(&Collider::HalfSpace {
-        normal: plane_n,
-        offset,
-    }) = geometry.get(b.collider())
-    else {
-        return None;
-    };
-    let plane_n = b.orientation.rotation * plane_n;
-    let offset = offset + plane_n.dot(b.position);
-
-    let mut deepest = Vec3::ZERO;
-    let mut deepest_depth = 0.0_f32;
-    for &v_local in va_local {
-        let v_world = a.orientation.rotation * v_local + a.position;
-        let signed = v_world.dot(plane_n) - offset;
-        let depth = -signed;
-        if depth > deepest_depth {
-            deepest_depth = depth;
-            deepest = v_world;
+    fn polytope(shape: &Shape) -> Option<&[Vec3]> {
+        match shape {
+            Shape::ConvexPolytope3D { vertices } => Some(vertices),
+            _ => None,
         }
     }
 
-    if deepest_depth <= 0.0 {
-        return None;
+    fn halfspace(shape: &Shape) -> Option<(Vec3, f32)> {
+        match *shape {
+            Shape::HalfSpace { normal, offset } => Some((normal, offset)),
+            _ => None,
+        }
     }
 
-    Some(Contact {
-        normal: -plane_n,
-        point: deepest,
-        penetration: deepest_depth,
-        restitution: (a.restitution + b.restitution) * 0.5,
-    })
+    fn bounding_radius(vertices: &[Vec3]) -> f32 {
+        convex_polytope3::bounding_radius(vertices)
+    }
+
+    fn rotate(orientation: Iso3, v: Vec3) -> Vec3 {
+        orientation.rotation * v
+    }
+
+    fn hull(local: &[Vec3], position: Vec3, orientation: Iso3) -> PosedHull<'_, Vec3, Quat> {
+        PosedHull {
+            local,
+            position,
+            rotation: orientation.rotation,
+        }
+    }
+
+    fn ball(center: Vec3, radius: f32) -> Sphere<Vec3> {
+        Sphere { center, radius }
+    }
+
+    fn penetration<A: SupportFn<Vec3>, B: SupportFn<Vec3>>(
+        a: &A,
+        b: &B,
+        initial_direction: Vec3,
+        scale: f32,
+    ) -> Option<ContactInfo<Vec3>> {
+        let simplex = match gjk_intersect(a, b, initial_direction) {
+            GjkResult::Intersecting { simplex } => simplex,
+            GjkResult::Separated => return None,
+        };
+        epa(a, b, simplex, scale)
+    }
 }
 
 pub fn register_default_narrowphase(np: &mut Narrowphase<EuclideanR3>) {
-    np.register(ColliderKind::Sphere, ColliderKind::Sphere, sphere_sphere_r3);
-    np.register(
-        ColliderKind::Sphere,
-        ColliderKind::HalfSpace,
-        sphere_halfspace_r3,
-    );
-    np.register(
-        ColliderKind::ConvexPolytope3D,
-        ColliderKind::ConvexPolytope3D,
-        polytope_polytope_r3,
-    );
-    np.register(
-        ColliderKind::Sphere,
-        ColliderKind::ConvexPolytope3D,
-        sphere_polytope_r3,
-    );
-    np.register(
-        ColliderKind::ConvexPolytope3D,
-        ColliderKind::HalfSpace,
-        polytope_halfspace_r3,
-    );
+    register_pairs(np);
 }
 
 pub fn sphere_inertia(mass: f32, radius: f32) -> f32 {
@@ -399,11 +217,11 @@ pub fn sphere_body_r3(
     velocity: Vec3,
     radius: f32,
     mass: f32,
-) -> Option<BodyDef<EuclideanR3>> {
+) -> Result<BodyDef<EuclideanR3>, EditError> {
     BodyDef::new(
         position,
         velocity,
-        Collider::sphere_at_origin(radius),
+        Shape::sphere_at_origin(radius),
         mass,
         sphere_inertia(mass, radius),
         &EuclideanR3,
@@ -411,11 +229,11 @@ pub fn sphere_body_r3(
 }
 
 /// `normal` points to the side the world is on; the plane is `dot(p, normal) = offset`.
-pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> Option<BodyDef<EuclideanR3>> {
-    let n = normal.try_normalize()?;
+pub fn halfspace_body_r3(normal: Vec3, offset: f32) -> Result<BodyDef<EuclideanR3>, EditError> {
+    let n = normal.normalize_or_zero();
     BodyDef::fixed(
         Vec3::ZERO,
-        Collider::HalfSpace { normal: n, offset },
+        Shape::HalfSpace { normal: n, offset },
         1.0,
         &EuclideanR3,
     )
@@ -449,11 +267,11 @@ pub fn box_body(
     velocity: Vec3,
     half_extents: Vec3,
     mass: f32,
-) -> Option<BodyDef<EuclideanR3>> {
+) -> Result<BodyDef<EuclideanR3>, EditError> {
     BodyDef::new(
         position,
         velocity,
-        Collider::ConvexPolytope3D {
+        Shape::ConvexPolytope3D {
             vertices: box_vertices(half_extents),
         },
         mass,
@@ -468,7 +286,7 @@ pub fn polytope_body(
     velocity: Vec3,
     vertices: Vec<Vec3>,
     mass: f32,
-) -> Option<BodyDef<EuclideanR3>> {
+) -> Result<BodyDef<EuclideanR3>, EditError> {
     let bounding_r_sq = vertices
         .iter()
         .map(|v| v.length_squared())
@@ -477,7 +295,7 @@ pub fn polytope_body(
     BodyDef::new(
         position,
         velocity,
-        Collider::ConvexPolytope3D { vertices },
+        Shape::ConvexPolytope3D { vertices },
         mass,
         inertia,
         &EuclideanR3,
@@ -569,6 +387,7 @@ mod tests {
     use super::*;
 
     use crate::world::World;
+    use loam_time::par::Sequential;
 
     fn assert_close(a: f32, b: f32, tol: f32) {
         assert!(
@@ -578,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn head_on_sphere_collision_is_elastic_only() {
+    fn sphere_collision() {
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -602,7 +421,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 120.0).unwrap();
+            world.step(1.0 / 120.0, &Sequential).unwrap();
         }
         let a = &world.bodies[0];
         let b = &world.bodies[1];
@@ -610,10 +429,7 @@ mod tests {
         assert_close(b.angular_velocity.magnitude(), 0.0, 1e-3);
         assert!(a.velocity.x < 0.0, "a.velocity.x = {}", a.velocity.x);
         assert!(b.velocity.x > 0.0, "b.velocity.x = {}", b.velocity.x);
-    }
 
-    #[test]
-    fn off_center_glancing_hit_produces_angular_velocity() {
         let mut world = World::new(EuclideanR3);
         register_default_narrowphase(&mut world.narrowphase);
 
@@ -629,7 +445,7 @@ mod tests {
         );
 
         for _ in 0..120 {
-            world.step(1.0 / 240.0).unwrap();
+            world.step(1.0 / 240.0, &Sequential).unwrap();
         }
 
         let target_omega = world.bodies[target_id].angular_velocity.magnitude();
@@ -645,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn integrated_orientation_advances_a_body_point_along_the_world_frame_omega() {
+    fn orientation_integration() {
         let space = EuclideanR3;
         let start = Iso3 {
             rotation: rotor_to_quat(Bivector3::new(0.8, 1.2, 0.9).exp()),
@@ -664,11 +480,7 @@ mod tests {
              {residual} over a step of {}",
             (after - before).length()
         );
-    }
 
-    #[test]
-    fn integration_preserves_unit_rotor() {
-        let space = EuclideanR3;
         let mut iso = Iso3::IDENTITY;
         let omega = Bivector3::new(0.2, 0.3, -0.1);
         for _ in 0..1000 {

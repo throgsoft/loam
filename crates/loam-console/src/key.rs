@@ -1,5 +1,4 @@
-/// Declaration order controls bind firing order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     Escape,
     Tab,

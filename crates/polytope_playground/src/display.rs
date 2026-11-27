@@ -1,5 +1,4 @@
-use loam::math::{Bivector, EuclideanR4, Plane4, Rotor, Rotor4};
-use loam::runtime::{Dispatch, DomainError, DomainHandle, Domains, Rejection};
+use loam::prelude::*;
 
 use crate::consts::BASE_ROTATION_RATE;
 use crate::mode::Mode;
@@ -40,26 +39,33 @@ impl Default for Display {
     }
 }
 
-pub(crate) fn set(app: &mut Playground, display: Display) -> Result<(), Rejection> {
-    if !display.wireframe_width_px.is_finite()
-        || display.wireframe_width_px <= 0.0
-        || display.wireframe_width_px > MAX_WIREFRAME_WIDTH_PX
-    {
-        return Err(Rejection::Unsupported(
-            "wireframe width must be finite and in (0, 16]",
-        ));
-    }
-    if !display.wireframe_opacity.is_finite()
-        || display.wireframe_opacity <= 0.0
-        || display.wireframe_opacity > 1.0
-    {
-        return Err(Rejection::Unsupported(
-            "wireframe opacity must be finite and in (0, 1]",
-        ));
-    }
-    app.display.set(display);
-    Ok(())
-}
+pub(crate) const SURFACE: Setting<Playground, Surface> = Setting::choice(
+    "surface",
+    &[
+        ("raster", Surface::Raster),
+        ("sdf", Surface::Sdf),
+        ("off", Surface::Off),
+    ],
+    |app| &mut app.display.get_mut().surface,
+);
+
+pub(crate) const WIREFRAME: Setting<Playground, bool> =
+    Setting::flag("wireframe", |app| &mut app.display.get_mut().wireframe);
+
+pub(crate) const SECTION_PERIMETER: Setting<Playground, bool> =
+    Setting::flag("section perimeter", |app| {
+        &mut app.display.get_mut().section_perimeter
+    });
+
+pub(crate) const WIREFRAME_WIDTH: Number<Playground> =
+    Number::above("wireframe width", 0.0, MAX_WIREFRAME_WIDTH_PX, |app| {
+        &mut app.display.get_mut().wireframe_width_px
+    });
+
+pub(crate) const WIREFRAME_OPACITY: Number<Playground> =
+    Number::above("wireframe alpha", 0.0, 1.0, |app| {
+        &mut app.display.get_mut().wireframe_opacity
+    });
 
 pub(crate) fn rotor_at(app: &Playground, time: f32) -> Rotor4 {
     match *app.mode.get() {
@@ -102,14 +108,6 @@ pub(crate) fn seek(
     domain: DomainHandle<EuclideanR4>,
     time: f32,
 ) -> Result<(), DomainError> {
-    if !time.is_finite() || time < 0.0 {
-        return Err(DomainError::Unsupported(
-            "playback time must be finite and nonnegative",
-        ));
-    }
-    if *app.mode.get() == Mode::Toybox {
-        return Err(DomainError::Unsupported("playback belongs to Rotate"));
-    }
     let before = rotor_at(app, *app.time.get());
     let after = rotor_at(app, time);
     apply_turn(app, domains, domain, after * before.inverse())?;
@@ -124,7 +122,7 @@ pub(crate) fn set_plane_angle(
     angle: f32,
 ) -> Result<(), Rejection> {
     if plane >= 6 || !angle.is_finite() {
-        return Err(Rejection::Unsupported("invalid plane angle"));
+        return Err(Rejection::Refused("invalid plane angle"));
     }
     let time = *dispatch.app.time.get();
     let before = rotor_at(dispatch.app, time);

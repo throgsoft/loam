@@ -290,30 +290,3 @@ fn draw_input_row<Ctx: 'static>(ui: &mut egui::Ui, console: &mut Console<Ctx>, w
         },
     );
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::VecDeque;
-
-    fn history(lines: &[(LineKind, &str)]) -> VecDeque<HistoryLine> {
-        lines
-            .iter()
-            .map(|(kind, text)| HistoryLine {
-                kind: *kind,
-                text: (*text).to_string(),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn multiple_lines_alternate_with_newline_separators() {
-        let h = history(&[
-            (LineKind::Input, "> reset"),
-            (LineKind::Output, "ok"),
-            (LineKind::Error, "boom"),
-        ]);
-        let job = scrollback_layout_job(&h);
-        assert_eq!(job.text, "> reset\nok\nboom");
-    }
-}

@@ -1,11 +1,10 @@
-#[path = "../src/wasm/metrics.rs"]
-#[allow(dead_code)]
+#[path = "../src/web/metrics.rs"]
 mod metrics;
 
 use metrics::capped;
 
 #[test]
-fn a_capped_buffer_stays_within_the_budget_after_rounding_and_never_exceeds_device_scale() {
+fn capped_buffer() {
     const FULL_HD: u32 = 1920 * 1080;
 
     assert_eq!(capped(960, 540, 2.0, Some(FULL_HD)), (1920, 1080, 2.0));

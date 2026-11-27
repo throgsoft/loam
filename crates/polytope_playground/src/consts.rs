@@ -16,4 +16,6 @@ pub(crate) const FLOOR_Y: f32 = 0.0;
 
 pub(crate) const GRAVITY: f32 = 9.8;
 
+pub(crate) const MIN_RATE: f32 = 0.25;
+
 pub(crate) const MAX_RATE: f32 = 4.0;

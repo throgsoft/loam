@@ -1,0 +1,1107 @@
+mod pass;
+mod polytope_data;
+pub use pass::HyperslicePass;
+pub use polytope_data::{polytope_extended_sdfs_wgsl, polytope_stub_sdfs_wgsl};
+
+use bytemuck::{Pod, Zeroable};
+use loam_math::Rotor4;
+use std::fmt::Write;
+use wgpu::*;
+
+use crate::pass::{ColorLoad, PassFault};
+
+pub fn shape_id(shape: loam_shape::FieldShape) -> u32 {
+    use loam_shape::polytope::Polytope4;
+    use loam_shape::FieldShape;
+    match shape {
+        FieldShape::Polytope(p) => match p {
+            Polytope4::Pentatope => SHAPE_PENTATOPE,
+            Polytope4::Tesseract => SHAPE_TESSERACT,
+            Polytope4::Cell16 => SHAPE_16CELL,
+            Polytope4::Cell24 => SHAPE_24CELL,
+            Polytope4::Cell120 => SHAPE_120CELL,
+            Polytope4::Cell600 => SHAPE_600CELL,
+        },
+        FieldShape::ThreeSphere => SHAPE_3SPHERE,
+        FieldShape::Duocylinder => SHAPE_DUOCYLINDER,
+        FieldShape::CliffordTorus => SHAPE_CLIFFORD_TORUS,
+        FieldShape::Spherinder => SHAPE_SPHERINDER,
+    }
+}
+
+const INITIAL_BODY_CAPACITY: usize = 32;
+
+macro_rules! kernel_shapes {
+    ($($name:ident = $id:literal,)*) => {
+        $(pub const $name: u32 = $id;)*
+        const KERNEL_SHAPES: &[(&str, u32)] = &[$((stringify!($name), $name)),*];
+    };
+}
+
+kernel_shapes! {
+    SHAPE_PENTATOPE = 0,
+    SHAPE_TESSERACT = 1,
+    SHAPE_16CELL = 2,
+    SHAPE_24CELL = 3,
+    SHAPE_120CELL = 4,
+    SHAPE_600CELL = 5,
+    SHAPE_3SPHERE = 6,
+    SHAPE_DUOCYLINDER = 7,
+    SHAPE_CLIFFORD_TORUS = 8,
+    SHAPE_SPHERINDER = 9,
+}
+
+/// 80 bytes, matching the kernel's `BodyUniform`; the rotor packs as two `vec4`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct BodyUniform {
+    pub position: [f32; 4],
+    pub kind: f32,
+    pub radius_or_shape: f32,
+    pub polytope_size: f32,
+    pub _pad0: f32,
+    pub color: [f32; 3],
+    pub _pad1: f32,
+    pub rotor: [f32; 8],
+}
+
+impl Default for BodyUniform {
+    fn default() -> Self {
+        Self {
+            position: [0.0; 4],
+            kind: BodyKind::Invalid as i32 as f32,
+            radius_or_shape: 0.0,
+            polytope_size: 0.0,
+            _pad0: 0.0,
+            color: [0.7, 0.7, 0.7],
+            _pad1: 0.0,
+            rotor: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// Written as `f32`; the shader reads it back as `u32`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BodyKind {
+    Sphere = 0,
+    Polytope = 1,
+    Invalid = 255,
+}
+
+const KERNEL_BODY_KINDS: [(&str, BodyKind); 2] = [
+    ("BODY_KIND_SPHERE", BodyKind::Sphere),
+    ("BODY_KIND_POLYTOPE", BodyKind::Polytope),
+];
+
+impl BodyUniform {
+    pub fn sphere(position: [f32; 4], radius: f32, color: [f32; 3]) -> Self {
+        Self {
+            position,
+            kind: BodyKind::Sphere as i32 as f32,
+            radius_or_shape: radius,
+            color,
+            ..Self::default()
+        }
+    }
+
+    pub fn polytope(
+        position: [f32; 4],
+        shape_index: u32,
+        size: f32,
+        rotor: [f32; 8],
+        color: [f32; 3],
+    ) -> Self {
+        Self {
+            position,
+            kind: BodyKind::Polytope as i32 as f32,
+            radius_or_shape: shape_index as f32,
+            polytope_size: size,
+            color,
+            rotor,
+            ..Self::default()
+        }
+    }
+
+    pub fn polytope_with_rotor(
+        position: [f32; 4],
+        shape_index: u32,
+        size: f32,
+        rotor: Rotor4,
+        color: [f32; 3],
+    ) -> Self {
+        Self::polytope(position, shape_index, size, rotor.into(), color)
+    }
+}
+
+/// Bind group 0, binding 0; matches the kernel's `Uniforms`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct Hyperslice4DUniforms {
+    pub camera_pos: [f32; 3],
+    pub _pad0: f32,
+    pub camera_forward: [f32; 3],
+    pub _pad1: f32,
+    pub camera_right: [f32; 3],
+    pub _pad2: f32,
+    pub camera_up: [f32; 3],
+    pub fov_y_tan: f32,
+    pub resolution: [f32; 2],
+    pub time: f32,
+    pub tick: f32,
+    pub w_slice: f32,
+    pub body_count: f32,
+    /// Framebuffer pixel of the viewport's top-left.
+    pub viewport_origin: [f32; 2],
+    pub params: [f32; 4],
+    pub near: f32,
+    pub body_offset: f32,
+    /// Width over height of the projection, which for the full frame is the eye's and may differ from the target's.
+    pub aspect: f32,
+    pub _pad3: f32,
+    pub sky_below: [f32; 3],
+    pub _pad4: f32,
+    pub sky_above: [f32; 3],
+    pub _pad5: f32,
+    /// Unit normal in `xyz` and offset in `w` of the ground plane in the drawn view's image space, so `dot(p, xyz) = w` on the plane.
+    pub ground_plane: [f32; 4],
+}
+
+impl Default for Hyperslice4DUniforms {
+    fn default() -> Self {
+        Self {
+            camera_pos: [0.0, 0.0, 5.0],
+            _pad0: 0.0,
+            camera_forward: [0.0, 0.0, -1.0],
+            _pad1: 0.0,
+            camera_right: [1.0, 0.0, 0.0],
+            _pad2: 0.0,
+            camera_up: [0.0, 1.0, 0.0],
+            fov_y_tan: (60.0_f32.to_radians() * 0.5).tan(),
+            resolution: [1.0, 1.0],
+            time: 0.0,
+            tick: 0.0,
+            w_slice: 0.0,
+            body_count: 0.0,
+            viewport_origin: [0.0, 0.0],
+            params: [0.0; 4],
+            near: 0.05,
+            body_offset: 0.0,
+            aspect: 1.0,
+            _pad3: 0.0,
+            sky_below: crate::sky_ground::DEFAULT_SKY.below,
+            _pad4: 0.0,
+            sky_above: crate::sky_ground::DEFAULT_SKY.above,
+            _pad5: 0.0,
+            ground_plane: [0.0, 1.0, 0.0, 0.0],
+        }
+    }
+}
+
+const KERNEL_WGSL: &str = include_str!("kernel.wgsl");
+
+/// Prefixed with `sky_ground.wgsl` and the shared `loam_projective_depth`; [`hyperslice_ground_wgsl`] supplies `loam_scene_sdf`.
+pub fn hyperslice_kernel_wgsl() -> String {
+    let mut source = String::new();
+    source.push_str(include_str!("../sky_ground/sky_ground.wgsl"));
+    source.push_str(include_str!("../shader/projective_depth.wgsl"));
+    source.push('\n');
+    for (name, kind) in KERNEL_BODY_KINDS {
+        let _ = writeln!(source, "const {name}: u32 = {}u;", kind as u32);
+    }
+    source.push('\n');
+    for (name, id) in KERNEL_SHAPES {
+        let _ = writeln!(source, "const {name}: u32 = {id}u;");
+    }
+    source.push('\n');
+    source.push_str(KERNEL_WGSL);
+    source
+}
+
+// The backdrop's ground plane gated by `u.params.x`; it bounds the march and its hits are discarded for the backdrop to draw.
+const GROUND_SCENE_WGSL: &str = include_str!("ground_scene.wgsl");
+
+/// The kernel, the polytope SDFs and a scene of the uniforms' ground plane.
+pub fn hyperslice_ground_wgsl() -> String {
+    format!(
+        "{}\n{}\n{GROUND_SCENE_WGSL}",
+        hyperslice_kernel_wgsl(),
+        polytope_extended_sdfs_wgsl()
+    )
+}
+
+const HYPERSLICE_UNIFORMS_SIZE: u64 = std::mem::size_of::<Hyperslice4DUniforms>() as u64;
+
+fn strip_cell_stride(min_uniform_buffer_offset_alignment: u64) -> u64 {
+    HYPERSLICE_UNIFORMS_SIZE.div_ceil(min_uniform_buffer_offset_alignment)
+        * min_uniform_buffer_offset_alignment
+}
+
+fn strip_cell_uniforms(
+    base: &Hyperslice4DUniforms,
+    viewport: crate::Viewport,
+    w_slice: f32,
+    slot: usize,
+) -> Hyperslice4DUniforms {
+    let mut cell = *base;
+    cell.body_count = 1.0;
+    cell.body_offset = slot as f32;
+    cell.w_slice = w_slice;
+    cell.resolution = viewport.resolution_f32();
+    cell.aspect = cell.resolution[0] / cell.resolution[1];
+    cell.viewport_origin = [viewport.x as f32, viewport.y as f32];
+    cell
+}
+
+const BODY_SIZE: u64 = std::mem::size_of::<BodyUniform>() as u64;
+
+fn body_buffer(device: &Device, label: &'static str, capacity: usize) -> Buffer {
+    device.create_buffer(&BufferDescriptor {
+        label: Some(label),
+        size: BODY_SIZE * capacity.max(1) as u64,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn body_bind_group(
+    device: &Device,
+    layout: &BindGroupLayout,
+    uniforms: BindingResource<'_>,
+    bodies: &Buffer,
+) -> BindGroup {
+    device.create_bind_group(&BindGroupDescriptor {
+        label: Some("hyperslice4d bg"),
+        layout,
+        entries: &[
+            BindGroupEntry {
+                binding: 0,
+                resource: uniforms,
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: bodies.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+struct StripCellUniforms {
+    buffer: Buffer,
+    bodies: Buffer,
+    bind_groups: Vec<BindGroup>,
+    stride: u64,
+}
+
+impl StripCellUniforms {
+    fn new(device: &Device, layout: &BindGroupLayout, cell_count: usize) -> Self {
+        let stride = strip_cell_stride(device.limits().min_uniform_buffer_offset_alignment as u64);
+        let buffer = device.create_buffer(&BufferDescriptor {
+            label: Some("hyperslice4d strip cell uniforms"),
+            size: stride * cell_count as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bodies = body_buffer(device, "hyperslice4d strip cell bodies", cell_count);
+        let bind_groups = (0..cell_count)
+            .map(|i| {
+                body_bind_group(
+                    device,
+                    layout,
+                    BindingResource::Buffer(BufferBinding {
+                        buffer: &buffer,
+                        offset: i as u64 * stride,
+                        size: BufferSize::new(HYPERSLICE_UNIFORMS_SIZE),
+                    }),
+                    &bodies,
+                )
+            })
+            .collect();
+        Self {
+            buffer,
+            bodies,
+            bind_groups,
+            stride,
+        }
+    }
+}
+
+pub struct Hyperslice4DNode {
+    device: Device,
+    pipeline: RenderPipeline,
+    strip_pipeline: Option<RenderPipeline>,
+    uniforms: Hyperslice4DUniforms,
+    uniform_buf: Buffer,
+    bodies: Vec<BodyUniform>,
+    body_buf: Buffer,
+    body_capacity: usize,
+    bind_group: BindGroup,
+    bind_group_layout: BindGroupLayout,
+    strip_cells: Option<StripCellUniforms>,
+    has_depth: bool,
+}
+
+impl Hyperslice4DNode {
+    pub fn new(device: &Device, surface_format: TextureFormat, module: &ShaderModule) -> Self {
+        Self::with_depth(device, surface_format, module, crate::DepthMode::Off)
+    }
+
+    pub fn with_depth(
+        device: &Device,
+        surface_format: TextureFormat,
+        module: &ShaderModule,
+        depth: crate::DepthMode,
+    ) -> Self {
+        let uniform_buf = device.create_buffer(&BufferDescriptor {
+            label: Some("hyperslice4d uniforms"),
+            size: std::mem::size_of::<Hyperslice4DUniforms>() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("hyperslice4d bgl"),
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let body_buf = body_buffer(device, "hyperslice4d bodies", INITIAL_BODY_CAPACITY);
+        let bind_group = body_bind_group(device, &bgl, uniform_buf.as_entire_binding(), &body_buf);
+
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("hyperslice4d pipeline layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = hyperslice_pipeline(device, &pipeline_layout, module, surface_format, depth);
+        let strip_pipeline = depth.is_active().then(|| {
+            hyperslice_pipeline(
+                device,
+                &pipeline_layout,
+                module,
+                surface_format,
+                crate::DepthMode::Off,
+            )
+        });
+
+        Self {
+            device: device.clone(),
+            pipeline,
+            strip_pipeline,
+            uniforms: Hyperslice4DUniforms::default(),
+            uniform_buf,
+            bodies: Vec::with_capacity(INITIAL_BODY_CAPACITY),
+            body_buf,
+            body_capacity: INITIAL_BODY_CAPACITY,
+            bind_group,
+            bind_group_layout: bgl,
+            strip_cells: None,
+            has_depth: depth.is_active(),
+        }
+    }
+
+    pub fn uniforms_mut(&mut self) -> &mut Hyperslice4DUniforms {
+        &mut self.uniforms
+    }
+
+    pub fn set_uniforms(&mut self, queue: &Queue, uniforms: Hyperslice4DUniforms) {
+        self.uniforms = uniforms;
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
+    }
+
+    pub fn flush_uniforms(&self, queue: &Queue) {
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&self.uniforms));
+        if !self.bodies.is_empty() {
+            queue.write_buffer(&self.body_buf, 0, bytemuck::cast_slice(&self.bodies));
+        }
+    }
+
+    fn color_load_op(&self, load: ColorLoad) -> LoadOp<Color> {
+        match load {
+            ColorLoad::Clear => LoadOp::Clear(crate::sky_ground::SKY_HORIZON),
+            ColorLoad::Load => LoadOp::Load,
+        }
+    }
+
+    /// Does not auto-flush; pair with [`Self::flush_uniforms`].
+    pub fn set_bodies(&mut self, bodies: &[BodyUniform]) {
+        if bodies.len() > self.body_capacity {
+            let mut capacity = self.body_capacity.max(1);
+            while capacity < bodies.len() {
+                capacity *= 2;
+            }
+            self.body_buf = body_buffer(&self.device, "hyperslice4d bodies", capacity);
+            self.body_capacity = capacity;
+            self.bind_group = body_bind_group(
+                &self.device,
+                &self.bind_group_layout,
+                self.uniform_buf.as_entire_binding(),
+                &self.body_buf,
+            );
+        }
+        self.bodies.clear();
+        self.bodies.extend_from_slice(bodies);
+        self.uniforms.body_count = bodies.len() as f32;
+        self.uniforms.body_offset = 0.0;
+    }
+}
+
+impl Hyperslice4DNode {
+    pub fn record(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        depth_view: Option<&wgpu::TextureView>,
+        viewport: crate::Viewport,
+        load: ColorLoad,
+    ) {
+        match (self.has_depth, depth_view.is_some()) {
+            (true, false) => panic!(
+                "Hyperslice4DNode::record: the pipeline has a depth format but no depth view \
+                 was given"
+            ),
+            (false, true) => panic!(
+                "Hyperslice4DNode::record: the pipeline has no depth format but a depth view \
+                 was given"
+            ),
+            _ => {}
+        }
+        let depth_stencil_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
+            view: dv,
+            depth_ops: Some(Operations {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+            }),
+            stencil_ops: None,
+        });
+        let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("hyperslice4d pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load: self.color_load_op(load),
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        viewport.apply(&mut rp);
+        rp.set_pipeline(&self.pipeline);
+        rp.set_bind_group(0, &self.bind_group, &[]);
+        rp.draw(0..3, 0..1);
+    }
+
+    /// Each cell gets its own uniform image and bind group: `write_buffer` lands ahead of the whole command buffer, so a shared image would give every cell the last write.
+    pub fn record_strip(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        view: &wgpu::TextureView,
+        cells: &[(crate::Viewport, f32, BodyUniform)],
+        load: ColorLoad,
+    ) -> Result<(), PassFault> {
+        let drawn = cells
+            .iter()
+            .filter(|(viewport, _, _)| viewport.width != 0 && viewport.height != 0)
+            .count();
+        if drawn == 0 {
+            return Ok(());
+        }
+        if self
+            .strip_cells
+            .as_ref()
+            .is_none_or(|strip| strip.bind_groups.len() < drawn)
+        {
+            self.strip_cells = Some(StripCellUniforms::new(
+                device,
+                &self.bind_group_layout,
+                drawn,
+            ));
+        }
+        let strip = self
+            .strip_cells
+            .as_ref()
+            .expect("the strip storage was sized just above");
+
+        {
+            let upload_size = BufferSize::new(drawn as u64 * strip.stride)
+                .expect("a drawn strip has at least one cell of nonzero stride");
+            let mut staging = queue
+                .write_buffer_with(&strip.buffer, 0, upload_size)
+                .ok_or(PassFault::StagingBuffer("filmstrip cell uniform"))?;
+            let mut slot = 0usize;
+            for (viewport, w_slice, _) in cells {
+                if viewport.width == 0 || viewport.height == 0 {
+                    continue;
+                }
+                let cell = strip_cell_uniforms(&self.uniforms, *viewport, *w_slice, slot);
+                let start = slot * strip.stride as usize;
+                staging[start..start + HYPERSLICE_UNIFORMS_SIZE as usize]
+                    .copy_from_slice(bytemuck::bytes_of(&cell));
+                slot += 1;
+            }
+        }
+
+        {
+            let upload_size = BufferSize::new(drawn as u64 * BODY_SIZE)
+                .expect("a drawn strip has at least one body of nonzero size");
+            let mut staging = queue
+                .write_buffer_with(&strip.bodies, 0, upload_size)
+                .ok_or(PassFault::StagingBuffer("filmstrip cell body"))?;
+            let mut slot = 0usize;
+            for (viewport, _, body) in cells {
+                if viewport.width == 0 || viewport.height == 0 {
+                    continue;
+                }
+                let start = slot * BODY_SIZE as usize;
+                staging[start..start + BODY_SIZE as usize]
+                    .copy_from_slice(bytemuck::bytes_of(body));
+                slot += 1;
+            }
+        }
+
+        {
+            let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("hyperslice4d strip pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: self.color_load_op(load),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rp.set_pipeline(self.strip_pipeline.as_ref().unwrap_or(&self.pipeline));
+            let mut slot = 0usize;
+            for (viewport, _, _) in cells {
+                if viewport.width == 0 || viewport.height == 0 {
+                    continue;
+                }
+                viewport.apply(&mut rp);
+                rp.set_bind_group(0, &strip.bind_groups[slot], &[]);
+                rp.draw(0..3, 0..1);
+                slot += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn hyperslice_pipeline(
+    device: &Device,
+    layout: &PipelineLayout,
+    module: &ShaderModule,
+    surface_format: TextureFormat,
+    depth: crate::DepthMode,
+) -> RenderPipeline {
+    device.create_render_pipeline(&RenderPipelineDescriptor {
+        label: Some("hyperslice4d pipeline"),
+        layout: Some(layout),
+        vertex: VertexState {
+            module,
+            entry_point: Some("vs_fullscreen"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(FragmentState {
+            module,
+            entry_point: Some(if depth.is_active() {
+                "fs_depth"
+            } else {
+                "fs_main"
+            }),
+            targets: &[Some(ColorTargetState {
+                format: surface_format,
+                blend: None,
+                write_mask: ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: PrimitiveState {
+            topology: PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: depth.format().map(|format| DepthStencilState {
+            format,
+            depth_write_enabled: depth.writes(),
+            depth_compare: crate::depth::DEPTH_COMPARE,
+            stencil: StencilState::default(),
+            bias: DepthBiasState::default(),
+        }),
+        multisample: MultisampleState {
+            count: 1,
+            ..Default::default()
+        },
+        multiview: None,
+        cache: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kernel_uniform_layout() {
+        let source = format!(
+            "{}\n{}\n{EMPTY_SCENE_STUB}",
+            hyperslice_kernel_wgsl(),
+            polytope_data::polytope_stub_sdfs_wgsl()
+        );
+        let module = naga::front::wgsl::parse_str(&source).expect("parse");
+        let ty = module
+            .types
+            .iter()
+            .map(|(_, t)| t)
+            .find(|t| t.name.as_deref() == Some("Uniforms"))
+            .expect("the kernel declares `Uniforms`");
+        let naga::TypeInner::Struct { members, span } = &ty.inner else {
+            panic!("`Uniforms` is not a struct");
+        };
+        assert_eq!(*span as usize, std::mem::size_of::<Hyperslice4DUniforms>());
+        let rust_offsets = [
+            (
+                "camera_pos",
+                std::mem::offset_of!(Hyperslice4DUniforms, camera_pos),
+            ),
+            (
+                "camera_forward",
+                std::mem::offset_of!(Hyperslice4DUniforms, camera_forward),
+            ),
+            (
+                "camera_right",
+                std::mem::offset_of!(Hyperslice4DUniforms, camera_right),
+            ),
+            (
+                "camera_up",
+                std::mem::offset_of!(Hyperslice4DUniforms, camera_up),
+            ),
+            (
+                "fov_y_tan",
+                std::mem::offset_of!(Hyperslice4DUniforms, fov_y_tan),
+            ),
+            (
+                "resolution",
+                std::mem::offset_of!(Hyperslice4DUniforms, resolution),
+            ),
+            ("time", std::mem::offset_of!(Hyperslice4DUniforms, time)),
+            ("tick", std::mem::offset_of!(Hyperslice4DUniforms, tick)),
+            (
+                "w_slice",
+                std::mem::offset_of!(Hyperslice4DUniforms, w_slice),
+            ),
+            (
+                "body_count",
+                std::mem::offset_of!(Hyperslice4DUniforms, body_count),
+            ),
+            (
+                "viewport_origin",
+                std::mem::offset_of!(Hyperslice4DUniforms, viewport_origin),
+            ),
+            ("params", std::mem::offset_of!(Hyperslice4DUniforms, params)),
+            ("near", std::mem::offset_of!(Hyperslice4DUniforms, near)),
+            (
+                "body_offset",
+                std::mem::offset_of!(Hyperslice4DUniforms, body_offset),
+            ),
+            ("aspect", std::mem::offset_of!(Hyperslice4DUniforms, aspect)),
+            (
+                "sky_below",
+                std::mem::offset_of!(Hyperslice4DUniforms, sky_below),
+            ),
+            (
+                "sky_above",
+                std::mem::offset_of!(Hyperslice4DUniforms, sky_above),
+            ),
+            (
+                "ground_plane",
+                std::mem::offset_of!(Hyperslice4DUniforms, ground_plane),
+            ),
+        ];
+        assert_eq!(members.len(), rust_offsets.len());
+        for (member, (name, offset)) in members.iter().zip(rust_offsets) {
+            assert_eq!(member.name.as_deref(), Some(name));
+            assert_eq!(member.offset as usize, offset, "offset of {name}");
+        }
+    }
+
+    fn strip_probe_cells() -> Vec<(crate::Viewport, f32, BodyUniform)> {
+        crate::Viewport::full([192, 64])
+            .split_horizontal(3)
+            .zip([0.0_f32, 0.6, 0.9])
+            .map(|(viewport, w_slice)| {
+                (
+                    viewport,
+                    w_slice,
+                    BodyUniform::sphere([0.0; 4], 1.0, [1.0, 0.0, 0.0]),
+                )
+            })
+            .collect()
+    }
+
+    const EMPTY_SCENE_STUB: &str = r#"
+const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
+const LOAM_PRIM_OTHER: u32 = 255u;
+struct LoamSceneHit { dist: f32, kind: u32 }
+fn loam_scene_at(p: vec3<f32>) -> LoamSceneHit {
+    return LoamSceneHit(1.0e9, LOAM_PRIM_OTHER);
+}
+fn loam_scene_sdf(p: vec3<f32>) -> f32 {
+    return loam_scene_at(p).dist;
+}
+fn loam_scene_max_t(ro: vec3<f32>, rd: vec3<f32>) -> f32 {
+    return 1.0e9;
+}
+"#;
+
+    async fn request_device() -> Result<(Device, Queue), String> {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|e| format!("request_adapter failed: {e}"))?;
+        adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("hyperslice4d-strip"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::Off,
+                experimental_features: Default::default(),
+            })
+            .await
+            .map_err(|e| format!("request_device failed: {e}"))
+    }
+
+    fn read_back_rgba(
+        device: &Device,
+        queue: &Queue,
+        texture: &Texture,
+        size: [u32; 2],
+    ) -> Vec<u8> {
+        let bytes_per_row = size[0] * 4;
+        assert_eq!(
+            bytes_per_row % COPY_BYTES_PER_ROW_ALIGNMENT,
+            0,
+            "probe width chosen so no row padding is needed"
+        );
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: Some("hyperslice4d strip readback"),
+            size: (bytes_per_row * size[1]) as u64,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("hyperslice4d strip readback encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+            },
+            Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+        let slice = readback.slice(..);
+        slice.map_async(MapMode::Read, |_| {});
+        device
+            .poll(PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("readback poll");
+        let data = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        data
+    }
+
+    fn strip_probe_module(device: &Device) -> ShaderModule {
+        let polytope = polytope_data::polytope_stub_sdfs_wgsl();
+        device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("hyperslice4d strip probe"),
+            source: ShaderSource::Wgsl(
+                format!(
+                    "{}\n{polytope}\n{EMPTY_SCENE_STUB}",
+                    hyperslice_kernel_wgsl()
+                )
+                .into(),
+            ),
+        })
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn strip_cell_w_slices_gpu_probe() {
+        const SIZE: [u32; 2] = [192, 64];
+        let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
+
+        let module = strip_probe_module(&device);
+        let target = device.create_texture(&TextureDescriptor {
+            label: Some("hyperslice4d strip probe target"),
+            size: Extent3d {
+                width: SIZE[0],
+                height: SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&TextureViewDescriptor::default());
+
+        let cells = strip_probe_cells();
+        let mut node = Hyperslice4DNode::new(&device, TextureFormat::Rgba8Unorm, &module);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        node.record_strip(
+            &device,
+            &queue,
+            &mut encoder,
+            &view,
+            &cells,
+            ColorLoad::Clear,
+        )
+        .expect("filmstrip should render");
+        queue.submit(Some(encoder.finish()));
+
+        let pixels = read_back_rgba(&device, &queue, &target, SIZE);
+        let footprints: Vec<usize> = cells
+            .iter()
+            .map(|(viewport, _, _)| {
+                let mut covered = 0;
+                for y in viewport.y..viewport.y + viewport.height {
+                    for x in viewport.x..viewport.x + viewport.width {
+                        let px = ((y * SIZE[0] + x) * 4) as usize;
+                        if pixels[px] > pixels[px + 2] {
+                            covered += 1;
+                        }
+                    }
+                }
+                covered
+            })
+            .collect();
+
+        assert!(
+            footprints[2] > 0,
+            "the w = 0.9 slice should still show a body: {footprints:?}"
+        );
+        assert!(
+            footprints[0] > footprints[1] && footprints[1] > footprints[2],
+            "footprints should shrink with |w|; equal cells mean one uniform image \
+             fed every cell: {footprints:?}"
+        );
+    }
+
+    const DEPTH_PROBE_SIZE: u32 = 64;
+    const DEPTH_PROBE_NEAR: f32 = 0.05;
+    const DEPTH_PROBE_CENTER: [f32; 4] = [0.0, 0.0, -3.0, 0.0];
+    const DEPTH_PROBE_RADIUS: f32 = 0.5;
+
+    fn depth_probe_ray() -> glam::Vec3 {
+        let pixel = DEPTH_PROBE_SIZE / 2;
+        let uv = |v: u32| ((v as f32 + 0.5) / DEPTH_PROBE_SIZE as f32) * 2.0 - 1.0;
+        let tan = Hyperslice4DUniforms::default().fov_y_tan;
+        glam::Vec3::new(uv(pixel) * tan, -uv(pixel) * tan, -1.0).normalize()
+    }
+
+    fn depth_probe_expected() -> f32 {
+        let center = glam::Vec3::new(
+            DEPTH_PROBE_CENTER[0],
+            DEPTH_PROBE_CENTER[1],
+            DEPTH_PROBE_CENTER[2],
+        );
+        let rd = depth_probe_ray();
+        let along = rd.dot(center);
+        let gap = along * along - center.length_squared() + DEPTH_PROBE_RADIUS * DEPTH_PROBE_RADIUS;
+        assert!(gap > 0.0, "the probe ray misses the body");
+        let t = along - gap.sqrt();
+        crate::depth::projective_depth(rd * t, DEPTH_PROBE_NEAR)
+    }
+
+    #[test]
+    #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
+    fn thirty_third_body_gpu_probe() {
+        let size = Extent3d {
+            width: DEPTH_PROBE_SIZE,
+            height: DEPTH_PROBE_SIZE,
+            depth_or_array_layers: 1,
+        };
+        let (device, queue) = pollster::block_on(request_device()).expect("wgpu device");
+        let module = strip_probe_module(&device);
+        let attachment = |format: TextureFormat, label: &str| {
+            device.create_texture(&TextureDescriptor {
+                label: Some(label),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let color = attachment(TextureFormat::Rgba8Unorm, "hyperslice4d depth probe color");
+        let depth = attachment(crate::depth::DEPTH_FORMAT, "hyperslice4d depth probe depth");
+        let color_view = color.create_view(&TextureViewDescriptor::default());
+        let depth_view = depth.create_view(&TextureViewDescriptor::default());
+
+        let mut node = Hyperslice4DNode::with_depth(
+            &device,
+            TextureFormat::Rgba8Unorm,
+            &module,
+            crate::DepthMode::ReadWrite {
+                format: crate::depth::DEPTH_FORMAT,
+            },
+        );
+        node.set_uniforms(
+            &queue,
+            Hyperslice4DUniforms {
+                camera_pos: [0.0; 3],
+                resolution: [DEPTH_PROBE_SIZE as f32; 2],
+                near: DEPTH_PROBE_NEAR,
+                ..Hyperslice4DUniforms::default()
+            },
+        );
+        let mut bodies = vec![BodyUniform::default(); 32];
+        bodies.push(BodyUniform::sphere(
+            DEPTH_PROBE_CENTER,
+            DEPTH_PROBE_RADIUS,
+            [1.0, 0.0, 0.0],
+        ));
+        node.set_bodies(&bodies);
+        node.flush_uniforms(&queue);
+
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+            label: Some("hyperslice4d depth probe"),
+        });
+        {
+            encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("hyperslice4d depth probe clear"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &color_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color::BLACK),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(crate::depth::DEPTH_CLEAR),
+                        store: StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        node.record(
+            &mut encoder,
+            &color_view,
+            Some(&depth_view),
+            crate::Viewport::full([DEPTH_PROBE_SIZE, DEPTH_PROBE_SIZE]),
+            ColorLoad::Load,
+        );
+        let readback = device.create_buffer(&BufferDescriptor {
+            label: Some("hyperslice4d depth probe readback"),
+            size: (DEPTH_PROBE_SIZE * DEPTH_PROBE_SIZE * 4) as u64,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            TexelCopyTextureInfo {
+                texture: &depth,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::DepthOnly,
+            },
+            TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(DEPTH_PROBE_SIZE * 4),
+                    rows_per_image: None,
+                },
+            },
+            size,
+        );
+        queue.submit(Some(encoder.finish()));
+        readback.slice(..).map_async(MapMode::Read, |_| {});
+        device
+            .poll(PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("readback poll");
+        let depths =
+            bytemuck::cast_slice::<u8, f32>(&readback.slice(..).get_mapped_range()).to_vec();
+
+        let center = DEPTH_PROBE_SIZE / 2;
+        let pixels = read_back_rgba(&device, &queue, &color, [DEPTH_PROBE_SIZE; 2]);
+        let shaded = ((center * DEPTH_PROBE_SIZE + center) * 4) as usize;
+        assert!(
+            pixels[shaded] > pixels[shaded + 2],
+            "the 33rd body must shade the centre pixel, not the background: {:?}",
+            &pixels[shaded..shaded + 4]
+        );
+        let written = depths[(center * DEPTH_PROBE_SIZE + center) as usize];
+        let expected = depth_probe_expected();
+        assert!(
+            (written - expected).abs() <= 5.0e-5,
+            "the hit wrote depth {written}, not the projective depth {expected}"
+        );
+    }
+}

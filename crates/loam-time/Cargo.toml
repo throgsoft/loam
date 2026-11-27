@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Fixed ticks, replay tapes, presentation timelines, and frame timing."
+description = "Fixed ticks, state hashes, keyframe tracks and frame timing."
 keywords = ["fixed-timestep", "determinism", "timing", "gamedev"]
 categories = ["game-development", "date-and-time"]
 
@@ -18,11 +18,7 @@ frame-trace = ["dep:tracing"]
 # `std::time::Instant::now` is unavailable on wasm32.
 web-time = { workspace = true }
 tracing = { workspace = true, optional = true }
-thiserror = { workspace = true }
-loam-math = { path = "../loam-math", version = "0.1.0" }
 glam = { workspace = true }
-serde = { workspace = true }
-ron = { workspace = true }
 
 [lints]
 workspace = true

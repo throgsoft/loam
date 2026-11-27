@@ -156,12 +156,6 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "base64"
-version = "0.21.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
-
-[[package]]
-name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
@@ -192,9 +186,6 @@ name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
-dependencies = [
- "serde_core",
-]
 
 [[package]]
 name = "block"
@@ -675,10 +666,8 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 name = "examples"
 version = "0.1.0"
 dependencies = [
- "glam",
  "loam",
  "tracing",
- "web-time",
 ]
 
 [[package]]
@@ -1335,7 +1324,6 @@ dependencies = [
 name = "loam-app"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "color_quant",
  "console_error_panic_hook",
  "egui-wgpu",
@@ -1369,10 +1357,6 @@ dependencies = [
 [[package]]
 name = "loam-console"
 version = "0.1.0"
-dependencies = [
- "anyhow",
- "web-sys",
-]
 
 [[package]]
 name = "loam-egui"
@@ -1401,9 +1385,6 @@ dependencies = [
  "loam-math",
  "loam-shape",
  "loam-time",
- "ron",
- "serde",
- "thiserror 1.0.69",
  "tracing",
 ]
 
@@ -1411,7 +1392,6 @@ dependencies = [
 name = "loam-render"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bytemuck",
  "glam",
  "loam-math",
@@ -1420,7 +1400,6 @@ dependencies = [
  "loam-time",
  "naga",
  "pollster",
- "thiserror 1.0.69",
  "tracing",
  "web-time",
  "wgpu",
@@ -1451,15 +1430,14 @@ name = "loam-text"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
- "anyhow",
  "bytemuck",
  "glam",
  "loam-math",
  "loam-physics",
  "loam-render",
  "loam-shape",
+ "loam-time",
  "pollster",
- "thiserror 1.0.69",
  "tracing",
  "wgpu",
 ]
@@ -1469,10 +1447,6 @@ name = "loam-time"
 version = "0.1.0"
 dependencies = [
  "glam",
- "loam-math",
- "ron",
- "serde",
- "thiserror 1.0.69",
  "tracing",
  "web-time",
 ]
@@ -2099,11 +2073,9 @@ checksum = "22686f4785f02a4fcc856d3b3bb19bf6c8160d103f7a99cc258bddd0251dc7f2"
 name = "polytope_playground"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "glam",
  "loam",
  "loam-egui",
- "loam-time",
 ]
 
 [[package]]
@@ -2293,18 +2265,6 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
-
-[[package]]
-name = "ron"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b91f7eff05f748767f183df4320a63d6936e9c6107d97c9e6bdd9784f4289c94"
-dependencies = [
- "base64 0.21.7",
- "bitflags 2.11.1",
- "serde",
- "serde_derive",
-]
 
 [[package]]
 name = "rustc-demangle"
@@ -2996,7 +2956,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8494db31fcc7e4b0f7787beaa316d4e88b4db4235ef50e52a371053c51d8ee3"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64",
  "leb128",
  "log",
  "rustc-demangle",

@@ -6,6 +6,7 @@ use loam_math::EuclideanR3;
 use loam_physics::euclidean_r3::{register_default_narrowphase, sphere_body_r3};
 use loam_physics::{BodyDef, BodyId, World};
 use loam_shape::Isovolume;
+use loam_time::par::Sequential;
 
 const MAJOR: f32 = 1.0;
 const MINOR: f32 = 0.3;
@@ -22,7 +23,8 @@ fn torus(p: [f32; 3]) -> f32 {
 }
 
 fn extract() -> Isovolume<3> {
-    let volume = Isovolume::extract([-BOUND; 3], [BOUND; 3], RESOLUTION, torus);
+    let volume = Isovolume::extract([-BOUND; 3], [BOUND; 3], RESOLUTION, torus)
+        .expect("the torus domain is a positive cube");
     assert!(!volume.clipped(), "sampling domain clipped the solid");
     volume
 }
@@ -48,13 +50,13 @@ fn torus_world(volume: &Isovolume<3>, x: f32) -> (World<EuclideanR3>, BodyId) {
 }
 
 #[test]
-fn a_body_dropped_on_an_sdf_extracted_torus_rests_on_its_surface() {
+fn torus_hole() {
     let volume = extract();
     let (mut world, sphere) = torus_world(&volume, MAJOR);
 
     let mut lowest = f32::INFINITY;
     for _ in 0..600 {
-        world.step(DT).unwrap();
+        world.step(DT, &Sequential).unwrap();
         let y = world.body(sphere).unwrap().position.y;
         assert!(y.is_finite(), "simulation diverged");
         lowest = lowest.min(y);
@@ -84,14 +86,10 @@ fn a_body_dropped_on_an_sdf_extracted_torus_rests_on_its_surface() {
         "sphere has not settled: |v| = {}",
         body.velocity.length()
     );
-}
 
-#[test]
-fn a_body_dropped_down_the_torus_axis_passes_through_the_hole() {
-    let volume = extract();
     let (mut world, sphere) = torus_world(&volume, 0.0);
     for _ in 0..600 {
-        world.step(DT).unwrap();
+        world.step(DT, &Sequential).unwrap();
     }
     let y = world.body(sphere).unwrap().position.y;
     assert!(

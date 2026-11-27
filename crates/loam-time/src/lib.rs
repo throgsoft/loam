@@ -1,10 +1,10 @@
 pub mod alloc;
-pub mod director;
 mod fixed_timestep;
 pub mod frame_trace;
 pub mod par;
-pub mod replay;
+mod state_hash;
+mod track;
 
-pub use director::{Director, Drive, Playhead, Timeline, TimelineError, Track};
 pub use fixed_timestep::{FixedTimestep, DEFAULT_MAX_CATCH_UP};
-pub use replay::{Checkpoint, StateHash, Tape, TapeError, TAPE_FORMAT_VERSION};
+pub use state_hash::StateHash;
+pub use track::{Ease, Interpolate, Track};

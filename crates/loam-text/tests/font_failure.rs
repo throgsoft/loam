@@ -1,12 +1,12 @@
 use loam_render::device::{FeatureRequest, GpuContext};
 use loam_render::pass::{FrameFormat, FramePass};
-use loam_text::TextPass;
+use loam_text::{TextError, TextPass};
 use wgpu::{
     BackendOptions, Backends, Instance, InstanceDescriptor, NoopBackendOptions, TextureFormat,
 };
 
 #[test]
-fn a_font_that_does_not_parse_leaves_the_text_pass_drawing_nothing() {
+fn unparseable_font() {
     let instance = Instance::new(&InstanceDescriptor {
         backends: Backends::NOOP,
         backend_options: BackendOptions {
@@ -27,5 +27,8 @@ fn a_font_that_does_not_parse_leaves_the_text_pass_drawing_nothing() {
     )
     .expect("a font that does not parse is not fatal to the host");
     assert!(!pass.ready(), "the pass claims to be ready with no font");
-    assert!(pass.failure().is_some(), "the parse failure was not kept");
+    assert!(
+        matches!(pass.failure(), Some(TextError::Font(_))),
+        "the parse failure was not kept"
+    );
 }

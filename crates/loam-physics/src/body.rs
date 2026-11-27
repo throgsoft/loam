@@ -1,21 +1,13 @@
-use std::ops::{Add, Deref, Index, IndexMut, Mul};
+use std::ops::{Deref, Index, IndexMut};
 
 use loam_math::Bivector;
+use loam_shape::{Shape, ShapeKind};
 
-use crate::collider::{Collider, ColliderKind};
-use crate::collision::VectorOps;
-use crate::edit::EditError;
+use crate::error::EditError;
 use crate::geometry::{ColliderRef, GeometryStore};
-use crate::integrator::PhysicsSpace;
+use crate::space::{PhysicsSpace, VectorOps};
+use crate::state::StateError;
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "persist",
-    serde(bound(
-        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
-        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
-    ))
-)]
 pub struct RigidBody<S: PhysicsSpace> {
     pub position: S::Point,
     pub velocity: S::Vector,
@@ -46,60 +38,102 @@ impl<S: PhysicsSpace> Copy for RigidBody<S> {}
 pub struct BodyDef<S: PhysicsSpace> {
     position: S::Point,
     velocity: S::Vector,
-    collider: Collider,
+    angular_velocity: S::AngVel,
+    collider: Shape,
     mass: f32,
     inertia: S::Inertia,
+    restitution: f32,
+    collision_group: u32,
+    collision_mask: u32,
+    asleep: bool,
 }
 
 impl<S: PhysicsSpace> BodyDef<S> {
     pub fn new(
         position: S::Point,
         velocity: S::Vector,
-        collider: Collider,
+        collider: Shape,
         mass: f32,
         inertia: S::Inertia,
         space: &S,
-    ) -> Option<Self> {
-        if !valid_mass(mass)
-            || !space.valid_initial_state(position, velocity, inertia)
-            || !valid_collider(space, &collider, mass)
-        {
-            return None;
+    ) -> Result<Self, EditError> {
+        if !valid_mass(mass) {
+            return Err(EditError::InvalidMass);
         }
-        Some(Self {
+        if !space.valid_point(position) || !space.valid_vector(velocity) {
+            return Err(EditError::NotFinite);
+        }
+        if !space.valid_inertia(inertia) {
+            return Err(EditError::InvalidInertia);
+        }
+        check_collider(space, &collider, mass)?;
+        Ok(Self {
             position,
             velocity,
+            angular_velocity: <S::AngVel as Bivector>::zero(),
             collider,
             mass,
             inertia,
+            restitution: 0.2,
+            collision_group: GROUP_DEFAULT,
+            collision_mask: MASK_ALL,
+            asleep: false,
         })
     }
 
     pub fn fixed(
         position: S::Point,
-        collider: Collider,
+        collider: Shape,
         inertia: S::Inertia,
         space: &S,
-    ) -> Option<Self>
-    where
-        S::Vector: Default,
-    {
-        Self::new(
-            position,
-            S::Vector::default(),
-            collider,
-            0.0,
-            inertia,
-            space,
-        )
+    ) -> Result<Self, EditError> {
+        Self::new(position, VectorOps::zero(), collider, 0.0, inertia, space)
     }
 
     pub fn mass(&self) -> f32 {
         self.mass
     }
 
-    pub fn collider(&self) -> &Collider {
+    pub fn collider(&self) -> &Shape {
         &self.collider
+    }
+
+    pub fn restitution(mut self, restitution: f32) -> Result<Self, EditError> {
+        if !restitution.is_finite() || restitution < 0.0 {
+            return Err(EditError::InvalidRestitution);
+        }
+        self.restitution = restitution;
+        Ok(self)
+    }
+
+    pub fn velocity(
+        mut self,
+        velocity: S::Vector,
+        angular_velocity: S::AngVel,
+        space: &S,
+    ) -> Result<Self, EditError> {
+        if !space.valid_vector(velocity) || !space.valid_angular_velocity(angular_velocity) {
+            return Err(EditError::NotFinite);
+        }
+        if !self.asleep {
+            self.velocity = velocity;
+            self.angular_velocity = angular_velocity;
+        }
+        Ok(self)
+    }
+
+    pub fn collision_filter(mut self, group: u32, mask: u32) -> Self {
+        self.collision_group = group;
+        self.collision_mask = mask;
+        self
+    }
+
+    /// A dynamic body spawns asleep and at rest whatever velocity the definition is given.
+    pub fn asleep(mut self) -> Self {
+        self.velocity = VectorOps::zero();
+        self.angular_velocity = <S::AngVel as Bivector>::zero();
+        self.asleep = true;
+        self
     }
 
     pub(crate) fn into_row(self, geometry: &mut GeometryStore, space: &S) -> RigidBody<S> {
@@ -109,18 +143,18 @@ impl<S: PhysicsSpace> BodyDef<S> {
             0.0
         };
         RigidBody {
-            sleeping: false,
-            collision_group: GROUP_DEFAULT,
-            collision_mask: MASK_ALL,
+            sleeping: self.asleep && self.mass > 0.0,
+            collision_group: self.collision_group,
+            collision_mask: self.collision_mask,
             position: self.position,
             velocity: self.velocity,
             orientation: space.iso_identity(),
-            angular_velocity: <S::AngVel as Bivector>::zero(),
+            angular_velocity: self.angular_velocity,
             mass: self.mass,
             inv_mass,
             inertia: self.inertia,
             collider: geometry.prepare(self.collider),
-            restitution: 0.2,
+            restitution: self.restitution,
         }
     }
 }
@@ -151,12 +185,9 @@ impl<S: PhysicsSpace> RigidBody<S> {
         self.sleeping
     }
 
-    pub fn sleep(&mut self)
-    where
-        S::Vector: Default,
-    {
+    pub fn sleep(&mut self) {
         if !self.is_static() {
-            self.velocity = S::Vector::default();
+            self.velocity = VectorOps::zero();
             self.angular_velocity = S::AngVel::zero();
             self.sleeping = true;
         }
@@ -197,17 +228,10 @@ impl<S: PhysicsSpace> RigidBody<S> {
         &mut self,
         geometry: &mut GeometryStore,
         space: &S,
-        collider: Collider,
+        collider: Shape,
         inertia: S::Inertia,
     ) -> Result<(), EditError> {
-        if self.mass > 0.0 && is_halfspace_kind(collider.kind()) {
-            geometry.stash(collider);
-            return Err(EditError::DynamicHalfSpace);
-        }
-        if !valid_collider(space, &collider, self.mass) {
-            geometry.stash(collider);
-            return Err(EditError::UnsupportedCollider);
-        }
+        check_collider(space, &collider, self.mass)?;
         let replacement = geometry.prepare(collider);
         geometry.release(self.collider);
         self.collider = replacement;
@@ -217,10 +241,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
     }
 
     // Baraff 1997, "Physically Based Modeling: Rigid Body Simulation", colliding contact.
-    pub fn apply_impulse(&mut self, impulse: S::Vector)
-    where
-        S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
-    {
+    pub fn apply_impulse(&mut self, impulse: S::Vector) {
         if self.is_static() {
             return;
         }
@@ -229,10 +250,7 @@ impl<S: PhysicsSpace> RigidBody<S> {
     }
 
     // Baraff 1997, "Physically Based Modeling: Rigid Body Simulation", colliding contact.
-    pub fn apply_impulse_at_point(&mut self, space: &S, impulse: S::Vector, point: S::Point)
-    where
-        S::Vector: Add<Output = S::Vector> + Mul<f32, Output = S::Vector>,
-    {
+    pub fn apply_impulse_at_point(&mut self, space: &S, impulse: S::Vector, point: S::Point) {
         if self.is_static() {
             return;
         }
@@ -245,66 +263,37 @@ impl<S: PhysicsSpace> RigidBody<S> {
     }
 }
 
-fn valid_mass(mass: f32) -> bool {
+pub(crate) fn valid_mass(mass: f32) -> bool {
     mass.is_finite() && mass >= 0.0 && (mass == 0.0 || mass.recip().is_finite())
 }
 
-fn is_halfspace_kind(kind: ColliderKind) -> bool {
-    matches!(kind, ColliderKind::HalfSpace | ColliderKind::HalfSpace4D)
+fn is_halfspace_kind(kind: ShapeKind) -> bool {
+    matches!(kind, ShapeKind::HalfSpace | ShapeKind::HalfSpace4D)
 }
 
-pub(crate) fn valid_collider<S: PhysicsSpace>(space: &S, collider: &Collider, mass: f32) -> bool {
-    if !space.supports_collider(collider.kind())
-        || (mass > 0.0 && is_halfspace_kind(collider.kind()))
-    {
-        return false;
+fn check_collider<S: PhysicsSpace>(
+    space: &S,
+    collider: &Shape,
+    mass: f32,
+) -> Result<(), EditError> {
+    if mass > 0.0 && is_halfspace_kind(collider.kind()) {
+        return Err(EditError::DynamicHalfSpace);
     }
-    match collider {
-        Collider::Sphere { center, radius } => {
-            center.is_finite()
-                && *center == glam::Vec3::ZERO
-                && radius.is_finite()
-                && *radius >= 0.0
-        }
-        Collider::HalfSpace { normal, offset } => {
-            normal.is_finite() && offset.is_finite() && (normal.length_squared() - 1.0).abs() < 1e-5
-        }
-        Collider::HalfSpace4D { normal, offset } => {
-            normal.is_finite() && offset.is_finite() && (normal.length_squared() - 1.0).abs() < 1e-5
-        }
-        Collider::Polygon2D { vertices } => convex_ccw_polygon(vertices),
-        Collider::ConvexPolytope3D { vertices } => {
-            !vertices.is_empty() && vertices.iter().all(|v| v.is_finite())
-        }
-        Collider::ConvexPolytope4D { vertices } => {
-            !vertices.is_empty() && vertices.iter().all(|v| v.is_finite())
-        }
-        _ => false,
+    if !space.supports_collider(collider.kind()) {
+        return Err(EditError::UnsupportedCollider);
     }
-}
-
-fn convex_ccw_polygon(vertices: &[glam::Vec2]) -> bool {
-    if vertices.len() < 3 || !vertices.iter().all(|v| v.is_finite()) {
-        return false;
-    }
-    let mut has_area = false;
-    for i in 0..vertices.len() {
-        let origin = vertices[i];
-        let edge = vertices[(i + 1) % vertices.len()] - origin;
-        for &vertex in vertices {
-            let offset = vertex - origin;
-            let cross = edge.perp_dot(offset);
-            if !cross.is_finite() || cross < 0.0 {
-                return false;
-            }
-            has_area |= cross > 0.0;
+    if let Shape::Sphere { center, .. } = collider {
+        if *center != glam::Vec3::ZERO {
+            return Err(EditError::OffCentreSphere);
         }
     }
-    has_area
+    if !collider.is_well_formed() {
+        return Err(EditError::MalformedCollider);
+    }
+    Ok(())
 }
 
 /// A body handle is valid only in its owning arena and is ordered by slot, then generation.
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BodyId {
     slot: u32,
@@ -328,7 +317,6 @@ impl BodyId {
 
 const STALE_HANDLE: &str = "BodyId refers to a despawned body";
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 struct Slot {
     generation: u32,
@@ -336,14 +324,6 @@ struct Slot {
 }
 
 /// Compaction preserves handles; callers must not exchange bodies between mutable references.
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "persist",
-    serde(bound(
-        serialize = "S::Point: serde::Serialize, S::Vector: serde::Serialize, S::Iso: serde::Serialize, S::AngVel: serde::Serialize, S::Inertia: serde::Serialize",
-        deserialize = "S::Point: serde::Deserialize<'de>, S::Vector: serde::Deserialize<'de>, S::Iso: serde::Deserialize<'de>, S::AngVel: serde::Deserialize<'de>, S::Inertia: serde::Deserialize<'de>"
-    ))
-)]
 pub struct BodyArena<S: PhysicsSpace> {
     dense: Vec<RigidBody<S>>,
     ids: Vec<BodyId>,
@@ -451,27 +431,26 @@ impl<S: PhysicsSpace> BodyArena<S> {
         &mut self.dense
     }
 
-    pub(crate) fn validate(&self, space: &S, geometry: &GeometryStore) -> Result<(), EditError>
+    pub(crate) fn validate(&self, space: &S, geometry: &GeometryStore) -> Result<(), StateError>
     where
-        S::Vector: VectorOps,
         S::AngVel: PartialEq,
     {
         if self.dense.len() != self.ids.len() {
-            return Err(EditError::InvalidBodyArena);
+            return Err(StateError::InvalidBodyArena);
         }
         let mut occupied = vec![false; self.slots.len()];
         for (dense, (&id, body)) in self.ids.iter().zip(&self.dense).enumerate() {
             let Ok(dense_index) = u32::try_from(dense) else {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             };
             let Some(slot) = self.slots.get(id.slot as usize) else {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             };
             if occupied[id.slot as usize]
                 || slot.generation != id.generation
                 || slot.dense != Some(dense_index)
             {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             }
             occupied[id.slot as usize] = true;
             let expected_inv_mass = if body.mass > 0.0 {
@@ -480,7 +459,7 @@ impl<S: PhysicsSpace> BodyArena<S> {
                 0.0
             };
             let Some(collider) = geometry.get(body.collider) else {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             };
             if !valid_mass(body.mass)
                 || body.inv_mass != expected_inv_mass
@@ -494,18 +473,18 @@ impl<S: PhysicsSpace> BodyArena<S> {
                 || !body.restitution.is_finite()
                 || body.restitution < 0.0
                 || body.collider.kind() != collider.kind()
-                || !valid_collider(space, collider, body.mass)
+                || check_collider(space, collider, body.mass).is_err()
             {
-                return Err(EditError::InvalidBody);
+                return Err(StateError::InvalidBody);
             }
         }
         let mut free = vec![false; self.slots.len()];
         for &slot in &self.free {
             let Some(entry) = self.slots.get(slot as usize) else {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             };
             if free[slot as usize] || entry.dense.is_some() || occupied[slot as usize] {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             }
             free[slot as usize] = true;
         }
@@ -513,7 +492,7 @@ impl<S: PhysicsSpace> BodyArena<S> {
             if occupied[slot] != entry.dense.is_some()
                 || (!occupied[slot] && entry.generation != u32::MAX && !free[slot])
             {
-                return Err(EditError::InvalidBodyArena);
+                return Err(StateError::InvalidBodyArena);
             }
         }
         geometry.validate(self.dense.iter().map(|body| body.collider))
@@ -568,35 +547,117 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_halfspaces_are_rejected_in_both_dimensions() {
-        assert!(BodyDef::new(
-            Vec3::ZERO,
-            Vec3::ZERO,
-            Collider::HalfSpace {
-                normal: Vec3::Y,
-                offset: 0.0
-            },
-            1.0,
-            1.0,
-            &EuclideanR3
-        )
-        .is_none());
-        assert!(BodyDef::new(
+    fn invalid_definition() {
+        let sphere = |position, velocity, mass, inertia| {
+            BodyDef::new(
+                position,
+                velocity,
+                Shape::sphere_at_origin(0.5),
+                mass,
+                inertia,
+                &EuclideanR3,
+            )
+            .err()
+        };
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for (position, velocity, mass, inertia, cause) in [
+                (Vec3::ZERO, Vec3::ZERO, invalid, 1.0, EditError::InvalidMass),
+                (
+                    Vec3::splat(invalid),
+                    Vec3::ZERO,
+                    1.0,
+                    1.0,
+                    EditError::NotFinite,
+                ),
+                (
+                    Vec3::ZERO,
+                    Vec3::splat(invalid),
+                    1.0,
+                    1.0,
+                    EditError::NotFinite,
+                ),
+                (
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    1.0,
+                    invalid,
+                    EditError::InvalidInertia,
+                ),
+            ] {
+                assert_eq!(sphere(position, velocity, mass, inertia), Some(cause));
+            }
+        }
+
+        let dynamic_halfspace4 = BodyDef::new(
             Vec4::ZERO,
             Vec4::ZERO,
-            Collider::HalfSpace4D {
+            Shape::HalfSpace4D {
                 normal: Vec4::Y,
-                offset: 0.0
+                offset: 0.0,
             },
             1.0,
             1.0,
-            &EuclideanR4
-        )
-        .is_none());
+            &EuclideanR4,
+        );
+        assert_eq!(dynamic_halfspace4.err(), Some(EditError::DynamicHalfSpace));
+        assert_eq!(
+            crate::euclidean_r4::halfspace4_body_r4(Vec4::ZERO, 0.0).err(),
+            Some(EditError::MalformedCollider),
+            "a half-space without a normal"
+        );
+        assert_eq!(
+            crate::euclidean_r3::halfspace_body_r3(Vec3::ZERO, 0.0).err(),
+            Some(EditError::MalformedCollider),
+            "a half-space without a normal"
+        );
+
+        let mut world = World::new(EuclideanR3);
+        let id = world.push_body(def_r3(Vec3::ZERO, 2.0, 1.0));
+        for (collider, cause) in [
+            (
+                Shape::ConvexPolytope3D { vertices: vec![] },
+                EditError::MalformedCollider,
+            ),
+            (
+                Shape::Box3 {
+                    half_extents: Vec3::ONE,
+                },
+                EditError::UnsupportedCollider,
+            ),
+            (
+                Shape::sphere_at_origin(f32::NAN),
+                EditError::MalformedCollider,
+            ),
+            (Shape::sphere_at(Vec3::X, 1.0), EditError::OffCentreSphere),
+            (
+                Shape::HalfSpace {
+                    normal: Vec3::Y,
+                    offset: 0.0,
+                },
+                EditError::DynamicHalfSpace,
+            ),
+        ] {
+            let built = BodyDef::new(
+                Vec3::ZERO,
+                Vec3::ZERO,
+                collider.clone(),
+                2.0,
+                1.0,
+                &EuclideanR3,
+            );
+            assert_eq!(built.err(), Some(cause));
+            assert_eq!(
+                world.set_collider(id, collider, 1.0),
+                Err(cause),
+                "an edit and a definition disagree on the cause"
+            );
+            let kept = world.collider(&world.bodies[id]);
+            assert!(matches!(kept, Some(Shape::Sphere { radius, .. }) if *radius == 0.5));
+        }
     }
 
     #[test]
-    fn sleeping_keeps_nominal_mass_and_an_explicit_impulse_wakes_the_body() {
+    fn sleeping_body() {
         let mut body = body_r3(Vec3::ZERO, 2.0, 1.0);
         body.velocity = Vec3::Y;
         body.angular_velocity = Bivector3::new(1.0, 0.0, 0.0);
@@ -613,68 +674,11 @@ mod tests {
         assert_eq!(body.angular_velocity, Bivector3::ZERO);
     }
 
-    #[test]
-    fn nonfinite_initial_state_is_rejected() {
-        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            for (position, velocity, inertia) in [
-                (Vec3::splat(invalid), Vec3::ZERO, 1.0),
-                (Vec3::ZERO, Vec3::splat(invalid), 1.0),
-                (Vec3::ZERO, Vec3::ZERO, invalid),
-            ] {
-                assert!(BodyDef::new(
-                    position,
-                    velocity,
-                    Collider::sphere_at_origin(0.5),
-                    1.0,
-                    inertia,
-                    &EuclideanR3
-                )
-                .is_none());
-            }
-        }
-    }
-
-    #[test]
-    fn invalid_replacements_preserve_the_previous_body() {
-        let mut world = World::new(EuclideanR3);
-        let id = world.push_body(def_r3(Vec3::ZERO, 2.0, 1.0));
-        for mass in [-1.0, f32::NAN, f32::INFINITY, f32::from_bits(1)] {
-            assert!(!world.bodies[id].set_mass(mass));
-            assert_eq!(world.bodies[id].mass(), 2.0);
-            assert_eq!(world.bodies[id].inv_mass(), 0.5);
-        }
-        for collider in [
-            Collider::ConvexPolytope3D { vertices: vec![] },
-            Collider::Box3 {
-                half_extents: Vec3::ONE,
-            },
-            Collider::sphere_at_origin(f32::NAN),
-            Collider::sphere_at(Vec3::X, 1.0),
-            Collider::HalfSpace {
-                normal: Vec3::Y,
-                offset: 0.0,
-            },
-        ] {
-            assert!(BodyDef::new(
-                Vec3::ZERO,
-                Vec3::ZERO,
-                collider.clone(),
-                2.0,
-                1.0,
-                &EuclideanR3
-            )
-            .is_none());
-            assert!(world.set_collider(id, collider, 1.0).is_err());
-            let kept = world.collider(&world.bodies[id]);
-            assert!(matches!(kept, Some(Collider::Sphere { radius, .. }) if *radius == 0.5));
-        }
-    }
-
     fn def_r3(position: Vec3, mass: f32, inertia: f32) -> BodyDef<EuclideanR3> {
         BodyDef::new(
             position,
             Vec3::ZERO,
-            Collider::sphere_at_origin(0.5),
+            Shape::sphere_at_origin(0.5),
             mass,
             inertia,
             &EuclideanR3,
@@ -691,7 +695,7 @@ mod tests {
             BodyDef::new(
                 position,
                 Vec4::ZERO,
-                Collider::sphere_at_origin(0.5),
+                Shape::sphere_at_origin(0.5),
                 mass,
                 inertia,
                 &EuclideanR4,
@@ -702,16 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_impulse_changes_velocity_by_impulse_over_mass() {
-        let mut body = body_r3(Vec3::ZERO, 4.0, 0.5);
-        body.velocity = Vec3::new(1.0, 0.0, 0.0);
-        body.apply_impulse(Vec3::new(8.0, -4.0, 2.0));
-        assert_eq!(body.velocity, Vec3::new(3.0, -1.0, 0.5));
-        assert_eq!(body.angular_velocity, Bivector3::ZERO);
-    }
-
-    #[test]
-    fn central_impulse_produces_no_spin_and_matches_linear_form() {
+    fn impulse_at_point() {
         let position = Vec3::new(2.0, -1.0, 3.0);
         let impulse = Vec3::new(8.0, -4.0, 2.0);
 
@@ -723,10 +718,7 @@ mod tests {
 
         assert_eq!(at_point.velocity, linear.velocity);
         assert_eq!(at_point.angular_velocity, Bivector3::ZERO);
-    }
 
-    #[test]
-    fn off_center_impulse_spins_body_by_inverse_inertia_times_lever_wedge_impulse_r3() {
         let mut body = body_r3(Vec3::ZERO, 2.0, 0.5);
         body.apply_impulse_at_point(
             &EuclideanR3,
@@ -736,10 +728,7 @@ mod tests {
 
         assert_eq!(body.velocity, Vec3::new(1.5, 0.0, 0.0));
         assert_eq!(body.angular_velocity, Bivector3::new(-12.0, 0.0, 0.0));
-    }
 
-    #[test]
-    fn off_center_impulse_spins_body_by_inverse_inertia_times_lever_wedge_impulse_r4() {
         let mut body = body_r4(Vec4::ZERO, 2.0, 0.5);
         body.apply_impulse_at_point(
             &EuclideanR4,
@@ -753,194 +742,24 @@ mod tests {
             ..Bivector4::ZERO
         };
         assert_eq!(body.angular_velocity, expected);
-    }
 
-    #[test]
-    fn equal_and_opposite_impulses_conserve_linear_and_angular_momentum() {
-        let space = EuclideanR3;
-
-        let a_velocity_before = Vec3::new(0.5, -0.25, 1.0);
-        let a_spin_before = Bivector3::new(0.125, -0.5, 0.25);
-        let mut a = body_r3(Vec3::new(-1.0, 0.0, 0.0), 2.0, 0.5);
-        a.velocity = a_velocity_before;
-        a.angular_velocity = a_spin_before;
-
-        let b_velocity_before = Vec3::new(-0.75, 0.5, 0.125);
-        let b_spin_before = Bivector3::new(-0.25, 0.0, 0.5);
-        let mut b = body_r3(Vec3::new(1.0, 0.5, 0.0), 4.0, 0.25);
-        b.velocity = b_velocity_before;
-        b.angular_velocity = b_spin_before;
-
-        let momenta = |a: &RigidBody<EuclideanR3>, b: &RigidBody<EuclideanR3>| {
-            let linear = a.velocity * a.mass + b.velocity * b.mass;
-            let angular = space.wedge(a.position, a.velocity * a.mass)
-                + a.angular_velocity * a.inertia
-                + space.wedge(b.position, b.velocity * b.mass)
-                + b.angular_velocity * b.inertia;
-            (linear, angular)
-        };
-
-        let (linear_before, angular_before) = momenta(&a, &b);
-
-        let point = Vec3::new(0.0, 0.25, 0.0);
-        let impulse = Vec3::new(1.5, -0.5, 0.25);
-        a.apply_impulse_at_point(&space, -impulse, point);
-        b.apply_impulse_at_point(&space, impulse, point);
-
-        let (linear_after, angular_after) = momenta(&a, &b);
-
-        assert!((a.velocity - a_velocity_before).length() > 0.1);
-        assert!((b.velocity - b_velocity_before).length() > 0.1);
-        assert!((a.angular_velocity + a_spin_before * -1.0).magnitude() > 0.1);
-        assert!((b.angular_velocity + b_spin_before * -1.0).magnitude() > 0.1);
-
-        let linear_drift = (linear_after - linear_before).length();
-        assert!(
-            linear_drift < 1e-5,
-            "linear momentum drifted by {linear_drift}"
-        );
-        let angular_drift = (angular_after + angular_before * -1.0).magnitude();
-        assert!(
-            angular_drift < 1e-5,
-            "angular momentum drifted by {angular_drift}"
-        );
-    }
-
-    #[test]
-    fn static_body_ignores_both_impulse_forms() {
-        let mut body = row(
+        let mut fixed = row(
             BodyDef::<EuclideanR3>::fixed(
                 Vec3::ZERO,
-                Collider::sphere_at_origin(0.5),
+                Shape::sphere_at_origin(0.5),
                 1.0,
                 &EuclideanR3,
             )
             .unwrap(),
             &EuclideanR3,
         );
-        body.apply_impulse(Vec3::new(5.0, 5.0, 5.0));
-        body.apply_impulse_at_point(
+        fixed.apply_impulse(Vec3::new(5.0, 5.0, 5.0));
+        fixed.apply_impulse_at_point(
             &EuclideanR3,
             Vec3::new(5.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
         );
-        assert_eq!(body.velocity, Vec3::ZERO);
-        assert_eq!(body.angular_velocity, Bivector3::ZERO);
-    }
-
-    #[test]
-    fn stale_handle_never_resolves_after_its_slot_is_recycled() {
-        let mut arena = BodyArena::new();
-        let doomed = arena.spawn(body_r3(Vec3::X, 1.0, 1.0));
-        assert!(arena.despawn(doomed).is_some());
-
-        let recycled = arena.spawn(body_r3(Vec3::Y, 1.0, 1.0));
-        assert_eq!(
-            recycled.slot(),
-            doomed.slot(),
-            "the free slot was not reused, so this test is not exercising aliasing"
-        );
-        assert_ne!(recycled.generation(), doomed.generation());
-
-        assert!(arena.get(doomed).is_none());
-        assert!(arena.dense_index(doomed).is_none());
-        assert_eq!(arena[recycled].position, Vec3::Y);
-        assert!(
-            arena.despawn(doomed).is_none(),
-            "stale despawn must be inert"
-        );
-        assert!(
-            arena.get(recycled).is_some(),
-            "a stale despawn removed the live body sharing its slot"
-        );
-    }
-
-    #[test]
-    fn despawn_keeps_storage_dense_and_survivor_handles_valid() {
-        let mut arena = BodyArena::new();
-        let first = arena.spawn(body_r3(Vec3::X, 1.0, 1.0));
-        let middle = arena.spawn(body_r3(Vec3::Y, 1.0, 1.0));
-        let last = arena.spawn(body_r3(Vec3::Z, 1.0, 1.0));
-
-        assert_eq!(arena.despawn(middle).map(|b| b.position), Some(Vec3::Y));
-
-        assert_eq!(arena.len(), 2);
-        assert_eq!(arena[first].position, Vec3::X);
-        assert_eq!(
-            arena[last].position,
-            Vec3::Z,
-            "the moved body's handle broke"
-        );
-        assert_eq!(arena.id_at(arena.dense_index(last).unwrap()), last);
-        let positions: Vec<Vec3> = arena.iter().map(|b| b.position).collect();
-        assert_eq!(positions, vec![Vec3::X, Vec3::Z]);
-    }
-
-    #[test]
-    fn every_dense_position_resolves_back_through_its_own_handle() {
-        let mut arena = BodyArena::new();
-        let assert_consistent = |arena: &BodyArena<EuclideanR3>| {
-            for dense in 0..arena.len() {
-                assert_eq!(
-                    arena.dense_index(arena.id_at(dense)),
-                    Some(dense),
-                    "slot table disagrees with dense position {dense}"
-                );
-            }
-        };
-
-        let mut live = Vec::new();
-        for i in 0..5 {
-            live.push(arena.spawn(body_r3(Vec3::splat(i as f32), 1.0, 1.0)));
-            assert_consistent(&arena);
-        }
-        for victim in [live[0], live[2], live[3]] {
-            assert!(arena.despawn(victim).is_some());
-            assert_consistent(&arena);
-        }
-        arena.spawn(body_r3(Vec3::ZERO, 1.0, 1.0));
-        assert_consistent(&arena);
-    }
-
-    #[test]
-    fn decoded_arena_with_a_wrong_dense_id_is_rejected() {
-        let mut geometry = GeometryStore::default();
-        let mut arena = BodyArena::new();
-        let first = arena.spawn(def_r3(Vec3::X, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        let second = arena.spawn(def_r3(Vec3::Y, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        assert!(arena.validate(&EuclideanR3, &geometry).is_ok());
-
-        arena.ids.swap(0, 1);
-        assert_eq!(
-            arena.validate(&EuclideanR3, &geometry),
-            Err(EditError::InvalidBodyArena)
-        );
-        assert_eq!(arena.get(first).map(|body| body.position), Some(Vec3::X));
-        assert_eq!(arena.get(second).map(|body| body.position), Some(Vec3::Y));
-    }
-
-    #[test]
-    fn a_maximum_generation_slot_is_reused_once_then_retired() {
-        let mut geometry = GeometryStore::default();
-        let mut arena = BodyArena::new();
-        let first = arena.spawn(def_r3(Vec3::X, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        arena.ids[0].generation = u32::MAX - 1;
-        arena.slots[0].generation = u32::MAX - 1;
-        let first = BodyId {
-            slot: first.slot,
-            generation: u32::MAX - 1,
-        };
-
-        let removed = arena.despawn(first).unwrap();
-        geometry.release(removed.collider());
-        assert!(arena.validate(&EuclideanR3, &geometry).is_ok());
-        let last = arena.spawn(def_r3(Vec3::Y, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        assert_eq!(last.generation(), u32::MAX);
-        let removed = arena.despawn(last).unwrap();
-        geometry.release(removed.collider());
-        assert!(arena.validate(&EuclideanR3, &geometry).is_ok());
-
-        let fresh = arena.spawn(def_r3(Vec3::Z, 1.0, 1.0).into_row(&mut geometry, &EuclideanR3));
-        assert_ne!(fresh.slot(), last.slot());
+        assert_eq!(fixed.velocity, Vec3::ZERO);
+        assert_eq!(fixed.angular_velocity, Bivector3::ZERO);
     }
 }

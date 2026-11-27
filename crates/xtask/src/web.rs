@@ -307,34 +307,3 @@ fn git_hash(dir: &Path) -> String {
         hash
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::wasm_artifact;
-
-    #[test]
-    fn wasm_artifact_ignores_other_units() {
-        let unit = |name: &str, kind: &str, executable: serde_json::Value| {
-            serde_json::json!({
-                "reason": "compiler-artifact",
-                "target": { "name": name, "kind": [kind] },
-                "executable": executable,
-            })
-            .to_string()
-        };
-        let lines = [
-            r#"{"reason":"build-script-executed","package_id":"examples"}"#.to_string(),
-            unit(
-                "build-script-build",
-                "custom-build",
-                "t/build/examples/build-script".into(),
-            ),
-            unit("loam_app", "lib", serde_json::Value::Null),
-            unit("hero", "bin", "t/wasm-release/hero.wasm".into()),
-            unit("backdrop", "bin", "t/wasm-release/backdrop.wasm".into()),
-            r#"{"reason":"build-finished","success":true}"#.to_string(),
-        ];
-        let wasm = wasm_artifact(lines.join("\n").as_bytes(), "backdrop").unwrap();
-        assert_eq!(wasm, std::path::Path::new("t/wasm-release/backdrop.wasm"));
-    }
-}

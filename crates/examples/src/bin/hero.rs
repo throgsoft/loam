@@ -1,32 +1,9 @@
+use std::fmt::Write as _;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use glam::{Vec2, Vec3, Vec4};
-use loam::app::args::Args;
-use loam::app::capture::{CaptureFormat, CaptureRequest, CaptureStage, PaletteMode};
-use loam::app::environment::Environment;
-use loam::app::session::{launch_or_headless, FrameHook, Orbit, SessionApp};
-use loam::math::{Bivector4, EuclideanR4, Rotor, WPlane};
-use loam::physics::body::MASK_ALL;
-use loam::physics::euclidean_r4::{
-    halfspace4_body_r4, polytope_body_r4, register_default_narrowphase, regular_polytope4_inertia,
-};
-use loam::physics::BodyId;
-use loam::render::{FragmentShading, SkyGroundPass, TriangleFeed};
-use loam::runtime::host::{self, HostConfig, HostError};
-use loam::runtime::{
-    ActionId, Bindings, Command, Ctx, Dispatch, DomainBuilder, DomainError, DomainHandle, Domains,
-    Entity, Key, LogCapacity, Order, Outcome, Phase, Physics, PhysicsConfig, Pose, Rejection,
-    Rigid, Session, SimConfig, SpawnBundle, DOMAIN_STEP,
-};
-use loam::shape::polytope::{polytope_section_faces_append, Polytope4, SectionScratch};
-use loam::shape::{Shape, TriangleMesh};
-use loam::text::ab_glyph::FontRef;
-use loam::text::glyph::{
-    append_field_prism, layout_word, DistanceField2D, GlyphParams, GlyphSolid,
-};
-use loam::time::director::{Ease, Track};
+use loam::prelude::*;
 
 const WORD: &str = "LOAM";
 const FONT: &[u8] = include_bytes!("../../fonts/lmroman10-bold.otf");
@@ -42,15 +19,15 @@ const GROUP_FALLING: u32 = 1 << 1;
 const GROUP_LANDED: u32 = 1 << 2;
 const MASK_FALLING: u32 = GROUP_SCENERY | GROUP_LANDED;
 
-const ASSEMBLE_FRAMES: u32 = 90;
-const LETTER_STAGGER_FRAMES: u32 = 12;
-const LETTER_SLIDE_FRAMES: u32 = 36;
-const SETTLE_FRAMES: u32 = 120;
-const RAIN_START_FRAME: u32 = ASSEMBLE_FRAMES + SETTLE_FRAMES;
-const PHYSICS_FRAMES: u32 = 360;
-const FREEZE_FRAME: u32 = RAIN_START_FRAME + PHYSICS_FRAMES;
-const SWEEP_FRAMES: u32 = 300;
-const SEQUENCE_FRAMES: u32 = FREEZE_FRAME + SWEEP_FRAMES;
+const ASSEMBLE: f32 = 1.5;
+const LETTER_STAGGER: f32 = 0.2;
+const LETTER_SLIDE: f32 = 0.6;
+const SETTLE: f32 = 2.0;
+const RAIN_AT: f32 = ASSEMBLE + SETTLE;
+const RAIN: f32 = 6.0;
+const FREEZE_AT: f32 = RAIN_AT + RAIN;
+const SWEEP: f32 = 5.0;
+const END_AT: f32 = FREEZE_AT + SWEEP;
 
 const W_ENTRY_SPAN: f32 = 0.6;
 const RELEASE_CLEARANCE: f32 = 0.20;
@@ -85,8 +62,8 @@ const DEFAULT_SEED: u64 = 0x10a3_5eed;
 const BOOT_ORBIT_DISTANCE: f32 = 4.0;
 const BOOT_ORBIT_PITCH: f32 = -0.12;
 
-const PAUSE: ActionId = ActionId(0);
-const RESEED: ActionId = ActionId(1);
+const PAUSE: ActionId = ActionId("pause");
+const RESEED: ActionId = ActionId("reseed");
 
 #[derive(Clone)]
 struct Letter {
@@ -98,10 +75,6 @@ struct Letter {
     w_before: f32,
 }
 
-struct Scene {
-    r4: DomainHandle<EuclideanR4>,
-}
-
 #[derive(Clone, Copy)]
 struct Drop {
     polytope: Polytope4,
@@ -109,46 +82,26 @@ struct Drop {
 }
 
 #[derive(Clone, Copy)]
-struct Held {
-    body: BodyId,
-    velocity: Vec4,
-    spin: Bivector4,
-}
-
-#[derive(Clone, Copy)]
 struct Stage {
-    tick: u32,
-    next_spawn: u32,
+    now: Moment,
+    next_drop: f32,
     rng: u64,
     seed: u64,
-    paused: bool,
-    released: bool,
-    frozen: bool,
 }
 
 impl Stage {
     fn seeded(seed: u64) -> Self {
         Self {
-            tick: 0,
-            next_spawn: RAIN_START_FRAME,
+            now: Moment::default(),
+            next_drop: RAIN_AT,
             rng: (seed ^ 0x9e37_79b9_7f4a_7c15).max(1),
             seed,
-            paused: false,
-            released: false,
-            frozen: false,
         }
     }
 
-    fn frame(&self) -> u32 {
-        self.tick / SUBSTEPS
-    }
-
     fn slice(&self) -> f32 {
-        let Some(since) = self.tick.checked_sub(FREEZE_FRAME * SUBSTEPS) else {
-            return W_SLICE;
-        };
-        let phase = std::f32::consts::TAU * since as f32 / (SWEEP_FRAMES * SUBSTEPS) as f32;
-        W_SLICE + SLICE_SWEEP_RANGE * phase.sin()
+        let swept = ((self.now.seconds() - FREEZE_AT) / SWEEP).clamp(0.0, 1.0);
+        W_SLICE + SLICE_SWEEP_RANGE * (std::f32::consts::TAU * swept).sin()
     }
 
     // xorshift64*, Vigna 2016 §4.
@@ -166,17 +119,22 @@ impl Default for Stage {
     }
 }
 
-loam::runtime::stores! {
+stores! {
     #[derive(Default)]
     pub struct HeroStores {
         letters: Store<Letter>,
         drops: Store<Drop>,
         stage: Value<Stage>,
-        held: Value<Vec<Held>>,
-        environment: Value<Environment>,
         mesh: Value<TriangleMesh<3>>,
-        camera: Value<Orbit>,
     }
+    publishes Shown;
+}
+
+#[derive(Default)]
+pub struct Shown {
+    mesh: TriangleMesh<3>,
+    version: Option<Version>,
+    done: bool,
 }
 
 fn unit(draw: u64) -> f32 {
@@ -193,10 +151,6 @@ fn lerp(a: f32, b: f32, u: f32) -> f32 {
 
 fn fps() -> NonZeroU32 {
     NonZeroU32::new(TICK_HZ).unwrap_or(NonZeroU32::MIN)
-}
-
-fn refused(what: impl std::fmt::Display) -> HostError {
-    HostError::Host(what.to_string())
 }
 
 #[derive(Clone)]
@@ -273,7 +227,6 @@ impl MorphField {
 }
 
 fn letters_of(solids: &[GlyphSolid]) -> Option<Vec<Letter>> {
-    let seconds = |frames: u32| frames as f32 / TICK_HZ as f32;
     let mut letters = Vec::new();
     for (index, solid) in solids.iter().filter(|s| !s.is_blank()).enumerate() {
         let (centre, shape) = solid.rigid_hull_4d()?;
@@ -303,14 +256,12 @@ fn letters_of(solids: &[GlyphSolid]) -> Option<Vec<Letter>> {
     for letter in &mut letters {
         letter.mark.x += shift;
         letter.entry.x += shift;
-        let start = LETTER_STAGGER_FRAMES * letter.index as u32;
-        letter.slide = Track::new()
-            .key(seconds(start), letter.entry, Ease::Linear)
-            .key(
-                seconds(start + LETTER_SLIDE_FRAMES),
-                letter.mark,
-                Ease::InOutCubic,
-            );
+        let start = LETTER_STAGGER * letter.index as f32;
+        letter.slide = Track::new().key(start, letter.entry, Ease::Linear).key(
+            start + LETTER_SLIDE,
+            letter.mark,
+            Ease::InOutCubic,
+        );
     }
     Some(letters)
 }
@@ -368,52 +319,25 @@ fn bindings() -> Bindings {
         .key(Key::Letter('n'), RESEED)
 }
 
-fn physics_of(
-    domains: &mut Domains,
-    r4: DomainHandle<EuclideanR4>,
-) -> Result<&mut Physics<EuclideanR4>, Rejection> {
-    domains
-        .typed(r4)?
-        .physics_mut()
-        .ok_or(Rejection::Unsupported("physics on r4"))
-}
-
-fn hold(
+fn freeze(
     d: &mut Dispatch<'_, HeroStores>,
     r4: DomainHandle<EuclideanR4>,
-    asleep: bool,
 ) -> Result<(), Rejection> {
-    let physics = physics_of(d.domains, r4)?;
-    if !asleep {
-        for held in d.app.held.get() {
-            if let Some(entity) = physics.entity(held.body) {
-                physics.set_velocity(entity, held.velocity, held.spin)?;
-            }
-        }
-        d.app.held.get_mut().clear();
-        return Ok(());
-    }
-    let mut held = Vec::new();
+    let physics = d.domains.physics(r4)?;
+    let mut moving = Vec::new();
     for dense in 0..physics.world().bodies().len() {
         let id = physics.world().bodies().id_at(dense);
-        let Some(body) = physics.world().body(id) else {
-            continue;
-        };
-        if body.is_static() {
-            continue;
-        }
-        held.push(Held {
-            body: id,
-            velocity: body.velocity,
-            spin: body.angular_velocity,
-        });
-    }
-    for row in &held {
-        if let Some(entity) = physics.entity(row.body) {
-            physics.sleep_body(entity)?;
+        if physics
+            .world()
+            .body(id)
+            .is_some_and(|body| !body.is_static())
+        {
+            moving.extend(physics.entity(id));
         }
     }
-    d.app.held.set(held);
+    for entity in moving {
+        physics.sleep_body(entity)?;
+    }
     Ok(())
 }
 
@@ -424,37 +348,23 @@ fn spawn_drop(
     position: Vec4,
     tumble: Bivector4,
 ) -> Result<Entity, Rejection> {
-    let entity = d.spawn(SpawnBundle::new().at(r4, Pose::at(position)).row(Drop {
-        polytope,
-        color: drop_color(polytope),
-    }))?;
-    let vertices: Vec<Vec4> = polytope
-        .topology()
-        .vertices
-        .iter()
-        .map(|v| RAIN_SIZE * *v)
-        .collect();
-    let body = polytope_body_r4(
-        position,
-        Vec4::new(0.0, -RAIN_ENTRY_SPEED, 0.0, 0.0),
-        vertices,
-        RAIN_MASS,
+    let body = regular_polytope_body_r4(polytope, RAIN_SIZE, RAIN_MASS)?
+        .restitution(RESTITUTION)?
+        .velocity(
+            Vec4::new(0.0, -RAIN_ENTRY_SPEED, 0.0, 0.0),
+            tumble,
+            &EuclideanR4,
+        )?
+        .collision_filter(GROUP_FALLING, MASK_FALLING);
+    d.spawn(
+        SpawnBundle::new()
+            .at(r4, Pose::at(position))
+            .body(body)
+            .row(Drop {
+                polytope,
+                color: drop_color(polytope),
+            }),
     )
-    .ok_or(Rejection::Unsupported("polytope rain body"))?;
-    let domain = d.domains.typed(r4)?;
-    domain.spawn_body(entity, body)?;
-    let physics = domain
-        .physics_mut()
-        .ok_or(Rejection::Unsupported("physics on r4"))?;
-    physics.set_restitution(entity, RESTITUTION)?;
-    physics.set_velocity(entity, Vec4::new(0.0, -RAIN_ENTRY_SPEED, 0.0, 0.0), tumble)?;
-    physics.set_collision_filter(entity, GROUP_FALLING, MASK_FALLING)?;
-    physics.set_mass_properties(
-        entity,
-        RAIN_MASS,
-        regular_polytope4_inertia(polytope, RAIN_MASS, RAIN_SIZE),
-    )?;
-    Ok(entity)
 }
 
 fn compose(
@@ -522,13 +432,13 @@ fn compose(
     }
 }
 
-fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
-    let font = FontRef::try_from_slice(FONT).map_err(refused)?;
+fn build() -> Result<Session<HeroStores>, HostError> {
+    let font = FontRef::try_from_slice(FONT)?;
     let params = GlyphParams::default();
-    let solids = layout_word(&font, WORD, &params).map_err(refused)?;
-    let letters = letters_of(&solids).ok_or_else(|| refused("a letter has no convex hull"))?;
+    let solids = layout_word(&font, WORD, &params)?;
+    let letters = letters_of(&solids).expect("every letter of the bundled word has a convex hull");
     let mut morph = MorphField::new(&solids, params.em_size / params.resolution as f32)
-        .ok_or_else(|| refused("the word laid out with no ink to morph"))?;
+        .expect("the bundled word lays out with ink to morph");
     let centre = word_centre(&letters);
     let half_depth = 0.5 * params.depth;
 
@@ -539,53 +449,34 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
             max_ticks_per_frame: 2 * SUBSTEPS,
         },
     );
-    let r4 = session.register_domain(
-        DomainBuilder::new("r4", EuclideanR4)
-            .tracked(LogCapacity::default())
-            .physics(PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::Y * GRAVITY))
-            .map_err(|error| HostError::Setup(Rejection::Edit(error)))?,
-    );
-    session.dispatch(|d| -> Result<(), Rejection> {
+    let physics = PhysicsConfig::default().gravity(Vec4::Y * GRAVITY);
+    let r4 = session.register_domain(DomainBuilder::new("r4", EuclideanR4).physics(physics)?);
+    session.try_dispatch(|d| {
         for letter in letters {
             let entry = letter.entry;
             d.spawn(SpawnBundle::new().at(r4, Pose::at(entry)).row(letter))?;
         }
-        let floor_entity = d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)))?;
-        let floor = halfspace4_body_r4(Vec4::Y, FLOOR_Y)
-            .ok_or(Rejection::Unsupported("half-space floor"))?;
-        let domain = d.domains.typed(r4)?;
-        domain.spawn_body(floor_entity, floor)?;
-        let physics = domain
-            .physics_mut()
-            .ok_or(Rejection::Unsupported("physics on r4"))?;
-        physics.set_solver_iterations(PILE_PGS_ITERS);
-        physics.set_restitution(floor_entity, RESTITUTION)?;
+        let floor = halfspace4_body_r4(Vec4::Y, FLOOR_Y)?.restitution(RESTITUTION)?;
+        d.spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::ZERO)).body(floor))?;
+        d.domains.physics(r4)?.set_solver_iterations(PILE_PGS_ITERS);
         Ok(())
     })?;
 
-    let mut orbit = Orbit::around(centre.to_array(), BOOT_ORBIT_DISTANCE);
-    orbit.pitch = BOOT_ORBIT_PITCH;
-    session.app.camera.set(orbit);
-    loam::app::session::orbit(&mut session, |app: &mut HeroStores| app.camera.get_mut());
+    session.set_rig(Rig::Orbit(Orbit {
+        pitch: BOOT_ORBIT_PITCH,
+        ..Orbit::around(centre.to_array(), BOOT_ORBIT_DISTANCE)
+    }));
 
-    session.system(Phase::Dispatch, "keys", move |ctx: Ctx<'_, HeroStores>| {
-        if ctx.input.pressed(PAUSE) {
-            let paused = !ctx.app.stage.get().paused;
-            ctx.commands
-                .try_app_fn("pause", move |d: &mut Dispatch<'_, HeroStores>| {
-                    hold(d, r4, paused)?;
-                    d.app.stage.get_mut().paused = paused;
-                    Ok(Outcome::Done)
-                });
-        }
+    session.pause_on(PAUSE);
+    // The seed is read at the press, because the reset lands before the reseed.
+    session.system(Phase::Dispatch, "keys", |ctx| {
         if ctx.input.pressed(RESEED) {
-            let seed = ctx.app.stage.get().seed.wrapping_add(1);
+            let seed = ctx.app.stage.seed.wrapping_add(1);
             ctx.commands.submit(Command::Reset);
-            ctx.commands
-                .try_app_fn("reseed", move |d: &mut Dispatch<'_, HeroStores>| {
-                    d.app.stage.set(Stage::seeded(seed));
-                    Ok(Outcome::Done)
-                });
+            ctx.commands.try_app_fn("reseed", move |d| {
+                d.app.stage.set(Stage::seeded(seed));
+                Ok(Outcome::Done)
+            });
         }
         Ok(())
     });
@@ -594,38 +485,32 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
         Phase::Simulation,
         Order::Before(DOMAIN_STEP),
         "assemble",
-        move |ctx: Ctx<'_, HeroStores>| -> Result<(), DomainError> {
-            let stage = *ctx.app.stage.get();
-            if stage.paused {
-                return Ok(());
-            }
+        move |ctx| {
+            let now = ctx.step.start();
             let domain = ctx.domains.typed(r4)?;
-            if !stage.released {
+            if !now.reached(ASSEMBLE) {
                 for (entity, letter) in ctx.app.letters.iter() {
-                    let Some(at) = letter.slide.sample(stage.frame(), fps()) else {
+                    let Some(at) = letter.slide.sample(now.frame(fps()), fps()) else {
                         continue;
                     };
                     domain.set_point(entity, at)?;
                 }
-                if stage.frame() < ASSEMBLE_FRAMES {
-                    return Ok(());
-                }
-                for (entity, letter) in ctx.app.letters.iter() {
-                    let body =
-                        polytope_body_r4(letter.mark, Vec4::ZERO, letter.hull.clone(), LETTER_MASS)
-                            .ok_or(DomainError::Unsupported("letter collider"))?;
-                    domain.spawn_body(entity, body)?;
-                    domain
-                        .physics_mut()
-                        .ok_or(DomainError::Unsupported("physics on r4"))?
-                        .set_restitution(entity, RESTITUTION)?;
-                }
-                ctx.app.stage.get_mut().released = true;
                 return Ok(());
             }
-            let physics = domain
-                .physics_mut()
-                .ok_or(DomainError::Unsupported("physics on r4"))?;
+            if now.fires(ASSEMBLE) {
+                for (entity, letter) in ctx.app.letters.iter() {
+                    let body = polytope_body_r4(
+                        letter.mark,
+                        Vec4::ZERO,
+                        letter.hull.clone(),
+                        LETTER_MASS,
+                    )?
+                    .restitution(RESTITUTION)?;
+                    domain.spawn_body(entity, body)?;
+                }
+                return Ok(());
+            }
+            let physics = ctx.domains.physics(r4)?;
             for (entity, letter) in ctx.app.letters.iter_mut() {
                 letter.w_before = physics
                     .body(entity)
@@ -640,33 +525,19 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
         Phase::Simulation,
         Order::After(DOMAIN_STEP),
         "settle",
-        move |ctx: Ctx<'_, HeroStores>| -> Result<(), DomainError> {
-            let mut stage = *ctx.app.stage.get();
-            if stage.paused || stage.frame() >= SEQUENCE_FRAMES {
+        move |ctx| {
+            if ctx.step.start().reached(END_AT) {
                 return Ok(());
             }
             {
-                let domain = ctx.domains.typed(r4)?;
-                let physics = domain
-                    .physics_mut()
-                    .ok_or(DomainError::Unsupported("physics on r4"))?;
+                let physics = ctx.domains.physics(r4)?;
                 for (entity, letter) in ctx.app.letters.iter() {
                     let Some(id) = physics.body(entity) else {
                         continue;
                     };
                     let scenery_only = physics
-                        .world()
-                        .manifolds()
-                        .filter(|(key, manifold)| {
-                            !manifold.points.is_empty() && (key.0 == id || key.1 == id)
-                        })
-                        .all(|(key, _)| {
-                            let other = if key.0 == id { key.1 } else { key.0 };
-                            physics
-                                .world()
-                                .body(other)
-                                .is_some_and(|body| body.inv_mass() == 0.0)
-                        });
+                        .touching(entity)
+                        .all(|(_, body)| body.inv_mass() == 0.0);
                     let Some(body) = physics.world().body(id).copied() else {
                         continue;
                     };
@@ -693,32 +564,24 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
                     {
                         continue;
                     }
-                    let touched = physics.world().manifolds().any(|(key, manifold)| {
-                        (key.0 == id || key.1 == id) && !manifold.points.is_empty()
-                    });
-                    if touched {
+                    if physics.touching(entity).next().is_some() {
                         physics.set_collision_filter(entity, GROUP_LANDED, MASK_ALL)?;
                     }
                 }
             }
 
-            stage.tick += 1;
-            if stage.frame() >= FREEZE_FRAME {
-                if !stage.frozen {
-                    stage.frozen = true;
-                    ctx.commands
-                        .try_app_fn(
-                            "freeze",
-                            move |d: &mut Dispatch<'_, HeroStores>| match hold(d, r4, true) {
-                                Ok(()) => Ok(Outcome::Done),
-                                Err(error) => {
-                                    d.app.stage.get_mut().frozen = false;
-                                    Err(error)
-                                }
-                            },
-                        );
-                }
-            } else if stage.frame() >= stage.next_spawn && ctx.app.drops.len() < RAIN_CAP {
+            let now = ctx.step.end();
+            let mut stage = *ctx.app.stage;
+            stage.now = now;
+            if now.fires(FREEZE_AT) {
+                ctx.commands
+                    .try_app_fn("freeze", move |d: &mut Dispatch<'_, HeroStores>| {
+                        freeze(d, r4).map(|()| Outcome::Done)
+                    });
+            } else if !now.reached(FREEZE_AT)
+                && now.reached(stage.next_drop)
+                && ctx.app.drops.len() < RAIN_CAP
+            {
                 let polytope = RAIN_SHAPES[ctx.app.drops.len() % RAIN_SHAPES.len()];
                 let span = word_span(ctx.app.letters.rows());
                 let position = Vec4::new(
@@ -736,7 +599,8 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
                     RAIN_TUMBLE * signed_unit(stage.draw()),
                 );
                 let jitter = (stage.draw() % (2 * RAIN_INTERVAL_JITTER as u64 + 1)) as u32;
-                stage.next_spawn = stage.frame() + RAIN_INTERVAL_MIN + jitter;
+                stage.next_drop =
+                    now.seconds() + (RAIN_INTERVAL_MIN + jitter) as f32 / TICK_HZ as f32;
                 ctx.commands
                     .try_app_fn("rain", move |d: &mut Dispatch<'_, HeroStores>| {
                         spawn_drop(d, r4, polytope, position, tumble).map(Outcome::Spawned)
@@ -749,16 +613,11 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
 
     let mut local = Vec::new();
     let mut scratch = SectionScratch::default();
-    let mut composed = None;
-    session.system(
+    session.system_on_change(
         Phase::Publication,
         "compose",
-        move |ctx: Ctx<'_, HeroStores>| {
-            let tick = ctx.app.stage.get().tick;
-            let key = (tick, ctx.app.mesh.version());
-            if composed == Some(key) {
-                return Ok(());
-            }
+        |app: &HeroStores| (app.stage.now, app.mesh.version()),
+        move |ctx| {
             compose(
                 ctx.app,
                 ctx.domains,
@@ -768,134 +627,78 @@ fn build() -> Result<(Session<HeroStores>, Scene), HostError> {
                 &mut scratch,
                 half_depth,
             );
-            composed = Some((tick, ctx.app.mesh.version()));
             Ok(())
         },
     );
+    session.publish_value("shown", |ctx, shown| {
+        let version = ctx.app.mesh.version();
+        if shown.version != Some(version) {
+            let mesh = ctx.app.mesh.get();
+            shown.mesh.vertices.clone_from(&mesh.vertices);
+            shown.mesh.colors.clone_from(&mesh.colors);
+            shown.mesh.indices.clone_from(&mesh.indices);
+            shown.version = Some(version);
+        }
+        shown.done = ctx.app.stage.now.reached(END_AT);
+        Ok(())
+    });
+    session.views_mut().root_mut().backdrop = Some(Environment::default().backdrop(FLOOR_Y));
 
+    // Taken here so a reset straight after build has a state to return to.
     session.set_initial()?;
-    Ok((session, Scene { r4 }))
+    Ok(session)
 }
 
 fn host(args: Args, record: Option<CaptureRequest>) -> SessionApp<HeroStores> {
     let feed = TriangleFeed::default();
-    let sky = SkyGroundPass::new(Environment::default().ground(FLOOR_Y, true));
     let mut start = record;
     let mut recording = start.is_some();
     SessionApp::with_args(HostConfig::new("loam", bindings()), args)
         .recover_on_fault(RESEED)
-        .pass(Box::new(sky.clone()))
+        .record_every(RECORD_STRIDE)
+        .on_record(|session: &Session<HeroStores>, out| write_mesh(out, session.app.mesh.get()))
         .pass(feed.pass(FragmentShading::FaceNormalLambert))
         .target_fps(TICK_HZ as f32)
-        .on_frame(move |hook: &mut FrameHook<'_, HeroStores>| {
-            let environment = *hook.session.app.environment.get();
-            let root = hook.session.views().root();
-            if let Some(image) = hook.session.views().get(root) {
-                feed.set_view(&image.eye, Rigid::IDENTITY);
-                sky.publish(
-                    &image.eye,
-                    environment.sky,
-                    environment.ground(FLOOR_Y, environment.floor_visible),
-                );
+        .on_published(move |hook: &mut PublishedHook<'_, HeroStores>| {
+            let shown = &hook.published.value;
+            feed.set_view(&hook.eye);
+            if let Some(version) = shown.version {
+                feed.set_mesh(version, &shown.mesh);
             }
-            let version = hook.session.app.mesh.version();
-            feed.set_mesh(version, hook.session.app.mesh.get());
             if let Some(request) = start.take() {
                 if let Err(error) = hook.capture.start(request) {
                     tracing::error!("hero capture start refused: {error}");
                     recording = false;
                 }
             }
-            if recording && hook.session.app.stage.get().frame() >= SEQUENCE_FRAMES {
+            if recording && shown.done {
                 if let Err(error) = hook.capture.stop() {
                     tracing::error!("hero capture stop refused: {error}");
                 }
                 recording = false;
             }
         })
-        .command(
-            "ground",
-            "checker colors and fog: dark|light <r> <g> <b>, fog <density>, reset",
-            |args, submit, out| {
-                Environment::default().apply(args)?;
-                let owned: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-                submit.app_fn("ground", move |d: &mut Dispatch<'_, HeroStores>| {
-                    let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
-                    match d.app.environment.get_mut().apply(&refs) {
-                        Ok(line) => tracing::info!("{line}"),
-                        Err(error) => tracing::error!("{error}"),
-                    }
-                });
-                out.line("ground: applied at the next boundary");
-                Ok(())
-            },
-        )
-        .command(
-            "floor",
-            "the ground plane: on | off (bare flips)",
-            |args, submit, out| {
-                let next = match args.first().copied() {
-                    None => None,
-                    Some("on") => Some(true),
-                    Some("off") => Some(false),
-                    Some(other) => {
-                        out.line(format!("floor: unknown arg `{other}` (try on|off)"));
-                        return Ok(());
-                    }
-                };
-                submit.app_fn("floor", move |d: &mut Dispatch<'_, HeroStores>| {
-                    let visible = d.app.environment.get().floor_visible;
-                    d.app.environment.get_mut().floor_visible = next.unwrap_or(!visible);
-                });
-                out.line("floor: applied at the next boundary");
-                Ok(())
-            },
-        )
 }
 
-fn letter_height(
-    session: &Session<HeroStores>,
-    r4: DomainHandle<EuclideanR4>,
-    index: usize,
-) -> Option<f32> {
-    let entity = session
-        .app
-        .letters
-        .iter()
-        .find(|(_, letter)| letter.index == index)
-        .map(|(entity, _)| entity)?;
-    let pose = session.domains().read(r4).ok()?.poses().get(entity)?;
-    Some(pose.point.y)
-}
+// A record dump keeps every 20th step so it stays short enough to diff.
+const RECORD_STRIDE: NonZeroU32 = NonZeroU32::new(20).expect("the record stride is nonzero");
 
-fn headless(
-    session: &mut Session<HeroStores>,
-    r4: DomainHandle<EuclideanR4>,
-    steps: u32,
-) -> Result<(), HostError> {
-    host::run_headless(session, &HostConfig::new("hero", bindings()), steps, &[])?;
-    let y = letter_height(session, r4, 0).ok_or_else(|| refused("the first letter has no pose"))?;
-    let frame = session.app.stage.get().frame();
-    println!("hero letter 0 after {steps} ticks (frame {frame}): y = {y:.4}");
+fn write_mesh(out: &mut String, mesh: &TriangleMesh<3>) -> std::fmt::Result {
+    for (vertex, color) in mesh.vertices.iter().zip(&mesh.colors) {
+        writeln!(out, "vertex {vertex:?} color {color:?}")?;
+    }
+    for face in &mesh.indices {
+        writeln!(out, "face {face:?}")?;
+    }
     Ok(())
 }
 
 fn main() -> ExitCode {
-    let outcome = launch_or_headless(
-        |args| {
-            let (session, _) = build()?;
-            let record = record_request(&args);
-            Ok((session, host(args, record)))
-        },
-        |args| {
-            let steps = args
-                .flag_value("headless")
-                .and_then(|count| count.parse::<u32>().ok())
-                .ok_or_else(|| refused("--headless needs a tick count"))?;
-            let (mut session, scene) = build()?;
-            headless(&mut session, scene.r4, steps)
-        },
-    );
+    let outcome = launch(|args| {
+        let session = build()?;
+        let record = record_request(&args);
+        Ok((session, host(args, record)))
+    });
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -907,355 +710,19 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use loam::math::Rotor4;
-    use loam::physics::manifold::PENETRATION_SLOP;
-    use loam::runtime::{Input, Publication};
-    use loam::shape::Visualizable;
-
     use super::*;
 
-    const SETTLE_TICKS: u32 = (ASSEMBLE_FRAMES + 60) * SUBSTEPS;
-
-    const REST_WINDOW_FRAMES: u32 = 60;
-    const REST_SPREAD: f32 = 0.02;
-    const TUNNEL_DEPTH: f32 = 0.075;
-
-    fn solids() -> Vec<GlyphSolid> {
-        let font = FontRef::try_from_slice(FONT).expect("the vendored font parses");
-        layout_word(&font, WORD, &GlyphParams::default()).expect("the word lays out")
-    }
-
-    fn morph_field() -> MorphField {
-        let params = GlyphParams::default();
-        MorphField::new(&solids(), params.em_size / params.resolution as f32)
-            .expect("a morph field")
-    }
-
-    fn seeded(seed: u64) -> (Session<HeroStores>, Scene) {
-        let (mut session, scene) = build().expect("hero builds");
-        session.app.stage.set(Stage::seeded(seed));
-        (session, scene)
-    }
-
-    fn frames(session: &mut Session<HeroStores>, count: u32) {
-        for _ in 0..count {
-            session.boundary(Input::default()).expect("boundary");
-            for _ in 0..SUBSTEPS {
-                session.tick().expect("tick");
-            }
-        }
-    }
-
-    fn rows(session: &Session<HeroStores>) -> Vec<Letter> {
-        let mut letters: Vec<Letter> = session
-            .app
-            .letters
-            .iter()
-            .map(|(_, letter)| letter.clone())
-            .collect();
-        letters.sort_by_key(|letter| letter.index);
-        letters
-    }
-
-    fn poses(session: &Session<HeroStores>, r4: DomainHandle<EuclideanR4>) -> Vec<Vec4> {
-        let mut found: Vec<(usize, Entity)> = session
-            .app
-            .letters
-            .iter()
-            .map(|(entity, letter)| (letter.index, entity))
-            .collect();
-        found.sort_by_key(|(index, _)| *index);
-        let domain = session.domains().read(r4).expect("the r4 domain");
-        found
-            .iter()
-            .filter_map(|(_, entity)| domain.poses().get(*entity).map(|pose| pose.point))
-            .collect()
-    }
-
-    fn letter_rotors(session: &Session<HeroStores>, r4: DomainHandle<EuclideanR4>) -> Vec<Rotor4> {
-        let mut found: Vec<(usize, Entity)> = session
-            .app
-            .letters
-            .iter()
-            .map(|(entity, letter)| (letter.index, entity))
-            .collect();
-        found.sort_by_key(|(index, _)| *index);
-        let domain = session.domains().read(r4).expect("the r4 domain");
-        found
-            .iter()
-            .filter_map(|(_, entity)| domain.poses().get(*entity).map(|pose| pose.frame))
-            .collect()
-    }
-
-    fn drop_poses(session: &Session<HeroStores>, r4: DomainHandle<EuclideanR4>) -> Vec<Vec4> {
-        let entities: Vec<Entity> = session.app.drops.iter().map(|(entity, _)| entity).collect();
-        let domain = session.domains().read(r4).expect("the r4 domain");
-        entities
-            .iter()
-            .filter_map(|entity| domain.poses().get(*entity).map(|pose| pose.point))
-            .collect()
-    }
-
-    fn bounds_of(mesh: &TriangleMesh<3>) -> Option<(Vec3, Vec3)> {
-        mesh.vertices
-            .iter()
-            .map(|v| (Vec3::from_array(*v), Vec3::from_array(*v)))
-            .reduce(|(lo, hi), (l, h)| (lo.min(l), hi.max(h)))
-    }
-
-    fn section_bounds(morph: &mut MorphField, u: f32) -> (Vec3, Vec3) {
-        let mut mesh = TriangleMesh::<3>::default();
-        assert!(
-            append_field_prism(
-                morph.blend_at(u),
-                0.5 * GlyphParams::default().depth,
-                LETTER_COLOR,
-                &mut mesh,
-            ),
-            "the blend at {u} cut an empty section"
-        );
-        bounds_of(&mesh).expect("a non-empty section has bounds")
-    }
-
-    fn blend_of(letter: &Letter, at: Vec4) -> f32 {
-        letter.index as f32 - (at.w - W_SLICE) / W_PER_LETTERFORM
-    }
-
-    fn composed(session: &mut Session<HeroStores>) -> TriangleMesh<3> {
+    #[test]
+    fn reset_at_same_tick() {
+        let mut session = build().expect("hero builds");
+        session.app.stage.set(Stage::seeded(DEFAULT_SEED));
         let mut publication = Publication::default();
-        session.publish(&mut publication).expect("publication");
-        session.app.mesh.get().clone()
-    }
-
-    fn deepest_dynamic_point(
-        session: &mut Session<HeroStores>,
-        r4: DomainHandle<EuclideanR4>,
-    ) -> f32 {
-        let world = physics_of(session.domains_mut(), r4)
-            .expect("physics")
-            .world();
-        let mut deepest = f32::INFINITY;
-        for body in world.bodies().iter() {
-            let Some(Shape::ConvexPolytope4D { vertices }) = world.collider(body) else {
-                continue;
-            };
-            for v in vertices {
-                deepest = deepest.min(body.orientation.rotation.apply(*v).y + body.position.y);
-            }
-        }
-        deepest
-    }
-
-    const ONE_SUBSTEP_FALL: f32 = -GRAVITY / ((TICK_HZ * SUBSTEPS) * (TICK_HZ * SUBSTEPS)) as f32;
-
-    fn run(steps: u32) -> (Session<HeroStores>, Scene) {
-        let (mut session, scene) = build().expect("hero builds");
-        host::run_headless(
-            &mut session,
-            &HostConfig::new("hero", bindings()),
-            steps,
-            &[],
-        )
-        .expect("headless");
-        (session, scene)
-    }
-
-    #[test]
-    fn a_released_letter_falls_its_clearance_onto_the_floor() {
-        let (session, scene) = run(SETTLE_TICKS);
-        let r4 = scene.r4;
-        let mark = session
-            .app
-            .letters
-            .iter()
-            .find(|(_, letter)| letter.index == 0)
-            .map(|(_, letter)| letter.mark.y)
-            .expect("the first letter");
-        let y = letter_height(&session, r4, 0).expect("a pose");
-        assert!(
-            (y - (mark - RELEASE_CLEARANCE)).abs() < 2.0 * PENETRATION_SLOP,
-            "the letter rests at {y}, not at its mark {mark} less the {RELEASE_CLEARANCE} clearance"
-        );
-    }
-
-    #[test]
-    fn the_letters_are_directed_until_the_solver_owns_them() {
-        let (mut session, scene) = run(ASSEMBLE_FRAMES * SUBSTEPS);
-        let r4 = scene.r4;
-        let bodies = |session: &mut Session<HeroStores>| {
-            let physics = physics_of(session.domains_mut(), r4).expect("physics");
-            physics.world().bodies().len()
-        };
-        assert_eq!(bodies(&mut session), 1, "a letter became a body early");
-        let directed = letter_height(&session, r4, 0).expect("a pose");
-
-        host::run_headless(&mut session, &HostConfig::new("hero", bindings()), 1, &[])
-            .expect("headless");
-        assert_eq!(
-            bodies(&mut session),
-            session.app.letters.len() + 1,
-            "the release left a letter without a body"
-        );
-        let handed = letter_height(&session, r4, 0).expect("a pose");
-        assert!(
-            (handed - directed).abs() < 2.0 * ONE_SUBSTEP_FALL,
-            "the release put the letter at {handed}, not where the director left it at {directed}"
-        );
-    }
-
-    #[test]
-    fn record_takes_a_directory_or_the_default_and_is_off_otherwise() {
-        assert!(record_request(&Args::from_argv(["--fps=60"])).is_none());
-        let bare = record_request(&Args::from_argv(["--record"])).expect("a bare flag records");
-        assert!(matches!(
-            bare,
-            CaptureRequest::StartSequence { dir: None, .. }
-        ));
-        let named = record_request(&Args::from_argv(["--record=out/hero"])).expect("a named dir");
-        let CaptureRequest::StartSequence { dir, .. } = named else {
-            panic!("--record started something other than a sequence");
-        };
-        assert_eq!(dir, Some(PathBuf::from("out/hero")));
-    }
-
-    #[test]
-    fn morph_wraps_across_both_ends_of_the_word() {
-        let mut morph = morph_field();
-        let cycle = morph.letters.len() as f32;
-        let point = Vec2::new(0.13, 0.27);
-        for position in [-2.25_f32, -0.25, 0.0, 0.25, 3.5] {
-            let expected = morph.blend_at(position).sample(point);
-            let wrapped = morph.blend_at(position + 2.0 * cycle).sample(point);
-            assert!((expected - wrapped).abs() < 1e-6);
-        }
-    }
-
-    #[test]
-    fn at_its_mark_every_letter_cuts_its_own_letterform() {
-        let (mut session, scene) = seeded(DEFAULT_SEED);
-        let r4 = scene.r4;
-        frames(&mut session, ASSEMBLE_FRAMES);
-        let letters = rows(&session);
-        let at = poses(&session, r4);
-        let mut morph = morph_field();
-        let baked = solids();
-        let cell = GlyphParams::default().em_size / GlyphParams::default().resolution as f32;
-        for letter in &letters {
-            let (lo, hi) = section_bounds(&mut morph, blend_of(letter, at[letter.index]));
-            let solid = baked
-                .iter()
-                .filter(|solid| !solid.is_blank())
-                .nth(letter.index)
-                .expect("a solid per letter");
-            let own = bounds_of(&Visualizable::<3>::to_triangles(solid).expect("glyph mesh"))
-                .expect("baked mesh");
-            let (want, got) = (own.1 - own.0, hi - lo);
-            assert!(
-                (want.x - got.x).abs() < 2.0 * cell && (want.y - got.y).abs() < 2.0 * cell,
-                "letter {} settled on a section {got:?} against its own {want:?}",
-                letter.index
-            );
-        }
-    }
-
-    #[test]
-    fn a_letter_mid_approach_is_a_different_letterform_and_not_a_scaled_copy() {
-        let mut morph = morph_field();
-        let (mut settled, scene) = seeded(DEFAULT_SEED);
-        let r4 = scene.r4;
-        frames(&mut settled, ASSEMBLE_FRAMES);
-        let own = section_bounds(
-            &mut morph,
-            blend_of(&rows(&settled)[0], poses(&settled, r4)[0]),
-        );
-
-        let (mut approaching, scene) = seeded(DEFAULT_SEED);
-        let r4 = scene.r4;
-        frames(&mut approaching, LETTER_SLIDE_FRAMES / 2);
-        let u = blend_of(&rows(&approaching)[0], poses(&approaching, r4)[0]);
-        let mid = section_bounds(&mut morph, u);
-        let nearest = section_bounds(&mut morph, u.floor());
-        assert_ne!(
-            mid,
-            nearest,
-            "the section at {u} equals the letterform at {}, so the morph snaps",
-            u.floor()
-        );
-
-        let ratio = |(lo, hi): (Vec3, Vec3)| (hi.x - lo.x) / (hi.y - lo.y);
-        assert!(
-            (ratio(mid) - ratio(own)).abs() > 0.05,
-            "mid-approach aspect {} matches its own {}, so the section is only scaling",
-            ratio(mid),
-            ratio(own)
-        );
-        assert!(mid.1.y - mid.0.y > 0.1, "the approach drew almost nothing");
-    }
-
-    #[test]
-    fn the_assembly_slides_every_letter_onto_its_mark_before_the_release() {
-        let (mut session, scene) = seeded(DEFAULT_SEED);
-        let r4 = scene.r4;
-        let letters = rows(&session);
-        let entries = poses(&session, r4);
-        for letter in &letters {
-            assert_eq!(entries[letter.index], letter.entry);
-            let offset = letter.entry - letter.mark;
-            assert!(
-                offset.w.abs() > W_PER_LETTERFORM,
-                "letter {} starts less than a letterform away, so it never morphs",
-                letter.index
-            );
-            assert!(
-                offset.truncate().length() < 1e-6,
-                "letter {} enters by a 3D translation of {:?}",
-                letter.index,
-                offset.truncate()
-            );
-        }
-        frames(&mut session, LETTER_STAGGER_FRAMES);
-        assert_ne!(poses(&session, r4), entries);
-
-        frames(&mut session, ASSEMBLE_FRAMES - LETTER_STAGGER_FRAMES);
-        let marks: Vec<Vec4> = letters.iter().map(|letter| letter.mark).collect();
-        assert_eq!(poses(&session, r4), marks, "a letter missed its mark");
-    }
-
-    #[test]
-    fn the_assembled_word_is_centred_on_what_the_camera_aims_at() {
-        let (session, _) = seeded(DEFAULT_SEED);
-        let letters = rows(&session);
-        let centre = word_centre(&letters);
-        assert!(
-            centre.x.abs() < 1e-5,
-            "the word centres at x {}, so it hangs off one side of frame",
-            centre.x
-        );
-        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
-        for letter in &letters {
-            for v in &letter.hull {
-                lo = lo.min(letter.mark.x + v.x);
-                hi = hi.max(letter.mark.x + v.x);
-            }
-        }
-        assert!(
-            (lo + hi).abs() < 1e-5,
-            "the word spans [{lo}, {hi}] em, which is not symmetric about the aim"
-        );
-        assert!(
-            centre.y > 0.0 && centre.y < 1.0,
-            "the word centres at y {}, outside a one-em letter's own height",
-            centre.y
-        );
-    }
-
-    #[test]
-    fn reset_at_the_same_tick_rebuilds_the_published_mesh() {
-        let (mut session, _) = seeded(DEFAULT_SEED);
-        let before = composed(&mut session);
+        session.publish(&mut publication, 1.0).expect("publication");
+        let before = session.app.mesh.get().clone();
 
         session.reset().expect("reset");
-        let after = composed(&mut session);
+        session.publish(&mut publication, 1.0).expect("publication");
+        let after = session.app.mesh.get().clone();
 
         assert_eq!(
             (after.vertices, after.indices, after.colors),
@@ -1263,186 +730,75 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_settled_letter_is_drawn_standing_on_the_floor_within_the_covers_margin() {
-        let (mut session, _scene) = seeded(DEFAULT_SEED);
-        frames(&mut session, RAIN_START_FRAME);
-        assert!(session.app.drops.is_empty(), "the rain started early");
-        let margin = solids()
-            .iter()
-            .map(GlyphSolid::collider_margin)
-            .fold(0.0f32, f32::max);
-
-        let mesh = composed(&mut session);
-        assert!(!mesh.vertices.is_empty(), "the settled word drew nothing");
-        let drawn = mesh.vertices.iter().fold(f32::INFINITY, |m, v| m.min(v[1]));
+    fn publish(session: &mut Session<HeroStores>, into: &mut Publication<Shown>) {
+        session.publish(into, 1.0).expect("publication");
+        let mesh = session.app.mesh.get();
         assert!(
-            drawn > -2.0 * PENETRATION_SLOP,
-            "the word is drawn {drawn} below the floor"
-        );
-        assert!(
-            drawn < margin + 2.0 * PENETRATION_SLOP,
-            "the word floats {drawn} above the floor, past the {margin} margin"
+            into.value.mesh.vertices == mesh.vertices
+                && into.value.mesh.indices == mesh.indices
+                && into.value.mesh.colors == mesh.colors,
+            "the published mesh is not the session's mesh"
         );
     }
 
     #[test]
-    fn the_seed_moves_the_rain_and_leaves_the_letters_landing_untouched() {
-        let settled = |seed: u64| {
-            let (mut session, scene) = seeded(seed);
-            let r4 = scene.r4;
-            frames(&mut session, RAIN_START_FRAME);
-            let letters = poses(&session, r4);
-            frames(&mut session, REST_WINDOW_FRAMES);
-            (letters, drop_poses(&session, r4))
-        };
-        let (letters_a, drops_a) = settled(DEFAULT_SEED);
-        let (letters_b, drops_b) = settled(DEFAULT_SEED ^ 0xdead_beef);
-        assert_eq!(
-            letters_a, letters_b,
-            "the seed reached the letters' landing"
-        );
+    fn mesh_through_ticks_and_reset() {
+        let mut session = build().expect("hero builds");
+        let mut publication = Publication::default();
+        publish(&mut session, &mut publication);
+        let first = publication.value.mesh.vertices.clone();
+
+        for _ in 0..TICK_HZ {
+            session.tick(&Sequential).expect("tick");
+        }
+        publish(&mut session, &mut publication);
         assert!(
-            drops_a.len() != drops_b.len() || drops_a.iter().zip(&drops_b).any(|(a, b)| a != b),
-            "two seeds rained identically, so the seed is decoration"
+            publication.value.mesh.vertices != first,
+            "a second of the scene left the mesh as it was, so the copy was never exercised"
+        );
+
+        session.reset().expect("reset");
+        publish(&mut session, &mut publication);
+    }
+
+    #[test]
+    fn backdrop_after_reset() {
+        let mut session = build().expect("hero builds");
+        let built = session.views_mut().root_mut().backdrop;
+        assert!(built.is_some(), "hero was built with no backdrop");
+
+        session.views_mut().root_mut().backdrop = None;
+        session.reset().expect("reset");
+
+        assert!(
+            session.views_mut().root_mut().backdrop == built,
+            "the reset lost the backdrop"
         );
     }
 
     #[test]
-    fn release_rain_and_freeze_preserve_the_sequence_boundaries() {
-        let (mut session, scene) = seeded(DEFAULT_SEED);
-        let r4 = scene.r4;
-        let letters = rows(&session);
-        let mut rest_start: Vec<Vec4> = Vec::new();
-        let mut frozen: Vec<(Vec4, Rotor4)> = Vec::new();
-        let mut falling_seen = false;
-        let mut slice_sweep = 0.0_f32;
-        for frame in 1..=SEQUENCE_FRAMES {
-            frames(&mut session, 1);
-            let deepest = deepest_dynamic_point(&mut session, r4);
-            assert!(
-                deepest > -TUNNEL_DEPTH,
-                "floor depth {deepest} at frame {frame}"
-            );
-
-            let at = poses(&session, r4);
-            if frame == RAIN_START_FRAME - REST_WINDOW_FRAMES {
-                rest_start = at.clone();
+    fn release_after_reset() {
+        let mut session = build().expect("hero builds");
+        let past_release = (ASSEMBLE * (TICK_HZ * SUBSTEPS) as f32) as u32 + 2;
+        for run in ["the first run", "the run after a reset"] {
+            for _ in 0..past_release {
+                session.tick(&Sequential).expect("tick");
             }
-            for letter in &letters {
-                let pose = at[letter.index];
-                if (ASSEMBLE_FRAMES..=RAIN_START_FRAME).contains(&frame) {
-                    assert!(
-                        (pose.w - letter.mark.w).abs() < 1e-6,
-                        "the floor moved letter {} through w",
-                        letter.index
-                    );
-                }
-                if (RAIN_START_FRAME - REST_WINDOW_FRAMES..=RAIN_START_FRAME).contains(&frame) {
-                    assert!(
-                        pose.distance(rest_start[letter.index]) < REST_SPREAD,
-                        "letter {} has not settled",
-                        letter.index
-                    );
-                }
-            }
-
-            for (index, rotor) in letter_rotors(&session, r4).iter().enumerate() {
-                let determinant = rotor.apply(Vec4::X).truncate().dot(
-                    rotor
-                        .apply(Vec4::Y)
-                        .truncate()
-                        .cross(rotor.apply(Vec4::Z).truncate()),
-                );
-                assert!(
-                    (determinant - 1.0).abs() < 1e-3,
-                    "letter {index} left the draw's rotation plane at frame {frame}"
-                );
-            }
-            let world = physics_of(session.domains_mut(), r4)
-                .expect("physics")
-                .world();
-            for (key, manifold) in world.manifolds() {
-                if manifold.points.is_empty() {
-                    continue;
-                }
-                let falling = |id: BodyId| {
-                    world
-                        .body(id)
-                        .is_some_and(|body| body.collision_group == GROUP_FALLING)
-                };
-                assert!(
-                    !(falling(key.0) && falling(key.1)),
-                    "airborne drops collided"
-                );
-            }
-            falling_seen |= (0..world.bodies().len())
-                .map(|dense| world.bodies().id_at(dense))
-                .any(|id| {
-                    world
-                        .body(id)
-                        .is_some_and(|body| body.collision_group == GROUP_FALLING)
-                });
-
-            if frame == RAIN_START_FRAME {
-                assert!(session.app.drops.is_empty(), "the rain started early");
-            }
-            if frame == FREEZE_FRAME {
-                let drops = session.app.drops.len();
-                let world = physics_of(session.domains_mut(), r4)
-                    .expect("physics")
-                    .world();
-                let landed = (0..world.bodies().len())
-                    .map(|dense| world.bodies().id_at(dense))
-                    .filter(|id| {
-                        world
-                            .body(*id)
-                            .is_some_and(|body| body.collision_group == GROUP_LANDED)
-                    })
-                    .count();
-                assert!(
-                    falling_seen && landed * 2 > drops,
-                    "{landed} of {drops} drops had landed by the freeze"
-                );
-                frozen = (0..world.bodies().len())
-                    .map(|dense| world.bodies().id_at(dense))
-                    .map(|id| world.body(id).expect("dense body"))
-                    .map(|body| (body.position, body.orientation.rotation))
-                    .collect();
-            }
-            if frame > FREEZE_FRAME {
-                let stage = *session.app.stage.get();
-                let world = physics_of(session.domains_mut(), r4)
-                    .expect("physics")
-                    .world();
-                let now: Vec<(Vec4, Rotor4)> = (0..world.bodies().len())
-                    .map(|dense| world.bodies().id_at(dense))
-                    .map(|id| world.body(id).expect("dense body"))
-                    .map(|body| (body.position, body.orientation.rotation))
-                    .collect();
-                assert_eq!(
-                    now, frozen,
-                    "the pile moved after the freeze at frame {frame}"
-                );
-                slice_sweep = slice_sweep.max((stage.slice() - W_SLICE).abs());
-            }
-        }
-        assert!(
-            slice_sweep > 0.9 * SLICE_SWEEP_RANGE,
-            "the slice swept {slice_sweep}, not {SLICE_SWEEP_RANGE}"
-        );
-
-        let mesh = composed(&mut session);
-        assert_eq!(mesh.colors.len(), mesh.vertices.len());
-        let count = mesh.vertices.len() as u32;
-        assert!(count > 4, "the mesh holds almost nothing");
-        for tri in &mesh.indices {
-            for index in tri {
-                assert!(*index < count, "index {index} past {count} vertices");
-            }
-        }
-        for v in &mesh.vertices {
-            assert!(v.iter().all(|c| c.is_finite()), "non-finite vertex {v:?}");
+            let r4 = session
+                .domains()
+                .named::<EuclideanR4>("r4")
+                .expect("hero has one r4 domain");
+            let domain = session.domains().read(r4).expect("the r4 domain");
+            let physics = domain.physics().expect("the r4 domain has physics");
+            let letters = session.app.letters.len();
+            let bodies = session
+                .app
+                .letters
+                .iter()
+                .filter(|(entity, _)| physics.body(*entity).is_some())
+                .count();
+            assert_eq!(bodies, letters, "{run} released {bodies} of the letters");
+            session.reset().expect("reset");
         }
     }
 }

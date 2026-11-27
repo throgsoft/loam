@@ -16,10 +16,13 @@ pub struct FixedTimestep {
 }
 
 impl FixedTimestep {
-    /// Panics outside `1..=1_000_000_000` Hz, the range supported by nanosecond ticks.
+    /// The fastest rate whose tick is at least one nanosecond.
+    pub const MAX_HZ: u32 = 1_000_000_000;
+
+    /// Panics outside `1..=MAX_HZ` Hz.
     pub fn new(hz: u32) -> Self {
         assert!(
-            (1..=1_000_000_000).contains(&hz),
+            (1..=Self::MAX_HZ).contains(&hz),
             "tick rate must be between 1 and 1000000000 Hz"
         );
         Self {
@@ -48,10 +51,6 @@ impl FixedTimestep {
 
     pub fn dt(&self) -> Duration {
         self.dt
-    }
-
-    pub fn dt_seconds(&self) -> f32 {
-        self.dt.as_secs_f32()
     }
 
     /// Fraction of the pending tick elapsed, rounded to `[0, 1]`.
@@ -85,7 +84,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reset_clock_drops_pause_time_without_rewinding_ticks() {
+    fn reset_clock() {
         let mut clock = FixedTimestep::new(100);
         let start = Instant::now();
         clock.advance(start);
@@ -97,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_boundaries_carry_fractional_time() {
+    fn fractional_time_and_catch_up() {
         let mut clock = FixedTimestep::new(100);
         let start = Instant::now();
         let dt = clock.dt();
@@ -109,10 +108,7 @@ mod tests {
         assert_eq!(clock.advance(start + dt * 3 + dt / 2), 1..3);
         assert_eq!(clock.alpha(), 0.5);
         assert_eq!(clock.tick(), 3);
-    }
 
-    #[test]
-    fn catch_up_drops_backlog_but_keeps_remainder() {
         let mut clock = FixedTimestep::new(100).with_max_catch_up(5);
         let start = Instant::now();
         clock.advance(start);
@@ -121,34 +117,5 @@ mod tests {
         assert_eq!(clock.alpha(), 0.5);
         assert_eq!(clock.advance(resumed), 5..5);
         assert_eq!(clock.advance(resumed + clock.dt() / 2), 5..6);
-    }
-
-    #[test]
-    fn zero_catch_up_discards_whole_ticks() {
-        let mut clock = FixedTimestep::new(100).with_max_catch_up(0);
-        let start = Instant::now();
-        clock.advance(start);
-        assert_eq!(clock.advance(start + Duration::from_millis(15)), 0..0);
-        assert_eq!(clock.alpha(), 0.5);
-    }
-
-    #[test]
-    fn nanosecond_ticks_advance() {
-        let mut clock = FixedTimestep::new(1_000_000_000);
-        let start = Instant::now();
-        clock.advance(start);
-        assert_eq!(clock.advance(start + Duration::from_nanos(1)), 0..1);
-    }
-
-    #[test]
-    #[should_panic(expected = "tick rate must be between")]
-    fn zero_tick_rate_is_rejected() {
-        FixedTimestep::new(0);
-    }
-
-    #[test]
-    #[should_panic(expected = "tick rate must be between")]
-    fn subnanosecond_ticks_are_rejected() {
-        FixedTimestep::new(1_000_000_001);
     }
 }

@@ -1,5 +1,4 @@
 [package]
-build = "../loam-app/build_info.rs"
 name = "polytope_playground"
 version.workspace = true
 edition.workspace = true
@@ -12,14 +11,10 @@ keywords = ["4d", "polytope", "rotation", "demo", "wgpu"]
 categories = ["game-development", "graphics", "visualization"]
 
 [dependencies]
-anyhow.workspace = true
 glam.workspace = true
 
 loam = { path = "../..", version = "0.1.0", default-features = false, features = ["app", "egui", "physics", "render", "text"] }
 loam-egui = { path = "../loam-egui", version = "0.1.0" }
-
-[dev-dependencies]
-loam-time = { path = "../loam-time", version = "0.1.0", default-features = false }
 
 [features]
 default = ["capture"]

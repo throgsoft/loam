@@ -1,11 +1,10 @@
+use loam_render::depth::DEPTH_FORMAT;
 use loam_render::device::{FeatureRequest, GpuContext};
-use loam_render::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget};
-use loam_render::raymarch::{
-    polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode, Hyperslice4DUniforms,
-    HYPERSLICE_KERNEL_WGSL,
+use loam_render::hyperslice::{
+    hyperslice_kernel_wgsl, polytope_stub_sdfs_wgsl, BodyUniform, Hyperslice4DNode,
 };
+use loam_render::pass::{ColorLoad, FrameFormat, FramePass, FrameTarget};
 use loam_render::sky_ground::SKY_HORIZON;
-use loam_render::view::DEPTH_FORMAT;
 use loam_render::{HyperslicePass, Viewport};
 use wgpu::*;
 
@@ -17,7 +16,6 @@ const CELLS: u32 = 4;
 const TOLERANCE: u8 = 2;
 
 const FLOOR_SCENE_WGSL: &str = r#"
-const LOAM_PRIM_HYPERSPHERE4D: u32 = 0u;
 const LOAM_PRIM_HALFSPACE4D: u32 = 1u;
 const LOAM_PRIM_OTHER: u32 = 255u;
 struct LoamSceneHit { dist: f32, kind: u32 }
@@ -39,7 +37,7 @@ fn unorm_byte(linear: f64) -> u8 {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
+fn filmstrip_clear_gpu_probe() {
     let instance = Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
         power_preference: PowerPreference::LowPower,
@@ -59,13 +57,7 @@ fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
 
     let module = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("hyperslice-strip-background"),
-        source: ShaderSource::Wgsl(
-            format!(
-                "{HYPERSLICE_KERNEL_WGSL}\n{}\n{FLOOR_SCENE_WGSL}",
-                polytope_stub_sdfs_wgsl()
-            )
-            .into(),
-        ),
+        source: ShaderSource::Wgsl(probe_source().into()),
     });
     let target = device.create_texture(&TextureDescriptor {
         label: Some("hyperslice-strip-background target"),
@@ -89,10 +81,7 @@ fn every_filmstrip_cell_clears_to_the_sky_rather_than_black_gpu_probe() {
         u.camera_pos = [0.0, 1.8, 6.0];
         u.resolution = [SIZE[0] as f32, SIZE[1] as f32];
     }
-    let cells: Vec<(Viewport, f32, BodyUniform)> = Viewport::full(SIZE)
-        .split_horizontal(CELLS)
-        .map(|vp| (vp, 0.0, BodyUniform::default()))
-        .collect();
+    let cells = strip_cells(CELLS);
     let mut strip_encoder = device.create_command_encoder(&Default::default());
     node.record_strip(
         &device,
@@ -178,9 +167,10 @@ fn strip_cells(count: u32) -> Vec<(Viewport, f32, BodyUniform)> {
 
 fn probe_source() -> String {
     format!(
-        "{HYPERSLICE_KERNEL_WGSL}
+        "{}
 {}
 {FLOOR_SCENE_WGSL}",
+        hyperslice_kernel_wgsl(),
         polytope_stub_sdfs_wgsl()
     )
 }
@@ -206,7 +196,7 @@ fn probe_attachment(device: &Device, format: TextureFormat, label: &'static str)
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn a_published_strip_records_a_pipeline_its_attachments_accept_gpu_probe() {
+fn strip_pipeline_gpu_probe() {
     let gpu = pollster::block_on(GpuContext::new(
         Instance::default(),
         FeatureRequest::default(),
@@ -233,7 +223,6 @@ fn a_published_strip_records_a_pipeline_its_attachments_accept_gpu_probe() {
         },
     )
     .expect("the hyperslice pass attaches");
-    pass.publish(Hyperslice4DUniforms::default(), &[]);
     pass.publish_strip(&strip_cells(CELLS));
 
     gpu.device.push_error_scope(ErrorFilter::Validation);

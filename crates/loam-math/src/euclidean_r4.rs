@@ -1,10 +1,8 @@
-use std::borrow::Cow;
-
 use glam::Vec4;
 use serde::{Deserialize, Serialize};
 
 use crate::bivector::{Rotor, Rotor4};
-use crate::space::{IsometryGroup, Space, WgslAccuracy, WgslSpace, FLAT_CHART_MAX_ARC};
+use crate::space::{IsometryGroup, Space};
 
 /// Rigid motion of R⁴; callers must keep the rotor unit length.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -109,51 +107,5 @@ impl IsometryGroup for EuclideanR4 {
 
     fn iso_transport(&self, iso: Iso4Flat, _at: Vec4, v: Vec4) -> Vec4 {
         iso.rotation.apply(v)
-    }
-}
-
-impl WgslSpace for EuclideanR4 {
-    fn wgsl_impl(&self) -> Cow<'static, str> {
-        Cow::Owned(format!(
-            "const LOAM_MAX_ARC: f32 = {FLAT_CHART_MAX_ARC:?};{WGSL_IMPL}"
-        ))
-    }
-
-    fn wgsl_accuracy(&self) -> WgslAccuracy {
-        WgslAccuracy::Exact
-    }
-}
-
-const WGSL_IMPL: &str = r#"
-// loam-math :: EuclideanR4 (v0 Space WGSL ABI)
-fn loam_distance(a: vec4<f32>, b: vec4<f32>) -> f32 { return length(a - b); }
-fn loam_origin_distance(p: vec4<f32>) -> f32 { return length(p); }
-fn loam_exp(at: vec4<f32>, v: vec4<f32>) -> vec4<f32> { return at + v; }
-fn loam_log(p_from: vec4<f32>, p_to: vec4<f32>) -> vec4<f32> { return p_to - p_from; }
-struct LoamGeodesicStep { p: vec4<f32>, v: vec4<f32> }
-fn loam_geodesic_step(p: vec4<f32>, v: vec4<f32>, s: f32) -> LoamGeodesicStep {
-    return LoamGeodesicStep(loam_exp(p, v * s), v);
-}
-"#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-
-    fn r4() -> EuclideanR4 {
-        EuclideanR4
-    }
-
-    #[test]
-    fn iso_transport_ignores_translation() {
-        let s = r4();
-        let iso = Iso4Flat::from_translation(Vec4::new(100.0, -50.0, 7.0, 12.0));
-        let v = Vec4::new(1.0, 0.0, 0.0, 0.0);
-        let transported = s.iso_transport(iso, Vec4::ZERO, v);
-        assert_relative_eq!(transported.x, v.x);
-        assert_relative_eq!(transported.y, v.y);
-        assert_relative_eq!(transported.z, v.z);
-        assert_relative_eq!(transported.w, v.w);
     }
 }

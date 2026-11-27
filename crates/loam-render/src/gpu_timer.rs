@@ -111,9 +111,9 @@ impl SectionTimer {
         self.resolved = Some(self.open);
     }
 
-    pub fn after_submit(&mut self) -> bool {
+    pub fn after_submit(&mut self) {
         let Some(open) = self.resolved.take() else {
-            return false;
+            return;
         };
         let bytes = SECTION_BYTES * open as u64;
         let names = self.names;
@@ -149,6 +149,5 @@ impl SectionTimer {
                 }
                 flag.store(false, Ordering::Release);
             });
-        true
     }
 }

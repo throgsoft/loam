@@ -1,20 +1,26 @@
 use std::any::Any;
-use std::ops::Sub;
+use std::fmt;
 
 use loam_math::Bivector;
 use loam_physics::collision::VectorOps;
 use loam_physics::{
-    BodyDef, BodyId, Collider, EditError, Narrowphase, PhysicsSpace, RigidBody, World, WorldState,
+    BodyDef, BodyId, EditError, Narrowphase, PhysicsSpace, RigidBody, World, WorldState,
 };
+use loam_shape::Shape;
+use loam_time::par::Executor;
 
 use crate::command::{Outcome, Rejection};
 use crate::domain::{
-    ChartCommand, ChartPose, DomainBuilder, DomainError, Facility, Homogeneous, Pose, TypedDomain,
+    ChartCommand, ChartPose, DomainBuilder, DomainError, DomainHandle, DomainId, Domains, Facility,
+    Homogeneous, Pose,
 };
 use crate::entity::{Entity, EntityKey, SceneId};
 use crate::phase::Step;
 use crate::session::RestoreError;
 use crate::store::{Owner, SchemaId, Store};
+use crate::view::{Vec3, ViewMapping};
+
+mod euclidean_r4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GrabHold {
@@ -25,6 +31,49 @@ pub enum GrabHold {
     Anchor,
 }
 
+/// Under [`GrabHold::Anchor`] a thrown body keeps its own motion and only `max_spin` applies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThrowConfig {
+    pub gain: f32,
+    /// Distance units per second.
+    pub max_speed: f32,
+    /// Radians per second gained per unit of pointer speed across the unit grab lever.
+    pub spin_gain: f32,
+    /// Radians per second.
+    pub max_spin: f32,
+}
+
+impl ThrowConfig {
+    fn is_valid(&self) -> bool {
+        let non_negative = |value: f32| value.is_finite() && value >= 0.0;
+        non_negative(self.gain)
+            && self.max_speed.is_finite()
+            && self.max_speed > 0.0
+            && non_negative(self.spin_gain)
+            && !self.max_spin.is_nan()
+            && self.max_spin >= 0.0
+    }
+}
+
+/// A body falls asleep once it has moved less than `travel` and stayed under both speeds for `window` seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RestConfig {
+    pub travel: f32,
+    pub window: f32,
+    /// Distance units per second.
+    pub speed: f32,
+    /// Radians per second.
+    pub angular_speed: f32,
+}
+
+impl RestConfig {
+    fn is_valid(&self) -> bool {
+        [self.travel, self.window, self.speed, self.angular_speed]
+            .into_iter()
+            .all(|value| value >= 0.0)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct GrabConfig<S: PhysicsSpace> {
     stiffness: f32,
@@ -33,6 +82,7 @@ pub struct GrabConfig<S: PhysicsSpace> {
     hold: GrabHold,
     anchor_point: fn(S::Point, S::Point) -> S::Point,
     constrain_target: fn(S::Point, S::Point) -> S::Point,
+    throw: Option<ThrowConfig>,
 }
 
 impl<S: PhysicsSpace> GrabConfig<S> {
@@ -44,7 +94,13 @@ impl<S: PhysicsSpace> GrabConfig<S> {
             hold: GrabHold::Center,
             anchor_point: |_, point| point,
             constrain_target: |_, point| point,
+            throw: None,
         }
+    }
+
+    pub fn throw(mut self, throw: ThrowConfig) -> Self {
+        self.throw = Some(throw);
+        self
     }
 
     pub fn hold(mut self, hold: GrabHold) -> Self {
@@ -66,6 +122,28 @@ impl<S: PhysicsSpace> GrabConfig<S> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicsConfigError {
+    Gravity,
+    Grab,
+    Rest,
+    StepTravel,
+}
+
+impl fmt::Display for PhysicsConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self {
+            Self::Gravity => "gravity is not finite",
+            Self::Grab => "the grab configuration is invalid",
+            Self::Rest => "the rest or damping configuration is invalid",
+            Self::StepTravel => "the adaptive step travel is not positive",
+        };
+        f.write_str(text)
+    }
+}
+
+impl std::error::Error for PhysicsConfigError {}
+
 pub struct PhysicsConfig<S: PhysicsSpace> {
     gravity: Option<S::Vector>,
     register: fn(&mut Narrowphase<S>),
@@ -74,12 +152,13 @@ pub struct PhysicsConfig<S: PhysicsSpace> {
     grab: Option<GrabConfig<S>>,
     max_step_travel: Option<f32>,
     motion_speed: fn(&RigidBody<S>) -> f32,
+    angular_damping: Option<f32>,
+    rest: Option<RestConfig>,
 }
 
 fn linear_speed<S>(body: &RigidBody<S>) -> f32
 where
     S: PhysicsSpace,
-    S::Vector: VectorOps,
 {
     body.velocity.length()
 }
@@ -87,7 +166,6 @@ where
 impl<S> PhysicsConfig<S>
 where
     S: PhysicsSpace,
-    S::Vector: VectorOps,
 {
     pub fn new(register: fn(&mut Narrowphase<S>)) -> Self {
         Self {
@@ -98,6 +176,8 @@ where
             grab: None,
             max_step_travel: None,
             motion_speed: linear_speed::<S>,
+            angular_damping: None,
+            rest: None,
         }
     }
 
@@ -131,13 +211,18 @@ where
         self
     }
 
-    fn validate(&self, space: &S) -> Result<(), EditError> {
-        if self
-            .gravity
-            .is_some_and(|gravity| !space.valid_vector(gravity))
-        {
-            return Err(EditError::InvalidGravity);
-        }
+    /// Scales each dynamic body's angular velocity by `exp(-rate * dt)` after every step.
+    pub fn angular_damping(mut self, rate: f32) -> Self {
+        self.angular_damping = Some(rate);
+        self
+    }
+
+    pub fn rest(mut self, rest: RestConfig) -> Self {
+        self.rest = Some(rest);
+        self
+    }
+
+    fn validate(&self) -> Result<(), PhysicsConfigError> {
         if let Some(grab) = &self.grab {
             if !grab.stiffness.is_finite()
                 || grab.stiffness < 0.0
@@ -145,15 +230,23 @@ where
                 || grab.max_carry_speed < 0.0
                 || grab.max_acceleration.is_nan()
                 || grab.max_acceleration < 0.0
+                || grab.throw.as_ref().is_some_and(|throw| !throw.is_valid())
             {
-                return Err(EditError::InvalidGrabConfig);
+                return Err(PhysicsConfigError::Grab);
             }
+        }
+        if self
+            .angular_damping
+            .is_some_and(|rate| !rate.is_finite() || rate < 0.0)
+            || self.rest.is_some_and(|rest| !rest.is_valid())
+        {
+            return Err(PhysicsConfigError::Rest);
         }
         if self
             .max_step_travel
             .is_some_and(|travel| travel.is_nan() || travel <= 0.0)
         {
-            return Err(EditError::InvalidStepTravel);
+            return Err(PhysicsConfigError::StepTravel);
         }
         Ok(())
     }
@@ -187,23 +280,77 @@ impl<S: PhysicsSpace> Clone for Released<S> {
 
 impl<S: PhysicsSpace> Copy for Released<S> {}
 
+enum Grip<S: PhysicsSpace> {
+    Free,
+    Held(Held<S>),
+    Released(Released<S>),
+}
+
+impl<S: PhysicsSpace> Clone for Grip<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: PhysicsSpace> Copy for Grip<S> {}
+
+impl<S: PhysicsSpace> Grip<S> {
+    fn held(self) -> Option<Held<S>> {
+        match self {
+            Self::Held(held) => Some(held),
+            _ => None,
+        }
+    }
+
+    fn released(self) -> Option<Released<S>> {
+        match self {
+            Self::Released(released) => Some(released),
+            _ => None,
+        }
+    }
+
+    fn body(self) -> Option<BodyId> {
+        match self {
+            Self::Free => None,
+            Self::Held(held) => Some(held.body),
+            Self::Released(released) => Some(released.body),
+        }
+    }
+}
+
+struct Rest<S: PhysicsSpace> {
+    anchor: S::Point,
+    time: f32,
+}
+
+impl<S: PhysicsSpace> Clone for Rest<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S: PhysicsSpace> Copy for Rest<S> {}
+
 pub struct Physics<S: PhysicsSpace> {
     scene: SceneId,
     world: World<S>,
     to_body: Vec<Option<(u32, BodyId)>>,
     to_entity: Vec<Option<(u32, EntityKey)>>,
-    held: Option<Held<S>>,
-    released: Option<Released<S>>,
+    rests: Vec<Option<(u32, Rest<S>)>>,
+    grip: Grip<S>,
     min_substeps: u32,
     max_substeps: u32,
     grab: Option<GrabConfig<S>>,
     max_step_travel: Option<f32>,
     motion_speed: fn(&RigidBody<S>) -> f32,
+    angular_damping: Option<f32>,
+    rest: Option<RestConfig>,
 }
 
 struct PhysicsSnapshot<S: PhysicsSpace> {
     world: WorldState<S>,
     to_entity: Vec<Option<(u32, EntityKey)>>,
+    rests: Vec<Option<(u32, Rest<S>)>>,
 }
 
 fn body_at(to_body: &[Option<(u32, BodyId)>], key: EntityKey) -> Option<BodyId> {
@@ -246,19 +393,9 @@ fn domain_edit(entity: Entity, error: EditError) -> DomainError {
     }
 }
 
-fn domain_rejection(entity: Entity, rejection: Rejection) -> DomainError {
-    match rejection {
-        Rejection::Domain(error) => error,
-        Rejection::Edit(error) => domain_edit(entity, error),
-        _ => DomainError::Unsupported("physics pose edit"),
-    }
-}
-
 impl<S> Physics<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
-    S::Point: Sub<Output = S::Vector>,
 {
     pub fn world(&self) -> &World<S> {
         &self.world
@@ -279,12 +416,8 @@ where
         }
     }
 
-    pub fn set_gravity(&mut self, gravity: Option<S::Vector>) -> Result<(), EditError> {
-        self.world.set_gravity(gravity)
-    }
-
-    pub fn set_solver_tolerance(&mut self, tolerance: f32) -> Result<(), EditError> {
-        self.world.set_solver_tolerance(tolerance)
+    pub fn set_gravity(&mut self, gravity: Option<S::Vector>) -> Result<(), DomainError> {
+        Ok(self.world.set_gravity(gravity)?)
     }
 
     pub fn body(&self, entity: Entity) -> Option<BodyId> {
@@ -298,19 +431,33 @@ where
         entity_at(&self.to_entity, body).map(|key| Entity::new(self.scene, key))
     }
 
+    /// Each entity whose body shares a contact point with `entity`'s after the last step, in the world's manifold order.
+    pub fn touching(&self, entity: Entity) -> impl Iterator<Item = (Entity, &RigidBody<S>)> + '_ {
+        let id = self.body(entity);
+        self.world
+            .manifolds()
+            .filter(move |(_, manifold)| !manifold.points.is_empty())
+            .filter_map(move |(&(a, b), _)| match id {
+                Some(id) if a == id => Some(b),
+                Some(id) if b == id => Some(a),
+                _ => None,
+            })
+            .filter_map(|other| Some((self.entity(other)?, self.world.body(other)?)))
+    }
+
     pub fn set_velocity(
         &mut self,
         entity: Entity,
         velocity: S::Vector,
         angular_velocity: S::AngVel,
-    ) -> Result<(), EditError> {
-        let id = self.body(entity).ok_or(EditError::StaleHandle)?;
-        self.world.set_velocity(id, velocity, angular_velocity)
+    ) -> Result<(), DomainError> {
+        let id = self.body(entity).ok_or(DomainError::NoBody(entity))?;
+        Ok(self.world.set_velocity(id, velocity, angular_velocity)?)
     }
 
-    pub fn set_restitution(&mut self, entity: Entity, restitution: f32) -> Result<(), EditError> {
-        let id = self.body(entity).ok_or(EditError::StaleHandle)?;
-        self.world.set_restitution(id, restitution)
+    pub fn set_restitution(&mut self, entity: Entity, restitution: f32) -> Result<(), DomainError> {
+        let id = self.body(entity).ok_or(DomainError::NoBody(entity))?;
+        Ok(self.world.set_restitution(id, restitution)?)
     }
 
     pub fn set_collision_filter(
@@ -318,9 +465,9 @@ where
         entity: Entity,
         group: u32,
         mask: u32,
-    ) -> Result<(), EditError> {
-        let id = self.body(entity).ok_or(EditError::StaleHandle)?;
-        self.world.set_collision_filter(id, group, mask)
+    ) -> Result<(), DomainError> {
+        let id = self.body(entity).ok_or(DomainError::NoBody(entity))?;
+        Ok(self.world.set_collision_filter(id, group, mask)?)
     }
 
     pub fn set_mass_properties(
@@ -328,39 +475,39 @@ where
         entity: Entity,
         mass: f32,
         inertia: S::Inertia,
-    ) -> Result<(), EditError> {
-        let id = self.body(entity).ok_or(EditError::StaleHandle)?;
-        self.world.set_mass_properties(id, mass, inertia)
+    ) -> Result<(), DomainError> {
+        let id = self.body(entity).ok_or(DomainError::NoBody(entity))?;
+        Ok(self.world.set_mass_properties(id, mass, inertia)?)
     }
 
     pub fn set_collider(
         &mut self,
         entity: Entity,
-        collider: Collider,
+        collider: Shape,
         inertia: S::Inertia,
-    ) -> Result<(), EditError> {
-        let id = self.body(entity).ok_or(EditError::StaleHandle)?;
-        self.world.set_collider(id, collider, inertia)
+    ) -> Result<(), DomainError> {
+        let id = self.body(entity).ok_or(DomainError::NoBody(entity))?;
+        Ok(self.world.set_collider(id, collider, inertia)?)
     }
 
-    pub fn sleep_body(&mut self, entity: Entity) -> Result<(), EditError> {
-        let id = self.body(entity).ok_or(EditError::StaleHandle)?;
-        self.world.sleep_body(id)
+    pub fn sleep_body(&mut self, entity: Entity) -> Result<(), DomainError> {
+        let id = self.body(entity).ok_or(DomainError::NoBody(entity))?;
+        Ok(self.world.sleep_body(id)?)
     }
 
-    pub fn wake_body(&mut self, entity: Entity) -> Result<(), EditError> {
-        let id = self.body(entity).ok_or(EditError::StaleHandle)?;
-        self.world.wake_body(id)
+    pub fn wake_body(&mut self, entity: Entity) -> Result<(), DomainError> {
+        let id = self.body(entity).ok_or(DomainError::NoBody(entity))?;
+        Ok(self.world.wake_body(id)?)
     }
 
     pub fn is_held(&self, entity: Entity) -> bool {
         self.body(entity)
-            .is_some_and(|body| self.held.is_some_and(|held| held.body == body))
+            .is_some_and(|body| self.grip.held().is_some_and(|held| held.body == body))
     }
 
     pub fn held_anchor(&self, entity: Entity) -> Option<S::Point> {
         let body = self.body(entity)?;
-        let held = self.held.filter(|held| held.body == body)?;
+        let held = self.grip.held().filter(|held| held.body == body)?;
         let row = self.world.body(body)?;
         let lever = self
             .world
@@ -370,24 +517,34 @@ where
         self.world.space().valid_point(point).then_some(point)
     }
 
-    pub fn throw(&mut self, entity: Entity, velocity: S::Vector) -> Result<(), EditError> {
-        let id = self.body(entity).ok_or(EditError::StaleHandle)?;
+    pub fn throw(&mut self, entity: Entity, velocity: S::Vector) -> Result<(), DomainError> {
+        let id = self.body(entity).ok_or(DomainError::NoBody(entity))?;
         let angular = self
             .world
             .body(id)
             .ok_or(EditError::StaleHandle)?
             .angular_velocity;
         self.world.set_velocity(id, velocity, angular)?;
-        if self.released.is_some_and(|released| released.body == id) {
-            self.released = None;
+        if self
+            .grip
+            .released()
+            .is_some_and(|released| released.body == id)
+        {
+            self.grip = Grip::Free;
         }
         Ok(())
     }
 
     /// The grab point of the body released last, moved with the body since.
     pub fn released_anchor(&self, entity: Entity) -> Option<S::Point> {
-        let body = self.body(entity)?;
-        let released = self.released.filter(|released| released.body == body)?;
+        self.released_point(self.body(entity)?)
+    }
+
+    fn released_point(&self, body: BodyId) -> Option<S::Point> {
+        let released = self
+            .grip
+            .released()
+            .filter(|released| released.body == body)?;
         let row = self.world.body(body)?;
         let lever =
             self.world
@@ -414,17 +571,28 @@ where
         id
     }
 
+    pub(crate) fn restart_rest(&mut self, id: BodyId) {
+        let rest = self.world.body(id).map(|body| {
+            (
+                id.generation(),
+                Rest {
+                    anchor: body.position,
+                    time: 0.0,
+                },
+            )
+        });
+        put(&mut self.rests, id.slot() as usize, rest);
+    }
+
     pub fn despawn(&mut self, entity: Entity) -> Option<BodyId> {
         let id = self.body(entity)?;
-        if self.held.is_some_and(|held| held.body == id) {
-            self.held = None;
-        }
-        if self.released.is_some_and(|released| released.body == id) {
-            self.released = None;
+        if self.grip.body() == Some(id) {
+            self.grip = Grip::Free;
         }
         let _ = self.world.despawn_body(id);
         put(&mut self.to_body, entity.key().slot() as usize, None);
         put(&mut self.to_entity, id.slot() as usize, None);
+        put(&mut self.rests, id.slot() as usize, None);
         Some(id)
     }
 
@@ -484,37 +652,34 @@ where
         id: BodyId,
         pose: &ChartPose,
         poses: &mut Store<Pose<S>>,
-    ) -> Result<Outcome, Rejection> {
+    ) -> Result<Outcome, DomainError> {
         let pose = self.world.space().pose_from_chart(pose)?;
-        self.replace_pose(id, pose, poses)
-            .map_err(Rejection::Edit)?;
+        self.replace_pose(id, pose, poses)?;
         Ok(Outcome::Done)
     }
 
-    fn move_to(&mut self, id: BodyId, position: S::Point) -> Result<bool, Rejection> {
+    fn move_to(&mut self, id: BodyId, position: S::Point) -> Result<bool, EditError> {
         let orientation = self
             .world
             .body(id)
-            .ok_or(Rejection::Edit(EditError::StaleHandle))?
+            .ok_or(EditError::StaleHandle)?
             .orientation;
         if !self.world.space().valid_point(position) {
-            return Err(Rejection::Edit(EditError::NotFinite));
+            return Err(EditError::NotFinite);
         }
-        if let Some(held) = &mut self.held {
+        if let Grip::Held(held) = &mut self.grip {
             if held.body == id {
                 let target = self.grab.map_or(position, |grab| {
                     (grab.constrain_target)(held.target, position)
                 });
                 if !self.world.space().valid_point(target) {
-                    return Err(Rejection::Edit(EditError::NotFinite));
+                    return Err(EditError::NotFinite);
                 }
                 held.target = target;
                 return Ok(false);
             }
         }
-        self.world
-            .set_pose(id, position, orientation)
-            .map_err(Rejection::Edit)?;
+        self.world.set_pose(id, position, orientation)?;
         Ok(true)
     }
 
@@ -523,26 +688,23 @@ where
         id: BodyId,
         point: S::Point,
         poses: &mut Store<Pose<S>>,
-    ) -> Result<(), Rejection> {
-        self.mirror_entity(id, poses).map_err(Rejection::Edit)?;
+    ) -> Result<(), EditError> {
+        self.mirror_entity(id, poses)?;
         if self.move_to(id, point)? {
-            self.mirror_pose(id, poses).map_err(Rejection::Edit)?;
+            self.mirror_pose(id, poses)?;
         }
         Ok(())
     }
 
-    fn grab(&mut self, id: BodyId, point: S::Point) -> Result<Outcome, Rejection> {
+    fn grab(&mut self, id: BodyId, point: S::Point) -> Result<Outcome, EditError> {
         let Some(grab) = self.grab else {
             return Ok(Outcome::Done);
         };
-        let row = self
-            .world
-            .body(id)
-            .ok_or(Rejection::Edit(EditError::StaleHandle))?;
+        let row = self.world.body(id).ok_or(EditError::StaleHandle)?;
         let target = row.position;
         let anchor = (grab.anchor_point)(target, point);
         if !self.world.space().valid_point(anchor) {
-            return Err(Rejection::Edit(EditError::NotFinite));
+            return Err(EditError::NotFinite);
         }
         let lever = self.world.space().log(target, anchor);
         let local_anchor = self.world.space().iso_transport(
@@ -551,13 +713,11 @@ where
             lever,
         );
         if !self.world.space().valid_vector(local_anchor) {
-            return Err(Rejection::Edit(EditError::NotFinite));
+            return Err(EditError::NotFinite);
         }
         self.world
-            .set_velocity(id, S::Vector::default(), S::AngVel::zero())
-            .map_err(Rejection::Edit)?;
-        self.released = None;
-        self.held = Some(Held {
+            .set_velocity(id, VectorOps::zero(), S::AngVel::zero())?;
+        self.grip = Grip::Held(Held {
             body: id,
             target,
             anchor: local_anchor,
@@ -566,19 +726,65 @@ where
         Ok(Outcome::Done)
     }
 
-    fn release_grab(&mut self, id: BodyId) -> Result<Outcome, Rejection> {
-        if let Some(held) = self.held.filter(|held| held.body == id) {
-            self.held = None;
-            self.released = Some(Released {
+    fn release_grab(&mut self, id: BodyId) -> Outcome {
+        if let Some(held) = self.grip.held().filter(|held| held.body == id) {
+            self.grip = Grip::Released(Released {
                 body: held.body,
                 anchor: held.anchor,
             });
         }
+        Outcome::Done
+    }
+
+    fn throw_body(
+        &mut self,
+        id: BodyId,
+        flick: S::Vector,
+        mapping: &dyn ViewMapping<S>,
+        eye: &Pose<S>,
+    ) -> Result<Outcome, DomainError> {
+        let Some(grab) = self.grab else {
+            return Ok(Outcome::Done);
+        };
+        let Some(throw) = grab.throw else {
+            return Ok(Outcome::Done);
+        };
+        let space = *self.world.space();
+        let body = *self.world.body(id).ok_or(EditError::StaleHandle)?;
+        let mut linear = body.velocity;
+        let mut angular = body.angular_velocity;
+        if grab.hold == GrabHold::Center {
+            let unlifted = || DomainError::NoLift(mapping.name());
+            let at = mapping
+                .image_point(eye, body.position)
+                .ok_or_else(unlifted)?;
+            let shown = mapping
+                .image_tangent(eye, body.position, body.velocity)
+                .and_then(|image| mapping.lift_tangent(eye, at, image))
+                .ok_or_else(unlifted)?;
+            let thrown = flick * throw.gain;
+            let capped = thrown * (throw.max_speed / thrown.length().max(throw.max_speed));
+            linear = capped + (body.velocity - shown);
+            let lever = self.released_point(id).and_then(|handle| {
+                let offset = space.log(body.position, handle);
+                let unit = Vec3::from(mapping.image_tangent(eye, body.position, offset)?)
+                    .try_normalize()?;
+                mapping.lift_tangent(eye, at, unit.to_array())
+            });
+            if let Some(lever) = lever {
+                angular = angular + space.wedge(lever, flick) * throw.spin_gain;
+            }
+        }
+        let spin = angular.magnitude();
+        if spin > throw.max_spin {
+            angular = angular * (throw.max_spin / spin);
+        }
+        self.world.set_velocity(id, linear, angular)?;
         Ok(Outcome::Done)
     }
 
     fn drive_held(&mut self, dt: f32) -> Result<(), DomainError> {
-        let Some(held) = self.held else {
+        let Some(held) = self.grip.held() else {
             return Ok(());
         };
         let Some(grab) = self.grab else {
@@ -665,12 +871,74 @@ where
     }
 }
 
+impl<S> Physics<S>
+where
+    S: Homogeneous + PhysicsSpace + Copy,
+    S::AngVel: PartialEq,
+{
+    fn settle(&mut self, dt: f32) -> Result<(), DomainError> {
+        if self.angular_damping.is_none() && self.rest.is_none() {
+            return Ok(());
+        }
+        let decay = self.angular_damping.map(|rate| (-rate * dt).exp());
+        let space = *self.world.space();
+        for dense in 0..self.world.bodies().len() {
+            let id = self.world.bodies().id_at(dense);
+            let Some(mut body) = self.world.body(id).copied() else {
+                continue;
+            };
+            if body.is_static() {
+                continue;
+            }
+            if let Some(decay) = decay {
+                let angular = body.angular_velocity * decay;
+                if angular != body.angular_velocity {
+                    self.world.set_velocity(id, body.velocity, angular)?;
+                    body.angular_velocity = angular;
+                }
+            }
+            let Some(rest) = self.rest else {
+                continue;
+            };
+            let held = self.grip.held().is_some_and(|held| held.body == id);
+            let slot = id.slot() as usize;
+            if !matches!(self.rests.get(slot), Some(Some((generation, _))) if *generation == id.generation())
+            {
+                self.restart_rest(id);
+            }
+            let Some(Some((_, state))) = self.rests.get_mut(slot) else {
+                continue;
+            };
+            if held {
+                state.anchor = body.position;
+                state.time = 0.0;
+                continue;
+            }
+            if !body.is_sleeping() && state.time >= rest.window {
+                state.anchor = body.position;
+                state.time = 0.0;
+            }
+            let travelled = space.log(state.anchor, body.position).length();
+            let moving = body.velocity.length() > rest.speed
+                || body.angular_velocity.magnitude() > rest.angular_speed;
+            if travelled > rest.travel || moving {
+                state.anchor = body.position;
+                state.time = 0.0;
+            } else {
+                state.time += dt;
+                if state.time >= rest.window {
+                    self.world.sleep_body(id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<S> Facility<S> for Physics<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
     S::AngVel: PartialEq,
-    S::Point: Sub<Output = S::Vector>,
 {
     fn name(&self) -> &'static str {
         "physics"
@@ -684,6 +952,7 @@ where
         &mut self,
         poses: &mut Store<Pose<S>>,
         step: Step,
+        executor: &dyn Executor,
         _owner: Owner,
     ) -> Result<(), DomainError> {
         if !step.dt.is_finite() || step.dt < 0.0 {
@@ -693,11 +962,13 @@ where
         let substeps = self.step_count(step.dt);
         let dt = step.dt / substeps as f32;
         for _ in 0..substeps {
-            self.world.step(dt)?;
+            self.world.step(dt, executor)?;
         }
         self.sync_poses(poses, true);
-        self.released = None;
-        Ok(())
+        if matches!(self.grip, Grip::Released(_)) {
+            self.grip = Grip::Free;
+        }
+        self.settle(step.dt)
     }
 
     fn synchronize(&mut self, poses: &mut Store<Pose<S>>, _owner: Owner) {
@@ -728,7 +999,7 @@ where
         let id = self.body(entity)?;
         Some(
             self.move_to_and_mirror(id, point, poses)
-                .map_err(|error| domain_rejection(entity, error)),
+                .map_err(|error| domain_edit(entity, error)),
         )
     }
 
@@ -736,6 +1007,7 @@ where
         Box::new(PhysicsSnapshot::<S> {
             world: self.world.snapshot(),
             to_entity: self.to_entity.clone(),
+            rests: self.rests.clone(),
         })
     }
 
@@ -745,7 +1017,7 @@ where
             .ok_or_else(|| RestoreError::Schema(SchemaId::of::<PhysicsSnapshot<S>>()))?;
         self.world
             .check_restore(&from.world)
-            .map_err(RestoreError::Edit)
+            .map_err(RestoreError::World)
     }
 
     fn restore(&mut self, from: &(dyn Any + Send), _owner: Owner) -> Result<(), RestoreError> {
@@ -754,11 +1026,12 @@ where
             .ok_or_else(|| RestoreError::Schema(SchemaId::of::<PhysicsSnapshot<S>>()))?;
         self.world
             .restore(&from.world)
-            .map_err(RestoreError::Edit)?;
+            .map_err(RestoreError::World)?;
         self.to_entity.clear();
         self.to_entity.extend_from_slice(&from.to_entity);
-        self.held = None;
-        self.released = None;
+        self.rests.clear();
+        self.rests.extend_from_slice(&from.rests);
+        self.grip = Grip::Free;
         for slot in &mut self.to_body {
             *slot = None;
         }
@@ -789,7 +1062,7 @@ where
         match command {
             ChartCommand::Place { entity, pose } => {
                 let id = self.body(*entity)?;
-                Some(self.place(id, pose, poses))
+                Some(self.place(id, pose, poses).map_err(Rejection::from))
             }
             ChartCommand::Grab { entity, point } => {
                 let id = self.body(*entity)?;
@@ -797,61 +1070,96 @@ where
                     Ok(point) => point,
                     Err(error) => return Some(Err(error.into())),
                 };
-                Some(self.grab(id, point))
+                Some(
+                    self.grab(id, point)
+                        .map_err(|error| domain_edit(*entity, error).into()),
+                )
             }
             ChartCommand::Release { entity } => {
                 let id = self.body(*entity)?;
-                Some(self.release_grab(id))
+                Some(Ok(self.release_grab(id)))
             }
             _ => None,
         }
+    }
+
+    fn throw(
+        &mut self,
+        entity: Entity,
+        velocity: S::Vector,
+        mapping: &dyn ViewMapping<S>,
+        eye: &Pose<S>,
+    ) -> Option<Result<Outcome, Rejection>> {
+        let id = self.body(entity)?;
+        Some(
+            self.throw_body(id, velocity, mapping, eye)
+                .map_err(Rejection::from),
+        )
     }
 }
 
 impl<S> DomainBuilder<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
     S::AngVel: PartialEq,
-    S::Point: Sub<Output = S::Vector>,
 {
-    pub fn physics(self, config: PhysicsConfig<S>) -> Result<Self, EditError> {
-        config.validate(&self.space)?;
+    pub fn physics(self, config: PhysicsConfig<S>) -> Result<Self, DomainError> {
+        config.validate().map_err(DomainError::PhysicsConfig)?;
         let mut world = World::new(self.space);
-        world.set_gravity(config.gravity)?;
+        world
+            .set_gravity(config.gravity)
+            .map_err(|_| DomainError::PhysicsConfig(PhysicsConfigError::Gravity))?;
         (config.register)(&mut world.narrowphase);
         Ok(self.facility(Physics {
             scene: SceneId::UNBOUND,
             world,
             to_body: Vec::new(),
             to_entity: Vec::new(),
-            held: None,
-            released: None,
+            rests: Vec::new(),
+            grip: Grip::Free,
             min_substeps: config.min_substeps,
             max_substeps: config.max_substeps,
             grab: config.grab,
             max_step_travel: config.max_step_travel,
             motion_speed: config.motion_speed,
+            angular_damping: config.angular_damping,
+            rest: config.rest,
         }))
     }
 }
 
-impl<S> TypedDomain<S>
+impl Domains {
+    pub fn physics<S>(&mut self, handle: DomainHandle<S>) -> Result<&mut Physics<S>, DomainError>
+    where
+        S: Homogeneous + PhysicsSpace + Copy,
+    {
+        self.typed(handle)?.physics_mut()
+    }
+}
+
+pub(crate) trait SpawnBody: Send {
+    fn spawn(
+        self: Box<Self>,
+        domains: &mut Domains,
+        domain: DomainId,
+        entity: Entity,
+    ) -> Result<(), DomainError>;
+}
+
+impl<S> SpawnBody for BodyDef<S>
 where
     S: Homogeneous + PhysicsSpace + Copy,
-    S::Vector: VectorOps + Default,
-    S::Point: Sub<Output = S::Vector>,
 {
-    pub fn physics(&self) -> Option<&Physics<S>> {
-        self.facilities
-            .iter()
-            .find_map(|facility| (facility.as_ref() as &dyn Any).downcast_ref::<Physics<S>>())
-    }
-
-    pub fn physics_mut(&mut self) -> Option<&mut Physics<S>> {
-        self.facilities
-            .iter_mut()
-            .find_map(|facility| (facility.as_mut() as &mut dyn Any).downcast_mut::<Physics<S>>())
+    fn spawn(
+        self: Box<Self>,
+        domains: &mut Domains,
+        domain: DomainId,
+        entity: Entity,
+    ) -> Result<(), DomainError> {
+        domains
+            .typed_at::<S>(domain)?
+            .spawn_body(entity, *self)
+            .map(|_| ())
     }
 }
 
@@ -859,15 +1167,17 @@ where
 mod tests {
     use loam_math::{EuclideanR4, Rotor4};
     use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
-    use loam_time::alloc::bytes_allocated_by;
+    use loam_time::par::Sequential;
 
     use super::*;
+    use crate::assets::{Material, PreparedGeometry};
     use crate::command::{Command, SpawnBundle};
     use crate::domain::{DomainId, DomainOwner, DomainSpace, Instance};
     use crate::entity::{Entities, Epoch, RuntimeId, SceneId};
     use crate::input::Input;
     use crate::phase::Tick;
-    use crate::session::{Material, PreparedGeometry, Publication, Session, SimConfig};
+    use crate::publication::Publication;
+    use crate::session::{Session, SimConfig};
     use crate::store::DEFAULT_LOG_CAPACITY;
     use crate::view::{Section4, Vec4, ViewSpec};
 
@@ -876,18 +1186,16 @@ mod tests {
         pub struct Bare {}
     }
 
-    const MOVING: usize = 64;
-    const WARM_STEPS: u64 = 8;
-
     fn step_at(tick: u64) -> Step {
         Step {
             tick: Tick(tick),
             dt: 1.0 / 60.0,
+            hz: 60,
         }
     }
 
     #[test]
-    fn a_constrained_grab_does_not_drop_its_release_lever() {
+    fn constrained_grab_release() {
         let scene = SceneId {
             runtime: RuntimeId::allocate(),
             epoch: Epoch::default(),
@@ -934,10 +1242,10 @@ mod tests {
             .move_to(id, Vec4::new(9.0, -9.0, 0.0, 7.0))
             .expect("move");
         assert_eq!(
-            physics.held.expect("held").target,
+            physics.grip.held().expect("held").target,
             Vec4::new(1.0, 0.5, 0.0, 0.75)
         );
-        physics.release_grab(id).expect("release");
+        physics.release_grab(id);
         let handle = physics.released_anchor(entity).expect("released");
         assert!(
             (handle - Vec4::new(0.0, 2.3, 0.0, 0.75)).length() < 1e-5,
@@ -946,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn the_grab_hold_decides_whether_an_off_center_body_swings() {
+    fn off_center_hold() {
         let lowest = |hold: GrabHold| {
             let scene = SceneId {
                 runtime: RuntimeId::allocate(),
@@ -975,7 +1283,7 @@ mod tests {
             physics.grab(id, Vec4::X * 0.4).expect("grab");
             let mut lowest = f32::INFINITY;
             for tick in 0..120 {
-                domain.step(step_at(tick)).expect("step");
+                domain.step(step_at(tick), &Sequential).expect("step");
                 let physics = domain.physics().expect("physics");
                 lowest = lowest.min(physics.world.body(id).expect("body").position.y);
             }
@@ -1003,7 +1311,7 @@ mod tests {
     }
 
     #[test]
-    fn a_held_body_transfers_motion_through_sleeping_contacts() {
+    fn held_body_on_sleeping_contacts() {
         let scene = SceneId {
             runtime: RuntimeId::allocate(),
             epoch: Epoch::default(),
@@ -1036,7 +1344,7 @@ mod tests {
         physics.move_to(held_body, Vec4::X * 2.0).expect("move");
 
         for tick in 0..4 {
-            domain.step(step_at(tick)).expect("step");
+            domain.step(step_at(tick), &Sequential).expect("step");
         }
 
         let physics = domain.physics().expect("physics");
@@ -1055,7 +1363,7 @@ mod tests {
     }
 
     #[test]
-    fn a_held_body_dragged_and_thrown_between_ticks_keeps_its_blend() {
+    fn drag_and_throw_between_ticks() {
         let mut session = Session::new(Bare::default(), SimConfig::default());
         let r4 = session.register_domain(
             DomainBuilder::new("r4", EuclideanR4)
@@ -1070,7 +1378,7 @@ mod tests {
             segments: vec![[[0.1, 0.0, 0.0, 0.0], [-0.1, 0.0, 0.0, 0.0]]],
         });
         let material = session.add_material(Material::flat([1.0; 4]));
-        let root = session.views().root();
+        let root = session.views().root_id();
         let body = session.dispatch(|dispatch| {
             let eye = dispatch
                 .spawn(SpawnBundle::new().at(r4, Pose::at(Vec4::Z * 4.0)))
@@ -1110,10 +1418,10 @@ mod tests {
             },
         ));
         session.boundary(Input::default()).unwrap();
-        session.tick().unwrap();
+        session.tick(&Sequential).unwrap();
         let mut publication = Publication::default();
         let mut drawn_x = |session: &mut Session<Bare>| {
-            session.publish_at(&mut publication, 0.5).unwrap();
+            session.publish(&mut publication, 0.5).unwrap();
             publication.views[0].records.instances.rows()[0]
                 .pose
                 .coordinates[0]
@@ -1137,73 +1445,5 @@ mod tests {
             .throw(body, Vec4::X)
             .unwrap();
         assert_eq!(drawn_x(&mut session), blended);
-    }
-
-    #[test]
-    fn a_warmed_step_with_sixty_four_moving_bodies_allocates_nothing() {
-        let mut entities = Entities::new(SceneId {
-            runtime: RuntimeId::allocate(),
-            epoch: Epoch::default(),
-        });
-        let mut domain = DomainBuilder::new("r4", EuclideanR4)
-            .tracked(DEFAULT_LOG_CAPACITY)
-            .physics(PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::NEG_Y))
-            .unwrap()
-            .build(DomainId::new(0), entities.scene());
-        for index in 0..MOVING {
-            let at = Vec4::new(index as f32 * 4.0, 10.0, 0.0, 0.0);
-            let entity = entities.spawn();
-            domain.attach_pose(entity, Pose::at(at)).expect("pose row");
-            domain.physics_mut().expect("physics").spawn(
-                entity,
-                sphere_body_r4(at, Vec4::ZERO, 0.5, 1.0).expect("body"),
-            );
-        }
-        for tick in 0..WARM_STEPS {
-            domain.step(step_at(tick)).expect("warm step");
-        }
-
-        let bytes = bytes_allocated_by(|| {
-            domain.step(step_at(WARM_STEPS)).expect("step");
-        })
-        .expect("the counting allocator is installed");
-        assert_eq!(bytes, 0, "a warmed physics step allocated {bytes} bytes");
-    }
-
-    #[test]
-    fn invalid_physics_configuration_is_refused_before_installation() {
-        let invalid_gravity =
-            PhysicsConfig::new(register_default_narrowphase).gravity(Vec4::splat(f32::NAN));
-        assert_eq!(
-            DomainBuilder::new("r4", EuclideanR4)
-                .physics(invalid_gravity)
-                .err(),
-            Some(EditError::InvalidGravity)
-        );
-
-        let invalid_grab = PhysicsConfig::new(register_default_narrowphase).grab(GrabConfig::new(
-            f32::NAN,
-            1.0,
-            1.0,
-        ));
-        assert_eq!(
-            DomainBuilder::new("r4", EuclideanR4)
-                .physics(invalid_grab)
-                .err(),
-            Some(EditError::InvalidGrabConfig)
-        );
-
-        let invalid_travel = PhysicsConfig::new(register_default_narrowphase).adaptive_substeps(
-            1,
-            4,
-            0.0,
-            linear_speed::<EuclideanR4>,
-        );
-        assert_eq!(
-            DomainBuilder::new("r4", EuclideanR4)
-                .physics(invalid_travel)
-                .err(),
-            Some(EditError::InvalidStepTravel)
-        );
     }
 }

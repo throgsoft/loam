@@ -1,18 +1,11 @@
 use glam::Vec4;
 
-use super::gjk_r4::{minkowski_support_r4, MinkowskiPoint4, SupportFn4};
+use super::minkowski::{minkowski_support, ContactInfo, MinkowskiPoint, SupportFn};
 use super::simplex_r4::project_origin_onto_affine_hull;
 
 const EPA_MAX_ITERATIONS: u32 = 96;
 
 const EPA_TOLERANCE: f32 = 1e-3;
-
-#[derive(Clone, Copy, Debug)]
-pub struct ContactInfo4 {
-    pub normal: Vec4,
-    pub penetration: f32,
-    pub point: Vec4,
-}
 
 #[derive(Clone, Copy, Debug)]
 struct Face4 {
@@ -39,7 +32,7 @@ impl Thresholds {
 }
 
 struct Polytope4 {
-    vertices: Vec<MinkowskiPoint4>,
+    vertices: Vec<MinkowskiPoint<Vec4>>,
     faces: Vec<Face4>,
     horizon: Vec<Triangle>,
     centroid: Vec4,
@@ -47,7 +40,7 @@ struct Polytope4 {
 }
 
 impl Polytope4 {
-    fn from_simplex(simplex: [MinkowskiPoint4; 5], thresholds: Thresholds) -> Self {
+    fn from_simplex(simplex: [MinkowskiPoint<Vec4>; 5], thresholds: Thresholds) -> Self {
         let vertices = simplex.to_vec();
         let centroid = (simplex[0].point
             + simplex[1].point
@@ -96,7 +89,7 @@ impl Polytope4 {
             .map(|(idx, _)| idx)
     }
 
-    fn expand(&mut self, support: MinkowskiPoint4) {
+    fn expand(&mut self, support: MinkowskiPoint<Vec4>) {
         let new_idx = self.vertices.len();
         self.vertices.push(support);
 
@@ -165,7 +158,7 @@ fn sort_triangle(t: Triangle) -> (usize, usize, usize) {
 
 // Orient against the centroid: GJK's tolerance can leave the origin on the wrong side of a face.
 fn build_face(
-    verts: &[MinkowskiPoint4],
+    verts: &[MinkowskiPoint<Vec4>],
     a: usize,
     b: usize,
     c: usize,
@@ -228,12 +221,12 @@ fn det3(
 }
 
 /// `scale` is the sum of the two bounding radii.
-pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
+pub fn epa_r4<A: SupportFn<Vec4>, B: SupportFn<Vec4>>(
     a: &A,
     b: &B,
-    initial_simplex: [MinkowskiPoint4; 5],
+    initial_simplex: [MinkowskiPoint<Vec4>; 5],
     scale: f32,
-) -> Option<ContactInfo4> {
+) -> Option<ContactInfo<Vec4>> {
     let thresholds = Thresholds::for_scale(scale);
 
     let p0 = initial_simplex[0].point;
@@ -252,7 +245,7 @@ pub fn epa_r4<A: SupportFn4, B: SupportFn4>(
         let face_idx = polytope.closest_face()?;
         let face = polytope.faces[face_idx];
 
-        let support = minkowski_support_r4(a, b, face.normal);
+        let support = minkowski_support(a, b, face.normal);
         let new_distance = support.point.dot(face.normal);
 
         if !new_distance.is_finite() || !support.point.is_finite() {
@@ -282,7 +275,7 @@ fn det4(r0: Vec4, r1: Vec4, r2: Vec4, r3: Vec4) -> f32 {
         - r0.w * det3(r1.x, r1.y, r1.z, r2.x, r2.y, r2.z, r3.x, r3.y, r3.z)
 }
 
-fn contact_from_face(polytope: &Polytope4, face: Face4) -> ContactInfo4 {
+fn contact_from_face(polytope: &Polytope4, face: Face4) -> ContactInfo<Vec4> {
     let tetra = face.v.map(|i| polytope.vertices[i]);
 
     let closest = face.normal * face.distance;
@@ -295,7 +288,7 @@ fn contact_from_face(polytope: &Polytope4, face: Face4) -> ContactInfo4 {
         point_b += vertex.sb * w;
     }
 
-    ContactInfo4 {
+    ContactInfo {
         normal: face.normal,
         penetration: face.distance,
         point: (point_a + point_b) * 0.5,
@@ -312,329 +305,13 @@ fn face_barycentrics(points: &[Vec4; 4], closest: Vec4) -> [f32; 4] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::gjk_r4::{gjk_intersect_r4, ConvexHull4, GjkResult4, Sphere4};
+    use super::super::gjk_r4::gjk_intersect_r4;
+    use super::super::minkowski::{ConvexHull, GjkResult};
     use super::*;
 
-    fn assert_close(a: f32, b: f32, tol: f32) {
-        assert!(
-            (a - b).abs() <= tol,
-            "{a} not close to {b} (tol {tol}, diff {})",
-            (a - b).abs()
-        );
-    }
-
-    const UNIT_POLYCHORON_SCALE: f32 = 2.0;
-
     #[test]
-    fn sphere_sphere_penetration_matches_analytical() {
-        let a = Sphere4 {
-            center: Vec4::new(0.0, 0.0, 0.0, 0.0),
-            radius: 0.5,
-        };
-        let b = Sphere4 {
-            center: Vec4::new(0.8, 0.0, 0.0, 0.0),
-            radius: 0.5,
-        };
-        let simplex = match gjk_intersect_r4(&a, &b, Vec4::X) {
-            GjkResult4::Intersecting { simplex } => simplex,
-            _ => panic!("spheres should overlap"),
-        };
-        let contact = epa_r4(&a, &b, simplex, 1.0).expect("EPA should succeed");
-        assert_close(contact.penetration, 0.2, 5e-3);
-        assert!(
-            contact.normal.dot(Vec4::X) > 0.99,
-            "normal must run from A toward B along +x, got {:?}",
-            contact.normal
-        );
-    }
-
-    #[test]
-    fn contact_from_face_realizes_the_plane_projection_outside_the_tetra() {
-        use super::super::simplex_r4::closest_to_origin;
-
-        let points = [
-            Vec4::new(1.0, 1.0, 0.0, 0.0),
-            Vec4::new(1.0, 0.0, 1.0, 0.0),
-            Vec4::new(1.0, 0.0, 0.0, 1.0),
-            Vec4::new(1.0, 6.0, -3.0, 2.0),
-        ];
-        let pre_images_b = [
-            Vec4::new(0.0, 1.0, 0.0, 0.0),
-            Vec4::new(0.0, 0.0, 1.0, 0.0),
-            Vec4::new(0.0, 0.0, 0.0, 1.0),
-            Vec4::new(1.0, 0.0, 0.0, 0.0),
-        ];
-        let vertices: Vec<MinkowskiPoint4> = points
-            .iter()
-            .zip(pre_images_b)
-            .map(|(&point, sb)| MinkowskiPoint4 {
-                point,
-                sa: point + sb,
-                sb,
-            })
-            .collect();
-
-        let clamped = closest_to_origin(&points.map(|p| p - Vec4::X));
-        assert_eq!(clamped.kept(), &[0, 1, 2]);
-
-        let weights = [1.5, -0.75, 0.5, -0.25];
-        let realized = points
-            .iter()
-            .zip(weights)
-            .fold(Vec4::ZERO, |acc, (&p, w)| acc + p * w);
-        assert!((realized - Vec4::X).length() < 1e-6, "{realized:?}");
-
-        let solved = face_barycentrics(&points, Vec4::X);
-        assert!(
-            solved
-                .iter()
-                .zip(weights)
-                .all(|(&got, want)| (got - want).abs() < 1e-5),
-            "weights {solved:?} should be {weights:?}"
-        );
-
-        let centroid = (points[0] + points[1] + points[2] + points[3]) * 0.25;
-        let thresholds = Thresholds::for_scale(1.0);
-        let face = build_face(&vertices, 0, 1, 2, 3, centroid, thresholds.wedge_norm)
-            .expect("tetra is non-degenerate");
-        assert_close(face.distance, 1.0, 1e-6);
-
-        let polytope = Polytope4 {
-            vertices,
-            faces: vec![face],
-            horizon: Vec::new(),
-            centroid,
-            thresholds,
-        };
-        let contact = contact_from_face(&polytope, face);
-
-        let expected = Vec4::new(0.25, 1.5, -0.75, 0.5);
-        assert!(
-            (contact.point - expected).length() < 1e-5,
-            "contact {:?} should be {expected:?}",
-            contact.point
-        );
-    }
-
-    const SPHERE_PAIR_SCALE: f32 = 2.0;
-
-    fn seed(points: [Vec4; 5]) -> [MinkowskiPoint4; 5] {
-        points.map(|point| MinkowskiPoint4 {
-            point,
-            sa: point,
-            sb: Vec4::ZERO,
-        })
-    }
-
-    fn seed_of_height(h: f32) -> [MinkowskiPoint4; 5] {
-        seed([
-            Vec4::new(-1.0, -1.0, -1.0, 0.0),
-            Vec4::new(1.0, -1.0, -1.0, 0.0),
-            Vec4::new(0.0, 1.0, -1.0, 0.0),
-            Vec4::new(0.0, 0.0, 1.0, 0.0),
-            Vec4::new(0.0, 0.0, 0.0, h),
-        ])
-    }
-
-    #[test]
-    fn seeds_across_the_volume_floor_resolve_finitely_or_not_at_all() {
-        let a = Sphere4 {
-            center: Vec4::ZERO,
-            radius: 1.0,
-        };
-        let b = Sphere4 {
-            center: Vec4::new(0.5, 0.0, 0.0, 0.0),
-            radius: 1.0,
-        };
-
-        assert!(
-            epa_r4(&a, &b, seed_of_height(0.0), SPHERE_PAIR_SCALE).is_none(),
-            "a seed inside a hyperplane has no interior to orient against"
-        );
-        for h in [1e-6, 1e-4, 1e-2, 1.0] {
-            let contact = epa_r4(&a, &b, seed_of_height(h), SPHERE_PAIR_SCALE)
-                .unwrap_or_else(|| panic!("seed of height {h} clears the volume floor"));
-            assert!(
-                contact.normal.is_finite()
-                    && contact.point.is_finite()
-                    && contact.penetration.is_finite(),
-                "seed of height {h} resolved to {contact:?}"
-            );
-            assert!(
-                contact.penetration >= 0.0,
-                "seed of height {h}: negative depth"
-            );
-        }
-    }
-
-    #[test]
-    fn the_seed_volume_floor_admits_the_same_seed_shapes_at_every_size() {
-        fn resized(seed: [MinkowskiPoint4; 5], s: f32) -> [MinkowskiPoint4; 5] {
-            seed.map(|p| MinkowskiPoint4 {
-                point: p.point * s,
-                sa: p.sa * s,
-                sb: p.sb * s,
-            })
-        }
-
-        for s in [1e-3_f32, 1.0, 1e3] {
-            let a = Sphere4 {
-                center: Vec4::ZERO,
-                radius: s,
-            };
-            let b = Sphere4 {
-                center: Vec4::new(0.5 * s, 0.0, 0.0, 0.0),
-                radius: s,
-            };
-            let scale = SPHERE_PAIR_SCALE * s;
-            assert!(
-                epa_r4(&a, &b, resized(seed_of_height(1e-9), s), scale).is_none(),
-                "at size {s} a seed 20x under the volume floor resolved a contact"
-            );
-            assert!(
-                epa_r4(&a, &b, resized(seed_of_height(1e-6), s), scale).is_some(),
-                "at size {s} a seed 50x over the volume floor resolved to nothing"
-            );
-        }
-    }
-
-    #[test]
-    fn collinear_and_repeated_vertex_seeds_are_rejected_rather_than_resolved() {
-        let a = Sphere4 {
-            center: Vec4::ZERO,
-            radius: 1.0,
-        };
-        let b = Sphere4 {
-            center: Vec4::new(0.5, 0.0, 0.0, 0.0),
-            radius: 1.0,
-        };
-        let collinear = seed([
-            Vec4::new(-1.0, 0.0, 0.0, 0.0),
-            Vec4::new(-0.5, 0.0, 0.0, 0.0),
-            Vec4::ZERO,
-            Vec4::new(0.5, 0.0, 0.0, 0.0),
-            Vec4::new(1.0, 0.0, 0.0, 0.0),
-        ]);
-        let mut repeated = seed_of_height(1.0);
-        repeated[2] = repeated[1];
-        assert!(epa_r4(&a, &b, collinear, SPHERE_PAIR_SCALE).is_none());
-        assert!(epa_r4(&a, &b, repeated, SPHERE_PAIR_SCALE).is_none());
-    }
-
-    fn box4_vertices(half: Vec4) -> Vec<Vec4> {
-        let mut vertices = Vec::with_capacity(16);
-        for &x in &[-half.x, half.x] {
-            for &y in &[-half.y, half.y] {
-                for &z in &[-half.z, half.z] {
-                    for &w in &[-half.w, half.w] {
-                        vertices.push(Vec4::new(x, y, z, w));
-                    }
-                }
-            }
-        }
-        vertices
-    }
-
-    const WALL_HALF: f32 = 0.05;
-    const WALL_SPAN: f32 = 2.0;
-    const BALL_RADIUS: f32 = 0.1;
-    const CAPTURE: f32 = WALL_HALF + BALL_RADIUS;
-    fn wall_scale() -> f32 {
-        BALL_RADIUS + Vec4::new(WALL_HALF, WALL_SPAN, WALL_SPAN, WALL_SPAN).length()
-    }
-
-    fn ball_vs_wall(x: f32) -> ContactInfo4 {
-        let vertices = box4_vertices(Vec4::new(WALL_HALF, WALL_SPAN, WALL_SPAN, WALL_SPAN));
-        let wall = ConvexHull4 {
-            vertices: &vertices,
-        };
-        let ball = Sphere4 {
-            center: Vec4::new(x, 0.0, 0.0, 0.0),
-            radius: BALL_RADIUS,
-        };
-        let simplex = match gjk_intersect_r4(&ball, &wall, -ball.center) {
-            GjkResult4::Intersecting { simplex } => simplex,
-            GjkResult4::Separated => panic!("ball at {x} overlaps the wall"),
-        };
-        epa_r4(&ball, &wall, simplex, wall_scale()).expect("EPA should resolve an overlap")
-    }
-
-    #[test]
-    fn wall_contact_leaves_through_the_face_the_ball_entered() {
-        for side in [-1.0_f32, 1.0] {
-            for k in 1..(CAPTURE / 5e-4) as u32 {
-                let x = side * (CAPTURE - 5e-4 * k as f32);
-                let contact = ball_vs_wall(x);
-                assert!(
-                    contact.normal.x * side < -0.99,
-                    "ball at {x} leaves along {:?}, not back out of its own face",
-                    -contact.normal
-                );
-                assert_close(contact.penetration, CAPTURE - x.abs(), EPA_TOLERANCE);
-            }
-        }
-    }
-
-    #[test]
-    fn wall_contact_rejects_gaps_and_resolves_overlap() {
-        let vertices = box4_vertices(Vec4::new(WALL_HALF, WALL_SPAN, WALL_SPAN, WALL_SPAN));
-        let wall = ConvexHull4 {
-            vertices: &vertices,
-        };
-        for gap in [1e-3_f32, 1e-4, 1e-5] {
-            let ball = Sphere4 {
-                center: Vec4::X * -(CAPTURE + gap),
-                radius: BALL_RADIUS,
-            };
-            assert!(
-                matches!(
-                    gjk_intersect_r4(&ball, &wall, Vec4::X),
-                    GjkResult4::Separated
-                ),
-                "gap={gap}"
-            );
-        }
-        for overlap in [1e-5_f32, 1e-4, 1e-3, 1e-2] {
-            let contact = ball_vs_wall(-(CAPTURE - overlap));
-            assert_close(contact.penetration, overlap, EPA_TOLERANCE);
-            assert!(
-                contact.normal.x > 0.99,
-                "an overlap of {overlap} leaves along {:?}",
-                -contact.normal
-            );
-        }
-    }
-
-    #[test]
-    fn tesseract_tesseract_contact_matches_deepest_axis() {
-        use crate::collision::gjk_r4::ConvexHull4;
-        use crate::euclidean_r4::tesseract_vertices;
-
-        let va: Vec<Vec4> = tesseract_vertices(1.0);
-        let vb: Vec<Vec4> = tesseract_vertices(1.0)
-            .into_iter()
-            .map(|v| v + Vec4::new(0.4, 0.2, 0.1, 0.0))
-            .collect();
-
-        let a = ConvexHull4 { vertices: &va };
-        let b = ConvexHull4 { vertices: &vb };
-        let simplex = match gjk_intersect_r4(&a, &b, Vec4::X) {
-            GjkResult4::Intersecting { simplex } => simplex,
-            _ => panic!("tesseracts should overlap"),
-        };
-        let contact = epa_r4(&a, &b, simplex, UNIT_POLYCHORON_SCALE).expect("EPA should succeed");
-
-        assert_close(contact.penetration, 1.0 - 0.4, EPA_TOLERANCE);
-        assert!(
-            contact.normal.dot(Vec4::X) > 0.999,
-            "normal must run from A toward B along +x, got {:?}",
-            contact.normal
-        );
-    }
-
-    #[test]
-    fn epa_r4_contact_is_equivariant_under_uniform_scaling() {
-        use crate::euclidean_r4::{
+    fn uniform_scaling() {
+        use loam_shape::polytope_geom::{
             cell120_vertices, cell16_vertices, cell24_vertices, cell600_vertices,
             pentatope_vertices, tesseract_vertices,
         };
@@ -676,11 +353,11 @@ mod tests {
                     .into_iter()
                     .map(|v| v + Vec4::new(0.3 * s, 0.0, 0.0, 0.0))
                     .collect();
-                let a = ConvexHull4 { vertices: &va };
-                let b = ConvexHull4 { vertices: &vb };
+                let a = ConvexHull { vertices: &va };
+                let b = ConvexHull { vertices: &vb };
                 let simplex = match gjk_intersect_r4(&a, &b, Vec4::X) {
-                    GjkResult4::Intersecting { simplex } => simplex,
-                    GjkResult4::Separated => panic!("{name} at scale {s} should overlap"),
+                    GjkResult::Intersecting { simplex } => simplex,
+                    GjkResult::Separated => panic!("{name} at scale {s} should overlap"),
                 };
 
                 let scale = 2.0 * s;

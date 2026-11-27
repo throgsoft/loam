@@ -1,0 +1,52 @@
+# A tour of the playground's input: camera, slice, shapes, modes and the toybox.
+# Each line is `frame verb args`. A line runs after its frame publishes and lands at the next boundary.
+# Raw input: key <code> down|up, pointer <x> <y> down|up [button], pointer <x> <y> move, wheel <lines>, look <dx> <dy>.
+
+0 spin on
+
+# Orbit with a secondary drag, then zoom in and back out.
+10 pointer 0 0 down secondary
+12 pointer 0.1 0 move
+14 pointer 0.2 0.05 move
+16 pointer 0.3 0.1 move
+18 pointer 0.3 0.1 up secondary
+20 wheel 3
+24 wheel -1
+
+# Fly: the free camera captures the cursor, so look and the movement keys reach it.
+40 camera freecam
+44 look 60 -20
+46 look 60 -20
+50 key KeyW down
+70 key KeyW up
+72 key KeyD down
+82 key KeyD up
+84 key KeyE down
+90 key KeyE up
+100 camera orbit
+
+# Scrub the w slice, pause the spin with its key, then show only the active shape and pick another.
+110 slice 0.2
+114 slice 0.4
+118 slice 0.6
+122 slice 0.3
+130 key Space down
+131 key Space up
+136 view single
+140 active 2
+150 wireframe on
+160 hud on
+166 view shapes
+
+# Toybox spawns the toys. Grab the center toy and fling it right.
+170 demo toybox
+200 pointer 0 0.03 down
+202 pointer 0.05 0.05 move
+204 pointer 0.12 0.08 move
+206 pointer 0.2 0.1 move
+207 pointer 0.2 0.1 up
+260 floor off
+
+# Back to rotate, then reset poses, rotation and slice.
+280 demo rotate
+300 reset

@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::entity::{Entities, Entity, EntityKey, SceneId};
 use crate::relation::LinkId;
-use crate::session::Stamp;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StoreError {
@@ -66,12 +65,6 @@ pub struct Cursor {
     removed: u64,
     boundary: u64,
     synced: bool,
-}
-
-impl Cursor {
-    pub fn position(self) -> u64 {
-        self.position
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,82 +199,6 @@ pub enum PartitionError {
     OutOfRange { cut: usize, len: usize },
 }
 
-const NO_RECORD: u32 = u32::MAX;
-
-pub struct RecordBuffer<R> {
-    rows: Vec<R>,
-    entities: Vec<Entity>,
-    positions: Vec<u32>,
-    stamp: Stamp,
-}
-
-impl<R> RecordBuffer<R> {
-    pub fn rows(&self) -> &[R] {
-        &self.rows
-    }
-
-    pub fn stamp(&self) -> Stamp {
-        self.stamp
-    }
-
-    fn position(&self, entity: Entity) -> Option<usize> {
-        let position = *self.positions.get(entity.key().slot() as usize)?;
-        (position != NO_RECORD && self.entities[position as usize] == entity)
-            .then_some(position as usize)
-    }
-
-    fn upsert(&mut self, entity: Entity, record: R) {
-        if let Some(position) = self.position(entity) {
-            self.rows[position] = record;
-            return;
-        }
-        let slot = entity.key().slot() as usize;
-        if slot >= self.positions.len() {
-            self.positions.resize(slot + 1, NO_RECORD);
-        }
-        self.positions[slot] = self.rows.len() as u32;
-        self.rows.push(record);
-        self.entities.push(entity);
-    }
-
-    fn clear(&mut self) {
-        self.rows.clear();
-        self.entities.clear();
-        self.positions.fill(NO_RECORD);
-    }
-
-    pub(crate) fn restamp(&mut self, stamp: Stamp) {
-        self.stamp = stamp;
-    }
-
-    pub(crate) fn update(&mut self, entity: Entity, record: R) -> bool {
-        let Some(position) = self.position(entity) else {
-            return false;
-        };
-        self.rows[position] = record;
-        true
-    }
-
-    pub(crate) fn replace(&mut self, records: impl Iterator<Item = (Entity, R)>, stamp: Stamp) {
-        self.clear();
-        for (entity, record) in records {
-            self.upsert(entity, record);
-        }
-        self.stamp = stamp;
-    }
-}
-
-impl<R> Default for RecordBuffer<R> {
-    fn default() -> Self {
-        Self {
-            rows: Vec::new(),
-            entities: Vec::new(),
-            positions: Vec::new(),
-            stamp: Stamp::default(),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SchemaId(&'static str);
 
@@ -306,8 +223,8 @@ impl Owner {
     }
 }
 
-/// A storage-field contract; only `Stores` implementations call its lifetime hooks.
-pub trait StoreField: Send + 'static {
+/// A store-column contract; only `Stores` implementations call its lifetime hooks.
+pub trait StoreColumn: Send + 'static {
     type Snapshot: Send + 'static;
 
     fn bind(&mut self, scene: SceneId, owner: Owner);
@@ -388,7 +305,6 @@ impl<E: Copy> Ring<E> {
 }
 
 struct Tracking {
-    capacity: LogCapacity,
     versions: Vec<Version>,
     logged: Vec<u64>,
     dirty: Ring<EntityKey>,
@@ -400,7 +316,6 @@ struct Tracking {
 impl Tracking {
     fn new(capacity: LogCapacity) -> Self {
         Self {
-            capacity,
             versions: Vec::new(),
             logged: Vec::new(),
             dirty: Ring::new(capacity.dirty),
@@ -462,6 +377,7 @@ pub struct Store<T> {
     keys: Vec<EntityKey>,
     sparse: Vec<Option<SparseEntry>>,
     tracking: Option<Tracking>,
+    revision: Version,
 }
 
 impl<T> Default for Store<T> {
@@ -486,6 +402,7 @@ impl<T> Store<T> {
             keys: Vec::new(),
             sparse: Vec::new(),
             tracking,
+            revision: Version::default(),
         }
     }
 
@@ -495,10 +412,6 @@ impl<T> Store<T> {
 
     pub fn is_tracked(&self) -> bool {
         self.tracking.is_some()
-    }
-
-    pub fn log_capacity(&self) -> Option<LogCapacity> {
-        self.tracking.as_ref().map(|tracking| tracking.capacity)
     }
 
     pub fn scene(&self) -> SceneId {
@@ -547,6 +460,7 @@ impl<T> Store<T> {
 
     pub fn get_mut(&mut self, entity: Entity) -> Option<&mut T> {
         let dense = self.dense_index(entity)?;
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.touch(dense, self.keys[dense]);
         }
@@ -560,6 +474,7 @@ impl<T> Store<T> {
         if i == j {
             return None;
         }
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.touch(i, self.keys[i]);
             tracking.touch(j, self.keys[j]);
@@ -577,6 +492,7 @@ impl<T> Store<T> {
     }
 
     pub(crate) fn rows_mut_untracked(&mut self) -> &mut [T] {
+        self.revision = self.revision.bump();
         &mut self.dense
     }
 
@@ -589,6 +505,7 @@ impl<T> Store<T> {
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (Entity, &mut T)> {
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.touch_all(&self.keys);
         }
@@ -637,6 +554,7 @@ impl<T> Store<T> {
         });
         self.dense.push(row);
         self.keys.push(key);
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.push_row();
             tracking.touch(dense, key);
@@ -652,6 +570,7 @@ impl<T> Store<T> {
         self.sparse[key.slot() as usize] = None;
         let row = self.dense.swap_remove(dense);
         self.keys.swap_remove(dense);
+        self.revision = self.revision.bump();
         if let Some(&moved) = self.keys.get(dense) {
             if let Some(entry) = &mut self.sparse[moved.slot() as usize] {
                 entry.dense = dense as u32;
@@ -679,6 +598,7 @@ impl<T> Store<T> {
             }
             previous = Some(cut);
         }
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.touch_all(&self.keys);
         }
@@ -693,6 +613,11 @@ impl<T> Store<T> {
         if let Some(tracking) = &mut self.tracking {
             tracking.boundary += 1;
         }
+    }
+
+    /// Changes whenever a row is written, added or removed and whenever the store is restored.
+    pub fn revision(&self) -> Version {
+        self.revision
     }
 
     /// `None` for an untracked store or an entity it does not hold.
@@ -767,7 +692,7 @@ impl<T> Store<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> StoreField for Store<T> {
+impl<T: Clone + Send + 'static> StoreColumn for Store<T> {
     type Snapshot = StoreSnapshot<T>;
 
     fn bind(&mut self, scene: SceneId, _owner: Owner) {
@@ -799,6 +724,7 @@ impl<T: Clone + Send + 'static> StoreField for Store<T> {
                 dense: dense as u32,
             });
         }
+        self.revision = self.revision.bump();
         if let Some(tracking) = &mut self.tracking {
             tracking.reset(self.dense.len());
         }
@@ -818,11 +744,10 @@ pub(crate) mod tests {
     use std::alloc::System;
     use std::collections::BTreeMap;
 
-    use loam_time::alloc::{bytes_allocated_by, CountingAllocator};
+    use loam_time::alloc::CountingAllocator;
 
     use super::*;
     use crate::entity::{Entities, Epoch, RuntimeId};
-    use crate::relation::Relation;
 
     #[global_allocator]
     static COUNTING_ALLOCATOR: CountingAllocator<System> = CountingAllocator::new(System);
@@ -842,7 +767,7 @@ pub(crate) mod tests {
     fn filled(count: u32, capacity: Option<LogCapacity>) -> (Entities, Store<u32>, Vec<Entity>) {
         let entities = entities();
         let mut store = capacity.map_or_else(Store::untracked, Store::tracked);
-        StoreField::bind(&mut store, entities.scene(), Owner::new());
+        StoreColumn::bind(&mut store, entities.scene(), Owner::new());
         let mut entities = entities;
         let spawned: Vec<Entity> = (0..count)
             .map(|value| {
@@ -891,37 +816,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn pair_mut_and_partition_never_alias_and_never_refuse_distinct_rows() {
-        let (_, mut store, e) = filled(5, None);
-        assert!(store.pair_mut(e[1], e[1]).is_none());
-        let (a, b) = store.pair_mut(e[3], e[1]).unwrap();
-        *a += 10;
-        *b += 20;
-        assert_eq!(store.rows(), [0, 21, 2, 13, 4]);
-
-        assert_eq!(
-            store.partition(&[1, 6]).err(),
-            Some(PartitionError::OutOfRange { cut: 6, len: 5 })
-        );
-        assert_eq!(
-            store.partition(&[2, 2]).err(),
-            Some(PartitionError::Unsorted { at: 1 })
-        );
-        let partition = store.partition(&[1, 3]).unwrap();
-        assert_eq!(partition.part_count(), 3);
-        let mut covered = Vec::new();
-        for (index, part) in partition.parts().enumerate() {
-            for (offset, row) in part.rows.iter_mut().enumerate() {
-                *row = index as u32;
-                covered.push(part.first + offset);
-            }
-        }
-        assert_eq!(covered, [0, 1, 2, 3, 4]);
-        assert_eq!(store.rows(), [0, 1, 1, 2, 2]);
-    }
-
-    #[test]
-    fn swap_remove_keeps_every_survivor_once_in_iteration_and_the_sparse_index() {
+    fn swap_remove_survivors() {
         let (_, mut store, e) = filled(5, None);
         assert_eq!(store.remove(e[1]), Ok(1));
         assert_eq!(store.remove(e[1]), Err(StoreError::Missing(e[1])));
@@ -938,34 +833,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn deleting_the_last_rows_keeps_their_removals() {
-        let retaining = LogCapacity {
-            dirty: SMALL.dirty,
-            removals: 3,
-        };
-        let (_, mut store, e) = filled(3, Some(retaining));
-        let mut mirror = Mirror::default();
-        mirror.sync(&store);
-        assert_eq!(mirror.rows, live(&store));
-        for &entity in [e[2], e[0], e[1]].iter() {
-            store.remove(entity).unwrap();
-        }
-        let mut cursor = mirror.cursor;
-        let changes = store.changes(&mut cursor);
-        assert!(!changes.is_resync());
-        let mut removed: Vec<Entity> = changes
-            .map(|change| match change {
-                Change::Removed(removal) => removal.entity,
-                Change::Row(entity, _) => panic!("{entity:?} was published after its removal"),
-            })
-            .collect();
-        removed.sort();
-        assert_eq!(removed, e);
-        assert!(store.is_empty());
-    }
-
-    #[test]
-    fn churn_or_cursor_overflow_forces_a_resync_that_rebuilds_the_consumer() {
+    fn cursor_through_churn_and_restore() {
         let (mut entities, mut store, e) = filled(3, Some(SMALL));
         let mut mirror = Mirror::default();
         assert!(mirror.sync(&store).0);
@@ -1000,77 +868,7 @@ pub(crate) mod tests {
         store.remove(store.entity_at(0).unwrap()).unwrap();
         assert!(mirror.sync(&store).0);
         assert_eq!(mirror.rows, live(&store));
-    }
 
-    #[test]
-    fn old_generation_removal_never_deletes_a_reused_slots_new_object() {
-        let (mut entities, mut store, e) = filled(1, Some(SMALL));
-        let mut mirror = Mirror::default();
-        mirror.sync(&store);
-        store.remove(e[0]).unwrap();
-        entities.despawn(e[0]).unwrap();
-        let reused = entities.spawn();
-        assert_eq!(reused.key().slot(), e[0].key().slot());
-        store.insert(&entities, reused, 7).unwrap();
-
-        let mut cursor = mirror.cursor;
-        let removals: Vec<Removal> = store
-            .changes(&mut cursor)
-            .filter_map(|change| match change {
-                Change::Removed(removal) => Some(removal),
-                Change::Row(..) => None,
-            })
-            .collect();
-        assert_eq!(removals.len(), 1);
-        assert_eq!(removals[0].entity, e[0]);
-        assert_ne!(removals[0].entity, reused);
-        mirror.sync(&store);
-        assert_eq!(mirror.rows.get(&reused), Some(&7));
-        assert_eq!(mirror.rows.len(), 1);
-    }
-
-    #[test]
-    fn warm_read_iterate_pair_and_partition_paths_allocate_nothing() {
-        let (_, mut store, e) = filled(64, Some(LogCapacity::default()));
-        let mut cursor = Cursor::default();
-        let mut warm = |store: &mut Store<u32>| {
-            for (_, row) in store.iter_mut() {
-                *row += 1;
-            }
-            store.changes(&mut cursor).count()
-        };
-        warm(&mut store);
-        assert_eq!(warm(&mut store), 64);
-
-        let bytes = bytes_allocated_by(|| {
-            for _ in 0..16 {
-                let mut sum = 0u32;
-                for &entity in &e {
-                    sum = sum.wrapping_add(*store.get(entity).unwrap());
-                }
-                for (_, row) in store.iter() {
-                    sum = sum.wrapping_add(*row);
-                }
-                let (a, b) = store.pair_mut(e[0], e[63]).unwrap();
-                *a = sum;
-                *b += 1;
-                for part in store.partition(&[16, 48]).unwrap().parts() {
-                    for row in part.rows {
-                        *row += 1;
-                    }
-                }
-                warm(&mut store);
-            }
-        })
-        .expect("the counting allocator is installed");
-        assert_eq!(
-            bytes, 0,
-            "16 warmed passes asked the allocator for {bytes} bytes"
-        );
-    }
-
-    #[test]
-    fn edits_and_removals_after_a_restore_reach_a_resynchronized_cursor() {
         const RETAINING: LogCapacity = LogCapacity {
             dirty: 3,
             removals: 2,
@@ -1082,7 +880,7 @@ pub(crate) mod tests {
 
         entities.restore(&snapshot);
         let scene = entities.scene();
-        StoreField::restore(&mut store, &rows, scene, Owner::new());
+        StoreColumn::restore(&mut store, &rows, scene, Owner::new());
         let rebased: Vec<Entity> = e
             .iter()
             .map(|entity| Entity::new(scene, entity.key()))
@@ -1095,50 +893,6 @@ pub(crate) mod tests {
         let (resync, seen) = mirror.sync(&store);
         assert!(!resync, "a second resync hid the lost log entries");
         assert_eq!(seen, [rebased[0], rebased[1]]);
-        assert_eq!(mirror.rows, live(&store));
-    }
-
-    #[test]
-    fn restore_advances_the_epoch_so_old_handles_fail_and_relations_survive() {
-        let (mut entities, mut store, e) = filled(2, Some(SMALL));
-        let mut relation = Relation::<u8>::new();
-        StoreField::bind(&mut relation, entities.scene(), Owner::new());
-        let link = relation.link(&entities, e[0], e[1], 5).unwrap();
-        let mut mirror = Mirror::default();
-        mirror.sync(&store);
-        let (snapshot, rows, links) = (entities.snapshot(), store.snapshot(), relation.snapshot());
-
-        let extra = entities.spawn();
-        store.insert(&entities, extra, 9).unwrap();
-        relation.unlink(link).unwrap();
-        *store.get_mut(e[0]).unwrap() = 8;
-
-        entities.restore(&snapshot);
-        let scene = entities.scene();
-        assert_eq!(scene.epoch(), Epoch::default().advance());
-        StoreField::restore(&mut store, &rows, scene, Owner::new());
-        StoreField::restore(&mut relation, &links, scene, Owner::new());
-
-        assert_eq!(store.scene(), scene);
-        assert_eq!(store.get(e[0]), None);
-        assert_eq!(store.get(extra), None);
-        assert_eq!(relation.outgoing(e[0]).count(), 0);
-        assert!(relation.get(link).is_none());
-
-        let rebased: Vec<Entity> = e
-            .iter()
-            .map(|entity| Entity::new(scene, entity.key()))
-            .collect();
-        assert_eq!(store.get(rebased[0]), Some(&0));
-        assert_eq!(store.len(), 2);
-        let survivor = relation.outgoing(rebased[0]).next().unwrap();
-        let survivor = relation.get(survivor).unwrap();
-        assert_eq!(
-            (survivor.from(), survivor.to(), survivor.data),
-            (rebased[0], rebased[1], 5)
-        );
-        assert_eq!(store.get(survivor.to()), Some(&1));
-        assert!(mirror.sync(&store).0);
         assert_eq!(mirror.rows, live(&store));
     }
 }

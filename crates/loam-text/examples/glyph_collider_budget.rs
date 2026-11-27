@@ -1,13 +1,13 @@
 use std::time::Instant;
 
 use ab_glyph::FontRef;
-use anyhow::{Context, Result};
 use glam::Vec4;
 use loam_math::EuclideanR4;
 use loam_physics::euclidean_r4::{register_default_narrowphase, sphere_body_r4};
-use loam_physics::{BodyDef, World};
+use loam_physics::{BodyDef, EditError, World};
 use loam_shape::Shape;
 use loam_text::glyph::{layout_word, GlyphParams, GlyphSolid};
+use loam_time::par::Sequential;
 
 const WORD: &str = "LOAM";
 const FIXED_HZ: f32 = 60.0;
@@ -47,7 +47,7 @@ impl Xorshift64 {
     }
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), EditError> {
     let Some(bytes) = system_font() else {
         return Ok(());
     };
@@ -136,7 +136,7 @@ fn hull_area(letter: &GlyphSolid) -> f32 {
     0.5 * doubled
 }
 
-fn time_word(letters: &[GlyphSolid]) -> Result<(usize, f64)> {
+fn time_word(letters: &[GlyphSolid]) -> Result<(usize, f64), EditError> {
     let mut world = World::new(EuclideanR4);
     register_default_narrowphase(&mut world.narrowphase);
     world
@@ -145,8 +145,7 @@ fn time_word(letters: &[GlyphSolid]) -> Result<(usize, f64)> {
 
     for letter in letters {
         for (centre, hull) in letter.colliders_4d() {
-            let body = BodyDef::fixed(centre, hull, 1.0, &EuclideanR4)
-                .with_context(|| format!("invalid collider for glyph {:?}", letter.ch()))?;
+            let body = BodyDef::fixed(centre, hull, 1.0, &EuclideanR4)?;
             world.push_body(body);
         }
     }
@@ -162,18 +161,17 @@ fn time_word(letters: &[GlyphSolid]) -> Result<(usize, f64)> {
             0.3 + rng.unit() * 0.3,
             0.0,
         );
-        let body = sphere_body_r4(position, Vec4::ZERO, BALL_RADIUS, 1.0)
-            .context("invalid sphere body")?;
+        let body = sphere_body_r4(position, Vec4::ZERO, BALL_RADIUS, 1.0)?;
         world.push_body(body);
     }
 
     let dt = 1.0 / FIXED_HZ;
     for _ in 0..SETTLE_STEPS {
-        world.step(dt).expect("valid timestep");
+        world.step(dt, &Sequential).expect("valid timestep");
     }
     let started = Instant::now();
     for _ in 0..TIMED_STEPS {
-        world.step(dt).expect("valid timestep");
+        world.step(dt, &Sequential).expect("valid timestep");
     }
     let micros = started.elapsed().as_secs_f64() * 1.0e6 / TIMED_STEPS as f64;
     Ok((world.bodies().iter().count(), micros))

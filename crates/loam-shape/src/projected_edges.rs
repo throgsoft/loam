@@ -12,8 +12,7 @@ pub fn stereographic_clip_radius(
         loam_math::Projection::Stereographic { .. } => Some(view_radius),
         loam_math::Projection::Identity
         | loam_math::Projection::Orthographic { .. }
-        | loam_math::Projection::Perspective4D { .. }
-        | loam_math::Projection::Schlegel { .. } => None,
+        | loam_math::Projection::Perspective4D { .. } => None,
     }
 }
 

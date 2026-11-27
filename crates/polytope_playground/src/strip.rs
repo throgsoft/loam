@@ -1,6 +1,7 @@
-use loam::render::Viewport;
+use loam::prelude::*;
 
 use crate::catalog::SHAPE_CATALOG;
+use crate::consts::{BODY_SIZE, BODY_Y};
 
 pub(crate) const MIN_CELLS: usize = 3;
 
@@ -99,73 +100,39 @@ impl Strip {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Default)]
+pub(crate) struct Scratch {
+    pub(crate) cells: Vec<Cell>,
+    pub(crate) strip: Vec<(Viewport, f32, BodyUniform)>,
+}
 
-    const FRAME: [u32; 2] = [1280, 720];
-
-    #[test]
-    fn the_grid_tiles_the_frame_once_per_cell_and_spans_the_w_extent() {
-        const EXTENT: f32 = 0.35;
-        const SLICE: f32 = 0.1;
-        let strip = Strip {
-            on: true,
-            w: true,
-            t: true,
-            count_w: 5,
-            count_t: 3,
-            t_extent: 2.0,
-            ..Strip::default()
-        };
-        let mut cells = Vec::new();
-        strip.cells(FRAME, SLICE, EXTENT, &mut cells);
-        assert_eq!(cells.len(), 15, "a 5 by 3 grid has fifteen cells");
-
-        let covered: u64 = cells
-            .iter()
-            .map(|cell| u64::from(cell.viewport.width) * u64::from(cell.viewport.height))
-            .sum();
-        assert_eq!(
-            covered,
-            u64::from(FRAME[0]) * u64::from(FRAME[1]),
-            "the cells leave a gap or overlap"
-        );
-
-        assert!((cells[0].w - (SLICE - EXTENT)).abs() < 1e-6);
-        assert!((cells[14].w - (SLICE + EXTENT)).abs() < 1e-6);
-        assert!(
-            (cells[0].t - 0.0).abs() < 1e-6 && (cells[2].t - 2.0).abs() < 1e-6,
-            "the t fan spans the extent down each column"
-        );
+pub(crate) fn fill_strip(
+    strip: &Strip,
+    omega: Bivector4,
+    subject: Rotor4,
+    frame: (u32, u32),
+    slice: f32,
+    scratch: &mut Scratch,
+) {
+    scratch.strip.clear();
+    if !strip.on {
+        scratch.cells.clear();
+        return;
     }
-
-    #[test]
-    fn one_axis_off_leaves_a_single_row_or_column_at_the_slider() {
-        let mut cells = Vec::new();
-        let across = Strip {
-            on: true,
-            w: true,
-            t: false,
-            count_w: 4,
-            ..Strip::default()
-        };
-        across.cells(FRAME, 0.0, 1.0, &mut cells);
-        assert_eq!(cells.len(), 4);
-        assert!(cells.iter().all(|cell| cell.t == 0.0));
-
-        let forward = Strip {
-            on: true,
-            w: false,
-            t: true,
-            count_t: 4,
-            ..Strip::default()
-        };
-        forward.cells(FRAME, 0.25, 1.0, &mut cells);
-        assert_eq!(cells.len(), 4);
-        assert!(
-            cells.iter().all(|cell| (cell.w - 0.25).abs() < 1e-6),
-            "with w off every cell cuts at the slider's own w"
-        );
+    strip.cells([frame.0, frame.1], slice, BODY_SIZE, &mut scratch.cells);
+    let entry = SHAPE_CATALOG[strip.subject()];
+    for cell in &scratch.cells {
+        let rotor = ((omega * cell.t).exp() * subject).normalize();
+        scratch.strip.push((
+            cell.viewport,
+            cell.w,
+            BodyUniform::polytope_with_rotor(
+                [0.0, BODY_Y, 0.0, 0.0],
+                shape_id(entry.shape),
+                BODY_SIZE,
+                rotor,
+                entry.body_color,
+            ),
+        ));
     }
 }

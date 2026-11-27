@@ -39,38 +39,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn r4_edge_section_midpoint() {
+    fn edge_section() {
         let slice = WPlane::new(0.0);
-        let p0 = Vec4::new(1.0, 2.0, 3.0, -1.0);
-        let p1 = Vec4::new(5.0, 6.0, 7.0, 1.0);
-        let (t, p3) = slice.intersect_edge(p0, p1).unwrap();
+
+        let (t, p3) = slice
+            .intersect_edge(
+                Vec4::new(1.0, 2.0, 3.0, -1.0),
+                Vec4::new(5.0, 6.0, 7.0, 1.0),
+            )
+            .expect("the edge straddles the slice");
         assert!((t - 0.5).abs() < 1e-6);
         assert_eq!(p3, Vec3::new(3.0, 4.0, 5.0));
-    }
 
-    #[test]
-    fn r4_edge_section_no_crossing_returns_none() {
-        let slice = WPlane::new(0.0);
-        let p0 = Vec4::new(0.0, 0.0, 0.0, 0.5);
-        let p1 = Vec4::new(0.0, 0.0, 0.0, 1.5);
-        assert!(slice.intersect_edge(p0, p1).is_none());
-    }
-
-    #[test]
-    fn r4_edge_section_parallel_edge_returns_none() {
-        let slice = WPlane::new(0.0);
-        let p0 = Vec4::new(0.0, 0.0, 0.0, 0.0);
-        let p1 = Vec4::new(1.0, 1.0, 1.0, 1e-7);
-        assert!(slice.intersect_edge(p0, p1).is_none());
-    }
-
-    #[test]
-    fn r4_edge_section_endpoint_on_slice_returns_t_zero() {
-        let slice = WPlane::new(0.0);
-        let p0 = Vec4::new(2.0, 2.0, 2.0, 0.0);
-        let p1 = Vec4::new(5.0, 5.0, 5.0, 1.0);
-        let (t, p3) = slice.intersect_edge(p0, p1).unwrap();
+        let (t, p3) = slice
+            .intersect_edge(Vec4::new(2.0, 2.0, 2.0, 0.0), Vec4::new(5.0, 5.0, 5.0, 1.0))
+            .expect("an endpoint on the slice counts as a crossing");
         assert!(t.abs() < 1e-6);
         assert_eq!(p3, Vec3::new(2.0, 2.0, 2.0));
+
+        let one_sided =
+            slice.intersect_edge(Vec4::new(0.0, 0.0, 0.0, 0.5), Vec4::new(0.0, 0.0, 0.0, 1.5));
+        assert!(one_sided.is_none());
+
+        let parallel = slice.intersect_edge(Vec4::ZERO, Vec4::new(1.0, 1.0, 1.0, 1e-7));
+        assert!(parallel.is_none());
     }
 }

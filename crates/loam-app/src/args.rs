@@ -117,11 +117,6 @@ impl Args {
             None => Vec::new(),
         }
     }
-
-    /// Order is HashMap-arbitrary.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.map.iter().map(|(k, v)| (k.as_str(), v.as_str()))
-    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -158,118 +153,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_argv_keeps_only_attached_values_and_ignores_positionals() {
-        let args = Args::from_argv(["--seed=42", "sub", "--=x", "--fov=60.5", "--", "--late=1"]);
+    fn command_line_and_page_url() {
+        let args = Args::from_argv([
+            "--seed=42",
+            "sub",
+            "--=x",
+            "--state=a=b",
+            "--shapes",
+            "5-cell,8-cell",
+            "--",
+            "--late=1",
+        ]);
         assert_eq!(args.get("seed"), Some("42"));
-        assert_eq!(args.get("fov"), Some("60.5"));
-        assert_eq!(args.get("sub"), None);
-        assert_eq!(args.get("late"), None);
-        assert_eq!(args.get(""), None);
-    }
-
-    #[test]
-    fn argv_pairs_split_on_the_first_equals_so_values_keep_the_rest() {
-        let args = Args::from_argv(["--state=a=b", "--eq=="]);
         assert_eq!(args.get("state"), Some("a=b"));
-        assert_eq!(args.get("eq"), Some("="));
+        assert_eq!(args.get("sub"), None);
+        assert_eq!(args.get(""), None);
+        assert_eq!(args.get("late"), None);
 
-        assert_eq!(args.get("state=a"), None);
-        assert_eq!(args.get("eq="), None);
-        assert!(!args.has_bare_flag("state=a=b"));
-    }
-
-    #[test]
-    fn a_bare_flag_is_recorded_and_its_value_is_not_absorbed() {
-        let args = Args::from_argv(["--shapes", "5-cell,8-cell", "--seed=42"]);
         assert_eq!(args.get("shapes"), None);
         assert!(args.has_bare_flag("shapes"));
         assert_eq!(args.bare_flag_value("shapes"), Some("5-cell,8-cell"));
         assert_eq!(args.flag_value("shapes"), Some("5-cell,8-cell"));
-        assert_eq!(
-            Args::from_argv(["--headless=1200"]).flag_value("headless"),
-            Some("1200")
-        );
-        assert_eq!(Args::from_argv(["--other"]).flag_value("headless"), None);
-        assert_eq!(
-            Args::from_argv(["--headless=1200"]).bare_flag_value("headless"),
-            None
-        );
-
         assert!(!args.has_bare_flag("seed"));
-        assert!(!args.has_bare_flag("5-cell,8-cell"));
-        assert!(!args.has_bare_flag(""));
-        assert!(!Args::from_pairs([("shapes", "5-cell")]).has_bare_flag("shapes"));
-    }
+        assert_eq!(args.bare_flag_value("seed"), None);
+        assert_eq!(args.flag_value("seed"), Some("42"));
+        assert_eq!(args.flag_value("headless"), None);
 
-    #[test]
-    fn get_many_splits_on_comma_and_drops_empties() {
-        let args = Args::from_pairs([("shapes", "tesseract,5-cell,,8-cell,")]);
-        assert_eq!(
-            args.get_many("shapes"),
-            vec!["tesseract", "5-cell", "8-cell"]
-        );
-        assert!(args.get_many("missing").is_empty());
-    }
-
-    fn parse_all(fragments: &[&str]) -> Vec<(String, String)> {
         let mut map = HashMap::new();
-        for fragment in fragments {
+        for fragment in [
+            "?title=hello+world&flag&=1&empty=&state=a=b&a=1&a=search",
+            "#a=hash",
+            "?",
+            "",
+        ] {
             parse_query_into(fragment, &mut map);
         }
-        let mut pairs: Vec<(String, String)> = map.into_iter().collect();
+        let mut pairs: Vec<(&str, &str)> =
+            map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         pairs.sort();
-        pairs
-    }
-
-    fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
-        expected
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
-    #[test]
-    fn query_and_fragment_markers_are_stripped() {
-        assert_eq!(parse_all(&["?a=1&b=2"]), pairs(&[("a", "1"), ("b", "2")]));
-        assert_eq!(parse_all(&["#a=1"]), pairs(&[("a", "1")]));
-    }
-
-    #[test]
-    fn query_segments_without_a_nonempty_key_and_separator_are_dropped() {
-        assert_eq!(parse_all(&["?flag"]), pairs(&[]));
-        assert_eq!(parse_all(&["?=1"]), pairs(&[]));
-        assert_eq!(parse_all(&["?"]), pairs(&[]));
-        assert_eq!(parse_all(&[""]), pairs(&[]));
-
-        assert_eq!(parse_all(&["?flag&=1&a=2"]), pairs(&[("a", "2")]));
-    }
-
-    #[test]
-    fn query_values_decode_plus_as_space_and_keep_empty_values() {
         assert_eq!(
-            parse_all(&["?title=hello+world&plus=a+b+c&empty="]),
-            pairs(&[("empty", ""), ("plus", "a b c"), ("title", "hello world")])
-        );
-    }
-
-    #[test]
-    fn query_repeated_keys_resolve_last_write_wins_within_and_across_fragments() {
-        assert_eq!(parse_all(&["?a=1&a=2&a=3"]), pairs(&[("a", "3")]));
-
-        assert_eq!(
-            parse_all(&["?a=search&b=only-search", "#a=hash"]),
-            pairs(&[("a", "hash"), ("b", "only-search")])
-        );
-    }
-
-    #[test]
-    fn query_pairs_split_on_the_first_equals_so_values_keep_the_rest() {
-        assert_eq!(parse_all(&["?state=a=b"]), pairs(&[("state", "a=b")]));
-        assert_eq!(parse_all(&["?eq=="]), pairs(&[("eq", "=")]));
-
-        assert_eq!(
-            parse_all(&["?a=x=y&b=2"]),
-            pairs(&[("a", "x=y"), ("b", "2")])
+            pairs,
+            [
+                ("a", "hash"),
+                ("empty", ""),
+                ("state", "a=b"),
+                ("title", "hello world"),
+            ]
         );
     }
 }

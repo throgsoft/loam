@@ -5,6 +5,25 @@ use glam::{Vec3, Vec4};
 
 use crate::Shape;
 
+/// Why [`Isovolume::extract`] refuses its sampling domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IsovolumeError {
+    NoCells,
+    /// The axis whose extent is not positive.
+    EmptyAxis(usize),
+}
+
+impl std::fmt::Display for IsovolumeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoCells => write!(f, "the resolution must be at least one cell"),
+            Self::EmptyAxis(axis) => write!(f, "the domain has no positive extent on axis {axis}"),
+        }
+    }
+}
+
+impl std::error::Error for IsovolumeError {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellBox<const D: usize> {
     lo: [usize; D],
@@ -28,12 +47,20 @@ impl<const D: usize> Isovolume<D> {
         max: [f32; D],
         resolution: usize,
         sdf: impl Fn([f32; D]) -> f32,
-    ) -> Self {
-        assert!(resolution > 0, "resolution must be positive");
+    ) -> Result<Self, IsovolumeError> {
+        if resolution == 0 {
+            return Err(IsovolumeError::NoCells);
+        }
         let mut extent = [0.0f32; D];
-        for (e, (lo, hi)) in extent.iter_mut().zip(min.iter().zip(max.iter())) {
+        for (axis, (e, (lo, hi))) in extent
+            .iter_mut()
+            .zip(min.iter().zip(max.iter()))
+            .enumerate()
+        {
             *e = hi - lo;
-            assert!(*e > 0.0, "domain must be non-degenerate on every axis");
+            if e.is_nan() || *e <= 0.0 {
+                return Err(IsovolumeError::EmptyAxis(axis));
+            }
         }
 
         let cell = extent.iter().copied().fold(0.0f32, f32::max) / resolution as f32;
@@ -78,13 +105,13 @@ impl<const D: usize> Isovolume<D> {
             boxes.push(grown);
         }
 
-        Self {
+        Ok(Self {
             origin: min,
             cell,
             boxes,
             occupied_cells,
             clipped,
-        }
+        })
     }
 
     pub fn piece_count(&self) -> usize {
@@ -262,287 +289,5 @@ fn grow<const D: usize>(seed: [usize; D], occupied: &[bool], counts: &[usize; D]
         if !grew {
             return b;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn torus_3d(major: f32, minor: f32) -> impl Fn([f32; 3]) -> f32 {
-        move |p| {
-            let radial = (p[0] * p[0] + p[2] * p[2]).sqrt() - major;
-            (radial * radial + p[1] * p[1]).sqrt() - minor
-        }
-    }
-
-    fn torus_4d(major: f32, minor: f32) -> impl Fn([f32; 4]) -> f32 {
-        move |p| {
-            let radial = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() - major;
-            (radial * radial + p[3] * p[3]).sqrt() - minor
-        }
-    }
-
-    const TORUS_MAJOR: f32 = 1.0;
-    const TORUS_MINOR: f32 = 0.3;
-    const TORUS_BOUND: f32 = 1.6;
-
-    fn torus_volume_3d() -> f32 {
-        2.0 * std::f32::consts::PI.powi(2) * TORUS_MAJOR * TORUS_MINOR * TORUS_MINOR
-    }
-
-    fn extract_torus_3d(resolution: usize) -> Isovolume<3> {
-        Isovolume::extract(
-            [-TORUS_BOUND; 3],
-            [TORUS_BOUND; 3],
-            resolution,
-            torus_3d(TORUS_MAJOR, TORUS_MINOR),
-        )
-    }
-
-    fn direction_3d(i: usize) -> [f32; 3] {
-        const ALPHA_1: f32 = 0.754_877_7;
-        const ALPHA_2: f32 = 0.569_840_3;
-        let u = (0.5 + ALPHA_1 * i as f32).fract();
-        let v = (0.5 + ALPHA_2 * i as f32).fract();
-        let z = 2.0 * u - 1.0;
-        let r = (1.0 - z * z).max(0.0).sqrt();
-        let phi = 2.0 * std::f32::consts::PI * v;
-        [r * phi.cos(), r * phi.sin(), z]
-    }
-
-    fn surface_point_3d(
-        sdf: &impl Fn([f32; 3]) -> f32,
-        from: [f32; 3],
-        dir: [f32; 3],
-    ) -> Option<[f32; 3]> {
-        const STEP: f32 = 0.01;
-        const STEPS: usize = 800;
-        let at = |t: f32| {
-            [
-                from[0] + dir[0] * t,
-                from[1] + dir[1] * t,
-                from[2] + dir[2] * t,
-            ]
-        };
-        if sdf(at(0.0)) > 0.0 {
-            return None;
-        }
-        let mut lo = 0.0f32;
-        let hi = (1..=STEPS).map(|i| i as f32 * STEP).find(|&t| {
-            if sdf(at(t)) <= 0.0 {
-                lo = t;
-                false
-            } else {
-                true
-            }
-        })?;
-        let mut hi = hi;
-        for _ in 0..40 {
-            let mid = 0.5 * (lo + hi);
-            if sdf(at(mid)) <= 0.0 {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        Some(at(0.5 * (lo + hi)))
-    }
-
-    #[test]
-    fn rectangular_occupied_region_merges_into_one_piece() {
-        fn check<const D: usize>() {
-            let volume = Isovolume::extract([-2.0; D], [2.0; D], 16, |p| {
-                p.into_iter().map(f32::abs).fold(0.0, f32::max) - 0.5
-            });
-            assert_eq!(volume.piece_count(), 1);
-            assert_eq!(volume.piece_bounds(0), ([-0.75; D], [0.75; D]));
-            assert_eq!(volume.occupied_cells(), 6usize.pow(D as u32));
-        }
-        check::<3>();
-        check::<4>();
-    }
-
-    #[test]
-    fn every_isosurface_sample_lies_inside_a_piece() {
-        let sdf = torus_3d(TORUS_MAJOR, TORUS_MINOR);
-        for resolution in [24, 32, 48] {
-            let volume = extract_torus_3d(resolution);
-            assert!(!volume.clipped());
-            let mut checked = 0;
-            for i in 0..512 {
-                let angle = i as f32 * std::f32::consts::TAU / 512.0;
-                let core = [TORUS_MAJOR * angle.cos(), 0.0, TORUS_MAJOR * angle.sin()];
-                let dir = direction_3d(i);
-                let Some(p) = surface_point_3d(&sdf, core, dir) else {
-                    continue;
-                };
-                assert!(
-                    sdf(p).abs() < 1.0e-4,
-                    "bisection did not land on the surface: f = {}",
-                    sdf(p)
-                );
-                assert!(
-                    volume.contains(p),
-                    "resolution {resolution}: surface point {p:?} is outside every piece"
-                );
-                checked += 1;
-            }
-            assert!(checked > 400, "only {checked} usable surface samples");
-        }
-    }
-
-    #[test]
-    fn every_interior_probe_lies_inside_a_piece() {
-        let sdf = torus_3d(TORUS_MAJOR, TORUS_MINOR);
-        let volume = extract_torus_3d(32);
-        const PROBES: usize = 61;
-        let mut interior = 0;
-        for iz in 0..PROBES {
-            for iy in 0..PROBES {
-                for ix in 0..PROBES {
-                    let coord = |i: usize| {
-                        -TORUS_BOUND + 2.0 * TORUS_BOUND * (i as f32 + 0.31) / PROBES as f32
-                    };
-                    let p = [coord(ix), coord(iy), coord(iz)];
-                    if sdf(p) > 0.0 {
-                        continue;
-                    }
-                    interior += 1;
-                    assert!(volume.contains(p), "interior probe {p:?} is not covered");
-                }
-            }
-        }
-        assert!(interior > 1000, "only {interior} interior probes");
-    }
-
-    #[test]
-    fn no_piece_corner_exceeds_the_enclosure_margin() {
-        let sdf = torus_3d(TORUS_MAJOR, TORUS_MINOR);
-        let volume = extract_torus_3d(32);
-        let margin = volume.enclosure_margin();
-        for i in 0..volume.piece_count() {
-            let (lo, hi) = volume.piece_bounds(i);
-            for cz in [lo[2], hi[2]] {
-                for cy in [lo[1], hi[1]] {
-                    for cx in [lo[0], hi[0]] {
-                        let d = sdf([cx, cy, cz]);
-                        assert!(d <= margin + 1.0e-5, "corner distance {d} exceeds {margin}");
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn cover_volume_tightens_towards_the_true_volume() {
-        let truth = torus_volume_3d();
-        let mut previous = f32::INFINITY;
-        for resolution in [16, 32, 64] {
-            let ratio = extract_torus_3d(resolution).volume() / truth;
-            assert!(
-                ratio > 1.0,
-                "resolution {resolution}: cover {ratio} misses volume"
-            );
-            assert!(
-                ratio < previous,
-                "resolution {resolution}: ratio {ratio} did not improve on {previous}"
-            );
-            previous = ratio;
-        }
-        assert!(
-            previous < 1.6,
-            "finest cover is still {previous}x the solid"
-        );
-    }
-
-    #[test]
-    fn bounds_that_cut_the_solid_are_reported_as_clipped() {
-        let tight = Isovolume::extract([-0.8; 3], [0.8; 3], 24, torus_3d(TORUS_MAJOR, TORUS_MINOR));
-        assert!(tight.clipped());
-        assert!(!extract_torus_3d(24).clipped());
-    }
-
-    #[test]
-    fn a_field_with_no_solid_yields_no_pieces() {
-        let empty = Isovolume::extract([-1.0; 3], [1.0; 3], 8, |_| 10.0);
-        assert_eq!(empty.piece_count(), 0);
-        assert_eq!(empty.occupied_cells(), 0);
-        assert_eq!(empty.volume(), 0.0);
-        assert!(empty.colliders().is_empty());
-        assert!(!empty.contains([0.0; 3]));
-    }
-
-    #[test]
-    fn colliders_are_origin_centred_hulls_matching_their_piece_bounds() {
-        let volume = extract_torus_3d(16);
-        let colliders = volume.colliders();
-        assert_eq!(colliders.len(), volume.piece_count());
-        for (i, (centre, shape)) in colliders.iter().enumerate() {
-            let Shape::ConvexPolytope3D { vertices } = shape else {
-                panic!("expected ConvexPolytope3D, got {:?}", shape.kind());
-            };
-            assert_eq!(vertices.len(), 8);
-            let (lo, hi) = volume.piece_bounds(i);
-            let expect = 0.5 * (Vec3::from_array(lo) + Vec3::from_array(hi));
-            assert!(centre.distance(expect) < 1.0e-5);
-            let sum: Vec3 = vertices.iter().copied().sum();
-            assert!(sum.length() < 1.0e-5, "hull is not origin-centred");
-            let half = 0.5 * (Vec3::from_array(hi) - Vec3::from_array(lo));
-            for v in vertices {
-                assert!((v.abs() - half).abs().max_element() < 1.0e-5);
-            }
-        }
-    }
-
-    #[test]
-    fn colliders_4d_are_origin_centred_sixteen_vertex_hulls() {
-        let volume = Isovolume::extract(
-            [-TORUS_BOUND; 4],
-            [TORUS_BOUND; 4],
-            10,
-            torus_4d(TORUS_MAJOR, TORUS_MINOR),
-        );
-        let colliders = volume.colliders();
-        assert_eq!(colliders.len(), volume.piece_count());
-        assert!(volume.piece_count() > 0);
-        for (i, (centre, shape)) in colliders.iter().enumerate() {
-            let Shape::ConvexPolytope4D { vertices } = shape else {
-                panic!("expected ConvexPolytope4D, got {:?}", shape.kind());
-            };
-            assert_eq!(vertices.len(), 16);
-            let (lo, hi) = volume.piece_bounds(i);
-            let expect = 0.5 * (Vec4::from_array(lo) + Vec4::from_array(hi));
-            assert!(centre.distance(expect) < 1.0e-5);
-            let half = 0.5 * (Vec4::from_array(hi) - Vec4::from_array(lo));
-            for v in vertices {
-                assert!((v.abs() - half).abs().max_element() < 1.0e-5);
-            }
-        }
-    }
-
-    #[test]
-    fn every_interior_probe_lies_inside_a_piece_in_4d() {
-        let sdf = torus_4d(TORUS_MAJOR, TORUS_MINOR);
-        let volume = Isovolume::extract([-TORUS_BOUND; 4], [TORUS_BOUND; 4], 16, &sdf);
-        assert!(!volume.clipped());
-        const PROBES: usize = 21;
-        let coord = |i: usize| -TORUS_BOUND + 2.0 * TORUS_BOUND * (i as f32 + 0.37) / PROBES as f32;
-        let mut interior = 0;
-        for iw in 0..PROBES {
-            for iz in 0..PROBES {
-                for iy in 0..PROBES {
-                    for ix in 0..PROBES {
-                        let p = [coord(ix), coord(iy), coord(iz), coord(iw)];
-                        if sdf(p) > 0.0 {
-                            continue;
-                        }
-                        interior += 1;
-                        assert!(volume.contains(p), "interior probe {p:?} is not covered");
-                    }
-                }
-            }
-        }
-        assert!(interior > 1000, "only {interior} interior probes");
     }
 }

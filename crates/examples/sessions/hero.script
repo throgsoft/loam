@@ -1,0 +1,16 @@
+# The hero's verbs and keys over its assemble and settle.
+# Each line is `frame verb args`. A line runs after its frame publishes and lands at the next boundary.
+
+20 floor off
+40 floor on
+60 floor
+80 ground dark 0.1 0.1 0.12
+90 ground fog 0.05
+100 key Space down
+101 key Space up
+140 key Space down
+141 key Space up
+180 key KeyN down
+181 key KeyN up
+220 ground reset
+240 floor on

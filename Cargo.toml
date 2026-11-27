@@ -32,19 +32,15 @@ unsafe_op_in_unsafe_fn = "deny"
 undocumented_unsafe_blocks = "deny"
 
 [workspace.dependencies]
-anyhow = "1"
-thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 glam = { version = "0.27", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-ron = "0.8"
 
 wgpu  = { version = "27", features = ["wgsl"] }
 winit = "0.30"
 naga = { version = "27", features = ["wgsl-in"] }
 bytemuck = { version = "1", features = ["derive"] }
-notify = "6"
 pollster = "0.3"
 
 # `std::time::Instant::now` panics on wasm32.
@@ -87,7 +83,7 @@ capture = ["app", "loam-app/capture"]
 egui = ["app", "loam-app/egui"]
 physics = ["dep:loam-physics", "loam-runtime/physics"]
 render = ["dep:loam-render"]
-text = ["dep:loam-text", "render"]
+text = ["dep:loam-text", "render", "loam-app?/text"]
 
 [lints]
 workspace = true

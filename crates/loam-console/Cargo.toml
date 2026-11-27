@@ -6,12 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Developer console model: command registry, scrollback, tokenizer, tab completion, key binds. No UI dependency."
-
-[dependencies]
-anyhow.workspace = true
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features = ["console"] }
+description = "Developer console model: command registry, scrollback, tokenizer, tab completion. No UI dependency."
 
 [lints]
 workspace = true

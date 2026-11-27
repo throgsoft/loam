@@ -1,6 +1,7 @@
 use glam::Vec3;
-use loam_render::view::{self, DEPTH_CLEAR, DEPTH_FORMAT};
-use loam_render::{DepthConvention, Ground, SkyGroundNode, SkyGroundUniforms, Viewport};
+use loam_render::depth::{self, DEPTH_CLEAR, DEPTH_FORMAT};
+use loam_render::{DepthConvention, SkyGroundNode, SkyGroundUniforms, Viewport};
+use loam_runtime::Ground;
 use wgpu::*;
 
 const SIZE: u32 = 64;
@@ -88,7 +89,7 @@ fn reversed_z_depths() -> Vec<f32> {
     node.set_uniforms(
         &queue,
         &SkyGroundUniforms::new(
-            view::root_projection(FOV_Y, 1.0, NEAR),
+            depth::root_projection(FOV_Y, 1.0, NEAR),
             Viewport::full([SIZE, SIZE]),
             loam_render::sky_ground::DEFAULT_SKY,
             Ground {
@@ -139,7 +140,7 @@ fn reversed_z_depths() -> Vec<f32> {
 
 #[test]
 #[ignore = "requires a working wgpu adapter; run with --include-ignored"]
-fn reversed_z_background_clears_far_and_the_ground_writes_its_projective_depth_gpu_probe() {
+fn reversed_z_depth_gpu_probe() {
     let depths = reversed_z_depths();
     let at = |(x, y): (u32, u32)| depths[(y * SIZE + x) as usize];
 

@@ -3,9 +3,10 @@
 use glam::{Vec3, Vec4};
 use loam_math::{EuclideanR3, EuclideanR4};
 use loam_physics::{euclidean_r3 as r3, euclidean_r4 as r4, World};
+use loam_shape::polytope_geom::tesseract_vertices;
 
 #[test]
-fn sphere_hull_contacts_have_no_fixed_world_size_limit() {
+fn sphere_hull() {
     for scale in [0.1, 1.0, 100.0] {
         let mut w3 = World::new(EuclideanR3);
         r3::register_default_narrowphase(&mut w3.narrowphase);
@@ -32,13 +33,8 @@ fn sphere_hull_contacts_have_no_fixed_world_size_limit() {
             r4::sphere_body_r4(Vec4::X * (1.5 * scale), Vec4::ZERO, scale, 1.0).unwrap(),
         );
         let hull = w4.push_body(
-            r4::polytope_body_r4(
-                Vec4::ZERO,
-                Vec4::ZERO,
-                r4::tesseract_vertices(2.0 * scale),
-                0.0,
-            )
-            .unwrap(),
+            r4::polytope_body_r4(Vec4::ZERO, Vec4::ZERO, tesseract_vertices(2.0 * scale), 0.0)
+                .unwrap(),
         );
         let contact = w4
             .narrowphase

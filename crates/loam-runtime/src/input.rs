@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ActionId(pub u32);
+pub struct ActionId(pub &'static str);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActionEvent {
@@ -99,10 +99,10 @@ impl Input {
         self.held.contains(&action)
     }
 
-    pub fn began(&self) -> Option<&Pointer> {
-        self.pointers
-            .iter()
-            .find(|pointer| pointer.phase == PointerPhase::Began)
+    /// 1.0 while only `positive` is held, -1.0 while only `negative` is, and 0.0 otherwise.
+    pub fn axis(&self, negative: ActionId, positive: ActionId) -> f32 {
+        let held = |action| if self.is_held(action) { 1.0 } else { 0.0 };
+        held(positive) - held(negative)
     }
 
     pub fn drag(&self, button: PointerButton) -> [f32; 2] {
@@ -114,62 +114,5 @@ impl Input {
             .fold([0.0; 2], |sum, pointer| {
                 [sum[0] + pointer.delta[0], sum[1] + pointer.delta[1]]
             })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Key {
-    Space,
-    Escape,
-    Letter(char),
-    Digit(u8),
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Bindings {
-    keys: Vec<(Key, ActionId)>,
-}
-
-impl Bindings {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn key(mut self, key: Key, action: ActionId) -> Self {
-        self.keys.push((key, action));
-        self
-    }
-
-    pub fn action(&self, key: Key) -> Option<ActionId> {
-        self.keys
-            .iter()
-            .find(|(bound, _)| *bound == key)
-            .map(|(_, action)| *action)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn host_messages_keep_arrival_order_and_latest_returns_the_newest_per_topic() {
-        let mut host = HostMessages::default();
-        host.push("scroll", &[0.25]);
-        host.push("reset", &[]);
-        host.push("scroll", &[0.5, 1.0]);
-
-        let seen: Vec<(&str, &[f32])> = host.iter().collect();
-        assert_eq!(
-            seen,
-            [
-                ("scroll", &[0.25][..]),
-                ("reset", &[][..]),
-                ("scroll", &[0.5, 1.0][..])
-            ]
-        );
-        assert_eq!(host.latest("scroll"), Some(&[0.5, 1.0][..]));
-        assert_eq!(host.latest("reset"), Some(&[][..]));
-        assert_eq!(host.latest("scrol"), None);
     }
 }

@@ -1,5 +1,5 @@
 use crate::body::{BodyArena, BodyId, RigidBody};
-use crate::integrator::PhysicsSpace;
+use crate::space::PhysicsSpace;
 
 #[derive(Default)]
 pub(crate) struct DirtyBodies {

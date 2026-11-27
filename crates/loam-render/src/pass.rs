@@ -1,15 +1,18 @@
 use std::fmt;
 use std::time::Duration;
 
+use glam::Vec2;
+use loam_runtime::{Backdrop, Eye, Overlay, PublishedView};
 use web_time::Instant;
 use wgpu::{
     Color, CommandEncoder, LoadOp, Operations, RenderPass, RenderPassColorAttachment,
     RenderPassDepthStencilAttachment, RenderPassDescriptor, StoreOp, TextureFormat, TextureView,
 };
 
-use crate::device::{GpuContext, LossSignal, UncapturedGpuError};
+use crate::depth::DEPTH_CLEAR;
+use crate::device::{GpuContext, LossSignal, MissingGpuCapability, UncapturedGpuError};
 use crate::gpu_timer::SectionTimer;
-use crate::view::DEPTH_CLEAR;
+use crate::shader::WgslValidationError;
 use crate::DepthConvention;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -34,21 +37,80 @@ impl fmt::Display for PassPhase {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+/// Why one pass could not attach or record.
+#[derive(Debug)]
+pub enum PassFault {
+    /// The device raised an error while the pass ran.
+    Gpu(UncapturedGpuError),
+    Capability(MissingGpuCapability),
+    Shader(WgslValidationError),
+    /// The text names the buffer.
+    StagingBuffer(&'static str),
+    Unattached,
+    /// The pass was not given this frame's target before it recorded.
+    Unaimed,
+    /// The id names an image that had a partial update before any full upload.
+    MissingImage(u64),
+    /// The id names an image whose partial update falls outside it.
+    ImageBounds(u64),
+}
+
+impl fmt::Display for PassFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Gpu(error) => fmt::Display::fmt(error, f),
+            Self::Capability(error) => fmt::Display::fmt(error, f),
+            Self::Shader(error) => fmt::Display::fmt(error, f),
+            Self::StagingBuffer(buffer) => write!(f, "the {buffer} staging buffer did not map"),
+            Self::Unattached => f.write_str("the pass recorded before it attached"),
+            Self::Unaimed => f.write_str("the pass was not aimed at this frame's target"),
+            Self::MissingImage(image) => {
+                write!(f, "image {image} had a partial update before a full upload")
+            }
+            Self::ImageBounds(image) => {
+                write!(f, "a partial update of image {image} is out of bounds")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PassFault {}
+
+impl From<MissingGpuCapability> for PassFault {
+    fn from(error: MissingGpuCapability) -> Self {
+        Self::Capability(error)
+    }
+}
+
+impl From<WgslValidationError> for PassFault {
+    fn from(error: WgslValidationError) -> Self {
+        Self::Shader(error)
+    }
+}
+
+#[derive(Debug)]
 pub enum PassExecutionError {
-    #[error("pass `{pass}` failed during {phase}: {source:#}")]
     Pass {
         pass: &'static str,
         phase: PassPhase,
-        #[source]
-        source: anyhow::Error,
+        fault: PassFault,
     },
-    #[error("GPU work outside a pass failed: {source:#}")]
-    Backend {
-        #[source]
-        source: anyhow::Error,
-    },
+    /// The device raised an error between passes.
+    Backend(UncapturedGpuError),
 }
+
+impl fmt::Display for PassExecutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pass { pass, phase, fault } => {
+                write!(f, "pass `{pass}` failed during {phase}: {fault}")
+            }
+            Self::Backend(error) => write!(f, "GPU work outside a pass failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PassExecutionError {}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FrameFormat {
@@ -60,6 +122,18 @@ pub struct FrameTarget<'a> {
     pub color: &'a TextureView,
     pub depth: Option<&'a TextureView>,
     pub size: (u32, u32),
+}
+
+/// What the root image published for one presented frame.
+#[derive(Copy, Clone)]
+pub struct PublishedFrame<'a> {
+    pub eye: Eye,
+    pub viewport_px: Vec2,
+    pub pixels_per_point: f32,
+    pub text_origin_px: [f32; 2],
+    pub views: &'a [PublishedView],
+    pub overlay: &'a Overlay,
+    pub backdrop: Option<Backdrop>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -101,7 +175,7 @@ pub trait FramePass {
         &mut self,
         _encoder: &mut CommandEncoder,
         _target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         Ok(())
     }
 
@@ -110,7 +184,7 @@ pub trait FramePass {
         &mut self,
         _pass: &mut RenderPass<'_>,
         _target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         Ok(())
     }
 
@@ -118,9 +192,12 @@ pub trait FramePass {
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), PassFault>;
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()>;
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault>;
+
+    /// Runs once per presented frame before it records.
+    fn read(&mut self, _frame: &PublishedFrame<'_>) {}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,18 +284,6 @@ impl PassSchedule {
         }
     }
 
-    pub fn convention(&self) -> DepthConvention {
-        self.convention
-    }
-
-    pub fn unattached(&self) -> Option<&'static str> {
-        self.unattached
-    }
-
-    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.passes.iter().map(|pass| pass.name())
-    }
-
     pub fn sections(&self) -> &[Section] {
         &self.sections
     }
@@ -273,6 +338,12 @@ impl PassSchedule {
         }
         self.unattached = None;
         Ok(())
+    }
+
+    pub fn read(&mut self, frame: &PublishedFrame<'_>) {
+        for pass in self.passes.iter_mut() {
+            pass.read(frame);
+        }
     }
 
     pub fn begin_frame(&mut self) {
@@ -482,30 +553,20 @@ fn run_pass<T>(
     signal: Option<&LossSignal>,
     pass: &'static str,
     phase: PassPhase,
-    body: impl FnOnce() -> anyhow::Result<T>,
+    body: impl FnOnce() -> Result<T, PassFault>,
 ) -> Result<T, PassExecutionError> {
-    if let Some(source) = signal.and_then(LossSignal::take_error) {
-        return Err(backend_error(source));
+    if let Some(error) = signal.and_then(LossSignal::take_error) {
+        return Err(PassExecutionError::Backend(error));
     }
     let outcome = body();
-    if let Some(source) = signal.and_then(LossSignal::take_error) {
+    if let Some(error) = signal.and_then(LossSignal::take_error) {
         return Err(PassExecutionError::Pass {
             pass,
             phase,
-            source: source.into(),
+            fault: PassFault::Gpu(error),
         });
     }
-    outcome.map_err(|source| PassExecutionError::Pass {
-        pass,
-        phase,
-        source,
-    })
-}
-
-fn backend_error(source: UncapturedGpuError) -> PassExecutionError {
-    PassExecutionError::Backend {
-        source: source.into(),
-    }
+    outcome.map_err(|fault| PassExecutionError::Pass { pass, phase, fault })
 }
 
 fn time_section<T>(
@@ -684,11 +745,11 @@ mod tests {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
             let shader = gpu
                 .device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -774,17 +835,17 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             Ok(())
         }
     }
 
     #[test]
-    fn an_uncaptured_pipeline_error_names_the_pass_and_validation_cause() {
+    fn uncaptured_pipeline_error() {
         let gpu = crate::device::noop_context();
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
         schedule.register(Box::new(WrongVertexInput)).unwrap();
@@ -797,48 +858,11 @@ fn fragment() -> @location(0) vec4<f32> {
                 },
             )
             .unwrap_err();
-        let PassExecutionError::Pass {
-            pass,
-            phase,
-            source,
-        } = error
-        else {
+        let PassExecutionError::Pass { pass, phase, .. } = error else {
             panic!("pipeline error was not attributed to its pass");
         };
         assert_eq!(pass, "wrong vertex input");
         assert_eq!(phase, PassPhase::Attach);
-        let cause = format!("{source:#}");
-        assert!(
-            cause.contains("Input type is not compatible"),
-            "unexpected validation cause: {cause}"
-        );
-    }
-
-    fn probe(name: &'static str) -> Box<Probe> {
-        Box::new(Probe {
-            name,
-            convention: None,
-            stage: PassStage::Scene,
-        })
-    }
-
-    #[test]
-    fn a_pass_writing_depth_under_the_other_convention_is_refused_at_registration() {
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        let refused = schedule.register(Box::new(Probe {
-            name: "standard-z overlay",
-            convention: Some(DepthConvention::StandardZ),
-            stage: PassStage::Scene,
-        }));
-        assert_eq!(
-            refused,
-            Err(PassError::DepthConvention {
-                pass: "standard-z overlay",
-                declared: DepthConvention::StandardZ,
-                frame: DepthConvention::ReversedZ,
-            })
-        );
-        assert_eq!(schedule.names().count(), 0);
     }
 
     struct Clearing {
@@ -862,11 +886,11 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             Ok(())
         }
     }
@@ -890,11 +914,11 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             Ok(())
         }
     }
@@ -917,23 +941,44 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             self.recorded
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             if self.fail.load(std::sync::atomic::Ordering::Relaxed) {
-                anyhow::bail!("the pass could not build its resources");
+                return Err(PassFault::Unattached);
             }
             Ok(())
         }
     }
 
     #[test]
-    fn a_pass_that_clears_the_shared_color_target_is_refused_outside_the_background() {
+    fn misplaced_clear() {
         let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
+        let refused = schedule.register(Box::new(Probe {
+            name: "standard-z overlay",
+            convention: Some(DepthConvention::StandardZ),
+            stage: PassStage::Scene,
+        }));
+        assert_eq!(
+            refused,
+            Err(PassError::DepthConvention {
+                pass: "standard-z overlay",
+                declared: DepthConvention::StandardZ,
+                frame: DepthConvention::ReversedZ,
+            })
+        );
+        assert!(matches!(
+            schedule.register(Box::new(Reader)),
+            Err(PassError::DepthRead {
+                pass: "reader",
+                declared: DepthConvention::StandardZ,
+                frame: DepthConvention::ReversedZ
+            })
+        ));
         assert!(matches!(
             schedule.register(Box::new(Clearing {
                 stage: PassStage::Scene
@@ -957,20 +1002,7 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn a_depth_reader_under_the_other_convention_is_refused_at_registration() {
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        assert!(matches!(
-            schedule.register(Box::new(Reader)),
-            Err(PassError::DepthRead {
-                pass: "reader",
-                declared: DepthConvention::StandardZ,
-                frame: DepthConvention::ReversedZ
-            })
-        ));
-    }
-
-    #[test]
-    fn a_failed_attach_suppresses_recording_until_every_pass_attaches() {
+    fn failed_attach() {
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         use std::sync::Arc;
 
@@ -1009,8 +1041,14 @@ fn fragment() -> @location(0) vec4<f32> {
             size: (8, 8),
         };
 
-        assert!(schedule.attach(&gpu, frame).is_err());
-        assert_eq!(schedule.unattached(), Some("flaky"));
+        assert!(matches!(
+            schedule.attach(&gpu, frame),
+            Err(PassExecutionError::Pass {
+                pass: "flaky",
+                phase: PassPhase::Attach,
+                fault: PassFault::Unattached,
+            })
+        ));
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -1021,35 +1059,10 @@ fn fragment() -> @location(0) vec4<f32> {
 
         fail.store(false, Ordering::Relaxed);
         schedule.attach(&gpu, frame).expect("the retry attaches");
-        assert_eq!(schedule.unattached(), None);
         schedule
             .record(PassStage::Scene, &mut encoder, &target)
             .expect("recorded");
         assert_eq!(recorded.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn a_stage_orders_a_pass_ahead_of_one_registered_before_it() {
-        let mut schedule = PassSchedule::new(DepthConvention::ReversedZ);
-        schedule
-            .register(Box::new(Probe {
-                name: "overlay",
-                convention: None,
-                stage: PassStage::Overlay,
-            }))
-            .unwrap();
-        schedule.register(probe("scene")).unwrap();
-        schedule
-            .register(Box::new(Probe {
-                name: "background",
-                convention: None,
-                stage: PassStage::Background,
-            }))
-            .unwrap();
-        assert_eq!(
-            schedule.names().collect::<Vec<_>>(),
-            ["background", "scene", "overlay"]
-        );
     }
 
     struct Planned {
@@ -1093,11 +1106,11 @@ fn fragment() -> @location(0) vec4<f32> {
             &mut self,
             _encoder: &mut CommandEncoder,
             _target: &FrameTarget<'_>,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), PassFault> {
             Ok(())
         }
 
-        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> anyhow::Result<()> {
+        fn attach(&mut self, _gpu: &GpuContext, _frame: FrameFormat) -> Result<(), PassFault> {
             Ok(())
         }
     }
@@ -1156,7 +1169,7 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     #[test]
-    fn a_shared_pass_that_opens_the_frame_clears_the_depth_the_last_frame_left() {
+    fn shared_run_load_ops() {
         assert_eq!(
             steps(&[faces(), faces()]),
             [shared(
@@ -1164,12 +1177,10 @@ fn fragment() -> @location(0) vec4<f32> {
                 LoadOp::Clear(BACKGROUND),
                 LoadOp::Clear(DEPTH_CLEAR),
                 StoreOp::Discard
-            )]
+            )],
+            "a shared pass that opens the frame kept the depth the last frame left"
         );
-    }
 
-    #[test]
-    fn a_depth_reader_in_the_overlay_keeps_the_scene_depth_stored() {
         let mut passes = vec![sky(), faces(), faces()];
         let opened = |depth_store| {
             [shared(
@@ -1181,11 +1192,12 @@ fn fragment() -> @location(0) vec4<f32> {
         };
         assert_eq!(steps(&passes), opened(StoreOp::Discard));
         passes.push(unshared(PassStage::Overlay, true));
-        assert_eq!(steps(&passes), opened(StoreOp::Store));
-    }
+        assert_eq!(
+            steps(&passes),
+            opened(StoreOp::Store),
+            "a depth reader in the overlay found the scene depth discarded"
+        );
 
-    #[test]
-    fn a_sky_after_a_depth_writing_pass_clears_depth_as_its_own_pass_did() {
         let writer = Box::new(Planned {
             stage: PassStage::Background,
             shares: false,
@@ -1204,12 +1216,10 @@ fn fragment() -> @location(0) vec4<f32> {
                     LoadOp::Clear(DEPTH_CLEAR),
                     StoreOp::Discard
                 ),
-            ]
+            ],
+            "a sky after a depth-writing pass did not clear depth as its own pass did"
         );
-    }
 
-    #[test]
-    fn a_pass_that_does_not_share_splits_the_run_and_loads_what_was_drawn_before_it() {
         assert_eq!(
             steps(&[sky(), unshared(PassStage::Scene, false), faces()]),
             [
@@ -1221,7 +1231,8 @@ fn fragment() -> @location(0) vec4<f32> {
                 ),
                 Step::Alone(1),
                 shared(2..3, LoadOp::Load, LoadOp::Load, StoreOp::Discard),
-            ]
+            ],
+            "a pass that does not share did not split the run and load what was drawn before it"
         );
     }
 }

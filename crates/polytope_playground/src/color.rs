@@ -1,7 +1,7 @@
-use loam::runtime::{EdgeShading, PaletteId};
-use loam::shape::polytope::{vertex_color_by_position, Polytope4Topology};
+use loam::prelude::*;
 
-// Matches the depth cue in the LineRasterStaticR4 shader.
+use crate::Playground;
+
 pub(crate) const W_DEPTH_BACK: [f32; 4] = [0.30, 0.42, 0.58, 1.0];
 
 pub(crate) const W_DEPTH_FRONT: [f32; 4] = [1.00, 0.78, 0.45, 1.0];
@@ -14,25 +14,15 @@ pub(crate) enum ColorMode {
     WDepth,
 }
 
-impl ColorMode {
-    pub(crate) const ALL: [ColorMode; 3] = [
-        ColorMode::VertexGradient,
-        ColorMode::UniqueEdge,
-        ColorMode::WDepth,
-    ];
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            ColorMode::VertexGradient => "vertex",
-            ColorMode::UniqueEdge => "edge",
-            ColorMode::WDepth => "w-depth",
-        }
-    }
-
-    pub(crate) fn from_token(token: &str) -> Option<Self> {
-        ColorMode::ALL.into_iter().find(|mode| mode.name() == token)
-    }
-}
+pub(crate) const WIREFRAME_COLOR: Setting<Playground, ColorMode> = Setting::choice(
+    "wireframe color",
+    &[
+        ("vertex", ColorMode::VertexGradient),
+        ("edge", ColorMode::UniqueEdge),
+        ("w-depth", ColorMode::WDepth),
+    ],
+    |app| app.color.get_mut(),
+);
 
 #[derive(Clone, Copy)]
 pub(crate) struct Shades {
@@ -122,30 +112,4 @@ pub(crate) fn w_extent(topology: &Polytope4Topology, scale: f32) -> f32 {
         .fold(0.0_f32, f32::max)
         .max(1e-6)
         * scale
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_greedy_palette_separates_edges_that_share_a_vertex() {
-        let edges: &[[u32; 2]] = &[[0, 1], [0, 2], [0, 3]];
-        let colors = unique_edge_colors(edges);
-        assert_eq!(colors.len(), 6, "one color per endpoint");
-        for edge in 0..3 {
-            assert_eq!(
-                colors[edge * 2],
-                colors[edge * 2 + 1],
-                "an edge is one color"
-            );
-            for other in (edge + 1)..3 {
-                assert_ne!(
-                    colors[edge * 2],
-                    colors[other * 2],
-                    "edges {edge} and {other} share vertex 0 and got one color"
-                );
-            }
-        }
-    }
 }

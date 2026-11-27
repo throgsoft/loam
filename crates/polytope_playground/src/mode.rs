@@ -1,10 +1,7 @@
-use loam::math::{Bivector4, EuclideanR4, Plane4, Rotor4};
-use loam::runtime::{
-    Dispatch, DomainHandle, Domains, EdgeShading, Entity, Instance, Pose, Rejection, SpawnBundle,
-};
+use loam::prelude::*;
 
 use crate::catalog::ShapeEntry;
-use crate::consts::BASE_ROTATION_RATE;
+use crate::consts::{self, BASE_ROTATION_RATE};
 use crate::strip::{Strip, MAX_CELLS, MAX_T_EXTENT, MIN_CELLS, MIN_T_EXTENT};
 use crate::toy;
 use crate::{Card, Playground, Toy};
@@ -31,6 +28,13 @@ impl Mode {
     }
 }
 
+pub(crate) fn slice_reach(mode: Mode) -> f32 {
+    match mode {
+        Mode::Rotate => consts::W_RANGE,
+        Mode::Toybox => toy::ARENA_HALF,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Spin {
     pub(crate) planes: [bool; 6],
@@ -47,6 +51,11 @@ impl Default for Spin {
         }
     }
 }
+
+pub(crate) const RATE: Number<Playground> =
+    Number::new("rate", consts::MIN_RATE, consts::MAX_RATE, |app| {
+        &mut app.spin.get_mut().rate
+    });
 
 impl Spin {
     pub(crate) fn omega(&self) -> Bivector4 {
@@ -106,24 +115,6 @@ pub(crate) fn reset(
     Ok(())
 }
 
-pub(crate) fn throw_toy(
-    dispatch: &mut Dispatch<'_, Playground>,
-    domain: DomainHandle<EuclideanR4>,
-    entity: Entity,
-    pointer: [f32; 3],
-) -> Result<(), Rejection> {
-    if !dispatch.app.toys.contains(entity) {
-        return Ok(());
-    }
-    let rope = *dispatch.app.rope.get();
-    let physics = dispatch
-        .domains
-        .typed(domain)?
-        .physics_mut()
-        .ok_or(Rejection::Unsupported("the domain has no physics"))?;
-    toy::release(physics, entity, pointer, rope).map_err(Rejection::Edit)
-}
-
 pub(crate) fn toggle_plane(
     dispatch: &mut Dispatch<'_, Playground>,
     plane: usize,
@@ -134,14 +125,14 @@ pub(crate) fn toggle_plane(
         .get()
         .planes
         .get(plane)
-        .ok_or(Rejection::Unsupported("no such plane"))?;
+        .ok_or(Rejection::Refused("no such plane"))?;
     let elapsed = *dispatch.app.time.get() * BASE_ROTATION_RATE;
     let angle = dispatch
         .app
         .angles
         .get_mut()
         .get_mut(plane)
-        .ok_or(Rejection::Unsupported("no such plane"))?;
+        .ok_or(Rejection::Refused("no such plane"))?;
     *angle += if held { elapsed } else { -elapsed };
     dispatch.app.spin.get_mut().planes[plane] = !held;
     Ok(())
@@ -154,7 +145,7 @@ pub(crate) fn turn_row(
     rotor: Rotor4,
 ) -> Result<(), Rejection> {
     if *app.mode.get() != Mode::Rotate {
-        return Err(Rejection::Unsupported("rotation handles belong to Rotate"));
+        return Err(Rejection::Refused("rotation handles belong to Rotate"));
     }
     let entities = app.slots.iter().map(|(entity, _)| entity);
     let r4 = domains.typed(domain)?;
@@ -180,7 +171,7 @@ pub(crate) fn set_shape(
         .iter()
         .find(|(_, held)| held.index == slot)
         .map(|(entity, held)| (entity, *held))
-        .ok_or(Rejection::Unsupported("no such slot"))?;
+        .ok_or(Rejection::Refused("no such slot"))?;
     let (entity, mut row) = held;
     if row.entry == entry {
         return Ok(());
@@ -190,19 +181,18 @@ pub(crate) fn set_shape(
         Some(
             entry
                 .collider_polytope()
-                .ok_or(Rejection::Unsupported("the toy has no collider"))?,
+                .ok_or(Rejection::Refused("the toy has no collider"))?,
         )
     } else {
         None
     };
     let geometry = if is_toy {
-        Some(
-            card.toy_geometry
-                .ok_or(Rejection::Unsupported("the toy has no prepared geometry"))?,
-        )
+        card.toy_geometry
+            .ok_or(Rejection::Refused("the toy has no prepared geometry"))?
     } else {
         card.geometry
     };
+    let body = is_toy.then(|| toy::body(dispatch, geometry)).transpose()?;
     let frame = dispatch
         .domains
         .typed(domain)?
@@ -220,41 +210,33 @@ pub(crate) fn set_shape(
     row.rest = pose.point;
     dispatch.despawn(entity)?;
     let mut bundle = SpawnBundle::new().at(domain, pose).row(row);
-    if is_toy {
-        bundle = bundle.row(Toy {
-            rest_anchor: pose.point,
-            rest_time: 0.0,
-        });
+    if let Some(body) = body {
+        bundle = bundle.body(body).row(Toy);
     }
-    if let Some(geometry) = geometry {
-        let display = *dispatch.app.display.get();
-        let mode = *dispatch.app.color.get();
-        let shading = card
-            .shades
-            .map_or(EdgeShading::Material, |shades| shades.of(mode));
-        bundle = bundle.instance(
-            Instance::new(geometry, card.material)
-                .shaded(shading)
-                .sectioned(card.cut)
-                .line_style(display.wireframe_width_px, display.wireframe_opacity),
-        );
-    }
-    let spawned = dispatch.spawn(bundle)?;
-    if let Some(polytope) = polytope {
-        toy::add_body(dispatch, domain, spawned, polytope, pose)?;
-    }
+    let display = *dispatch.app.display.get();
+    let mode = *dispatch.app.color.get();
+    let shading = card
+        .shades
+        .map_or(EdgeShading::Material, |shades| shades.of(mode));
+    bundle = bundle.instance(
+        Instance::new(geometry, card.material)
+            .shaded(shading)
+            .sectioned(card.cut)
+            .line_style(display.wireframe_width_px, display.wireframe_opacity),
+    );
+    dispatch.spawn(bundle)?;
     Ok(())
 }
 
 pub(crate) fn set_strip(app: &mut Playground, mut strip: Strip) -> Result<(), Rejection> {
     if strip.on && *app.mode.get() == Mode::Toybox {
-        return Err(Rejection::Unsupported("filmstrip belongs to Rotate"));
+        return Err(Rejection::Refused("filmstrip belongs to Rotate"));
     }
     if !strip.t_extent.is_finite() {
-        return Err(Rejection::Unsupported("the t extent is not finite"));
+        return Err(Rejection::Refused("the t extent is not finite"));
     }
     if !strip.w && !strip.t {
-        return Err(Rejection::Unsupported("the strip needs one axis"));
+        return Err(Rejection::Refused("the strip needs one axis"));
     }
     strip.count_w = strip.count_w.clamp(MIN_CELLS, MAX_CELLS);
     strip.count_t = strip.count_t.clamp(MIN_CELLS, MAX_CELLS);

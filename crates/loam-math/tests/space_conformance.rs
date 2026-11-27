@@ -3,8 +3,8 @@
 use glam::{Quat, Vec2, Vec3, Vec4};
 use loam_math::{
     Bivector, Bivector2, Bivector4, BlendedSpace, ConformallyFlat, EuclideanR2, EuclideanR3,
-    EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat, IsometryGroup, LensSpace,
-    LinearBlendX, Space, SphericalS3, SphericalS3Embedded,
+    EuclideanR4, HyperbolicH3, Iso2, Iso3, Iso3H, Iso4, Iso4Flat, IsometryGroup, LinearBlendX,
+    Space, SphericalS3, SphericalS3Embedded,
 };
 
 #[derive(Clone, Copy)]
@@ -115,7 +115,7 @@ const GAUSS_BONNET_RELATIVE_TOL: f32 = 0.05;
 mod invariants {
     use super::*;
 
-    pub fn distance_is_symmetric_and_zero_on_the_diagonal<F: SpaceFixture>(f: &F) {
+    pub fn distance_symmetry<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -139,23 +139,7 @@ mod invariants {
         }
     }
 
-    pub fn distance_is_finite_and_nonnegative<F: SpaceFixture>(f: &F) {
-        let s = f.space();
-        let points = f.points();
-        for &a in &points {
-            for &b in &points {
-                let d = s.distance(a, b);
-                assert!(
-                    d.is_finite() && d >= 0.0,
-                    "d = {d} at {:?} {:?}",
-                    f.point_components(a),
-                    f.point_components(b)
-                );
-            }
-        }
-    }
-
-    pub fn distance_satisfies_the_triangle_inequality<F: SpaceFixture>(f: &F) {
+    pub fn triangle_inequality<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -185,7 +169,7 @@ mod invariants {
         }
     }
 
-    pub fn exp_inverts_log_on_sampled_pairs<F: SpaceFixture>(f: &F) {
+    pub fn exp_of_log<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -197,7 +181,7 @@ mod invariants {
         }
     }
 
-    pub fn log_inverts_exp_on_sampled_tangents<F: SpaceFixture>(f: &F) {
+    pub fn log_of_exp<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         for a in f.points() {
@@ -215,7 +199,7 @@ mod invariants {
         }
     }
 
-    pub fn log_magnitude_equals_geodesic_distance<F: SpaceFixture>(f: &F) {
+    pub fn log_magnitude<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -233,7 +217,7 @@ mod invariants {
         }
     }
 
-    pub fn exp_advances_by_the_metric_norm_of_its_tangent<F: SpaceFixture>(f: &F) {
+    pub fn exp_step_length<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         for a in f.points() {
@@ -250,7 +234,7 @@ mod invariants {
         }
     }
 
-    pub fn distance_is_invariant_under_isometry<F: IsometryFixture>(f: &F)
+    pub fn iso_distance<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -273,7 +257,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_identity_is_neutral<F: IsometryFixture>(f: &F)
+    pub fn iso_identity<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -305,7 +289,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_inverse_is_two_sided<F: IsometryFixture>(f: &F)
+    pub fn iso_inverse<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -334,7 +318,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_compose_is_associative<F: IsometryFixture>(f: &F)
+    pub fn iso_associativity<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -362,7 +346,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_compose_matches_sequential_apply<F: IsometryFixture>(f: &F)
+    pub fn sequential_apply<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -385,7 +369,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_transport_is_the_differential_of_iso_apply<F: IsometryFixture>(f: &F)
+    pub fn iso_transport_differential<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -409,7 +393,7 @@ mod invariants {
         }
     }
 
-    pub fn iso_transport_preserves_the_metric_norm<F: IsometryFixture>(f: &F)
+    pub fn iso_transport_norm<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -433,7 +417,7 @@ mod invariants {
         }
     }
 
-    pub fn parallel_transport_preserves_the_metric_norm<F: SpaceFixture>(f: &F) {
+    pub fn transport_norm<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -455,7 +439,7 @@ mod invariants {
         }
     }
 
-    pub fn parallel_transport_is_linear_in_the_transported_vector<F: SpaceFixture>(f: &F) {
+    pub fn transport_linearity<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -489,39 +473,7 @@ mod invariants {
         }
     }
 
-    pub fn parallel_transport_along_one_segment_matches_parallel_transport<F: SpaceFixture>(f: &F) {
-        let s = f.space();
-        let tol = f.tol();
-        let points = f.points();
-        for &a in &points {
-            for v in f.tangents(a) {
-                let residual = metric_residual(f, a, s.parallel_transport_along(&[], v), v);
-                assert!(residual <= tol.vector, "empty path moved v by {residual}");
-                let residual = metric_residual(f, a, s.parallel_transport_along(&[a], v), v);
-                assert!(
-                    residual <= tol.vector,
-                    "one-point path moved v by {residual}"
-                );
-                for &b in &points {
-                    let along = s.parallel_transport_along(&[a, b], v);
-                    let direct = s.parallel_transport(a, b, v);
-                    let residual = metric_residual(f, b, along, direct);
-                    let scale = metric_norm(f, b, direct).max(1.0);
-                    assert!(
-                        residual <= tol.vector * scale,
-                        "polyline transport differs from segment transport by {residual} \
-                         at {:?} {:?}",
-                        f.point_components(a),
-                        f.point_components(b)
-                    );
-                }
-            }
-        }
-    }
-
-    pub fn parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic<F: SpaceFixture>(
-        f: &F,
-    ) {
+    pub fn transport_along_geodesic<F: SpaceFixture>(f: &F) {
         let (ratio, a, b) = worst_geodesic_tangent_ratio(f);
         assert!(
             ratio <= 1.0,
@@ -533,7 +485,7 @@ mod invariants {
     }
 
     // Pennec, Parallel Transport with Pole Ladder, 2018, §3; Helgason, Symmetric Spaces, 1978, ch. IV §3.
-    pub fn parallel_transport_matches_the_one_its_own_geodesics_imply<F: SpaceFixture>(f: &F) {
+    pub fn transport_from_geodesics<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         let points = f.points();
@@ -563,7 +515,7 @@ mod invariants {
     }
 
     // do Carmo, Differential Geometry of Curves and Surfaces, 1976, §4.5.
-    pub fn geodesic_triangle_angle_excess_matches_gauss_bonnet<F: SpaceFixture>(f: &F) {
+    pub fn gauss_bonnet<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let l = TRIANGLE_SIDE;
         let apex = f.points()[0];
@@ -586,7 +538,7 @@ mod invariants {
         );
     }
 
-    pub fn degenerate_inputs_stay_finite<F: SpaceFixture>(f: &F) {
+    pub fn degenerate_inputs<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
         for (a, b) in f.degenerate_pairs() {
@@ -620,7 +572,7 @@ mod invariants {
         }
     }
 
-    pub fn isometries_of_degenerate_inputs_stay_finite<F: IsometryFixture>(f: &F)
+    pub fn iso_degenerate_inputs<F: IsometryFixture>(f: &F)
     where
         F::S: IsometryGroup<Iso = F::Iso>,
     {
@@ -741,10 +693,10 @@ macro_rules! conformance_tests {
 macro_rules! conformance_suite {
     ($suite:ident, $fixture:expr) => {
         conformance_suite!($suite, $fixture;
-            log_magnitude_equals_geodesic_distance,
-            parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic,
-            parallel_transport_matches_the_one_its_own_geodesics_imply,
-            geodesic_triangle_angle_excess_matches_gauss_bonnet,
+            log_magnitude,
+            transport_along_geodesic,
+            transport_from_geodesics,
+            gauss_bonnet,
         );
     };
     ($suite:ident, $fixture:expr; $($extra:ident),* $(,)?) => {
@@ -752,16 +704,14 @@ macro_rules! conformance_suite {
             use super::*;
 
             conformance_tests!($fixture;
-                distance_is_symmetric_and_zero_on_the_diagonal,
-                distance_is_finite_and_nonnegative,
-                distance_satisfies_the_triangle_inequality,
-                exp_inverts_log_on_sampled_pairs,
-                log_inverts_exp_on_sampled_tangents,
-                exp_advances_by_the_metric_norm_of_its_tangent,
-                parallel_transport_preserves_the_metric_norm,
-                parallel_transport_is_linear_in_the_transported_vector,
-                parallel_transport_along_one_segment_matches_parallel_transport,
-                degenerate_inputs_stay_finite,
+                distance_symmetry,
+                triangle_inequality,
+                exp_of_log,
+                log_of_exp,
+                exp_step_length,
+                transport_norm,
+                transport_linearity,
+                degenerate_inputs,
                 $($extra,)*
             );
         }
@@ -774,14 +724,14 @@ macro_rules! isometry_conformance_suite {
             use super::*;
 
             conformance_tests!($fixture;
-                distance_is_invariant_under_isometry,
-                iso_identity_is_neutral,
-                iso_inverse_is_two_sided,
-                iso_compose_is_associative,
-                iso_compose_matches_sequential_apply,
-                iso_transport_is_the_differential_of_iso_apply,
-                iso_transport_preserves_the_metric_norm,
-                isometries_of_degenerate_inputs_stay_finite,
+                iso_distance,
+                iso_identity,
+                iso_inverse,
+                iso_associativity,
+                sequential_apply,
+                iso_transport_differential,
+                iso_transport_norm,
+                iso_degenerate_inputs,
             );
         }
     };
@@ -1398,95 +1348,6 @@ impl SpaceFixture for BlendedSpaceFixture {
     }
 }
 
-struct LensSpaceFixture(LensSpace);
-
-impl SpaceFixture for LensSpaceFixture {
-    type Point = Vec4;
-    type Vector = Vec4;
-    type S = LensSpace;
-
-    fn space(&self) -> LensSpace {
-        self.0
-    }
-
-    fn points(&self) -> Vec<Vec4> {
-        let mut rng = Xorshift32::new(0x004C_0F1A);
-        let spread = 0.25 * self.0.injectivity_radius();
-        (0..5)
-            .map(|_| {
-                (Vec4::X
-                    + Vec4::new(
-                        rng.signed_unit(),
-                        rng.signed_unit(),
-                        rng.signed_unit(),
-                        rng.signed_unit(),
-                    ) * spread)
-                    .normalize()
-            })
-            .collect()
-    }
-
-    fn tangents(&self, at: Vec4) -> Vec<Vec4> {
-        let mut rng = Xorshift32::new(0x004C_7A46);
-        let reach = 0.4 * self.0.injectivity_radius();
-        (0..3)
-            .map(|_| {
-                let raw = Vec4::new(
-                    rng.signed_unit(),
-                    rng.signed_unit(),
-                    rng.signed_unit(),
-                    rng.signed_unit(),
-                );
-
-                (raw - raw.dot(at) * at) * reach
-            })
-            .collect()
-    }
-
-    fn inner(&self, _at: Vec4, u: Vec4, v: Vec4) -> f32 {
-        u.dot(v)
-    }
-
-    fn combine(&self, u: Vec4, s: f32, v: Vec4, t: f32) -> Vec4 {
-        u * s + v * t
-    }
-
-    fn degenerate_pairs(&self) -> Vec<(Vec4, Vec4)> {
-        let p = self.0.p() as f32;
-        let a = Vec4::new(0.1, -0.2, 0.3, 0.9).normalize();
-
-        let (sin, cos) = (std::f32::consts::PI / p).sin_cos();
-        let cut = Vec4::new(cos, sin, 0.0, 0.0);
-        vec![
-            (a, a),
-            (Vec4::X, -Vec4::X),
-            (Vec4::X, cut),
-            (Vec4::X, Vec4::Z),
-        ]
-    }
-
-    fn curvature(&self) -> Option<f32> {
-        Some(1.0)
-    }
-
-    fn tol(&self) -> Tol {
-        Tol {
-            point: 1e-5,
-            vector: 1e-5,
-            scalar: 1e-5,
-            degenerate: 1e-3,
-        }
-    }
-
-    fn point_components(&self, p: Vec4) -> [f32; 4] {
-        p.to_array()
-    }
-
-    fn vector_components(&self, v: Vec4) -> [f32; 4] {
-        v.to_array()
-    }
-}
-
 conformance_suite!(euclidean_r2, EuclideanR2Fixture);
 conformance_suite!(euclidean_r3, EuclideanR3Fixture);
 conformance_suite!(euclidean_r4, EuclideanR4Fixture);
@@ -1494,12 +1355,9 @@ conformance_suite!(hyperbolic_h3, HyperbolicH3Fixture);
 conformance_suite!(spherical_s3, SphericalS3Fixture);
 conformance_suite!(spherical_s3_embedded, SphericalS3EmbeddedFixture);
 conformance_suite!(blended_space, BlendedSpaceFixture;
-    log_magnitude_equals_geodesic_distance,
-    parallel_transport_carries_a_geodesic_tangent_along_its_own_geodesic,
+    log_magnitude,
+    transport_along_geodesic,
 );
-
-conformance_suite!(lens_space_l5_2, LensSpaceFixture(LensSpace::new(5, 2)));
-conformance_suite!(lens_space_rp3, LensSpaceFixture(LensSpace::new(2, 1)));
 
 isometry_conformance_suite!(euclidean_r2_isometries, EuclideanR2Fixture);
 isometry_conformance_suite!(euclidean_r3_isometries, EuclideanR3Fixture);

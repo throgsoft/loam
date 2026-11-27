@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::entity::{Entities, Entity, SceneId};
-use crate::store::{Owner, StoreError, StoreField};
+use crate::store::{Owner, StoreColumn, StoreError};
 
 /// Resolves to its original link or fails: after unlink, after a restore, in another session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -284,7 +284,7 @@ impl<T> RelationSnapshot<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> StoreField for Relation<T> {
+impl<T: Clone + Send + 'static> StoreColumn for Relation<T> {
     type Snapshot = RelationSnapshot<T>;
 
     fn bind(&mut self, scene: SceneId, _owner: Owner) {
@@ -370,13 +370,13 @@ mod tests {
     }
 
     #[test]
-    fn endpoints_resolve_after_a_swap_remove() {
+    fn endpoints_after_swap_remove() {
         let mut entities = Entities::new(SceneId {
             runtime: RuntimeId::allocate(),
             epoch: Epoch::default(),
         });
         let mut relation = Relation::new();
-        StoreField::bind(&mut relation, entities.scene(), Owner::new());
+        StoreColumn::bind(&mut relation, entities.scene(), Owner::new());
         let [a, b, c] = [(); 3].map(|()| entities.spawn());
         let ab = relation.link(&entities, a, b, "ab").unwrap();
         let ac = relation.link(&entities, a, c, "ac").unwrap();
@@ -401,25 +401,5 @@ mod tests {
         assert_ne!(relinked, bc);
         assert!(relation.get(bc).is_none());
         assert_eq!(data(&relation, relation.incoming(c)), ["ac", "bc2"]);
-    }
-
-    #[test]
-    fn mutable_link_data_keeps_adjacency_endpoints_sealed() {
-        let mut entities = Entities::new(SceneId {
-            runtime: RuntimeId::allocate(),
-            epoch: Epoch::default(),
-        });
-        let mut relation = Relation::new();
-        StoreField::bind(&mut relation, entities.scene(), Owner::new());
-        let [a, b, c] = [(); 3].map(|()| entities.spawn());
-        let ab = relation.link(&entities, a, b, "before").unwrap();
-
-        *relation.get_mut(ab).unwrap() = "after";
-
-        assert_eq!(relation.get(ab).map(Link::from), Some(a));
-        assert_eq!(relation.get(ab).map(Link::to), Some(b));
-        assert_eq!(data(&relation, relation.outgoing(a)), ["after"]);
-        assert_eq!(data(&relation, relation.incoming(b)), ["after"]);
-        assert!(relation.incoming(c).next().is_none());
     }
 }

@@ -1,33 +1,35 @@
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use loam_render::device::GpuContext;
-use loam_render::pass::{FrameFormat, FramePass, FrameTarget, PassStage};
+use loam_render::pass::{
+    FrameFormat, FramePass, FrameTarget, PassFault, PassStage, PublishedFrame,
+};
 
 use wgpu::{CommandEncoder, Device, Queue};
 
-use crate::TextRenderer;
+use crate::{TextError, TextRenderer};
 
-/// One placement of the published text, in physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TextDraw {
-    pub origin_px: [f32; 2],
-    pub size_px: f32,
-    pub color: [f32; 4],
+struct TextDraw {
+    origin_px: [f32; 2],
+    size_px: f32,
+    color: [f32; 4],
 }
 
 struct State {
     font: Vec<u8>,
     bake_size_px: f32,
     text: String,
-    draws: Vec<TextDraw>,
+    draws: Vec<(Range<usize>, TextDraw)>,
     renderer: Option<TextRenderer>,
-    failure: Option<String>,
+    failure: Option<TextError>,
     device: Option<Device>,
     queue: Option<Queue>,
 }
 
-/// A shared text overlay pass without a depth test.
+/// A text overlay pass without a depth test that draws the frame's published text in order, so later text paints over earlier text.
 #[derive(Clone)]
 pub struct TextPass {
     name: &'static str,
@@ -51,22 +53,13 @@ impl TextPass {
         }
     }
 
-    /// The record queues `text` once per draw, in order, so a shadow placed first paints under the body.
-    pub fn publish(&self, text: &str, draws: &[TextDraw]) {
-        let mut state = self.shared.borrow_mut();
-        state.text.clear();
-        state.text.push_str(text);
-        state.draws.clear();
-        state.draws.extend_from_slice(draws);
-    }
-
     /// False when the font never parsed, so the pass draws nothing.
     pub fn ready(&self) -> bool {
         self.shared.borrow().renderer.is_some()
     }
 
-    pub fn failure(&self) -> Option<String> {
-        self.shared.borrow().failure.clone()
+    pub fn failure(&self) -> Option<TextError> {
+        self.shared.borrow().failure
     }
 }
 
@@ -79,13 +72,37 @@ impl FramePass for TextPass {
         PassStage::Overlay
     }
 
+    fn read(&mut self, frame: &PublishedFrame<'_>) {
+        let mut state = self.shared.borrow_mut();
+        let State { text, draws, .. } = &mut *state;
+        text.clear();
+        draws.clear();
+        let scale = frame.pixels_per_point;
+        let [x, y] = frame.text_origin_px;
+        for (part, record) in frame.overlay.text() {
+            let start = text.len();
+            text.push_str(part);
+            draws.push((
+                start..text.len(),
+                TextDraw {
+                    origin_px: [
+                        x + record.origin_pt[0] * scale,
+                        y + record.origin_pt[1] * scale,
+                    ],
+                    size_px: record.size_pt * scale,
+                    color: record.color,
+                },
+            ));
+        }
+    }
+
     fn record(
         &mut self,
         encoder: &mut CommandEncoder,
         target: &FrameTarget<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
-        if state.text.is_empty() || state.draws.is_empty() {
+        if state.draws.is_empty() {
             return Ok(());
         }
         let State {
@@ -101,8 +118,13 @@ impl FramePass for TextPass {
         else {
             return Ok(());
         };
-        for draw in draws.iter() {
-            renderer.queue(text, draw.origin_px, draw.size_px, draw.color);
+        for (range, draw) in draws.iter() {
+            renderer.queue(
+                &text[range.clone()],
+                draw.origin_px,
+                draw.size_px,
+                draw.color,
+            );
         }
         renderer.record(
             device,
@@ -114,7 +136,7 @@ impl FramePass for TextPass {
         Ok(())
     }
 
-    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> anyhow::Result<()> {
+    fn attach(&mut self, gpu: &GpuContext, frame: FrameFormat) -> Result<(), PassFault> {
         let mut state = self.shared.borrow_mut();
         state.renderer = None;
         match TextRenderer::new(
@@ -129,9 +151,8 @@ impl FramePass for TextPass {
                 state.failure = None;
             }
             Err(error) => {
-                let failure = format!("{error:#}");
-                tracing::warn!("pass `{}` has no font: {failure}", self.name);
-                state.failure = Some(failure);
+                tracing::warn!("pass `{}` has no font: {error}", self.name);
+                state.failure = Some(error);
             }
         }
         state.device = Some(gpu.device.clone());

@@ -1,0 +1,324 @@
+mod pass;
+pub use pass::LinePass;
+
+use bytemuck::{Pod, Zeroable};
+use glam::{Mat4, Vec2};
+use loam_runtime::SegmentRecord;
+use wgpu::util::DeviceExt;
+use wgpu::{
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
+    BindGroupLayoutEntry, BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState,
+    Buffer, BufferBindingType, BufferDescriptor, BufferUsages, ColorTargetState, ColorWrites,
+    CompareFunction, DepthStencilState, Device, FragmentState, LoadOp, MultisampleState,
+    Operations, PipelineLayoutDescriptor, PrimitiveState, PrimitiveTopology, Queue,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    StencilState, StoreOp, TextureFormat, VertexAttribute, VertexBufferLayout, VertexFormat,
+    VertexState, VertexStepMode,
+};
+
+const LINE_RASTER_WGSL: &str = include_str!("line_raster.wgsl");
+
+/// Matches the WGSL `CameraUniform`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct LineRasterUniforms {
+    /// Must be bit-identical to the raymarcher's for the same frame.
+    pub view_projection: [[f32; 4]; 4],
+    pub viewport_size: [f32; 2],
+    pub _pad: [f32; 2],
+}
+
+/// The caller owns the depth texture and clears it before this node's draw, which loads both color and depth.
+pub struct LineRasterNode {
+    pipeline: RenderPipeline,
+    uniform_buf: Buffer,
+    bind_group: BindGroup,
+
+    corner_buf: Buffer,
+    index_buf: Buffer,
+    instance_buf: Buffer,
+    instance_count: u32,
+    instance_capacity: u32,
+    has_depth: bool,
+}
+
+impl LineRasterNode {
+    pub fn new(
+        device: &Device,
+        surface_format: TextureFormat,
+        depth: crate::DepthMode,
+        convention: crate::DepthConvention,
+    ) -> Self {
+        let module = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("line_raster shader"),
+            source: ShaderSource::Wgsl(LINE_RASTER_WGSL.into()),
+        });
+
+        let uniform_buf = device.create_buffer(&BufferDescriptor {
+            label: Some("line_raster uniforms"),
+            size: std::mem::size_of::<LineRasterUniforms>() as u64,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("line_raster bgl"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX_FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("line_raster bg"),
+            layout: &bgl,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("line_raster pipeline layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        let corner_attrs = [VertexAttribute {
+            format: VertexFormat::Uint32,
+            offset: 0,
+            shader_location: 0,
+        }];
+        let corner_layout = VertexBufferLayout {
+            array_stride: std::mem::size_of::<u32>() as u64,
+            step_mode: VertexStepMode::Vertex,
+            attributes: &corner_attrs,
+        };
+        let instance_attrs = [
+            VertexAttribute {
+                format: VertexFormat::Float32x3,
+                offset: 0,
+                shader_location: 1,
+            },
+            VertexAttribute {
+                format: VertexFormat::Float32x3,
+                offset: 16,
+                shader_location: 2,
+            },
+            VertexAttribute {
+                format: VertexFormat::Float32x4,
+                offset: 32,
+                shader_location: 3,
+            },
+            VertexAttribute {
+                format: VertexFormat::Float32x4,
+                offset: 48,
+                shader_location: 4,
+            },
+            VertexAttribute {
+                format: VertexFormat::Float32,
+                offset: 64,
+                shader_location: 5,
+            },
+        ];
+        let instance_layout = VertexBufferLayout {
+            array_stride: std::mem::size_of::<SegmentRecord>() as u64,
+            step_mode: VertexStepMode::Instance,
+            attributes: &instance_attrs,
+        };
+
+        let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+            label: Some("line_raster pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                buffers: &[corner_layout, instance_layout],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(ColorTargetState {
+                    format: surface_format,
+                    blend: Some(BlendState {
+                        color: BlendComponent {
+                            src_factor: BlendFactor::SrcAlpha,
+                            dst_factor: BlendFactor::OneMinusSrcAlpha,
+                            operation: BlendOperation::Add,
+                        },
+                        alpha: BlendComponent {
+                            src_factor: BlendFactor::One,
+                            dst_factor: BlendFactor::OneMinusSrcAlpha,
+                            operation: BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: PrimitiveState {
+                topology: PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: depth_state(depth, convention),
+            multisample: MultisampleState {
+                count: 1,
+                ..Default::default()
+            },
+            multiview: None,
+            cache: None,
+        });
+
+        let corner_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("line_raster corner buffer"),
+            contents: bytemuck::cast_slice(&[0u32, 1, 2, 3]),
+            usage: BufferUsages::VERTEX,
+        });
+
+        let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("line_raster index buffer"),
+            contents: bytemuck::cast_slice(&[0u32, 1, 2, 2, 1, 3]),
+            usage: BufferUsages::INDEX,
+        });
+
+        let instance_capacity = 0u32;
+        let instance_buf = device.create_buffer(&BufferDescriptor {
+            label: Some("line_raster instance buffer"),
+            size: 64,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            pipeline,
+            uniform_buf,
+            bind_group,
+            corner_buf,
+            index_buf,
+            instance_buf,
+            instance_count: 0,
+            instance_capacity,
+            has_depth: depth.is_active(),
+        }
+    }
+
+    pub fn set_camera(&self, queue: &Queue, view_projection: Mat4, viewport_size: Vec2) {
+        let uniforms = LineRasterUniforms {
+            view_projection: view_projection.to_cols_array_2d(),
+            viewport_size: viewport_size.to_array(),
+            _pad: [0.0; 2],
+        };
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    pub fn segment_count(&self) -> u32 {
+        self.instance_count
+    }
+
+    pub fn upload_segments(&mut self, device: &Device, queue: &Queue, segments: &[SegmentRecord]) {
+        let needed_capacity = segments.len() as u32;
+        if needed_capacity > self.instance_capacity {
+            let new_cap = needed_capacity.next_power_of_two().max(16);
+            self.instance_buf = device.create_buffer(&BufferDescriptor {
+                label: Some("line_raster instance buffer"),
+                size: (new_cap as u64) * (std::mem::size_of::<SegmentRecord>() as u64),
+                usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.instance_capacity = new_cap;
+        }
+        if !segments.is_empty() {
+            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(segments));
+        }
+        self.instance_count = needed_capacity;
+    }
+
+    /// Records into the caller's encoder with `LoadOp::Load` on both attachments; `depth_view` is `Some` iff the pipeline has depth.
+    pub fn record(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        depth_view: Option<&wgpu::TextureView>,
+        viewport: Option<&crate::Viewport>,
+    ) {
+        match (self.has_depth, depth_view.is_some()) {
+            (true, false) => {
+                panic!(
+                    "LineRasterNode::record: pipeline was created with a depth format but \
+                     no depth view was provided"
+                )
+            }
+            (false, true) => {
+                panic!(
+                    "LineRasterNode::record: pipeline was created without a depth format but \
+                     a depth view was provided"
+                )
+            }
+            _ => {}
+        }
+        if self.instance_count == 0 {
+            return;
+        }
+        let depth_attachment = depth_view.map(|dv| RenderPassDepthStencilAttachment {
+            view: dv,
+            depth_ops: Some(Operations {
+                load: LoadOp::Load,
+                store: StoreOp::Store,
+            }),
+            stencil_ops: None,
+        });
+        let mut rp = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("line_raster pass"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations {
+                    load: LoadOp::Load,
+                    store: StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: depth_attachment,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        self.draw(&mut rp, viewport);
+    }
+
+    pub fn draw(&self, rp: &mut wgpu::RenderPass<'_>, viewport: Option<&crate::Viewport>) {
+        if self.instance_count == 0 {
+            return;
+        }
+        if let Some(vp) = viewport {
+            vp.apply(rp);
+        }
+        rp.set_pipeline(&self.pipeline);
+        rp.set_bind_group(0, &self.bind_group, &[]);
+        rp.set_vertex_buffer(0, self.corner_buf.slice(..));
+        rp.set_vertex_buffer(1, self.instance_buf.slice(..));
+        rp.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint32);
+        rp.draw_indexed(0..6, 0, 0..self.instance_count);
+    }
+}
+
+fn depth_state(
+    depth: crate::DepthMode,
+    convention: crate::DepthConvention,
+) -> Option<DepthStencilState> {
+    depth.format().map(|format| DepthStencilState {
+        format,
+        depth_write_enabled: depth.writes(),
+        // Equal depth passes so coplanar outlines survive the filled surface.
+        depth_compare: convention.compare(CompareFunction::LessEqual),
+        stencil: StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    })
+}

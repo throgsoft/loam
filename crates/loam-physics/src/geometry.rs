@@ -2,45 +2,27 @@ use std::collections::hash_map::{DefaultHasher, Entry as MapEntry};
 use std::collections::HashMap;
 use std::hash::Hasher;
 
-use crate::collider::{Collider, ColliderKind};
-use crate::edit::EditError;
+use loam_shape::{Shape, ShapeKind};
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct GeometryId(u32);
+use crate::state::StateError;
 
-impl GeometryId {
-    pub fn index(self) -> u32 {
-        self.0
-    }
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct GeometryId(u32);
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GeometryRef {
     id: GeometryId,
     version: u32,
 }
 
-impl GeometryRef {
-    pub fn id(self) -> GeometryId {
-        self.id
-    }
-
-    pub fn version(self) -> u32 {
-        self.version
-    }
-}
-
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ColliderRef {
-    kind: ColliderKind,
+    kind: ShapeKind,
     geometry: GeometryRef,
 }
 
 impl ColliderRef {
-    pub fn kind(self) -> ColliderKind {
+    pub fn kind(self) -> ShapeKind {
         self.kind
     }
 
@@ -49,30 +31,25 @@ impl ColliderRef {
     }
 }
 
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 struct Entry {
     version: u32,
     uses: u32,
     hash: u64,
-    shape: Option<Collider>,
+    shape: Option<Shape>,
 }
 
-const RELEASED_BUFFERS: usize = 2;
-
-#[cfg_attr(feature = "persist", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Default)]
 pub struct GeometryStore {
     entries: Vec<Entry>,
     free: Vec<u32>,
-    released: Vec<Collider>,
     index: HashMap<u64, Vec<GeometryId>>,
     buckets: Vec<Vec<GeometryId>>,
 }
 
 impl GeometryStore {
-    /// A shape equal to one already held shares its entry, and the duplicate joins the released pool.
-    pub fn prepare(&mut self, shape: Collider) -> ColliderRef {
+    /// A shape equal to one already held shares its entry.
+    pub fn prepare(&mut self, shape: Shape) -> ColliderRef {
         let kind = shape.kind();
         let hash = shape_hash(&shape);
         let entries = &mut self.entries;
@@ -81,14 +58,13 @@ impl GeometryStore {
                 entries[id.0 as usize]
                     .shape
                     .as_ref()
-                    .is_some_and(|prepared| same_shape(prepared, &shape))
+                    .is_some_and(|prepared| *prepared == shape)
             })
         });
         if let Some(id) = shared {
             let entry = &mut self.entries[id.0 as usize];
             entry.uses += 1;
             let version = entry.version;
-            self.stash(shape);
             return ColliderRef {
                 kind,
                 geometry: GeometryRef { id, version },
@@ -147,7 +123,7 @@ impl GeometryStore {
         if entry.uses > 0 {
             return;
         }
-        let freed = entry.shape.take();
+        entry.shape = None;
         let hash = entry.hash;
         if let Some(bucket) = self.index.get_mut(&hash) {
             bucket.retain(|held| *held != collider.geometry.id);
@@ -162,23 +138,9 @@ impl GeometryStore {
             entry.version = next;
             self.free.push(slot as u32);
         }
-        if let Some(freed) = freed {
-            self.stash(freed);
-        }
     }
 
-    pub(crate) fn stash(&mut self, shape: Collider) {
-        if self.released.len() == RELEASED_BUFFERS {
-            self.released.remove(0);
-        }
-        self.released.push(shape);
-    }
-
-    pub fn take_released(&mut self) -> Option<Collider> {
-        self.released.pop()
-    }
-
-    pub fn get(&self, collider: ColliderRef) -> Option<&Collider> {
+    pub fn get(&self, collider: ColliderRef) -> Option<&Shape> {
         let entry = self.entries.get(collider.geometry.id.0 as usize)?;
         if entry.version != collider.geometry.version {
             return None;
@@ -196,30 +158,28 @@ impl GeometryStore {
     pub(crate) fn validate(
         &self,
         colliders: impl Iterator<Item = ColliderRef>,
-    ) -> Result<(), EditError> {
-        if self.released.len() > RELEASED_BUFFERS
-            || self.buckets.iter().any(|bucket| !bucket.is_empty())
-        {
-            return Err(EditError::InvalidGeometry);
+    ) -> Result<(), StateError> {
+        if self.buckets.iter().any(|bucket| !bucket.is_empty()) {
+            return Err(StateError::InvalidGeometry);
         }
         let mut free = vec![false; self.entries.len()];
         for &slot in &self.free {
             let Some(entry) = self.entries.get(slot as usize) else {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             };
             if free[slot as usize] || entry.shape.is_some() || entry.uses != 0 {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             }
             free[slot as usize] = true;
         }
         let mut indexed = vec![false; self.entries.len()];
         for (&hash, bucket) in &self.index {
             if bucket.is_empty() {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             }
             for &id in bucket {
                 let Some(entry) = self.entries.get(id.0 as usize) else {
-                    return Err(EditError::InvalidGeometry);
+                    return Err(StateError::InvalidGeometry);
                 };
                 if indexed[id.0 as usize]
                     || entry.hash != hash
@@ -229,7 +189,7 @@ impl GeometryStore {
                         .as_ref()
                         .is_some_and(|shape| shape_hash(shape) != hash)
                 {
-                    return Err(EditError::InvalidGeometry);
+                    return Err(StateError::InvalidGeometry);
                 }
                 indexed[id.0 as usize] = true;
             }
@@ -237,188 +197,37 @@ impl GeometryStore {
         let mut uses = vec![0_u32; self.entries.len()];
         for collider in colliders {
             let Some(entry) = self.entries.get(collider.geometry.id.0 as usize) else {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             };
             if entry.version != collider.geometry.version
-                || entry.shape.as_ref().map(Collider::kind) != Some(collider.kind)
+                || entry.shape.as_ref().map(Shape::kind) != Some(collider.kind)
             {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             }
             let Some(count) = uses[collider.geometry.id.0 as usize].checked_add(1) else {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             };
             uses[collider.geometry.id.0 as usize] = count;
         }
         for (slot, entry) in self.entries.iter().enumerate() {
             if entry.shape.is_some() {
                 if free[slot] || !indexed[slot] || entry.uses == 0 || uses[slot] != entry.uses {
-                    return Err(EditError::InvalidGeometry);
+                    return Err(StateError::InvalidGeometry);
                 }
             } else if entry.uses != 0
                 || indexed[slot]
                 || uses[slot] != 0
                 || (entry.version != u32::MAX && !free[slot])
             {
-                return Err(EditError::InvalidGeometry);
+                return Err(StateError::InvalidGeometry);
             }
         }
         Ok(())
     }
 }
 
-fn shape_hash(shape: &Collider) -> u64 {
+fn shape_hash(shape: &Shape) -> u64 {
     let mut hasher = DefaultHasher::new();
-    hasher.write_u8(kind_tag(shape));
-    match shape {
-        Collider::Sphere { center, radius } => {
-            hash_f32s(&mut hasher, center.as_ref());
-            hasher.write_u32(radius.to_bits());
-        }
-        Collider::HyperSphere4D { center, radius } => {
-            hash_f32s(&mut hasher, center.as_ref());
-            hasher.write_u32(radius.to_bits());
-        }
-        Collider::HalfSpace { normal, offset } => {
-            hash_f32s(&mut hasher, normal.as_ref());
-            hasher.write_u32(offset.to_bits());
-        }
-        Collider::HalfSpace4D { normal, offset } => {
-            hash_f32s(&mut hasher, normal.as_ref());
-            hasher.write_u32(offset.to_bits());
-        }
-        Collider::Box3 { half_extents } => hash_f32s(&mut hasher, half_extents.as_ref()),
-        Collider::Polygon2D { vertices } => {
-            for v in vertices {
-                hash_f32s(&mut hasher, v.as_ref());
-            }
-        }
-        Collider::ConvexPolytope3D { vertices } => {
-            for v in vertices {
-                hash_f32s(&mut hasher, v.as_ref());
-            }
-        }
-        Collider::ConvexPolytope4D { vertices } => {
-            for v in vertices {
-                hash_f32s(&mut hasher, v.as_ref());
-            }
-        }
-    }
+    shape.hash_into(&mut hasher);
     hasher.finish()
-}
-
-fn hash_f32s(hasher: &mut DefaultHasher, values: &[f32]) {
-    for value in values {
-        hasher.write_u32(value.to_bits());
-    }
-}
-
-fn kind_tag(shape: &Collider) -> u8 {
-    match shape.kind() {
-        ColliderKind::Sphere => 0,
-        ColliderKind::HalfSpace => 1,
-        ColliderKind::HalfSpace4D => 2,
-        ColliderKind::Box3 => 3,
-        ColliderKind::Polygon2D => 4,
-        ColliderKind::ConvexPolytope3D => 5,
-        ColliderKind::ConvexPolytope4D => 6,
-        ColliderKind::HyperSphere4D => 7,
-    }
-}
-
-fn same_shape(a: &Collider, b: &Collider) -> bool {
-    match (a, b) {
-        (
-            Collider::Sphere {
-                center: ca,
-                radius: ra,
-            },
-            Collider::Sphere {
-                center: cb,
-                radius: rb,
-            },
-        ) => ca == cb && ra == rb,
-        (
-            Collider::HyperSphere4D {
-                center: ca,
-                radius: ra,
-            },
-            Collider::HyperSphere4D {
-                center: cb,
-                radius: rb,
-            },
-        ) => ca == cb && ra == rb,
-        (
-            Collider::HalfSpace {
-                normal: na,
-                offset: oa,
-            },
-            Collider::HalfSpace {
-                normal: nb,
-                offset: ob,
-            },
-        ) => na == nb && oa == ob,
-        (
-            Collider::HalfSpace4D {
-                normal: na,
-                offset: oa,
-            },
-            Collider::HalfSpace4D {
-                normal: nb,
-                offset: ob,
-            },
-        ) => na == nb && oa == ob,
-        (Collider::Box3 { half_extents: a }, Collider::Box3 { half_extents: b }) => a == b,
-        (Collider::Polygon2D { vertices: a }, Collider::Polygon2D { vertices: b }) => a == b,
-        (
-            Collider::ConvexPolytope3D { vertices: a },
-            Collider::ConvexPolytope3D { vertices: b },
-        ) => a == b,
-        (
-            Collider::ConvexPolytope4D { vertices: a },
-            Collider::ConvexPolytope4D { vertices: b },
-        ) => a == b,
-        _ => false,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decoded_geometry_with_a_wrong_reference_count_is_rejected() {
-        let mut store = GeometryStore::default();
-        let collider = store.prepare(Collider::sphere_at_origin(1.0));
-        assert!(store.validate(std::iter::once(collider)).is_ok());
-
-        store.entries[0].uses = 2;
-        assert_eq!(
-            store.validate(std::iter::once(collider)),
-            Err(EditError::InvalidGeometry)
-        );
-    }
-
-    #[test]
-    fn a_maximum_version_entry_is_reused_once_then_retired() {
-        let mut store = GeometryStore::default();
-        let first = store.prepare(Collider::sphere_at_origin(1.0));
-        store.entries[0].version = u32::MAX - 1;
-        let first = ColliderRef {
-            kind: first.kind,
-            geometry: GeometryRef {
-                id: first.geometry.id,
-                version: u32::MAX - 1,
-            },
-        };
-
-        store.release(first);
-        assert!(store.validate(std::iter::empty()).is_ok());
-        let last = store.prepare(Collider::sphere_at_origin(2.0));
-        assert_eq!(last.geometry.version, u32::MAX);
-        store.release(last);
-        assert!(store.validate(std::iter::empty()).is_ok());
-
-        let fresh = store.prepare(Collider::sphere_at_origin(3.0));
-        assert_ne!(fresh.geometry.id, last.geometry.id);
-    }
 }

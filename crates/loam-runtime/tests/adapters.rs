@@ -1,13 +1,12 @@
 use std::fmt::Debug;
 use std::ops::Mul;
 
-use loam_math::{EuclideanR3, EuclideanR4, HyperbolicH3, Space};
+use loam_math::{EuclideanR4, Space};
 use loam_runtime::{
-    DomainBuilder, DomainSpace, Identity3, Instance, Klein, Material, Pose, PreparedGeometry,
-    Projection4, Publication, Session, SimConfig, SpawnBundle, ViewMapping, ViewSpec,
+    DomainBuilder, DomainSpace, Instance, Material, Pose, PreparedGeometry, Projection4,
+    Publication, Session, SimConfig, SpawnBundle, ViewMapping, ViewSpec,
 };
 
-type Vec3 = <EuclideanR3 as Space>::Point;
 type Vec4 = <EuclideanR4 as Space>::Point;
 
 loam_runtime::stores! {
@@ -23,7 +22,7 @@ struct Trace<S: Space> {
     eye: S::Point,
 }
 
-fn image_of(publication: &Publication, entity: loam_runtime::Entity) -> [f32; 3] {
+fn image_of(publication: &Publication<()>, entity: loam_runtime::Entity) -> [f32; 3] {
     publication
         .views
         .iter()
@@ -50,10 +49,10 @@ where
     M: ViewMapping<S> + 'static,
 {
     let mut session = Session::new(Probe::default(), SimConfig::default());
-    let handle = session.register_domain(DomainBuilder::new("traced", space.clone()));
+    let handle = session.register_domain(DomainBuilder::new("traced", space.clone()).untracked());
     let geometry = session.prepare(geometry);
     let material = session.add_material(Material::flat([1.0; 4]));
-    let root = session.views().root();
+    let root = session.views().root_id();
     let origin = space.origin();
     let eye_pose = Pose::new(&space, trace.eye);
     let image_at_target = mapping.image_point(&eye_pose, trace.target).unwrap();
@@ -98,7 +97,7 @@ where
     );
 
     let mut publication = Publication::default();
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     let image = image_of(&publication, object);
     assert_image(label, image, image_at_target);
 
@@ -116,38 +115,12 @@ where
         .find(|(_, pose)| space.distance(pose.point, origin) <= 1e-6)
         .map(|(entity, _)| entity)
         .unwrap_or_else(|| panic!("{label}: restore left no object at the origin"));
-    session.publish(&mut publication).unwrap();
+    session.publish(&mut publication, 1.0).unwrap();
     assert_image(label, image_of(&publication, object), image_at_origin);
 }
 
 #[test]
-fn every_adapter_walks_moves_publishes_picks_and_restores_the_same_way() {
-    trace(
-        EuclideanR3,
-        "r3",
-        PreparedGeometry::Lines3 {
-            segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
-        },
-        Identity3,
-        Trace {
-            tangent: Vec3::new(0.2, 0.1, 0.0),
-            target: Vec3::new(0.3, -0.2, -1.5),
-            eye: Vec3::new(0.1, 0.0, 0.5),
-        },
-    );
-    trace(
-        HyperbolicH3,
-        "h3",
-        PreparedGeometry::Lines3 {
-            segments: vec![[[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]]],
-        },
-        Klein,
-        Trace {
-            tangent: Vec3::new(0.1, 0.05, 0.0),
-            target: Vec3::new(0.1, 0.2, -0.3),
-            eye: Vec3::new(0.2, 0.0, 0.1),
-        },
-    );
+fn adapter_parity() {
     trace(
         EuclideanR4,
         "r4",

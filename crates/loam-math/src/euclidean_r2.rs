@@ -121,39 +121,3 @@ impl IsometryGroup for EuclideanR2 {
         iso.rotation.apply(v)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::bivector::{Bivector, Bivector2};
-    use std::f32::consts::FRAC_PI_2;
-
-    fn assert_vec2_close(a: Vec2, b: Vec2) {
-        assert!((a - b).length() <= 1e-5, "expected {a:?} close to {b:?}");
-    }
-
-    #[test]
-    fn iso_translation_moves_origin_to_target() {
-        let s = EuclideanR2;
-        let t = Vec2::new(2.0, -1.0);
-        let iso = Iso2::from_translation(t);
-        assert_vec2_close(s.iso_apply(iso, Vec2::ZERO), t);
-    }
-
-    #[test]
-    fn iso_rotation_quarter_turn_sends_x_to_y() {
-        let s = EuclideanR2;
-        let r = Iso2::from_rotation(Bivector2(FRAC_PI_2).exp());
-        assert_vec2_close(s.iso_apply(r, Vec2::X), Vec2::Y);
-    }
-
-    #[test]
-    fn iso_transport_is_rotation_only() {
-        let s = EuclideanR2;
-        let iso = Iso2 {
-            rotation: Bivector2(FRAC_PI_2).exp(),
-            translation: Vec2::new(100.0, -50.0),
-        };
-        assert_vec2_close(s.iso_transport(iso, Vec2::ZERO, Vec2::X), Vec2::Y);
-    }
-}

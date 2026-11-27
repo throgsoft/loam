@@ -1,10 +1,12 @@
 //! Interaction model follows the idTech console (Quake, 1996).
 
-mod queue;
+mod command_line;
 
-pub use queue::{CommandLine, CommandQueue};
+pub use command_line::{parse_line, render_line, CommandLine};
+use command_line::{quote_token, tokenize_spans};
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::fmt;
 
 mod key;
 
@@ -13,28 +15,6 @@ pub use key::Key;
 pub const MAX_HISTORY_LINES: usize = 2000;
 
 pub const MAX_INPUT_HISTORY: usize = 100;
-
-#[cfg(target_arch = "wasm32")]
-static ECHO_TO_BROWSER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// wasm32 only; a no-op on native.
-pub fn set_console_echo(enabled: bool) {
-    #[cfg(target_arch = "wasm32")]
-    ECHO_TO_BROWSER.store(enabled, std::sync::atomic::Ordering::Relaxed);
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = enabled;
-}
-
-pub fn console_echo_enabled() -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        ECHO_TO_BROWSER.load(std::sync::atomic::Ordering::Relaxed)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        false
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct HistoryLine {
@@ -105,57 +85,76 @@ impl Default for ConsoleWriter {
     }
 }
 
-pub trait Command<Ctx>: 'static {
-    fn name(&self) -> &str;
-
-    fn help(&self) -> &str;
-
-    /// `\n` breaks paint as separate scrollback entries.
-    fn long_help(&self) -> String {
-        self.help().to_string()
-    }
-
-    fn arg_choices(&self, arg_index: usize) -> &[&'static str] {
-        let _ = arg_index;
-        &[]
-    }
-
-    /// `prior` is the arg tokens before the cursor.
-    fn arg_choices_ctx<'a>(&'a self, arg_index: usize, prior: &[&str]) -> &'a [&'static str] {
-        let _ = prior;
-        self.arg_choices(arg_index)
-    }
-
-    /// `key` carries no trailing `=`; empty means free-form.
-    fn arg_value_choices(&self, arg_index: usize, key: &str) -> &[&'static str] {
-        let _ = (arg_index, key);
-        &[]
-    }
-
-    fn arg_value_choices_ctx<'a>(
-        &'a self,
-        arg_index: usize,
-        key: &str,
-        prior: &[&str],
-    ) -> &'a [&'static str] {
-        let _ = prior;
-        self.arg_value_choices(arg_index, key)
-    }
-
-    /// Recoverable issues go to `out.error(..)`; unrecoverable ones return `Err`.
-    fn run(&mut self, args: &[&str], ctx: &mut Ctx, out: &mut ConsoleWriter) -> anyhow::Result<()>;
+/// Why a command refused its arguments.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CommandError {
+    /// The text is the command's form without the `usage: ` prefix.
+    Usage(String),
+    Invalid {
+        name: &'static str,
+        token: String,
+        reason: String,
+    },
+    Unknown {
+        name: &'static str,
+        token: String,
+        choices: &'static str,
+    },
+    OutOfRange {
+        name: &'static str,
+        value: f32,
+        expected: &'static str,
+    },
 }
 
-pub struct FnCommand<F> {
+impl CommandError {
+    pub fn invalid(name: &'static str, token: &str, reason: impl fmt::Display) -> Self {
+        Self::Invalid {
+            name,
+            token: token.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Usage(form) => write!(f, "usage: {form}"),
+            Self::Invalid {
+                name,
+                token,
+                reason,
+            } => write!(f, "{name}: invalid `{token}`: {reason}"),
+            Self::Unknown {
+                name,
+                token,
+                choices,
+            } => write!(f, "{name}: unknown `{token}` (try {choices})"),
+            Self::OutOfRange {
+                name,
+                value,
+                expected,
+            } => write!(f, "{name}: {value} is out of range; expected {expected}"),
+        }
+    }
+}
+
+impl std::error::Error for CommandError {}
+
+type CommandFn<Ctx> =
+    Box<dyn FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> Result<(), CommandError>>;
+
+pub struct FnCommand<Ctx> {
     name: &'static str,
     help: &'static str,
     long_help: Option<&'static str>,
     arg_choices: Vec<Vec<&'static str>>,
     value_choices: HashMap<&'static str, Vec<&'static str>>,
-    f: F,
+    f: CommandFn<Ctx>,
 }
 
-impl<F> FnCommand<F> {
+impl<Ctx> FnCommand<Ctx> {
     /// One inner slice per position; trailing free-form args may be omitted.
     pub fn with_args(mut self, choices: &[&[&'static str]]) -> Self {
         self.arg_choices = choices.iter().map(|s| s.to_vec()).collect();
@@ -168,15 +167,36 @@ impl<F> FnCommand<F> {
         self
     }
 
+    /// `\n` breaks paint as separate scrollback entries.
     pub fn with_long_help(mut self, long: &'static str) -> Self {
         self.long_help = Some(long);
         self
     }
+
+    fn long_help(&self) -> &'static str {
+        self.long_help.unwrap_or(self.help)
+    }
+
+    fn arg_choices(&self, arg_index: usize) -> &[&'static str] {
+        self.arg_choices
+            .get(arg_index)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// `key` carries no trailing `=`; empty means free-form.
+    fn value_choices(&self, key: &str) -> &[&'static str] {
+        self.value_choices
+            .get(key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
-pub fn cmd<Ctx, F>(name: &'static str, help: &'static str, f: F) -> FnCommand<F>
+/// Recoverable issues go to `out.error(..)`; unrecoverable ones return `Err`.
+pub fn cmd<Ctx, F>(name: &'static str, help: &'static str, f: F) -> FnCommand<Ctx>
 where
-    F: FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
+    F: FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> Result<(), CommandError> + 'static,
 {
     FnCommand {
         name,
@@ -184,318 +204,12 @@ where
         long_help: None,
         arg_choices: Vec::new(),
         value_choices: HashMap::new(),
-        f,
-    }
-}
-
-impl<Ctx, F> Command<Ctx> for FnCommand<F>
-where
-    F: FnMut(&[&str], &mut Ctx, &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
-{
-    fn name(&self) -> &str {
-        self.name
-    }
-    fn help(&self) -> &str {
-        self.help
-    }
-    fn long_help(&self) -> String {
-        self.long_help
-            .map(str::to_string)
-            .unwrap_or_else(|| self.help.to_string())
-    }
-    fn arg_choices(&self, arg_index: usize) -> &[&'static str] {
-        self.arg_choices
-            .get(arg_index)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-    fn arg_value_choices(&self, _arg_index: usize, key: &str) -> &[&'static str] {
-        self.value_choices
-            .get(key)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-    fn run(&mut self, args: &[&str], ctx: &mut Ctx, out: &mut ConsoleWriter) -> anyhow::Result<()> {
-        (self.f)(args, ctx, out)
-    }
-}
-
-type ToggleHandler<Ctx> = Box<dyn FnMut(&mut Ctx, Option<bool>) -> anyhow::Result<()>>;
-
-type ChoiceHandler<Ctx> = Box<dyn FnMut(&mut Ctx, Option<&str>) -> anyhow::Result<()>>;
-
-type BareHandler<Ctx> = Box<dyn FnMut(&mut Ctx) -> anyhow::Result<()>>;
-
-type CustomHandler<Ctx> =
-    Box<dyn FnMut(&mut Ctx, &[&str], &mut ConsoleWriter) -> anyhow::Result<()>>;
-
-enum SubcommandKind<Ctx> {
-    Toggle {
-        handler: ToggleHandler<Ctx>,
-    },
-    Choice {
-        choices: Vec<&'static str>,
-        handler: ChoiceHandler<Ctx>,
-    },
-    Custom {
-        arg_choices: Vec<Vec<&'static str>>,
-        value_choices: HashMap<&'static str, Vec<&'static str>>,
-        handler: CustomHandler<Ctx>,
-    },
-}
-
-struct SubcommandEntry<Ctx> {
-    help: &'static str,
-    kind: SubcommandKind<Ctx>,
-}
-
-pub struct SubcommandSet<Ctx> {
-    name: &'static str,
-    help: &'static str,
-    subs: BTreeMap<&'static str, SubcommandEntry<Ctx>>,
-    name_cache: std::cell::OnceCell<Vec<&'static str>>,
-    bare: Option<BareHandler<Ctx>>,
-    long_help: Option<&'static str>,
-}
-
-impl<Ctx: 'static> SubcommandSet<Ctx> {
-    /// Parses `on|off|true|false|1|0`; a bare invocation passes `None`.
-    pub fn toggle<F>(mut self, name: &'static str, help: &'static str, handler: F) -> Self
-    where
-        F: FnMut(&mut Ctx, Option<bool>) -> anyhow::Result<()> + 'static,
-    {
-        self.name_cache.take();
-        self.subs.insert(
-            name,
-            SubcommandEntry {
-                help,
-                kind: SubcommandKind::Toggle {
-                    handler: Box::new(handler),
-                },
-            },
-        );
-        self
-    }
-
-    /// The handler receives the raw value string, unvalidated against `choices`.
-    pub fn choice<F>(
-        mut self,
-        name: &'static str,
-        help: &'static str,
-        choices: &[&'static str],
-        handler: F,
-    ) -> Self
-    where
-        F: FnMut(&mut Ctx, Option<&str>) -> anyhow::Result<()> + 'static,
-    {
-        self.name_cache.take();
-        self.subs.insert(
-            name,
-            SubcommandEntry {
-                help,
-                kind: SubcommandKind::Choice {
-                    choices: choices.to_vec(),
-                    handler: Box::new(handler),
-                },
-            },
-        );
-        self
-    }
-
-    /// `arg_choices[i]` completes the i-th arg after the subcommand name.
-    pub fn custom<F>(
-        mut self,
-        name: &'static str,
-        help: &'static str,
-        arg_choices: &[&[&'static str]],
-        value_choices: &[(&'static str, &[&'static str])],
-        handler: F,
-    ) -> Self
-    where
-        F: FnMut(&mut Ctx, &[&str], &mut ConsoleWriter) -> anyhow::Result<()> + 'static,
-    {
-        let mut vc = HashMap::new();
-        for (k, vs) in value_choices {
-            vc.insert(*k, vs.to_vec());
-        }
-        self.name_cache.take();
-        self.subs.insert(
-            name,
-            SubcommandEntry {
-                help,
-                kind: SubcommandKind::Custom {
-                    arg_choices: arg_choices.iter().map(|slot| slot.to_vec()).collect(),
-                    value_choices: vc,
-                    handler: Box::new(handler),
-                },
-            },
-        );
-        self
-    }
-
-    /// The subcommand table is appended either way.
-    pub fn with_long_help(mut self, long: &'static str) -> Self {
-        self.long_help = Some(long);
-        self
-    }
-
-    /// A bare command name runs `handler` instead of a usage error.
-    pub fn on_bare<F>(mut self, handler: F) -> Self
-    where
-        F: FnMut(&mut Ctx) -> anyhow::Result<()> + 'static,
-    {
-        self.bare = Some(Box::new(handler));
-        self
-    }
-
-    fn cached_names(&self) -> &[&'static str] {
-        self.name_cache
-            .get_or_init(|| self.subs.keys().copied().collect())
-    }
-}
-
-pub fn subcommands<Ctx: 'static>(name: &'static str, help: &'static str) -> SubcommandSet<Ctx> {
-    SubcommandSet {
-        name,
-        help,
-        subs: BTreeMap::new(),
-        name_cache: std::cell::OnceCell::new(),
-        bare: None,
-        long_help: None,
-    }
-}
-
-impl<Ctx: 'static> Command<Ctx> for SubcommandSet<Ctx> {
-    fn name(&self) -> &str {
-        self.name
-    }
-    fn help(&self) -> &str {
-        self.help
-    }
-
-    fn long_help(&self) -> String {
-        let preamble = self.long_help.unwrap_or(self.help);
-        let mut out = String::with_capacity(128 + preamble.len() + self.subs.len() * 64);
-        out.push_str(preamble);
-        if !self.subs.is_empty() {
-            out.push_str("\nsubcommands:");
-            for (name, entry) in &self.subs {
-                let kind = match entry.kind {
-                    SubcommandKind::Toggle { .. } => "<on|off>",
-                    SubcommandKind::Choice { .. } => "<choice>",
-                    SubcommandKind::Custom { .. } => "<args...>",
-                };
-                out.push_str(&format!("\n  {name:14} {kind:9}  {}", entry.help));
-            }
-        }
-        out
-    }
-
-    fn arg_choices(&self, arg_index: usize) -> &[&'static str] {
-        if arg_index == 0 {
-            self.cached_names()
-        } else {
-            &[]
-        }
-    }
-
-    fn arg_choices_ctx<'a>(&'a self, arg_index: usize, prior: &[&str]) -> &'a [&'static str] {
-        if arg_index == 0 {
-            return self.cached_names();
-        }
-        let Some(&sub_name) = prior.first() else {
-            return &[];
-        };
-        let Some(entry) = self.subs.get(sub_name) else {
-            return &[];
-        };
-        let sub_slot = arg_index - 1;
-        match &entry.kind {
-            SubcommandKind::Toggle { .. } => &[],
-            SubcommandKind::Choice { choices, .. } => {
-                if sub_slot == 0 {
-                    choices.as_slice()
-                } else {
-                    &[]
-                }
-            }
-            SubcommandKind::Custom { arg_choices, .. } => arg_choices
-                .get(sub_slot)
-                .map(|v| v.as_slice())
-                .unwrap_or(&[]),
-        }
-    }
-
-    fn arg_value_choices_ctx<'a>(
-        &'a self,
-        _arg_index: usize,
-        key: &str,
-        prior: &[&str],
-    ) -> &'a [&'static str] {
-        let Some(&sub_name) = prior.first() else {
-            return &[];
-        };
-        let Some(entry) = self.subs.get(sub_name) else {
-            return &[];
-        };
-        match &entry.kind {
-            SubcommandKind::Custom { value_choices, .. } => {
-                value_choices.get(key).map(|v| v.as_slice()).unwrap_or(&[])
-            }
-            _ => &[],
-        }
-    }
-
-    fn run(&mut self, args: &[&str], ctx: &mut Ctx, out: &mut ConsoleWriter) -> anyhow::Result<()> {
-        let Some((sub_name, rest)) = args.split_first() else {
-            if let Some(handler) = self.bare.as_mut() {
-                return handler(ctx);
-            }
-            let mut msg = format!("usage: {} <subcommand> <value>; subcommands:", self.name);
-            for (name, entry) in &self.subs {
-                msg.push_str(&format!("\n  {name:12} {}", entry.help));
-            }
-            return Err(anyhow::anyhow!(msg));
-        };
-        let Some(entry) = self.subs.get_mut(*sub_name) else {
-            let names: Vec<&str> = self.subs.keys().copied().collect();
-            return Err(anyhow::anyhow!(
-                "unknown subcommand `{sub_name}` for `{}` (try {})",
-                self.name,
-                names.join(", ")
-            ));
-        };
-        match &mut entry.kind {
-            SubcommandKind::Toggle { handler } => {
-                let v: Option<bool> = match rest.first() {
-                    None => None,
-                    Some(value) => match value.to_ascii_lowercase().as_str() {
-                        "on" | "true" | "1" => Some(true),
-                        "off" | "false" | "0" => Some(false),
-                        other => {
-                            return Err(anyhow::anyhow!(
-                                "unknown value `{other}` for `{} {sub_name}` (try on|off)",
-                                self.name
-                            ))
-                        }
-                    },
-                };
-                let _ = out;
-                handler(ctx, v)
-            }
-            SubcommandKind::Choice { handler, .. } => {
-                let value: Option<&str> = rest.first().copied();
-                let _ = out;
-                handler(ctx, value)
-            }
-            SubcommandKind::Custom { handler, .. } => handler(ctx, rest, out),
-        }
+        f: Box::new(f),
     }
 }
 
 pub struct Console<Ctx> {
-    commands: BTreeMap<String, Box<dyn Command<Ctx>>>,
-    binds: BTreeMap<Key, String>,
+    commands: BTreeMap<String, FnCommand<Ctx>>,
     toggle_key: Key,
     history: VecDeque<HistoryLine>,
     input: String,
@@ -550,7 +264,6 @@ impl<Ctx: 'static> Console<Ctx> {
     pub fn new() -> Self {
         Self {
             commands: BTreeMap::new(),
-            binds: BTreeMap::new(),
             toggle_key: Key::Backtick,
             history: VecDeque::new(),
             input: String::new(),
@@ -573,22 +286,12 @@ impl<Ctx: 'static> Console<Ctx> {
     }
 
     /// Silently replaces any existing command of the same name.
-    pub fn register<C: Command<Ctx> + 'static>(&mut self, command: C) {
-        let name = command.name().to_string();
-        self.commands.insert(name, Box::new(command));
+    pub fn register(&mut self, command: FnCommand<Ctx>) {
+        self.commands.insert(command.name.to_string(), command);
     }
 
     pub fn has_command(&self, name: &str) -> bool {
         Builtin::from_name(name).is_some() || self.commands.contains_key(name)
-    }
-
-    /// No modifiers; fires only while the console is closed. Re-binding overwrites.
-    pub fn bind(&mut self, key: Key, command_line: impl Into<String>) {
-        self.binds.insert(key, command_line.into());
-    }
-
-    pub fn unbind(&mut self, key: Key) {
-        self.binds.remove(&key);
     }
 
     pub fn open(&mut self) {
@@ -637,11 +340,6 @@ impl<Ctx: 'static> Console<Ctx> {
 
     pub fn toggle_key(&self) -> Key {
         self.toggle_key
-    }
-
-    /// In [`Key`] order.
-    pub fn binds(&self) -> impl Iterator<Item = (Key, &str)> {
-        self.binds.iter().map(|(key, line)| (*key, line.as_str()))
     }
 
     pub fn history(&self) -> &VecDeque<HistoryLine> {
@@ -759,11 +457,6 @@ impl<Ctx: 'static> Console<Ctx> {
     }
 
     fn push_history(&mut self, line: HistoryLine) {
-        // Not via `tracing`: `loam_app::log::ConsoleLayer` would echo it back here.
-        #[cfg(target_arch = "wasm32")]
-        if ECHO_TO_BROWSER.load(std::sync::atomic::Ordering::Relaxed) {
-            web_sys::console::log_1(&line.text.as_str().into());
-        }
         self.history.push_back(line);
         while self.history.len() > MAX_HISTORY_LINES {
             self.history.pop_front();
@@ -830,13 +523,12 @@ impl<Ctx: 'static> Console<Ctx> {
                 let Some(cmd) = self.commands.get(cmd_name) else {
                     return Vec::new();
                 };
-                let prior_refs: Vec<&str> = prior.iter().map(String::as_str).collect();
 
                 if let Some(eq) = prefix.find('=') {
                     let key = &prefix[..eq];
                     let value_prefix = &prefix[eq + 1..];
                     let mut matches: Vec<String> = cmd
-                        .arg_value_choices_ctx(*arg_index, key, &prior_refs)
+                        .value_choices(key)
                         .iter()
                         .filter(|v| v.starts_with(value_prefix))
                         .map(|v| format!("{key}={v}"))
@@ -851,7 +543,7 @@ impl<Ctx: 'static> Console<Ctx> {
                     .collect();
 
                 let mut matches: Vec<String> = cmd
-                    .arg_choices_ctx(*arg_index, &prior_refs)
+                    .arg_choices(*arg_index)
                     .iter()
                     .filter(|choice| choice.starts_with(prefix.as_str()))
                     .filter(|choice| match choice.find('=') {
@@ -915,17 +607,13 @@ impl<Ctx: 'static> Console<Ctx> {
         std::mem::take(&mut self.pending)
     }
 
-    /// Built-ins resolve here too, so a queued built-in runs like a typed one.
+    /// Builtins run in `execute` and never reach this, so `name` is a registered command.
     pub fn dispatch(&mut self, name: &str, args: &[&str], ctx: &mut Ctx) {
         self.push_history(HistoryLine::input(format!("> {}", render_line(name, args))));
-        if let Some(builtin) = Builtin::from_name(name) {
-            self.run_builtin(builtin, args.first().copied());
-            return;
-        }
 
         let mut writer = ConsoleWriter::new();
         let result = match self.commands.get_mut(name) {
-            Some(cmd) => cmd.run(args, ctx, &mut writer),
+            Some(cmd) => (cmd.f)(args, ctx, &mut writer),
             None => {
                 self.push_history(HistoryLine::error(format!(
                     "no command '{name}'. try: help"
@@ -937,7 +625,7 @@ impl<Ctx: 'static> Console<Ctx> {
             self.push_history(hl);
         }
         if let Err(e) = result {
-            self.push_history(HistoryLine::error(format!("error: {e:#}")));
+            self.push_history(HistoryLine::error(format!("error: {e}")));
         }
     }
 
@@ -963,9 +651,9 @@ impl<Ctx: 'static> Console<Ctx> {
                     self.push_history(HistoryLine::output(format!("{}: {}", b.name(), b.help())));
                 } else {
                     let prepared: Option<Vec<String>> = self.commands.get(name).map(|c| {
-                        let header_prefix = format!("{}: ", c.name());
+                        let header_prefix = format!("{}: ", c.name);
                         let body = c.long_help();
-                        let indent = " ".repeat(c.name().len() + 2);
+                        let indent = " ".repeat(c.name.len() + 2);
                         let mut lines = body.lines();
                         let first = lines.next().unwrap_or("");
                         let mut rendered = vec![format!("{header_prefix}{first}")];
@@ -988,7 +676,7 @@ impl<Ctx: 'static> Console<Ctx> {
                 let mut entries: Vec<(String, String)> = self
                     .commands
                     .values()
-                    .map(|c| (c.name().to_string(), c.help().to_string()))
+                    .map(|c| (c.name.to_string(), c.help.to_string()))
                     .collect();
                 for b in Builtin::ALL {
                     entries.push((b.name().to_string(), b.help().to_string()));
@@ -1048,121 +736,6 @@ impl Builtin {
     }
 }
 
-/// Double quotes honor `\"` and `\\`, single quotes are literal, and an open
-/// quote runs to the end of the line.
-pub fn parse_line(line: &str) -> Option<(String, Vec<String>)> {
-    let mut tokens = tokenize(line);
-    if tokens.is_empty() {
-        return None;
-    }
-    let name = tokens.remove(0);
-    Some((name, tokens))
-}
-
-/// Inverse of [`parse_line`].
-pub fn render_line(name: &str, args: &[&str]) -> String {
-    let mut line = quote_token(name);
-    for arg in args {
-        line.push(' ');
-        line.push_str(&quote_token(arg));
-    }
-    line
-}
-
-fn quote_token(token: &str) -> String {
-    let bare = !token.is_empty()
-        && !token
-            .chars()
-            .any(|c| c.is_whitespace() || c == '"' || c == '\'');
-    if bare {
-        return token.to_string();
-    }
-    let mut quoted = String::with_capacity(token.len() + 2);
-    quoted.push('"');
-    for c in token.chars() {
-        if c == '"' || c == '\\' {
-            quoted.push('\\');
-        }
-        quoted.push(c);
-    }
-    quoted.push('"');
-    quoted
-}
-
-fn tokenize(line: &str) -> Vec<String> {
-    tokenize_spans(line)
-        .into_iter()
-        .map(|token| token.value)
-        .collect()
-}
-
-struct Token {
-    value: String,
-    start: usize,
-    end: usize,
-}
-
-fn tokenize_spans(line: &str) -> Vec<Token> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut start = None;
-    let mut chars = line.char_indices().peekable();
-    while let Some((offset, c)) = chars.next() {
-        if !c.is_whitespace() {
-            start.get_or_insert(offset);
-        }
-        match c {
-            '"' => {
-                while let Some(&(_, next)) = chars.peek() {
-                    chars.next();
-                    if next == '"' {
-                        break;
-                    }
-                    if next == '\\' {
-                        if let Some(&(_, escaped)) = chars.peek() {
-                            if matches!(escaped, '"' | '\\') {
-                                cur.push(escaped);
-                                chars.next();
-                                continue;
-                            }
-                        }
-                    }
-                    cur.push(next);
-                }
-            }
-            '\'' => {
-                while let Some(&(_, next)) = chars.peek() {
-                    chars.next();
-                    if next == '\'' {
-                        break;
-                    }
-                    cur.push(next);
-                }
-            }
-            c if c.is_whitespace() => {
-                if let Some(start) = start.take() {
-                    out.push(Token {
-                        value: std::mem::take(&mut cur),
-                        start,
-                        end: offset,
-                    });
-                }
-            }
-            c => {
-                cur.push(c);
-            }
-        }
-    }
-    if let Some(start) = start {
-        out.push(Token {
-            value: cur,
-            start,
-            end: line.len(),
-        });
-    }
-    out
-}
-
 fn apply_completion(input: &str, ctx: &CompletionContext, choice: &str) -> String {
     match ctx {
         CompletionContext::Command { .. } => choice.to_string(),
@@ -1178,17 +751,91 @@ mod tests {
 
     type Ctx = u32;
 
+    fn run<C: 'static>(console: &mut Console<C>, line: &str, ctx: &mut C) {
+        console.execute(line);
+        drain_and_dispatch(console, ctx);
+    }
+
+    fn drain_and_dispatch<C: 'static>(console: &mut Console<C>, ctx: &mut C) {
+        for line in console.drain_pending() {
+            let Some((name, args)) = parse_line(&line) else {
+                continue;
+            };
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            console.dispatch(&name, &arg_refs, ctx);
+        }
+    }
+
+    fn echo_cmd() -> FnCommand<Ctx> {
+        cmd("echo", "echo args back", |args, _ctx, out| {
+            out.line(args.join(" "));
+            Ok(())
+        })
+    }
+
+    fn add_cmd() -> FnCommand<Ctx> {
+        cmd("add", "add args to ctx", |args, ctx, out| {
+            for a in args {
+                let n: u32 = a
+                    .parse()
+                    .map_err(|error| CommandError::invalid("add", a, error))?;
+                *ctx += n;
+            }
+            out.line(format!("ctx={ctx}"));
+            Ok(())
+        })
+    }
+
     #[test]
-    fn argument_completion_preserves_multibyte_whitespace() {
+    fn tab_completion() {
+        let mut c = Console::<Ctx>::new();
+        c.register(cmd("capture", "", |_, _, _| Ok(())).with_args(&[
+            &["png", "frames", "toggle", "stop"],
+            &["pre", "post", "both"],
+        ]));
+        for (input, preview) in [
+            ("", None),
+            ("zzz", None),
+            ("de", Some("tach")),
+            ("capture t", Some("oggle")),
+            ("capture png ", Some("both")),
+            ("capture png po", Some("st")),
+            ("capture png post extra ", None),
+        ] {
+            c.input = input.into();
+            assert_eq!(c.tab_preview().as_deref(), preview, "`{input}`");
+        }
+
+        c.input = "capture p".into();
+        c.tab_complete();
+        assert_eq!(c.input, "capture png");
+        c.input = "capture png p".into();
+        c.tab_complete();
+        assert_eq!(c.input, "capture png post");
+        c.tab_complete();
+        assert_eq!(c.input, "capture png pre");
+
+        let mut c = Console::<Ctx>::new();
+        for name in ["capture.start", "capture.stop", "capture.toggle"] {
+            c.register(cmd::<Ctx, _>(name, "x", |_, _, _| Ok(())));
+        }
+        c.input = "capture.s".into();
+        c.tab_complete();
+        assert_eq!(c.input, "capture.start");
+        c.tab_complete();
+        assert_eq!(c.input, "capture.stop");
+        c.tab_complete();
+        assert_eq!(c.input, "capture.start");
+    }
+
+    #[test]
+    fn quoted_and_multibyte_completion() {
         let mut console = Console::<()>::new();
         console.register(cmd("mode", "set mode", |_, _, _| Ok(())).with_args(&[&["solid"]]));
         *console.input_mut() = "mode\u{2003}so".to_owned();
         console.tab_complete();
         assert_eq!(console.input(), "mode\u{2003}solid");
-    }
 
-    #[test]
-    fn quoted_completion_preserves_tokens_and_cycles_matches() {
         for input in [
             "mode \"solid s",
             "mode 'solid s'",
@@ -1215,174 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn extending_subcommands_invalidates_completion_names() {
-        let set = subcommands::<()>("view", "view").toggle("grid", "grid", |_, _| Ok(()));
-        assert_eq!(set.arg_choices(0), &["grid"]);
-        let set = set.toggle("axes", "axes", |_, _| Ok(()));
-        assert_eq!(set.arg_choices(0), &["axes", "grid"]);
-    }
-    fn run<C: 'static>(console: &mut Console<C>, line: &str, ctx: &mut C) {
-        console.execute(line);
-        drain_and_dispatch(console, ctx);
-    }
-
-    fn submit_and_run<C: 'static>(console: &mut Console<C>, ctx: &mut C) {
-        console.submit();
-        drain_and_dispatch(console, ctx);
-    }
-
-    fn drain_and_dispatch<C: 'static>(console: &mut Console<C>, ctx: &mut C) {
-        for line in console.drain_pending() {
-            let Some((name, args)) = parse_line(&line) else {
-                continue;
-            };
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            console.dispatch(&name, &arg_refs, ctx);
-        }
-    }
-
-    fn echo_cmd() -> impl Command<Ctx> {
-        cmd("echo", "echo args back", |args, _ctx, out| {
-            out.line(args.join(" "));
-            Ok(())
-        })
-    }
-
-    fn add_cmd() -> impl Command<Ctx> {
-        cmd("add", "add args to ctx", |args, ctx, out| {
-            for a in args {
-                let n: u32 = a.parse()?;
-                *ctx += n;
-            }
-            out.line(format!("ctx={ctx}"));
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn tab_preview_shows_first_match_suffix() {
-        let mut c = Console::<Ctx>::new();
-
-        c.input = String::new();
-        assert_eq!(c.tab_preview(), None);
-
-        c.input = "de".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("tach"));
-
-        c.input = "do".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("ck"));
-
-        c.input = "cl".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("ear"));
-
-        c.input = "h".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("elp"));
-        c.input = "d".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("etach"));
-
-        c.input = "zzz".into();
-        assert_eq!(c.tab_preview(), None);
-    }
-
-    #[test]
-    fn tab_preview_completes_declared_arg_choices() {
-        let mut c = Console::<Ctx>::new();
-        c.register(cmd("capture", "", |_, _, _| Ok(())).with_args(&[
-            &["png", "frames", "toggle", "stop"],
-            &["pre", "post", "both"],
-        ]));
-
-        c.input = "capture p".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("ng"));
-
-        c.input = "capture t".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("oggle"));
-        c.input = "capture png ".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("both"));
-
-        c.input = "capture png po".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("st"));
-
-        c.input = "capture png post extra ".into();
-        assert_eq!(c.tab_preview(), None);
-    }
-
-    #[test]
-    fn two_step_kv_value_completion() {
-        let mut c = Console::<Ctx>::new();
-        c.register(
-            cmd("capture", "", |_, _, _| Ok(()))
-                .with_args(&[&["fps=", "palette="]])
-                .with_value_choices("palette", &["local", "global"]),
-        );
-
-        c.input = "capture pal".into();
-        assert_eq!(c.tab_preview().as_deref(), Some("ette="));
-        c.tab_complete();
-        assert_eq!(c.input, "capture palette=");
-
-        let ctx = c.completion_context().unwrap();
-        let matches = c.completion_matches(&ctx);
-        assert_eq!(matches, vec!["palette=global", "palette=local"]);
-
-        c.input = "capture fps=".into();
-        let ctx = c.completion_context().unwrap();
-        let matches = c.completion_matches(&ctx);
-        assert!(
-            matches.is_empty(),
-            "fps= should suggest no values; got {matches:?}"
-        );
-        assert_eq!(c.tab_preview(), None);
-    }
-
-    #[test]
-    fn arg_completion_filters_already_used_kv_prefixes() {
-        let mut c = Console::<Ctx>::new();
-        c.register(cmd("rec", "", |_, _, _| Ok(())).with_args(&[
-            &["both", "fps=", "post", "scale="],
-            &["fps=", "scale="],
-            &["fps=", "scale="],
-        ]));
-
-        c.input = "rec ".into();
-        let ctx = c.completion_context().unwrap();
-        let m = c.completion_matches(&ctx);
-        assert!(m.contains(&"fps=".into()));
-        assert!(m.contains(&"scale=".into()));
-
-        c.input = "rec fps=30 ".into();
-        let ctx = c.completion_context().unwrap();
-        let m = c.completion_matches(&ctx);
-        assert!(!m.contains(&"fps=".into()), "got matches: {m:?}");
-        assert!(m.contains(&"scale=".into()));
-
-        c.input = "rec fps=30 scale=720 ".into();
-        let ctx = c.completion_context().unwrap();
-        let m = c.completion_matches(&ctx);
-        assert!(m.is_empty(), "got matches: {m:?}");
-    }
-
-    #[test]
-    fn tab_complete_applies_arg_choice() {
-        let mut c = Console::<Ctx>::new();
-        c.register(cmd("capture", "", |_, _, _| Ok(())).with_args(&[
-            &["png", "frames", "toggle", "stop"],
-            &["pre", "post", "both"],
-        ]));
-
-        c.input = "capture p".into();
-        c.tab_complete();
-        assert_eq!(c.input, "capture png");
-
-        c.input = "capture png p".into();
-        c.tab_complete();
-        assert_eq!(c.input, "capture png post");
-        c.tab_complete();
-        assert_eq!(c.input, "capture png pre");
-    }
-
-    #[test]
-    fn builtin_help_describes_one_command() {
+    fn builtin_help() {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
@@ -1394,50 +874,15 @@ mod tests {
     }
 
     #[test]
-    fn input_history_appends_and_dedupes_consecutive() {
+    fn input_history_recall() {
         let mut c = Console::<Ctx>::new();
         c.register(echo_cmd());
         let mut ctx: Ctx = 0;
-        run(&mut c, "echo a", &mut ctx);
-        run(&mut c, "echo a", &mut ctx);
-        run(&mut c, "echo b", &mut ctx);
-        let h: Vec<&str> = c.input_history.iter().map(String::as_str).collect();
-        assert_eq!(h, vec!["echo a", "echo b"]);
-    }
-
-    #[test]
-    fn input_history_caps_at_max() {
-        let mut c = Console::<Ctx>::new();
-        c.register(echo_cmd());
-        let mut ctx: Ctx = 0;
-        for i in 0..(MAX_INPUT_HISTORY + 50) {
-            run(&mut c, &format!("echo n{i}"), &mut ctx);
+        for line in ["echo first", "echo first", "echo second"] {
+            run(&mut c, line, &mut ctx);
         }
-        assert_eq!(c.input_history.len(), MAX_INPUT_HISTORY);
-        assert!(c.input_history.front().unwrap().starts_with("echo n50"));
-    }
-
-    #[test]
-    fn history_caps_at_max() {
-        let mut c = Console::<Ctx>::new();
-        for i in 0..(MAX_HISTORY_LINES + 100) {
-            c.push_history(HistoryLine::output(i.to_string()));
-        }
-        assert_eq!(c.history.len(), MAX_HISTORY_LINES);
-        assert_eq!(c.history.front().unwrap().text, "100");
-        assert_eq!(
-            c.history.back().unwrap().text,
-            (MAX_HISTORY_LINES + 99).to_string()
-        );
-    }
-
-    #[test]
-    fn history_prev_walks_backwards_then_history_next_returns_to_blank() {
-        let mut c = Console::<Ctx>::new();
-        c.register(echo_cmd());
-        let mut ctx: Ctx = 0;
-        run(&mut c, "echo first", &mut ctx);
-        run(&mut c, "echo second", &mut ctx);
+        let recalled: Vec<&str> = c.input_history.iter().map(String::as_str).collect();
+        assert_eq!(recalled, ["echo first", "echo second"]);
 
         c.history_prev();
         assert_eq!(c.input, "echo second");
@@ -1452,43 +897,29 @@ mod tests {
     }
 
     #[test]
-    fn tab_complete_ambiguous_prefix_cycles() {
+    fn dispatch_echo() {
         let mut c = Console::<Ctx>::new();
-        c.register(cmd::<Ctx, _>("capture.start", "x", |_, _, _| Ok(())));
-        c.register(cmd::<Ctx, _>("capture.stop", "x", |_, _, _| Ok(())));
-        c.register(cmd::<Ctx, _>("capture.toggle", "x", |_, _, _| Ok(())));
-        c.input.clone_from(&"capture.s".to_string());
-
-        c.tab_complete();
-        assert_eq!(c.input, "capture.start");
-        c.tab_complete();
-        assert_eq!(c.input, "capture.stop");
-        c.tab_complete();
-        assert_eq!(c.input, "capture.start");
-    }
-
-    #[test]
-    fn binds_are_enumerated_in_key_order() {
-        let mut c = Console::<Ctx>::new();
-        c.bind(Key::F12, "third");
-        c.bind(Key::Backtick, "first");
-        c.bind(Key::F1, "second");
-        let seen: Vec<(Key, &str)> = c.binds().collect();
-        assert_eq!(
-            seen,
-            vec![
-                (Key::Backtick, "first"),
-                (Key::F1, "second"),
-                (Key::F12, "third"),
-            ]
-        );
-    }
-
-    #[test]
-    fn command_returning_err_pushes_error_line() {
-        let mut c = Console::<Ctx>::new();
-        c.register(cmd("fail", "always fails", |_, _, _| anyhow::bail!("nope")));
+        c.register(echo_cmd());
+        c.register(cmd("fail", "always fails", |_, _, _| {
+            Err(CommandError::Usage("nope".into()))
+        }));
         let mut ctx: Ctx = 0;
+
+        c.execute("echo hi");
+        assert!(
+            c.history.is_empty(),
+            "a parked line has not run, so nothing is owed to the scrollback yet"
+        );
+        drain_and_dispatch(&mut c, &mut ctx);
+        let kinds: Vec<LineKind> = c.history.iter().map(|l| l.kind).collect();
+        assert_eq!(kinds, [LineKind::Input, LineKind::Output]);
+        assert!(c.history[0].text.contains("echo hi"), "{:?}", c.history[0]);
+
+        c.clear_history();
+        c.dispatch("nonesuch", &[], &mut ctx);
+        let kinds: Vec<LineKind> = c.history.iter().map(|l| l.kind).collect();
+        assert_eq!(kinds, [LineKind::Input, LineKind::Error]);
+
         run(&mut c, "fail", &mut ctx);
         let last = c.history.back().unwrap();
         assert_eq!(last.kind, LineKind::Error);
@@ -1496,330 +927,26 @@ mod tests {
     }
 
     #[test]
-    fn submit_runs_the_input_line_and_clears_it() {
+    fn submit_typed_and_blank_lines() {
         let mut c = Console::<Ctx>::new();
         c.register(add_cmd());
         let mut ctx: Ctx = 1;
+
+        *c.input_mut() = "   ".into();
+        c.submit();
+        drain_and_dispatch(&mut c, &mut ctx);
+        assert!(c.history.is_empty());
+        assert!(c.input_history.is_empty());
+
         *c.input_mut() = "add 4".into();
-        submit_and_run(&mut c, &mut ctx);
+        c.submit();
+        drain_and_dispatch(&mut c, &mut ctx);
         assert_eq!(ctx, 5);
         assert!(c.input.is_empty());
     }
 
     #[test]
-    fn submit_of_blank_input_is_inert() {
-        let mut c = Console::<Ctx>::new();
-        let mut ctx: Ctx = 0;
-        *c.input_mut() = "   ".into();
-        submit_and_run(&mut c, &mut ctx);
-        assert!(c.history.is_empty());
-        assert!(c.input_history.is_empty());
-    }
-
-    #[test]
-    fn clear_input_drops_prompt_history_cursor_and_tab_cycle() {
-        let mut c = Console::<Ctx>::new();
-        c.register(cmd::<Ctx, _>("capture.start", "x", |_, _, _| Ok(())));
-        c.register(cmd::<Ctx, _>("capture.stop", "x", |_, _, _| Ok(())));
-        let mut ctx: Ctx = 0;
-        run(&mut c, "capture.stop", &mut ctx);
-        c.history_prev();
-        c.input = "capture.s".into();
-        c.tab_complete();
-        assert!(c.tab.is_some());
-
-        c.clear_input();
-        assert!(c.input.is_empty());
-        assert!(c.tab.is_none());
-        assert!(c.input_history_pos.is_none());
-    }
-
-    #[test]
-    fn clear_history_leaves_input_history_intact() {
-        let mut c = Console::<Ctx>::new();
-        c.register(echo_cmd());
-        let mut ctx: Ctx = 0;
-        run(&mut c, "echo a", &mut ctx);
-        c.clear_history();
-        assert!(c.history.is_empty());
-        assert_eq!(c.input_history.len(), 1);
-    }
-
-    type SubCtx = (u32, String);
-
-    fn sample_subset() -> SubcommandSet<SubCtx> {
-        subcommands::<SubCtx>("tests", "umbrella")
-            .toggle("axes", "toggle axes", |c, v| {
-                let on = v.unwrap_or(c.0 != 1);
-                c.0 = if on { 1 } else { 0 };
-                c.1 = format!("axes={on}");
-                Ok(())
-            })
-            .toggle("cube", "toggle cube", |c, v| {
-                let on = v.unwrap_or(c.0 != 2);
-                c.0 = if on { 2 } else { 0 };
-                c.1 = format!("cube={on}");
-                Ok(())
-            })
-            .choice(
-                "polytope",
-                "set polytope",
-                &["5cell", "tesseract", "off"],
-                |c, name| {
-                    c.1 = format!("polytope={}", name.unwrap_or("<bare>"));
-                    Ok(())
-                },
-            )
-    }
-
-    #[test]
-    fn subcommand_toggle_accepts_aliases() {
-        let mut con = Console::<SubCtx>::new();
-        con.register(sample_subset());
-        let mut ctx: SubCtx = (0, String::new());
-        for alias in &["on", "true", "1"] {
-            run(&mut con, &format!("tests axes {alias}"), &mut ctx);
-            assert_eq!(ctx.1, "axes=true", "alias `{alias}`");
-        }
-        for alias in &["off", "false", "0"] {
-            run(&mut con, &format!("tests axes {alias}"), &mut ctx);
-            assert_eq!(ctx.1, "axes=false", "alias `{alias}`");
-        }
-    }
-
-    #[test]
-    fn subcommand_unknown_subcommand_errors() {
-        let mut con = Console::<SubCtx>::new();
-        con.register(sample_subset());
-        let mut ctx: SubCtx = (0, String::new());
-        run(&mut con, "tests xyzzy on", &mut ctx);
-        let last = con.history.back().unwrap();
-        assert_eq!(last.kind, LineKind::Error);
-        assert!(
-            last.text.contains("unknown subcommand"),
-            "got: {}",
-            last.text
-        );
-    }
-
-    #[test]
-    fn subcommand_toggle_bare_invocation_flips() {
-        let mut con = Console::<SubCtx>::new();
-        con.register(sample_subset());
-        let mut ctx: SubCtx = (0, String::new());
-        run(&mut con, "tests axes", &mut ctx);
-        assert_eq!(ctx, (1, "axes=true".into()));
-        run(&mut con, "tests axes", &mut ctx);
-        assert_eq!(ctx, (0, "axes=false".into()));
-    }
-
-    #[test]
-    fn subcommand_choice_bare_invocation_passes_none() {
-        let mut con = Console::<SubCtx>::new();
-        con.register(sample_subset());
-        let mut ctx: SubCtx = (0, String::new());
-        run(&mut con, "tests polytope", &mut ctx);
-        assert_eq!(ctx.1, "polytope=<bare>");
-    }
-
-    #[test]
-    fn subcommand_bare_runs_on_bare_handler() {
-        let mut con = Console::<SubCtx>::new();
-        con.register(sample_subset().on_bare(|c| {
-            c.1 = "bare!".into();
-            Ok(())
-        }));
-        let mut ctx: SubCtx = (0, String::new());
-        run(&mut con, "tests", &mut ctx);
-        assert_eq!(ctx.1, "bare!");
-    }
-
-    #[test]
-    fn subcommand_bare_without_handler_emits_usage() {
-        let mut con = Console::<SubCtx>::new();
-        con.register(sample_subset());
-        let mut ctx: SubCtx = (0, String::new());
-        run(&mut con, "tests", &mut ctx);
-        let last = con.history.back().unwrap();
-        assert_eq!(last.kind, LineKind::Error);
-        assert!(last.text.contains("subcommands"), "got: {}", last.text);
-    }
-
-    #[test]
-    fn subcommand_value_completion_is_context_aware() {
-        let mut con = Console::<SubCtx>::new();
-        con.register(sample_subset());
-
-        con.input = "tests axes ".into();
-        let ctx = con.completion_context().unwrap();
-        let m = con.completion_matches(&ctx);
-        assert!(
-            m.is_empty(),
-            "toggle value slot should suggest nothing, got {m:?}"
-        );
-
-        con.input = "tests polytope ".into();
-        let ctx = con.completion_context().unwrap();
-        let m = con.completion_matches(&ctx);
-        assert_eq!(
-            m,
-            vec![
-                "5cell".to_string(),
-                "off".to_string(),
-                "tesseract".to_string()
-            ]
-        );
-        assert!(!m.contains(&"on".into()));
-    }
-
-    type CustomCtx = Vec<String>;
-
-    fn custom_subset() -> SubcommandSet<CustomCtx> {
-        subcommands::<CustomCtx>("capture", "umbrella")
-            .custom("stop", "stop running capture", &[], &[], |c, rest, _out| {
-                c.push(format!("stop;rest={}", rest.join(",")));
-                Ok(())
-            })
-            .custom(
-                "png",
-                "one-shot png",
-                &[&["pre", "post", "both"]],
-                &[],
-                |c, rest, _out| {
-                    c.push(format!("png;rest={}", rest.join(",")));
-                    Ok(())
-                },
-            )
-            .custom(
-                "gif",
-                "gif sequence",
-                &[
-                    &["pre", "post", "both"],
-                    &["fps=", "palette=", "scale="],
-                    &["fps=", "palette=", "scale="],
-                ],
-                &[("palette", &["local", "global"])],
-                |c, rest, _out| {
-                    c.push(format!("gif;rest={}", rest.join(",")));
-                    Ok(())
-                },
-            )
-    }
-
-    #[test]
-    fn custom_subcommand_dispatch_receives_full_rest() {
-        let mut con = Console::<CustomCtx>::new();
-        con.register(custom_subset());
-        let mut ctx: CustomCtx = Vec::new();
-
-        run(&mut con, "capture png post", &mut ctx);
-        run(&mut con, "capture gif both fps=30 palette=global", &mut ctx);
-        run(&mut con, "capture stop", &mut ctx);
-
-        assert_eq!(
-            ctx,
-            vec![
-                "png;rest=post".to_string(),
-                "gif;rest=both,fps=30,palette=global".to_string(),
-                "stop;rest=".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn custom_multi_slot_completion_per_slot() {
-        let mut con = Console::<CustomCtx>::new();
-        con.register(custom_subset());
-
-        con.input = "capture gif ".into();
-        let ctx = con.completion_context().unwrap();
-        let m = con.completion_matches(&ctx);
-        assert_eq!(
-            m,
-            vec!["both".to_string(), "post".to_string(), "pre".to_string()]
-        );
-
-        con.input = "capture gif post ".into();
-        let ctx = con.completion_context().unwrap();
-        let m = con.completion_matches(&ctx);
-        assert!(m.contains(&"fps=".into()));
-        assert!(m.contains(&"palette=".into()));
-        assert!(m.contains(&"scale=".into()));
-
-        con.input = "capture png ".into();
-        let ctx = con.completion_context().unwrap();
-        let m = con.completion_matches(&ctx);
-        assert!(m.contains(&"post".into()));
-        assert!(!m.contains(&"fps=".into()), "got: {m:?}");
-
-        con.input = "capture stop ".into();
-        let ctx = con.completion_context().unwrap();
-        let m = con.completion_matches(&ctx);
-        assert!(m.is_empty(), "got: {m:?}");
-    }
-
-    #[test]
-    fn custom_subcommand_kv_value_completion_is_context_aware() {
-        let mut con = Console::<CustomCtx>::new();
-        con.register(custom_subset());
-
-        con.input = "capture gif post palette=".into();
-        let ctx = con.completion_context().unwrap();
-        let m = con.completion_matches(&ctx);
-        assert_eq!(
-            m,
-            vec!["palette=global".to_string(), "palette=local".to_string()]
-        );
-    }
-
-    #[test]
-    fn tokenize_preserves_spaces_in_double_quotes() {
-        assert_eq!(
-            tokenize(r#"foo "bar baz" qux"#),
-            vec!["foo", "bar baz", "qux"]
-        );
-    }
-
-    #[test]
-    fn tokenize_handles_double_quote_escapes() {
-        assert_eq!(
-            tokenize(r#"a "he said \"hi\"" b"#),
-            vec!["a", r#"he said "hi""#, "b"]
-        );
-        assert_eq!(tokenize(r#""back\\slash""#), vec![r"back\slash"]);
-    }
-
-    #[test]
-    fn tokenize_single_quotes_are_literal() {
-        assert_eq!(tokenize(r"'a \n b'"), vec![r"a \n b"]);
-    }
-
-    #[test]
-    fn tokenize_unterminated_quote_consumes_to_end() {
-        assert_eq!(
-            tokenize(r#"foo "unterminated"#),
-            vec!["foo", "unterminated"]
-        );
-    }
-
-    #[test]
-    fn help_lists_user_commands_and_builtins_sorted() {
-        type Ctx = u32;
-        let mut con = Console::<Ctx>::new();
-        con.register(cmd("zebra", "fast horse", |_, _, _| Ok(())));
-        con.register(cmd("alpha", "first letter", |_, _, _| Ok(())));
-        let mut ctx: Ctx = 0;
-        run(&mut con, "help", &mut ctx);
-        let texts: Vec<&str> = con.history.iter().map(|h| h.text.as_str()).collect();
-        let i_alpha = texts.iter().position(|t| t.contains("alpha")).unwrap();
-        let i_clear = texts.iter().position(|t| t.contains("clear")).unwrap();
-        let i_zebra = texts.iter().position(|t| t.contains("zebra")).unwrap();
-        assert!(i_alpha < i_clear);
-        assert!(i_clear < i_zebra);
-    }
-
-    #[test]
-    fn builtins_run_on_the_typed_frame_and_registry_commands_wait() {
+    fn builtin_and_registry_timing() {
         let mut c = Console::<Ctx>::new();
         c.register(add_cmd());
         let mut ctx: Ctx = 0;
@@ -1837,90 +964,5 @@ mod tests {
         c.execute("add 5");
         drain_and_dispatch(&mut c, &mut ctx);
         assert_eq!(ctx, 5);
-    }
-
-    #[test]
-    fn a_builtin_does_the_same_thing_from_either_entry_point() {
-        for line in ["clear", "detach", "dock", "help", "help echo"] {
-            let mut typed = Console::<Ctx>::new();
-            let mut queued = Console::<Ctx>::new();
-            for console in [&mut typed, &mut queued] {
-                console.register(echo_cmd());
-                console.push_history(HistoryLine::output("earlier output"));
-            }
-
-            typed.execute(line);
-            let (name, args) = parse_line(line).expect("the fixture lines tokenize");
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            queued.dispatch(&name, &arg_refs, &mut 0);
-
-            assert_eq!(typed.detached, queued.detached, "`{line}`");
-            let rendered = |c: &Console<Ctx>| -> Vec<(LineKind, String)> {
-                c.history.iter().map(|l| (l.kind, l.text.clone())).collect()
-            };
-            assert_eq!(rendered(&typed), rendered(&queued), "`{line}`");
-            assert!(
-                !queued.history.iter().any(|l| l.kind == LineKind::Error),
-                "`{line}` reported as unregistered: {:?}",
-                rendered(&queued)
-            );
-        }
-    }
-
-    #[test]
-    fn a_line_is_echoed_exactly_once_ahead_of_its_own_output() {
-        let mut c = Console::<Ctx>::new();
-        c.register(echo_cmd());
-        let mut ctx: Ctx = 0;
-
-        c.execute("echo hi");
-        assert!(
-            c.history.is_empty(),
-            "a parked line has not run, so nothing is owed to the scrollback yet"
-        );
-        drain_and_dispatch(&mut c, &mut ctx);
-        let kinds: Vec<LineKind> = c.history.iter().map(|l| l.kind).collect();
-        assert_eq!(kinds, [LineKind::Input, LineKind::Output]);
-        assert!(c.history[0].text.contains("echo hi"), "{:?}", c.history[0]);
-
-        c.clear_history();
-        c.dispatch("nonesuch", &[], &mut ctx);
-        let kinds: Vec<LineKind> = c.history.iter().map(|l| l.kind).collect();
-        assert_eq!(kinds, [LineKind::Input, LineKind::Error]);
-    }
-
-    #[test]
-    fn a_rendered_line_reparses_to_the_invocation_it_came_from() {
-        let cases: [(&str, &[&str]); 7] = [
-            ("clear", &[]),
-            ("echo", &["a", "b"]),
-            ("load", &["5 cell", "fast"]),
-            ("mark", &["#ff8800"]),
-            ("say", &[r#"a "quoted" word"#]),
-            ("say", &["it's"]),
-            ("say", &["", "back\\slash"]),
-        ];
-        for (name, args) in cases {
-            let rendered = render_line(name, args);
-            let (back_name, back_args) = parse_line(&rendered)
-                .unwrap_or_else(|| panic!("`{rendered}` tokenizes to nothing"));
-            let back_args: Vec<&str> = back_args.iter().map(String::as_str).collect();
-            assert_eq!(back_name, name, "`{rendered}`");
-            assert_eq!(back_args, args, "`{rendered}`");
-        }
-    }
-
-    #[test]
-    fn submission_order_survives_the_pending_buffer() {
-        let mut c = Console::<Ctx>::new();
-        c.register(echo_cmd());
-        for line in ["echo a", "echo b", "echo a", "echo c"] {
-            c.execute(line);
-        }
-        assert_eq!(c.drain_pending(), ["echo a", "echo b", "echo a", "echo c"]);
-        assert!(
-            c.drain_pending().is_empty(),
-            "a drained line must not be handed out twice"
-        );
     }
 }

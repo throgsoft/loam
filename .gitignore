@@ -2,6 +2,9 @@
 /target
 **/*.rs.bk
 
+# Development-only tests
+crates/*/tests/validation/
+
 # Agent guidance and tooling (local only)
 CLAUDE.md
 AGENTS.md

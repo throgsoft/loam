@@ -16,8 +16,6 @@ loam-render = { path = "../loam-render", version = "0.1.0" }
 wgpu       = { workspace = true }
 bytemuck   = { workspace = true }
 ab_glyph   = "0.2"
-anyhow     = { workspace = true }
-thiserror  = { workspace = true }
 glam       = { workspace = true }
 tracing    = { workspace = true }
 
@@ -26,6 +24,7 @@ pollster.workspace = true
 wgpu = { workspace = true, features = ["noop"] }
 loam-math    = { path = "../loam-math",    version = "0.1.0" }
 loam-physics = { path = "../loam-physics", version = "0.1.0", default-features = false, features = ["r4"] }
+loam-time    = { path = "../loam-time",    version = "0.1.0", default-features = false }
 
 [lints]
 workspace = true

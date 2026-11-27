@@ -1,18 +1,17 @@
 use std::fmt;
 
-use crate::bridge::Bridge;
+use crate::app_state::{HasRelation, HasStore, Stores};
+use crate::assets::{Assets, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId};
 use crate::domain::{
     ChartCommand, ChartPose, DomainError, DomainHandle, DomainId, DomainSpace, Domains, Field,
     Instance, Pose,
 };
 use crate::entity::{Entities, EntitiesSnapshot, Entity, SceneId};
-use crate::relation::Relation;
-use crate::session::{
-    Assets, Material, MaterialId, PaletteId, PreparedGeometry, PreparedId, RestoreError,
-};
+use crate::image::Views;
+use crate::session::RestoreError;
+use crate::setting::OutOfRange;
 use crate::store::{Owner, StoreError};
-use crate::stores::{HasRelation, HasStore, Stores};
-use crate::view::Views;
+use crate::view::{ViewId, ViewMapping, ViewSpec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(u64);
@@ -32,7 +31,7 @@ impl fmt::Display for Outcome {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Rejection {
     Reserved(Entity),
     Capacity,
@@ -40,10 +39,16 @@ pub enum Rejection {
     Store(StoreError),
     Restore(RestoreError),
     Cancelled,
-    Unsupported(&'static str),
-    /// A world-owned edit refused the command before any change.
+    OutOfRange(OutOfRange),
     #[cfg(feature = "physics")]
-    Edit(loam_physics::EditError),
+    BodyUnplaced,
+    /// The prepared geometry is missing or is not a polytope, so it has no body.
+    #[cfg(feature = "physics")]
+    NotPolytope(PreparedId),
+    /// Reset and pause apply at a session boundary.
+    BoundaryCommand,
+    /// An app command refused for its own reason, which is the text.
+    Refused(&'static str),
 }
 
 impl fmt::Display for Rejection {
@@ -55,9 +60,19 @@ impl fmt::Display for Rejection {
             Self::Store(error) => fmt::Display::fmt(error, f),
             Self::Restore(error) => fmt::Display::fmt(error, f),
             Self::Cancelled => f.write_str("cancelled by a reset"),
-            Self::Unsupported(what) => write!(f, "unsupported: {what}"),
+            Self::OutOfRange(error) => fmt::Display::fmt(error, f),
             #[cfg(feature = "physics")]
-            Self::Edit(error) => fmt::Display::fmt(error, f),
+            Self::BodyUnplaced => f.write_str("the bundle has a body and no placement"),
+            #[cfg(feature = "physics")]
+            Self::NotPolytope(geometry) => {
+                write!(
+                    f,
+                    "prepared geometry {} is not a polytope",
+                    geometry.index()
+                )
+            }
+            Self::BoundaryCommand => f.write_str("reset and pause apply at a session boundary"),
+            Self::Refused(reason) => f.write_str(reason),
         }
     }
 }
@@ -74,14 +89,20 @@ impl From<StoreError> for Rejection {
     }
 }
 
-#[cfg(feature = "physics")]
-impl From<loam_physics::EditError> for Rejection {
-    fn from(error: loam_physics::EditError) -> Self {
-        Self::Edit(error)
+impl From<OutOfRange> for Rejection {
+    fn from(error: OutOfRange) -> Self {
+        Self::OutOfRange(error)
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "physics")]
+impl From<loam_physics::EditError> for Rejection {
+    fn from(error: loam_physics::EditError) -> Self {
+        Self::Domain(DomainError::Physics(error))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CommandResult {
     pub request: RequestId,
     pub name: &'static str,
@@ -107,6 +128,7 @@ pub enum Command<A> {
     Chart(DomainId, ChartCommand),
     App(Box<dyn AppCommand<A>>),
     Reset,
+    TogglePause,
 }
 
 impl<A: 'static> Command<A> {
@@ -117,6 +139,7 @@ impl<A: 'static> Command<A> {
             Self::Chart(_, _) => "chart",
             Self::App(command) => command.name(),
             Self::Reset => "reset",
+            Self::TogglePause => "pause",
         }
     }
 }
@@ -215,14 +238,6 @@ impl<A: Stores> Commands<A> {
         Ok(Reservation { request, entity })
     }
 
-    pub fn pending(&self) -> &[Request<A>] {
-        &self.queue
-    }
-
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -318,6 +333,8 @@ impl<A: HasStore<T>, T: Send + 'static> Attach<A> for Row<T> {
 pub struct SpawnBundle<A> {
     placement: Option<Box<dyn Place>>,
     instance: Option<Instance>,
+    #[cfg(feature = "physics")]
+    body: Option<Box<dyn crate::physics::SpawnBody>>,
     rows: Vec<Box<dyn Attach<A>>>,
     reserved: Option<Entity>,
 }
@@ -333,6 +350,8 @@ impl<A: Stores> SpawnBundle<A> {
         Self {
             placement: None,
             instance: None,
+            #[cfg(feature = "physics")]
+            body: None,
             rows: Vec::new(),
             reserved: None,
         }
@@ -353,6 +372,16 @@ impl<A: Stores> SpawnBundle<A> {
         self
     }
 
+    /// The body moves to the entity's pose and takes its velocity there, so the bundle needs a placement in a domain with physics.
+    #[cfg(feature = "physics")]
+    pub fn body<S>(mut self, body: loam_physics::BodyDef<S>) -> Self
+    where
+        S: crate::domain::Homogeneous + loam_physics::PhysicsSpace + Copy,
+    {
+        self.body = Some(Box::new(body));
+        self
+    }
+
     pub fn row<T: Send + 'static>(mut self, row: T) -> Self
     where
         A: HasStore<T>,
@@ -368,7 +397,6 @@ pub struct Dispatch<'a, A> {
     pub domains: &'a mut Domains,
     pub views: &'a mut Views,
     entities: &'a mut Entities,
-    bridges: &'a mut Relation<Bridge>,
     assets: &'a mut Assets,
 }
 
@@ -378,7 +406,6 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         domains: &'a mut Domains,
         views: &'a mut Views,
         entities: &'a mut Entities,
-        bridges: &'a mut Relation<Bridge>,
         assets: &'a mut Assets,
     ) -> Self {
         Self {
@@ -386,7 +413,6 @@ impl<'a, A: Stores> Dispatch<'a, A> {
             domains,
             views,
             entities,
-            bridges,
             assets,
         }
     }
@@ -395,24 +421,17 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         self.assets.prepare(geometry)
     }
 
-    pub fn prepared(&self, id: PreparedId) -> Option<&PreparedGeometry> {
-        self.assets.prepared(id)
-    }
-
     pub fn add_palette(&mut self, colors: Vec<[f32; 4]>) -> PaletteId {
         self.assets.add_palette(colors)
-    }
-
-    pub fn palette(&self, id: PaletteId) -> Option<&[[f32; 4]]> {
-        self.assets.palette(id)
     }
 
     pub fn add_material(&mut self, material: Material) -> MaterialId {
         self.assets.add_material(material)
     }
 
-    pub fn material(&self, id: MaterialId) -> Option<&Material> {
-        self.assets.material(id)
+    #[cfg(feature = "physics")]
+    pub(crate) fn prepared(&self, id: PreparedId) -> Option<&PreparedGeometry> {
+        self.assets.prepared(id)
     }
 
     pub fn spawn(&mut self, bundle: SpawnBundle<A>) -> Result<Entity, Rejection> {
@@ -481,10 +500,53 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         Ok(())
     }
 
+    /// Spawns an eye entity at `eye` and adds a view through it into the root image.
+    pub fn add_view<S: DomainSpace>(
+        &mut self,
+        domain: DomainHandle<S>,
+        eye: Pose<S>,
+        mapping: impl ViewMapping<S>,
+    ) -> Result<ViewId, Rejection> {
+        self.add_eye_view(domain, eye, mapping, true)
+    }
+
+    /// Like `add_view` with whole edges off, so the view shows only what the mapping cuts.
+    pub fn add_section<S: DomainSpace>(
+        &mut self,
+        domain: DomainHandle<S>,
+        eye: Pose<S>,
+        mapping: impl ViewMapping<S>,
+    ) -> Result<ViewId, Rejection> {
+        self.add_eye_view(domain, eye, mapping, false)
+    }
+
+    fn add_eye_view<S: DomainSpace>(
+        &mut self,
+        domain: DomainHandle<S>,
+        eye: Pose<S>,
+        mapping: impl ViewMapping<S>,
+        edges: bool,
+    ) -> Result<ViewId, Rejection> {
+        let eye = self.spawn(SpawnBundle::new().at(domain, eye))?;
+        let root = self.views.root_id();
+        let mut spec = ViewSpec::new(root, eye, mapping);
+        spec.edges = edges;
+        let view = self.domains.typed(domain)?.add_view(spec)?;
+        Ok(view)
+    }
+
     fn attach_bundle(&mut self, entity: Entity, bundle: SpawnBundle<A>) -> Result<(), Rejection> {
-        if let Some(placement) = &bundle.placement {
-            placement.place(self.domains, entity, bundle.instance)?;
+        let placed = match &bundle.placement {
+            Some(placement) => Some(placement.place(self.domains, entity, bundle.instance)?),
+            None => None,
+        };
+        #[cfg(feature = "physics")]
+        if let Some(body) = bundle.body {
+            let domain = placed.ok_or(Rejection::BodyUnplaced)?;
+            body.spawn(self.domains, domain, entity)?;
         }
+        #[cfg(not(feature = "physics"))]
+        let _ = placed;
         for row in bundle.rows {
             row.attach(self.app, entity)?;
         }
@@ -495,17 +557,6 @@ impl<'a, A: Stores> Dispatch<'a, A> {
         self.app.release(entity, Owner::new());
         for domain in self.domains.iter_mut() {
             domain.release(entity);
-        }
-        while let Some(id) = self
-            .bridges
-            .outgoing(entity)
-            .next()
-            .or_else(|| self.bridges.incoming(entity).next())
-        {
-            let Ok(link) = self.bridges.unlink(id) else {
-                break;
-            };
-            self.views.unplace(link.data.image);
         }
     }
 
@@ -543,9 +594,7 @@ impl<'a, A: Stores> Dispatch<'a, A> {
                     .apply(&command)
             }
             Command::App(mut command) => command.apply(self),
-            Command::Reset => Err(Rejection::Unsupported(
-                "reset applies at a session boundary",
-            )),
+            Command::Reset | Command::TogglePause => Err(Rejection::BoundaryCommand),
         }
     }
 

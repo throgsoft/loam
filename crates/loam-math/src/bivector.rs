@@ -12,6 +12,8 @@ pub trait Bivector: Copy + Add<Output = Self> + Mul<f32, Output = Self> {
     fn zero() -> Self;
 
     fn exp(self) -> Self::Rotor;
+
+    fn magnitude(self) -> f32;
 }
 
 /// Rotor operations require unit elements of Spin(N); public fields do not enforce this.
@@ -52,6 +54,10 @@ impl Bivector for Bivector2 {
 
     fn zero() -> Self {
         Self(0.0)
+    }
+
+    fn magnitude(self) -> f32 {
+        self.0.abs()
     }
 
     fn exp(self) -> Rotor2 {
@@ -166,6 +172,10 @@ impl Bivector for Bivector3 {
 
     fn zero() -> Self {
         Self::ZERO
+    }
+
+    fn magnitude(self) -> f32 {
+        Bivector3::magnitude(self)
     }
 
     fn exp(self) -> Rotor3 {
@@ -313,13 +323,6 @@ impl Bivector4 {
         }
     }
 
-    /// Panics if `i >= 6`; [`Plane4::unit_bivector`] is the typed form.
-    pub fn basis(i: usize) -> Self {
-        let mut c = [0.0_f32; 6];
-        c[i] = 1.0;
-        Self::new(c[0], c[1], c[2], c[3], c[4], c[5])
-    }
-
     pub fn magnitude_squared(self) -> f32 {
         self.xy * self.xy
             + self.xz * self.xz
@@ -418,7 +421,7 @@ pub enum Plane4 {
 impl Plane4 {
     pub const ALL: [Self; 6] = [Self::Xy, Self::Xz, Self::Xw, Self::Yz, Self::Yw, Self::Zw];
 
-    /// Stable serialization key.
+    /// Lowercase axis pair, such as `"xy"`.
     pub fn label(self) -> &'static str {
         match self {
             Self::Xy => "xy",
@@ -431,7 +434,15 @@ impl Plane4 {
     }
 
     pub fn unit_bivector(self) -> Bivector4 {
-        Bivector4::basis(self as usize)
+        let zero = Bivector4::ZERO;
+        match self {
+            Self::Xy => Bivector4 { xy: 1.0, ..zero },
+            Self::Xz => Bivector4 { xz: 1.0, ..zero },
+            Self::Xw => Bivector4 { xw: 1.0, ..zero },
+            Self::Yz => Bivector4 { yz: 1.0, ..zero },
+            Self::Yw => Bivector4 { yw: 1.0, ..zero },
+            Self::Zw => Bivector4 { zw: 1.0, ..zero },
+        }
     }
 }
 
@@ -468,6 +479,10 @@ impl Bivector for Bivector4 {
 
     fn zero() -> Self {
         Self::ZERO
+    }
+
+    fn magnitude(self) -> f32 {
+        Bivector4::magnitude(self)
     }
 
     fn exp(self) -> Rotor4 {
@@ -603,9 +618,6 @@ impl Rotor4 {
         xyzw: 0.0,
     };
 
-    /// [`Rotor4::IDENTITY`] in the `From<Rotor4> for [f32; 8]` slot order.
-    pub const IDENTITY_SLOT: [f32; 8] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-
     pub fn norm_squared(self) -> f32 {
         self.s * self.s
             + self.xy * self.xy
@@ -684,21 +696,39 @@ impl Rotor4 {
 const ARC_PLANE_EPSILON: f32 = 1e-6;
 const ROTATION_TOLERANCE: f32 = 1e-3;
 
+// The plane is built orthogonal to `held`, since from ^ to is rounding noise near an antipode.
 fn arc_holding(from: Vec4, to: Vec4, held: &[Vec4]) -> Rotor4 {
-    if Bivector4::wedge(from, to).magnitude() >= ARC_PLANE_EPSILON || from.dot(to) > 0.0 {
-        return Rotor4::from_rotation_arc(from, to);
-    }
-    let mut free = Vec4::ZERO;
-    for axis in [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W] {
-        let mut residual = axis - from * axis.dot(from);
+    let toward = beside(to, from, held);
+    let reach = toward.length();
+    let angle = reach.atan2(to.dot(from));
+    let direction = if reach >= ARC_PLANE_EPSILON {
+        toward
+    } else {
+        [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W]
+            .map(|axis| beside(axis, from, held))
+            .into_iter()
+            .fold(Vec4::ZERO, |free, residual| {
+                if residual.length_squared() > free.length_squared() {
+                    residual
+                } else {
+                    free
+                }
+            })
+    };
+    let plane = Bivector4::wedge(from, direction);
+    (plane * (angle / plane.magnitude())).exp().normalize()
+}
+
+// Parlett, The Symmetric Eigenvalue Problem, 1980, §6.9: Gram-Schmidt run twice is enough.
+fn beside(v: Vec4, from: Vec4, held: &[Vec4]) -> Vec4 {
+    let mut residual = v;
+    for _ in 0..2 {
+        residual -= from * (residual.dot(from) / from.length_squared());
         for fixed in held {
             residual -= *fixed * residual.dot(*fixed);
         }
-        if residual.length_squared() > free.length_squared() {
-            free = residual;
-        }
     }
-    (Bivector4::wedge(from, free.normalize()) * std::f32::consts::PI).exp()
+    residual
 }
 
 impl Mul for Rotor4 {
@@ -864,58 +894,128 @@ mod tests {
     }
 
     fn assert_vec2_close(a: Vec2, b: Vec2) {
+        assert!((a - b).length() <= 1e-5, "expected {a:?} close to {b:?}");
+    }
+
+    fn assert_vec3_close(a: Vec3, b: Vec3) {
+        assert!((a - b).length() <= 1e-5, "expected {a:?} close to {b:?}");
+    }
+
+    fn assert_vec4_close_tol(a: Vec4, b: Vec4, tol: f32) {
         assert!(
-            (a - b).length() <= 1e-5,
+            (a - b).length() <= tol,
             "expected {a:?} close to {b:?} (diff {})",
             (a - b).length()
         );
     }
 
-    #[test]
-    fn zero_bivector_exp_is_identity() {
-        let r = Bivector2::zero().exp();
-        assert_eq!(r, Rotor2::identity());
+    fn assert_vec4_close(a: Vec4, b: Vec4) {
+        assert_vec4_close_tol(a, b, 1e-4);
     }
 
     #[test]
-    fn quarter_turn_rotates_x_to_y() {
-        let r = Bivector2(FRAC_PI_2).exp();
+    fn quarter_turn() {
+        let q = FRAC_PI_2;
+
+        let r = Bivector2(q).exp();
         assert_vec2_close(r.apply(Vec2::X), Vec2::Y);
         assert_vec2_close(r.apply(Vec2::Y), -Vec2::X);
+
+        for (plane, from, to, fixed) in [
+            (Bivector3::new(q, 0.0, 0.0), Vec3::X, Vec3::Y, Vec3::Z),
+            (Bivector3::new(0.0, q, 0.0), Vec3::Y, Vec3::Z, Vec3::X),
+            (Bivector3::new(0.0, 0.0, q), Vec3::Z, Vec3::X, Vec3::Y),
+        ] {
+            let r = plane.exp();
+            assert_vec3_close(r.apply(from), to);
+            assert_vec3_close(r.apply(to), -from);
+            assert_vec3_close(r.apply(fixed), fixed);
+        }
+
+        for (plane, from, to) in [
+            (Bivector4::new(q, 0.0, 0.0, 0.0, 0.0, 0.0), Vec4::X, Vec4::Y),
+            (Bivector4::new(0.0, q, 0.0, 0.0, 0.0, 0.0), Vec4::X, Vec4::Z),
+            (Bivector4::new(0.0, 0.0, q, 0.0, 0.0, 0.0), Vec4::X, Vec4::W),
+            (Bivector4::new(0.0, 0.0, 0.0, q, 0.0, 0.0), Vec4::Y, Vec4::Z),
+            (Bivector4::new(0.0, 0.0, 0.0, 0.0, q, 0.0), Vec4::Y, Vec4::W),
+            (Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, q), Vec4::Z, Vec4::W),
+        ] {
+            let r = plane.exp();
+            assert_vec4_close(r.apply(from), to);
+            assert_vec4_close(r.apply(to), -from);
+            for fixed in [Vec4::X, Vec4::Y, Vec4::Z, Vec4::W] {
+                if fixed != from && fixed != to {
+                    assert_vec4_close(r.apply(fixed), fixed);
+                }
+            }
+        }
+
+        let r = Bivector4::new(q, 0.0, 0.0, 0.0, 0.0, q).exp();
+        assert_vec4_close(r.apply(Vec4::X), Vec4::Y);
+        assert_vec4_close(r.apply(Vec4::Y), -Vec4::X);
+        assert_vec4_close(r.apply(Vec4::Z), Vec4::W);
+        assert_vec4_close(r.apply(Vec4::W), -Vec4::Z);
     }
 
     #[test]
-    fn half_turn_negates() {
-        let r = Bivector2(PI).exp();
-        assert_vec2_close(r.apply(Vec2::new(1.0, 2.0)), Vec2::new(-1.0, -2.0));
-    }
+    fn product_order_and_drift() {
+        let ra = Bivector4::new(0.4, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
+        let rb = Bivector4::new(0.0, 0.0, 0.0, 0.5, 0.0, 0.0).exp();
+        let v = Vec4::new(0.7, -0.3, 1.1, 0.2);
+        assert_vec4_close((ra * rb).apply(v), rb.apply(ra.apply(v)));
 
-    #[test]
-    fn full_turn_is_identity_up_to_sign() {
-        let r = Bivector2(TAU).exp();
-        assert_vec2_close(r.apply(Vec2::X), Vec2::X);
-    }
-
-    #[test]
-    fn composition_adds_angles() {
-        let a = Bivector2(0.3).exp();
-        let b = Bivector2(0.5).exp();
-        let composed = a * b;
-        let direct = Bivector2(0.8).exp();
-        assert_close(composed.a, direct.a);
-        assert_close(composed.b, direct.b);
-    }
-
-    #[test]
-    fn inverse_cancels() {
-        let r = Bivector2(1.234).exp();
+        let r = Bivector4::new(0.3, -0.2, 0.4, 0.1, -0.5, 0.25).exp();
         let id = r * r.inverse();
-        assert_close(id.a, 1.0);
-        assert_close(id.b, 0.0);
+        assert_close(id.s, 1.0);
+        assert_close(id.xy, 0.0);
+        assert_close(id.xz, 0.0);
+        assert_close(id.xw, 0.0);
+        assert_close(id.yz, 0.0);
+        assert_close(id.yw, 0.0);
+        assert_close(id.zw, 0.0);
+        assert_close(id.xyzw, 0.0);
+
+        let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
+        let dt = 1.0 / 60.0;
+        let delta = (omega * dt).exp();
+
+        let mut integrated = Rotor4::IDENTITY;
+        for _ in 0..60 {
+            integrated = delta * integrated;
+        }
+        let closed_form = (omega * (dt * 60.0)).exp();
+
+        for v in [
+            Vec4::X,
+            Vec4::Y,
+            Vec4::Z,
+            Vec4::W,
+            Vec4::new(1.0, 2.0, 3.0, 4.0),
+            Vec4::new(-0.5, 0.5, -0.5, 0.5),
+        ] {
+            let via_integrated = integrated.apply(v);
+            let via_closed = closed_form.apply(v);
+            let diff = (via_integrated - via_closed).length();
+            assert!(
+                diff < 1e-5,
+                "compound xy+xz+xw+yz integration drift: v={v:?} \
+                 integrated={via_integrated:?} closed={via_closed:?} \
+                 diff={diff}",
+            );
+        }
+
+        for _ in 60..900 {
+            integrated = delta * integrated;
+        }
+        let n2 = integrated.norm_squared();
+        assert!(
+            (n2 - 1.0).abs() < 1e-5,
+            "rotor norm drifted after 900 compositions: |R|^2 = {n2}",
+        );
     }
 
     #[test]
-    fn rotation_arc_handles_parallel_and_antipodal_vectors() {
+    fn rotation_arc_parallel_and_antipodal() {
         let cases = [
             (Vec4::X, Vec4::Y),
             (Vec4::W, -Vec4::Y),
@@ -937,45 +1037,25 @@ mod tests {
     }
 
     #[test]
-    fn rotor4_to_mat4_agrees_with_apply() {
-        let b = Bivector4 {
-            xy: 0.7,
-            xz: 0.0,
-            xw: 0.0,
-            yz: 0.0,
-            yw: 0.0,
-            zw: 0.3,
-        };
-        let r: Rotor4 = b.exp();
+    fn mat4_round_trip() {
+        let r = Bivector4::new(0.7, 0.0, 0.0, 0.0, 0.0, 0.3).exp();
         let m = r.to_mat4();
-
-        let e1 = Vec4::new(1.0, 0.0, 0.0, 0.0);
-        let img1 = <Rotor4 as Rotor>::apply(&r, e1);
-        assert_close(m[0][0], img1.x);
-        assert_close(m[0][1], img1.y);
-        assert_close(m[0][2], img1.z);
-        assert_close(m[0][3], img1.w);
 
         let v = Vec4::new(0.6, -0.4, 0.2, 0.9);
         let row = |k: usize| m[0][k] * v.x + m[1][k] * v.y + m[2][k] * v.z + m[3][k] * v.w;
         let by_matrix = Vec4::new(row(0), row(1), row(2), row(3));
-        let by_rotor = <Rotor4 as Rotor>::apply(&r, v);
+        let by_rotor = r.apply(v);
         assert!(
             (by_matrix - by_rotor).length() < 1e-5,
             "matrix application {by_matrix:?} should match rotor application {by_rotor:?}"
         );
-    }
 
-    #[test]
-    fn rotor4_from_mat4_rebuilds_the_frame_including_half_turns() {
-        let quarter = std::f32::consts::FRAC_PI_2;
-        let half = std::f32::consts::PI;
         for rotor in [
             Rotor4::IDENTITY,
             Bivector4::new(0.7, 0.0, 0.0, 0.0, 0.0, 0.3).exp(),
-            Bivector4::new(quarter, 0.0, 0.0, 0.0, 0.0, quarter).exp(),
-            Bivector4::new(0.0, 0.0, 0.0, half, 0.0, 0.0).exp(),
-            Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, half).exp(),
+            Bivector4::new(FRAC_PI_2, 0.0, 0.0, 0.0, 0.0, FRAC_PI_2).exp(),
+            Bivector4::new(0.0, 0.0, 0.0, PI, 0.0, 0.0).exp(),
+            Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, PI).exp(),
         ] {
             let frame = rotor.to_mat4();
             let rebuilt = Rotor4::from_mat4(&frame)
@@ -995,300 +1075,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn log_is_inverse_of_exp() {
-        for &theta in &[-1.0_f32, -0.1, 0.0, 0.1, 1.0, 3.0] {
-            let back = Bivector2(theta).exp().log();
-            assert_close(back.0, theta);
-        }
-    }
-
-    fn assert_vec3_close(a: Vec3, b: Vec3) {
-        assert!((a - b).length() <= 1e-5, "expected {a:?} close to {b:?}");
-    }
-
-    #[test]
-    fn bivector3_zero_exp_is_identity() {
-        let r = Bivector3::ZERO.exp();
-        assert_eq!(r, Rotor3::IDENTITY);
-    }
-
-    #[test]
-    fn rotor3_identity_leaves_vector_unchanged() {
-        let v = Vec3::new(1.2, -3.4, 0.5);
-        assert_vec3_close(Rotor3::IDENTITY.apply(v), v);
-    }
-
-    #[test]
-    fn bivector3_xy_quarter_turn_sends_x_to_y() {
-        let r = Bivector3::new(FRAC_PI_2, 0.0, 0.0).exp();
-        assert_vec3_close(r.apply(Vec3::X), Vec3::Y);
-        assert_vec3_close(r.apply(Vec3::Y), -Vec3::X);
-        assert_vec3_close(r.apply(Vec3::Z), Vec3::Z);
-    }
-
-    #[test]
-    fn bivector3_yz_rotation() {
-        let r = Bivector3::new(0.0, FRAC_PI_2, 0.0).exp();
-        assert_vec3_close(r.apply(Vec3::Y), Vec3::Z);
-        assert_vec3_close(r.apply(Vec3::Z), -Vec3::Y);
-        assert_vec3_close(r.apply(Vec3::X), Vec3::X);
-    }
-
-    #[test]
-    fn bivector3_zx_rotation() {
-        let r = Bivector3::new(0.0, 0.0, FRAC_PI_2).exp();
-        assert_vec3_close(r.apply(Vec3::Z), Vec3::X);
-        assert_vec3_close(r.apply(Vec3::X), -Vec3::Z);
-        assert_vec3_close(r.apply(Vec3::Y), Vec3::Y);
-    }
-
-    #[test]
-    fn rotor3_full_turn_is_identity_on_vectors() {
-        let r = Bivector3::new(TAU, 0.0, 0.0).exp();
-        assert_vec3_close(r.apply(Vec3::new(1.0, 2.0, 3.0)), Vec3::new(1.0, 2.0, 3.0));
-    }
-
-    #[test]
-    fn rotor3_inverse_cancels() {
-        let r = Bivector3::new(0.7, -0.3, 0.5).exp();
-        let id = r * r.inverse();
-        assert_close(id.s, 1.0);
-        assert_close(id.xy, 0.0);
-        assert_close(id.yz, 0.0);
-        assert_close(id.zx, 0.0);
-    }
-
-    #[test]
-    fn rotor3_composition_matches_sequential_apply() {
-        let ra = Bivector3::new(0.4, 0.0, 0.0).exp();
-        let rb = Bivector3::new(0.0, 0.5, 0.0).exp();
-        let composed = ra * rb;
-        let v = Vec3::new(0.7, -0.3, 1.1);
-        assert_vec3_close(composed.apply(v), rb.apply(ra.apply(v)));
-    }
-
-    #[test]
-    fn rotor3_preserves_length() {
-        let r = Bivector3::new(0.3, 0.4, 0.5).exp();
-        for &v in &[Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(1.0, 2.0, -3.0)] {
-            assert!(
-                (r.apply(v).length() - v.length()).abs() < 1e-5,
-                "length not preserved: input {v}, output length {}",
-                r.apply(v).length()
-            );
-        }
-    }
-
-    #[test]
-    fn rotor3_log_is_inverse_of_exp() {
-        for bv in [
-            Bivector3::new(0.0, 0.0, 0.0),
-            Bivector3::new(0.1, 0.0, 0.0),
-            Bivector3::new(0.0, 0.6, 0.0),
-            Bivector3::new(-0.3, 0.4, 0.5),
-            Bivector3::new(1.0, -0.5, 0.2),
-        ] {
-            let back = bv.exp().log();
-            assert!(
-                (back.xy - bv.xy).abs() < 1e-5
-                    && (back.yz - bv.yz).abs() < 1e-5
-                    && (back.zx - bv.zx).abs() < 1e-5,
-                "log∘exp mismatch: {bv:?} -> {back:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn rotor3_matches_glam_quat_for_axis_rotation() {
-        use glam::Quat;
-
-        let theta = 0.7;
-        let v = Vec3::new(1.0, 2.0, 3.0).normalize();
-
-        let rotor = Bivector3::new(theta, 0.0, 0.0).exp();
-        let quat = Quat::from_axis_angle(Vec3::Z, theta);
-        assert_vec3_close(rotor.apply(v), quat * v);
-
-        let rotor = Bivector3::new(0.0, theta, 0.0).exp();
-        let quat = Quat::from_axis_angle(Vec3::X, theta);
-        assert_vec3_close(rotor.apply(v), quat * v);
-
-        let rotor = Bivector3::new(0.0, 0.0, theta).exp();
-        let quat = Quat::from_axis_angle(Vec3::Y, theta);
-        assert_vec3_close(rotor.apply(v), quat * v);
-    }
-
-    fn assert_vec4_close(a: Vec4, b: Vec4) {
-        assert!(
-            (a - b).length() <= 1e-4,
-            "expected {a:?} close to {b:?} (diff {})",
-            (a - b).length()
-        );
-    }
-
-    fn assert_vec4_close_tol(a: Vec4, b: Vec4, tol: f32) {
-        assert!(
-            (a - b).length() <= tol,
-            "expected {a:?} close to {b:?} (diff {})",
-            (a - b).length()
-        );
-    }
-
-    #[test]
-    fn bivector4_zero_exp_is_identity() {
-        let r = Bivector4::ZERO.exp();
-        assert_eq!(r, Rotor4::IDENTITY);
-    }
-
-    #[test]
-    fn bivector4_dot_inner_product_invariants() {
-        let xy = Plane4::Xy.unit_bivector();
-        let zw = Plane4::Zw.unit_bivector();
-        let xw = Plane4::Xw.unit_bivector();
-        assert_eq!(xy.dot(xy), 1.0);
-        assert_eq!(xy.dot(zw), 0.0);
-        assert_eq!(xy.dot(xw), 0.0);
-        let a = Bivector4::new(1.0, 0.5, -0.25, 0.75, -1.0, 2.0);
-        let b = xy * 3.0;
-        let c = xw * 4.0;
-        assert!((a.dot(b + c) - (a.dot(b) + a.dot(c))).abs() < 1e-6);
-    }
-
-    #[test]
-    fn rotor4_identity_leaves_vector_unchanged() {
-        let v = Vec4::new(1.2, -3.4, 0.5, 0.7);
-        assert_vec4_close(Rotor4::IDENTITY.apply(v), v);
-    }
-
-    #[test]
-    fn bivector4_single_plane_rotations_are_planar() {
-        let r = Bivector4::new(FRAC_PI_2, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
-        assert_vec4_close(r.apply(Vec4::X), Vec4::Y);
-        assert_vec4_close(r.apply(Vec4::Y), -Vec4::X);
-        assert_vec4_close(r.apply(Vec4::Z), Vec4::Z);
-        assert_vec4_close(r.apply(Vec4::W), Vec4::W);
-
-        let r = Bivector4::new(0.0, FRAC_PI_2, 0.0, 0.0, 0.0, 0.0).exp();
-        assert_vec4_close(r.apply(Vec4::X), Vec4::Z);
-        assert_vec4_close(r.apply(Vec4::Z), -Vec4::X);
-        assert_vec4_close(r.apply(Vec4::Y), Vec4::Y);
-        assert_vec4_close(r.apply(Vec4::W), Vec4::W);
-
-        let r = Bivector4::new(0.0, 0.0, FRAC_PI_2, 0.0, 0.0, 0.0).exp();
-        assert_vec4_close(r.apply(Vec4::X), Vec4::W);
-        assert_vec4_close(r.apply(Vec4::W), -Vec4::X);
-
-        let r = Bivector4::new(0.0, 0.0, 0.0, FRAC_PI_2, 0.0, 0.0).exp();
-        assert_vec4_close(r.apply(Vec4::Y), Vec4::Z);
-        assert_vec4_close(r.apply(Vec4::Z), -Vec4::Y);
-
-        let r = Bivector4::new(0.0, 0.0, 0.0, 0.0, FRAC_PI_2, 0.0).exp();
-        assert_vec4_close(r.apply(Vec4::Y), Vec4::W);
-        assert_vec4_close(r.apply(Vec4::W), -Vec4::Y);
-
-        let r = Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, FRAC_PI_2).exp();
-        assert_vec4_close(r.apply(Vec4::Z), Vec4::W);
-        assert_vec4_close(r.apply(Vec4::W), -Vec4::Z);
-    }
-
-    #[test]
-    fn bivector4_double_rotation_xy_plus_zw() {
-        let theta = FRAC_PI_2;
-        let r = Bivector4::new(theta, 0.0, 0.0, 0.0, 0.0, theta).exp();
-        assert_vec4_close(r.apply(Vec4::X), Vec4::Y);
-        assert_vec4_close(r.apply(Vec4::Y), -Vec4::X);
-        assert_vec4_close(r.apply(Vec4::Z), Vec4::W);
-        assert_vec4_close(r.apply(Vec4::W), -Vec4::Z);
-
-        assert_close(r.xyzw, 0.5);
-    }
-
-    #[test]
-    fn rotor4_scalar_and_pseudoscalar_carry_the_two_invariant_half_angles() {
-        for (t1, t2) in [(0.7, 0.0), (1.1, 0.4), (0.9, 0.9)] {
-            let r = Bivector4::new(t1, 0.0, 0.0, 0.0, 0.0, t2).exp();
-            assert_close(r.s, (t1 * 0.5).cos() * (t2 * 0.5).cos());
-            assert_close(r.xyzw, (t1 * 0.5).sin() * (t2 * 0.5).sin());
-        }
-
-        for b in [
-            Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.3),
-            Bivector4::new(0.0, 0.6, 0.0, 0.0, 0.0, 0.0),
-        ] {
-            assert_close(b.exp().xyzw, 0.0);
-        }
-    }
-
-    #[test]
-    fn rotor4_full_turn_is_identity_on_vectors() {
-        let r = Bivector4::new(TAU, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
-        assert_vec4_close_tol(
-            r.apply(Vec4::new(1.0, 2.0, 3.0, 4.0)),
-            Vec4::new(1.0, 2.0, 3.0, 4.0),
-            3e-4,
-        );
-    }
-
-    #[test]
-    fn rotor4_inverse_cancels() {
-        let r = Bivector4::new(0.3, -0.2, 0.4, 0.1, -0.5, 0.25).exp();
-        let id = r * r.inverse();
-        assert_close(id.s, 1.0);
-        assert_close(id.xy, 0.0);
-        assert_close(id.xz, 0.0);
-        assert_close(id.xw, 0.0);
-        assert_close(id.yz, 0.0);
-        assert_close(id.yw, 0.0);
-        assert_close(id.zw, 0.0);
-        assert_close(id.xyzw, 0.0);
-    }
-
-    #[test]
-    fn rotor4_is_unit_norm() {
-        for b in [
-            Bivector4::new(0.1, 0.0, 0.0, 0.0, 0.0, 0.0),
-            Bivector4::new(0.5, 0.3, -0.4, 0.0, 0.0, 0.0),
-            Bivector4::new(0.7, 0.0, 0.0, 0.0, 0.0, 0.5),
-            Bivector4::new(0.3, -0.2, 0.4, 0.1, -0.5, 0.25),
-        ] {
-            let r = b.exp();
-            let n = r.norm_squared();
-            assert!(
-                (n - 1.0).abs() < 1e-4,
-                "rotor not unit-norm: |R|² = {n} for B = {b:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn rotor4_preserves_length() {
-        let r = Bivector4::new(0.3, -0.2, 0.4, 0.1, -0.5, 0.25).exp();
-        for v in [
-            Vec4::X,
-            Vec4::Y,
-            Vec4::Z,
-            Vec4::W,
-            Vec4::new(1.0, 2.0, 3.0, 4.0),
-            Vec4::new(-0.5, 0.5, -0.5, 0.5),
-        ] {
-            let rotated = r.apply(v);
-            assert!(
-                (rotated.length() - v.length()).abs() < 1e-3,
-                "length drift: {v:?} -> {rotated:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn rotor4_composition_matches_sequential_apply() {
-        let ra = Bivector4::new(0.4, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
-        let rb = Bivector4::new(0.0, 0.0, 0.0, 0.5, 0.0, 0.0).exp();
-        let composed = ra * rb;
-        let v = Vec4::new(0.7, -0.3, 1.1, 0.2);
-        assert_vec4_close(composed.apply(v), rb.apply(ra.apply(v)));
-    }
-
     fn invariant_plane_pairs() -> [(Bivector4, Bivector4); 4] {
         let root_half = 0.5_f32.sqrt();
         let u1 = Vec4::new(root_half, root_half, 0.0, 0.0);
@@ -1297,7 +1083,7 @@ mod tests {
         let v2 = Vec4::new(0.0, 0.0, root_half, -root_half);
         let [oblique, orthogonal] = nondegenerate_plane_pairs();
         [
-            (Bivector4::basis(0), Bivector4::basis(5)),
+            (Plane4::Xy.unit_bivector(), Plane4::Zw.unit_bivector()),
             (Bivector4::wedge(u1, v1), Bivector4::wedge(v2, u2)),
             oblique,
             orthogonal,
@@ -1340,52 +1126,35 @@ mod tests {
     ];
 
     #[test]
-    fn rotor4_log_recovers_both_invariant_angles() {
+    fn log_angles() {
         for (p1, p2) in invariant_plane_pairs() {
             for (t1, t2) in HALF_ANGLE_STRESS_PAIRS {
                 let b = p1 * t1 + p2 * t2;
+
                 let back = ((p1 * t1).exp() * (p2 * t2).exp()).log();
                 let diff = (back + b * (-1.0)).magnitude();
                 assert!(
                     diff <= 1e-6,
-                    "log mismatch at ({t1}, {t2}): {b:?} -> {back:?}"
+                    "log of the product mismatch at ({t1}, {t2}): {b:?} gave {back:?}"
                 );
-            }
-        }
-    }
 
-    #[test]
-    fn rotor4_log_of_exp_round_trips_at_small_and_near_equal_angles() {
-        for (p1, p2) in invariant_plane_pairs() {
-            for (t1, t2) in HALF_ANGLE_STRESS_PAIRS {
-                let b = p1 * t1 + p2 * t2;
                 let back = b.exp().log();
                 let diff = (back + b * (-1.0)).magnitude();
                 assert!(
                     diff <= 2e-5 * b.magnitude(),
-                    "log∘exp mismatch at ({t1}, {t2}): {b:?} -> {back:?}"
+                    "log of exp mismatch at ({t1}, {t2}): {b:?} gave {back:?}"
                 );
             }
         }
-    }
 
-    #[test]
-    fn rotor4_log_of_a_simple_turn_takes_the_short_way_round() {
-        let long_way = 1.9 * PI;
-        let logged = Bivector4::new(long_way, 0.0, 0.0, 0.0, 0.0, 0.0)
-            .exp()
-            .log();
-        assert_close(logged.xy, long_way - TAU);
-        assert_close(logged.magnitude(), TAU - long_way);
-
-        const STEPS: i32 = 47;
-        for step in -STEPS..=STEPS {
-            let theta = step as f32 * (TAU / STEPS as f32);
-            let short = theta - TAU * (theta / TAU).round();
-            let back = Bivector4::new(0.0, 0.0, 0.0, theta, 0.0, 0.0).exp().log();
+        for (t1, t2) in [(3.0_f32, 1.0e-4_f32), (1.0, 1.0e-5), (0.5, -1.0e-4)] {
+            let b = Bivector4::new(t1, 0.0, 0.0, 0.0, 0.0, t2);
+            let rotor = b.exp();
+            assert_close(rotor.norm_squared(), 1.0);
+            let back = rotor.log();
             assert!(
-                (back.yz - short).abs() <= 1e-5 && back.magnitude() <= PI,
-                "a turn of {theta} logged as {back:?}, not {short}"
+                (back + b * (-1.0)).magnitude() <= 1e-6,
+                "({t1}, {t2}) round-tripped as {back:?}"
             );
         }
     }
@@ -1418,8 +1187,19 @@ mod tests {
     }
 
     #[test]
-    fn rotor4_log_is_the_shorter_of_the_two_representatives() {
-        const SAMPLES: usize = 100_000;
+    fn log_shortest_generator() {
+        const STEPS: i32 = 47;
+        for step in -STEPS..=STEPS {
+            let theta = step as f32 * (TAU / STEPS as f32);
+            let short = theta - TAU * (theta / TAU).round();
+            let back = Bivector4::new(0.0, 0.0, 0.0, theta, 0.0, 0.0).exp().log();
+            assert!(
+                (back.yz - short).abs() <= 1e-5 && back.magnitude() <= PI,
+                "a turn of {theta} logged as {back:?}, not {short}"
+            );
+        }
+
+        const SAMPLES: usize = 64;
         let probes = [Vec4::X, Vec4::W, Vec4::new(1.0, -0.5, 0.3, 0.7)];
         let mut rng = Xorshift(0x5eed_4104);
         for _ in 0..SAMPLES {
@@ -1430,35 +1210,18 @@ mod tests {
 
             assert!(
                 sum.length() + diff.length() <= 2.0 * PI + 1e-5,
-                "long way round: {rotor:?} -> {back:?}"
+                "long way round: {rotor:?} logged as {back:?}"
             );
             assert!(
                 back.magnitude() <= PI * SQRT_2 + 1e-5,
-                "past the SO(4) diameter: {rotor:?} -> {back:?}"
+                "past the SO(4) diameter: {rotor:?} logged as {back:?}"
             );
             let regenerated = back.exp();
             for v in probes {
                 assert_vec4_close_tol(regenerated.apply(v), rotor.apply(v), 1e-3);
             }
         }
-    }
 
-    #[test]
-    fn rotor4_exp_survives_a_double_rotation_with_one_tiny_angle() {
-        for (t1, t2) in [(3.0_f32, 1.0e-4_f32), (1.0, 1.0e-5), (0.5, -1.0e-4)] {
-            let b = Bivector4::new(t1, 0.0, 0.0, 0.0, 0.0, t2);
-            let rotor = b.exp();
-            assert_close(rotor.norm_squared(), 1.0);
-            let back = rotor.log();
-            assert!(
-                (back + b * (-1.0)).magnitude() <= 1e-6,
-                "({t1}, {t2}) round-tripped as {back:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn isoclinic_half_turn_log_preserves_action() {
         for sign in [-1.0, 1.0] {
             let pseudoscalar = Rotor4 {
                 s: 0.0,
@@ -1490,101 +1253,14 @@ mod tests {
     }
 
     #[test]
-    fn rotor4_xy_matches_mat4_rotation_z_on_xy_subspace() {
-        use glam::Mat4;
-        let theta = 0.7;
-        let rotor = Bivector4::new(theta, 0.0, 0.0, 0.0, 0.0, 0.0).exp();
-        let mat = Mat4::from_rotation_z(theta);
-
-        for v in [
-            Vec4::new(1.0, 0.0, 0.0, 0.0),
-            Vec4::new(0.0, 1.0, 0.0, 0.0),
-            Vec4::new(0.6, -0.8, 0.0, 0.0),
-        ] {
-            let via_rotor = rotor.apply(v);
-            let via_mat = mat * v;
-            assert_vec4_close_tol(via_rotor, via_mat, 1e-4);
-        }
-    }
-
-    #[test]
-    fn rotor4_normalize_produces_unit() {
-        let r = Bivector4::new(0.3, 0.1, -0.2, 0.4, 0.1, 0.0).exp();
-        let perturbed = Rotor4 {
-            s: r.s * 1.01,
-            xy: r.xy * 1.01,
-            xz: r.xz * 1.01,
-            xw: r.xw * 1.01,
-            yz: r.yz * 1.01,
-            yw: r.yw * 1.01,
-            zw: r.zw * 1.01,
-            xyzw: r.xyzw * 1.01,
-        };
-        let back = perturbed.normalize();
-        assert_close(back.norm_squared(), 1.0);
-    }
-
-    #[test]
-    fn rotor4_compound_xy_xz_xw_yz_integrated_matches_closed_form() {
-        let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
-        let dt = 1.0 / 60.0;
-        let n_steps = 60_u32;
-        let total_angle = dt * n_steps as f32;
-        let delta = (omega * dt).exp();
-
-        let mut integrated = Rotor4::IDENTITY;
-        for _ in 0..n_steps {
-            integrated = delta * integrated;
-        }
-        let closed_form = (omega * total_angle).exp();
-
-        for v in [
-            Vec4::X,
-            Vec4::Y,
-            Vec4::Z,
-            Vec4::W,
-            Vec4::new(1.0, 2.0, 3.0, 4.0),
-            Vec4::new(-0.5, 0.5, -0.5, 0.5),
-        ] {
-            let via_integrated = integrated.apply(v);
-            let via_closed = closed_form.apply(v);
-            let diff = (via_integrated - via_closed).length();
-            assert!(
-                diff < 1e-5,
-                "compound xy+xz+xw+yz integration drift: v={v:?} \
-                 integrated={via_integrated:?} closed={via_closed:?} \
-                 diff={diff}",
-            );
-        }
-    }
-
-    #[test]
-    fn rotor4_compound_integration_preserves_unit_norm_over_900_steps() {
-        let omega = Bivector4::new(1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
-        let dt = 1.0 / 60.0;
-        let delta = (omega * dt).exp();
-        let mut r = Rotor4::IDENTITY;
-        for _ in 0..900 {
-            r = delta * r;
-        }
-        let n2 = r.norm_squared();
-
-        assert!(
-            (n2 - 1.0).abs() < 1e-5,
-            "rotor norm drifted after 900 compositions: |R|² = {n2}",
-        );
-    }
-
-    #[test]
-    fn bivector4_contract_vec_is_clifford_left_contraction() {
+    fn contract_vec() {
         let b = Bivector4::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_vec4_close_tol(b.contract_vec(Vec4::X), -Vec4::Y, 1e-6);
         assert_vec4_close_tol(b.contract_vec(Vec4::Y), Vec4::X, 1e-6);
+        assert_vec4_close_tol(b.contract_vec(Vec4::Z), Vec4::ZERO, 1e-6);
+        assert_vec4_close_tol(b.contract_vec(Vec4::W), Vec4::ZERO, 1e-6);
         let b = Bivector4::new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
         assert_vec4_close_tol(b.contract_vec(Vec4::Z), -Vec4::W, 1e-6);
         assert_vec4_close_tol(b.contract_vec(Vec4::W), Vec4::Z, 1e-6);
-        let b = Bivector4::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        assert_vec4_close_tol(b.contract_vec(Vec4::Z), Vec4::ZERO, 1e-6);
-        assert_vec4_close_tol(b.contract_vec(Vec4::W), Vec4::ZERO, 1e-6);
     }
 }

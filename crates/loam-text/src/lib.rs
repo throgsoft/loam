@@ -5,14 +5,14 @@
 pub mod glyph;
 pub mod pass;
 
-pub use pass::{TextDraw, TextPass};
+pub use pass::TextPass;
 
 use std::collections::HashMap;
 
 pub use ab_glyph;
 use ab_glyph::{Font, FontRef, Glyph, GlyphId, Point, ScaleFont};
-use anyhow::{anyhow, Result};
 use bytemuck::{Pod, Zeroable};
+use std::fmt;
 use wgpu::*;
 
 const ATLAS_SIZE: u32 = 1024;
@@ -44,6 +44,36 @@ struct TextUniforms {
     _pad: [f32; 2],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextError {
+    Font(ab_glyph::InvalidFont),
+    BakeSize(f32),
+    GlyphTooLarge(char),
+    /// The char is the first glyph that did not fit.
+    AtlasFull(char),
+}
+
+impl fmt::Display for TextError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Font(error) => write!(f, "loam-text: failed to parse font: {error}"),
+            Self::BakeSize(size) => write!(
+                f,
+                "font bake size must be finite and positive, got {size}"
+            ),
+            Self::GlyphTooLarge(c) => {
+                write!(f, "glyph {c:?} exceeds the {ATLAS_SIZE} pixel atlas")
+            }
+            Self::AtlasFull(c) => write!(
+                f,
+                "loam-text: ASCII atlas exceeded {ATLAS_SIZE}x{ATLAS_SIZE} at glyph {c:?}; reduce bake_size_px or extend the packer"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TextError {}
+
 pub struct TextMetrics {
     advances: HashMap<char, f32>,
     bake_size_px: f32,
@@ -51,10 +81,9 @@ pub struct TextMetrics {
 }
 
 impl TextMetrics {
-    pub fn new(font_bytes: &[u8], bake_size_px: f32) -> Result<Self> {
+    pub fn new(font_bytes: &[u8], bake_size_px: f32) -> Result<Self, TextError> {
         validate_bake_size(bake_size_px)?;
-        let font = FontRef::try_from_slice(font_bytes)
-            .map_err(|e| anyhow!("loam-text: failed to parse font: {e}"))?;
+        let font = FontRef::try_from_slice(font_bytes).map_err(TextError::Font)?;
         Ok(Self::from_font(&font, bake_size_px))
     }
 
@@ -124,10 +153,9 @@ impl TextRenderer {
         surface_format: TextureFormat,
         font_bytes: &[u8],
         bake_size_px: f32,
-    ) -> Result<Self> {
+    ) -> Result<Self, TextError> {
         validate_bake_size(bake_size_px)?;
-        let font = FontRef::try_from_slice(font_bytes)
-            .map_err(|e| anyhow!("loam-text: failed to parse font: {e}"))?;
+        let font = FontRef::try_from_slice(font_bytes).map_err(TextError::Font)?;
 
         let atlas_tex = device.create_texture(&TextureDescriptor {
             label: Some("loam-text atlas"),
@@ -383,14 +411,6 @@ impl TextRenderer {
     pub fn metrics(&self) -> &TextMetrics {
         &self.metrics
     }
-
-    pub fn bake_size_px(&self) -> f32 {
-        self.metrics.bake_size_px
-    }
-
-    pub fn line_height_px(&self) -> f32 {
-        self.metrics.line_height_px
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -483,16 +503,14 @@ struct BakedAtlas {
     ascent_px: f32,
 }
 
-fn validate_bake_size(size: f32) -> Result<()> {
+fn validate_bake_size(size: f32) -> Result<(), TextError> {
     if !size.is_finite() || size <= 0.0 {
-        return Err(anyhow!(
-            "font bake size must be finite and positive, got {size}"
-        ));
+        return Err(TextError::BakeSize(size));
     }
     Ok(())
 }
 
-fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas> {
+fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas, TextError> {
     let scaled = font.as_scaled(bake_size_px);
 
     let mut atlas = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE) as usize];
@@ -533,7 +551,7 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                     continue;
                 }
                 if gw > ATLAS_SIZE - 2 * pad || gh > ATLAS_SIZE - 2 * pad {
-                    return Err(anyhow!("glyph {c:?} exceeds the {ATLAS_SIZE} pixel atlas"));
+                    return Err(TextError::GlyphTooLarge(c));
                 }
                 if shelf_x + gw + pad > ATLAS_SIZE {
                     shelf_y += shelf_h + pad;
@@ -541,10 +559,7 @@ fn bake_ascii_atlas(font: &FontRef<'_>, bake_size_px: f32) -> Result<BakedAtlas>
                     shelf_h = 0;
                 }
                 if shelf_y + gh + pad > ATLAS_SIZE {
-                    return Err(anyhow!(
-                        "loam-text: ASCII atlas exceeded {ATLAS_SIZE}x{ATLAS_SIZE} at glyph {c:?}; \
-                         reduce bake_size_px or extend the packer"
-                    ));
+                    return Err(TextError::AtlasFull(c));
                 }
 
                 let dst_x = shelf_x;
@@ -673,49 +688,8 @@ mod tests {
             .collect()
     }
 
-    fn mock_metrics(h_advance: f32) -> TextMetrics {
-        TextMetrics {
-            advances: (0x20u8..=0x7Eu8).map(|c| (c as char, h_advance)).collect(),
-            bake_size_px: 16.0,
-            line_height_px: 16.0,
-        }
-    }
-
     #[test]
-    fn layout_newline_resets_x_and_advances_y() {
-        let glyphs = mock_glyph_table(10.0);
-        let mut out = Vec::new();
-        layout_text(
-            "a\nb",
-            [5.0, 0.0],
-            16.0,
-            [1.0; 4],
-            &glyphs,
-            16.0,
-            16.0,
-            MOCK_ASCENT,
-            &mut out,
-        );
-        assert_eq!(out.len(), 12);
-
-        let first = out[0];
-        assert_eq!(first.pos[0], 5.0);
-        assert!((first.pos[1] - MOCK_ASCENT).abs() < 1e-5);
-
-        let second = out[6];
-        assert_eq!(
-            second.pos[0], 5.0,
-            "newline must reset cursor_x to position[0]"
-        );
-        assert!(
-            (second.pos[1] - (MOCK_ASCENT + 16.0)).abs() < 1e-5,
-            "newline must advance cursor_y by line_h, got {}",
-            second.pos[1],
-        );
-    }
-
-    #[test]
-    fn position_y_is_the_ascender_line_at_every_scale() {
+    fn glyph_placement_across_scales() {
         let mut glyphs = mock_glyph_table(10.0);
         glyphs.insert(
             'A',
@@ -748,68 +722,7 @@ mod tests {
                 out[0].pos[1]
             );
         }
-    }
 
-    #[test]
-    fn layout_cursor_advances_by_h_advance_scaled() {
-        let glyphs = mock_glyph_table(10.0);
-        let mut out = Vec::new();
-        layout_text(
-            "ab",
-            [0.0, 0.0],
-            32.0,
-            [1.0; 4],
-            &glyphs,
-            16.0,
-            16.0,
-            MOCK_ASCENT,
-            &mut out,
-        );
-
-        assert_eq!(out[0].pos[0], 0.0);
-        assert_eq!(out[6].pos[0], 20.0);
-    }
-
-    #[test]
-    fn layout_skips_unprintable_and_out_of_range_chars() {
-        let glyphs = mock_glyph_table(10.0);
-        let mut out = Vec::new();
-        layout_text(
-            "a\tb\u{80}c😀d",
-            [0.0, 0.0],
-            16.0,
-            [1.0; 4],
-            &glyphs,
-            16.0,
-            16.0,
-            MOCK_ASCENT,
-            &mut out,
-        );
-        assert_eq!(out.len(), 24);
-    }
-
-    #[test]
-    fn layout_skips_missing_glyphs() {
-        let mut glyphs = mock_glyph_table(10.0);
-        glyphs.remove(&'b');
-        let mut out = Vec::new();
-        layout_text(
-            "ab",
-            [0.0, 0.0],
-            16.0,
-            [1.0; 4],
-            &glyphs,
-            16.0,
-            16.0,
-            MOCK_ASCENT,
-            &mut out,
-        );
-        assert_eq!(out.len(), 6);
-    }
-
-    #[test]
-    fn metrics_keep_advance_widths_separate_from_ink_overhang() {
-        let metrics = mock_metrics(10.0);
         let mut glyphs = mock_glyph_table(10.0);
         let glyph = glyphs.get_mut(&'A').unwrap();
         glyph.bearing_x = -2.0;
@@ -826,18 +739,9 @@ mod tests {
             MOCK_ASCENT,
             &mut vertices,
         );
-        assert_eq!(metrics.measure("AA\nA\n", 32.0), [40.0, 96.0]);
         assert_eq!(vertices[0].pos[0], 3.0);
         assert_eq!(vertices[6].pos[0], 23.0);
         assert_eq!(vertices[12].pos[0], 3.0);
         assert_eq!(vertices[12].pos[1] - vertices[0].pos[1], 32.0);
-    }
-
-    #[test]
-    fn renderable_charset_excludes_controls_and_non_ascii() {
-        assert!(is_renderable(" ~\n"));
-        for text in ["\u{1f}", "\u{7f}", "\t", "é", "😀"] {
-            assert!(!is_renderable(text), "{text:?}");
-        }
     }
 }

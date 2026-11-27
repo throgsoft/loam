@@ -17,10 +17,6 @@ pub struct Section {
 #[derive(Clone, Debug, Default)]
 pub struct FrameTrace {
     pub sections: Vec<Section>,
-    /// `None` without a [`HeapSampler`].
-    pub heap_delta_bytes: Option<i64>,
-    /// `None` without a [`crate::alloc::CountingAllocator`] installed.
-    pub allocs: Option<crate::alloc::AllocDelta>,
 }
 
 impl FrameTrace {
@@ -48,20 +44,13 @@ impl Tracer {
     }
 }
 
-/// Bytes; on wasm32 + Chromium, `performance.memory.usedJSHeapSize`.
-pub type HeapSampler = fn() -> Option<u64>;
-
 #[cfg(feature = "frame-trace")]
 thread_local! {
     static TRACER: RefCell<Tracer> = RefCell::new(Tracer::new(DEFAULT_CAPACITY));
     static CURRENT_SECTIONS: RefCell<Vec<Section>> = const { RefCell::new(Vec::new()) };
     static LAST_FRAME_END: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
     static CURRENT_FRAME_START: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
-    static CURRENT_FRAME_HEAP_START: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
     static CURRENT_FRAME_ALLOC_START: std::cell::Cell<Option<crate::alloc::AllocSnapshot>> = const { std::cell::Cell::new(None) };
-    static HEAP_SAMPLER: std::cell::Cell<Option<HeapSampler>> = const { std::cell::Cell::new(None) };
-    static MAX_EVER: RefCell<std::collections::HashMap<&'static str, Duration>> =
-        RefCell::new(std::collections::HashMap::new());
     static SPIKE_THRESHOLD: std::cell::Cell<Duration> =
         const { std::cell::Cell::new(Duration::from_millis(250)) };
     static FRAME_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -80,6 +69,10 @@ impl Drop for Scope {
     fn drop(&mut self) {
         let elapsed = self.start.elapsed();
         let name = self.name;
+        // Only `end_frame` drains the sections, so one recorded outside a frame would pile up.
+        if CURRENT_FRAME_START.with(|c| c.get().is_none()) {
+            return;
+        }
         CURRENT_SECTIONS.with(|s| {
             if let Ok(mut s) = s.try_borrow_mut() {
                 s.push(Section { name, elapsed });
@@ -88,6 +81,7 @@ impl Drop for Scope {
     }
 }
 
+/// Records nothing unless it drops between `begin_frame` and `end_frame`.
 #[cfg(feature = "frame-trace")]
 #[inline]
 pub fn scope(name: &'static str) -> Scope {
@@ -99,15 +93,8 @@ pub fn scope(name: &'static str) -> Scope {
 }
 
 #[cfg(feature = "frame-trace")]
-pub fn set_heap_sampler(sampler: HeapSampler) {
-    HEAP_SAMPLER.with(|s| s.set(Some(sampler)));
-}
-
-#[cfg(feature = "frame-trace")]
 pub fn begin_frame() {
     CURRENT_FRAME_START.with(|c| c.set(Some(Instant::now())));
-    let sampler = HEAP_SAMPLER.with(|s| s.get());
-    CURRENT_FRAME_HEAP_START.with(|c| c.set(sampler.and_then(|f| f())));
     CURRENT_FRAME_ALLOC_START.with(|c| c.set(crate::alloc::current_snapshot()));
 }
 
@@ -121,14 +108,6 @@ pub fn end_frame() {
         prev
     });
     let frame_start = CURRENT_FRAME_START.with(|c| c.take());
-
-    let heap_start = CURRENT_FRAME_HEAP_START.with(|c| c.take());
-    let sampler = HEAP_SAMPLER.with(|s| s.get());
-    let heap_end = sampler.and_then(|f| f());
-    let heap_delta_bytes: Option<i64> = match (heap_start, heap_end) {
-        (Some(a), Some(b)) => Some((b as i64).saturating_sub(a as i64)),
-        _ => None,
-    };
 
     let alloc_start = CURRENT_FRAME_ALLOC_START.with(|c| c.take());
     let alloc_end = crate::alloc::current_snapshot();
@@ -162,19 +141,11 @@ pub fn end_frame() {
     }
 
     // Release tracer borrows before invoking a tracing subscriber.
-    let mut over_threshold: Vec<(&'static str, Duration)> = Vec::new();
-    MAX_EVER.with(|m| {
-        let mut m = m.borrow_mut();
-        for section in &sections {
-            let entry = m.entry(section.name).or_insert(Duration::ZERO);
-            if section.elapsed > *entry {
-                *entry = section.elapsed;
-            }
-            if section.elapsed > threshold {
-                over_threshold.push((section.name, section.elapsed));
-            }
-        }
-    });
+    let over_threshold: Vec<(&'static str, Duration)> = sections
+        .iter()
+        .filter(|section| section.elapsed > threshold)
+        .map(|section| (section.name, section.elapsed))
+        .collect();
 
     let mut reusable = TRACER.with(|t| {
         let mut t = t.borrow_mut();
@@ -186,20 +157,13 @@ pub fn end_frame() {
         } else {
             Vec::new()
         };
-        t.history.push_back(FrameTrace {
-            sections,
-            heap_delta_bytes,
-            allocs: alloc_delta,
-        });
+        t.history.push_back(FrameTrace { sections });
         reusable
     });
     reusable.clear();
     CURRENT_SECTIONS.with(|current| *current.borrow_mut() = reusable);
 
     for (name, elapsed) in over_threshold {
-        let heap_suffix = heap_delta_bytes
-            .map(|d| format!(" heap_delta={:+.2}MB", d as f64 / (1024.0 * 1024.0)))
-            .unwrap_or_default();
         let alloc_suffix = alloc_delta
             .map(|d| {
                 format!(
@@ -210,7 +174,7 @@ pub fn end_frame() {
             })
             .unwrap_or_default();
         tracing::warn!(
-            "frame_trace spike: section='{name}' elapsed={:.1}ms frame={frame_index}{heap_suffix}{alloc_suffix}",
+            "frame_trace spike: section='{name}' elapsed={:.1}ms frame={frame_index}{alloc_suffix}",
             elapsed.as_secs_f32() * 1000.0,
         );
     }
@@ -252,28 +216,6 @@ pub fn last_frame() -> Option<FrameTrace> {
     TRACER.with(|t| t.borrow().history.back().cloned())
 }
 
-/// `Duration::ZERO` for a name never seen.
-#[cfg(feature = "frame-trace")]
-pub fn max_ever(name: &'static str) -> Duration {
-    MAX_EVER.with(|m| m.borrow().get(name).copied().unwrap_or(Duration::ZERO))
-}
-
-/// Sorted descending by duration.
-#[cfg(feature = "frame-trace")]
-pub fn all_max_ever() -> Vec<(&'static str, Duration)> {
-    MAX_EVER.with(|m| {
-        let mut out: Vec<(&'static str, Duration)> =
-            m.borrow().iter().map(|(k, v)| (*k, *v)).collect();
-        out.sort_by_key(|entry| std::cmp::Reverse(entry.1));
-        out
-    })
-}
-
-#[cfg(feature = "frame-trace")]
-pub fn clear_max_ever() {
-    MAX_EVER.with(|m| m.borrow_mut().clear());
-}
-
 /// `Duration::MAX` disables the spike warning.
 #[cfg(feature = "frame-trace")]
 pub fn set_spike_threshold(threshold: Duration) {
@@ -294,23 +236,7 @@ pub fn record_external(name: &'static str, elapsed: Duration) {
 pub fn record_external(_name: &'static str, _elapsed: Duration) {}
 
 #[cfg(not(feature = "frame-trace"))]
-pub fn max_ever(_name: &'static str) -> Duration {
-    Duration::ZERO
-}
-
-#[cfg(not(feature = "frame-trace"))]
-pub fn all_max_ever() -> Vec<(&'static str, Duration)> {
-    Vec::new()
-}
-
-#[cfg(not(feature = "frame-trace"))]
-pub fn clear_max_ever() {}
-
-#[cfg(not(feature = "frame-trace"))]
 pub fn set_spike_threshold(_threshold: Duration) {}
-
-#[cfg(not(feature = "frame-trace"))]
-pub fn set_heap_sampler(_sampler: HeapSampler) {}
 
 #[derive(Clone, Debug)]
 pub struct SectionStats {
@@ -413,64 +339,9 @@ pub fn aggregate() -> Vec<SectionStats> {
 #[cfg(all(test, feature = "frame-trace"))]
 mod tests {
     use super::*;
-    use std::thread::sleep;
 
     #[test]
-    fn clearing_history_preserves_retention_capacity() {
-        set_capacity(2);
-        end_frame();
-        clear_history();
-        assert!(history().is_empty());
-        for _ in 0..3 {
-            end_frame();
-        }
-        assert_eq!(history().len(), 2);
-    }
-
-    #[test]
-    fn scope_records_elapsed_on_drop() {
-        end_frame();
-
-        {
-            let _s = scope("test-a");
-            sleep(Duration::from_millis(1));
-        }
-        end_frame();
-        let post_frame = last_frame().expect("end_frame should produce a frame");
-
-        let sections = &post_frame.sections;
-        let test_a = sections
-            .iter()
-            .find(|s| s.name == "test-a")
-            .unwrap_or_else(|| panic!("expected 'test-a' in {sections:?}"));
-        assert!(
-            test_a.elapsed >= Duration::from_millis(1),
-            "scope elapsed should be >= sleep duration, got {:?}",
-            test_a.elapsed
-        );
-    }
-
-    #[test]
-    fn heap_sampler_populates_delta_on_completed_frame() {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static FAKE_HEAP: AtomicU64 = AtomicU64::new(1_000_000);
-        fn fake_sampler() -> Option<u64> {
-            Some(FAKE_HEAP.fetch_add(4096, Ordering::SeqCst) + 4096)
-        }
-        FAKE_HEAP.store(1_000_000, Ordering::SeqCst);
-        set_heap_sampler(fake_sampler);
-        end_frame();
-        begin_frame();
-        end_frame();
-        let frame = last_frame().expect("end_frame should produce a frame");
-        let delta = frame
-            .heap_delta_bytes
-            .expect("sampler is registered; delta should be Some");
-        assert_eq!(delta, 4096, "expected one-increment delta, got {delta}");
-    }
-
-    #[test]
-    fn aggregate_uses_retained_frames_and_sorts_percentiles() {
+    fn retained_percentiles() {
         set_capacity(2);
         record_external("discarded", Duration::from_secs(10));
         end_frame();

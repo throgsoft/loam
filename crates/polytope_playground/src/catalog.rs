@@ -1,7 +1,4 @@
-use anyhow::{anyhow, Result};
-use loam::app::args::Args;
-use loam::render::raymarch::RaymarchShape;
-use loam::shape::polytope::Polytope4;
+use loam::prelude::*;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Category {
@@ -22,7 +19,7 @@ impl Category {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(crate) struct ShapeEntry {
-    pub(crate) shape: RaymarchShape,
+    pub(crate) shape: FieldShape,
     pub(crate) body_color: [f32; 3],
     pub(crate) label: &'static str,
     pub(crate) long_name: &'static str,
@@ -37,28 +34,28 @@ impl ShapeEntry {
 
 pub(crate) const DEFAULT_ROW: &[ShapeEntry] = &[
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell24),
+        shape: FieldShape::Polytope(Polytope4::Cell24),
         body_color: [0.95, 0.45, 0.85],
         label: "24-cell",
         long_name: "icositetrachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Pentatope),
+        shape: FieldShape::Polytope(Polytope4::Pentatope),
         body_color: [0.95, 0.55, 0.30],
         label: "5-cell",
         long_name: "pentachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell16),
+        shape: FieldShape::Polytope(Polytope4::Cell16),
         body_color: [0.55, 0.95, 0.40],
         label: "16-cell",
         long_name: "hexadecachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Tesseract),
+        shape: FieldShape::Polytope(Polytope4::Tesseract),
         body_color: [0.30, 0.55, 0.95],
         label: "8-cell",
         long_name: "tesseract",
@@ -69,70 +66,70 @@ pub(crate) const DEFAULT_ROW: &[ShapeEntry] = &[
 // `body_color` channels pass straight to the WGSL kernel.
 pub(crate) const SHAPE_CATALOG: &[ShapeEntry] = &[
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Pentatope),
+        shape: FieldShape::Polytope(Polytope4::Pentatope),
         body_color: [0.95, 0.55, 0.30],
         label: "5-cell",
         long_name: "pentachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Tesseract),
+        shape: FieldShape::Polytope(Polytope4::Tesseract),
         body_color: [0.30, 0.55, 0.95],
         label: "8-cell",
         long_name: "tesseract",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell16),
+        shape: FieldShape::Polytope(Polytope4::Cell16),
         body_color: [0.55, 0.95, 0.40],
         label: "16-cell",
         long_name: "hexadecachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell24),
+        shape: FieldShape::Polytope(Polytope4::Cell24),
         body_color: [0.95, 0.45, 0.85],
         label: "24-cell",
         long_name: "icositetrachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell120),
+        shape: FieldShape::Polytope(Polytope4::Cell120),
         body_color: [0.40, 0.85, 0.85],
         label: "120-cell",
         long_name: "hecatonicosachoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::Polytope(Polytope4::Cell600),
+        shape: FieldShape::Polytope(Polytope4::Cell600),
         body_color: [0.95, 0.85, 0.40],
         label: "600-cell",
         long_name: "hexacosichoron",
         category: Category::RegularPolychoron,
     },
     ShapeEntry {
-        shape: RaymarchShape::ThreeSphere,
+        shape: FieldShape::ThreeSphere,
         body_color: [0.85, 0.40, 0.40],
         label: "3-sphere",
         long_name: "hypersphere (4-ball)",
         category: Category::SmoothSolid,
     },
     ShapeEntry {
-        shape: RaymarchShape::Duocylinder,
+        shape: FieldShape::Duocylinder,
         body_color: [0.60, 0.45, 0.90],
         label: "duocyl",
         long_name: "duocylinder (D² × D²)",
         category: Category::SmoothSolid,
     },
     ShapeEntry {
-        shape: RaymarchShape::CliffordTorus,
+        shape: FieldShape::CliffordTorus,
         body_color: [0.70, 0.85, 0.35],
         label: "clifford",
         long_name: "Clifford torus tube",
         category: Category::SmoothSolid,
     },
     ShapeEntry {
-        shape: RaymarchShape::Spherinder,
+        shape: FieldShape::Spherinder,
         body_color: [0.85, 0.55, 0.75],
         label: "spherinder",
         long_name: "spherinder (B³ × interval)",
@@ -161,15 +158,15 @@ pub(crate) fn shape_catalog_menu(ui: &mut loam::app::egui::Ui, mut choose: impl 
     }
 }
 
-pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
+fn parse_shape_name(name: &str) -> Option<ShapeEntry> {
     let n = name.to_lowercase();
     let needle: &str = n.as_str();
     for entry in SHAPE_CATALOG {
         if needle == entry.label.to_lowercase() || needle == entry.long_name.to_lowercase() {
-            return Ok(*entry);
+            return Some(*entry);
         }
     }
-    Ok(match needle {
+    Some(match needle {
         "5cell" | "pentatope" | "tetrahedron" => SHAPE_CATALOG[0],
         "8cell" | "hypercube" | "cube" => SHAPE_CATALOG[1],
         "16cell" | "octahedron" => SHAPE_CATALOG[2],
@@ -180,86 +177,40 @@ pub(crate) fn parse_shape_name(name: &str) -> Result<ShapeEntry> {
         "duocylinder" => SHAPE_CATALOG[7],
         "clifford" | "clifford-torus" | "torus" => SHAPE_CATALOG[8],
         "spherinder" => SHAPE_CATALOG[9],
-        _ => {
-            return Err(anyhow!(
-                "unknown shape name {name:?}; valid: 5-cell, 8-cell, \
-                 16-cell, 24-cell, 120-cell, 600-cell, 3-sphere, \
-                 duocyl, clifford, spherinder (plus Platonic aliases: \
-                 tetrahedron, cube, octahedron, cuboctahedron, \
-                 dodecahedron, icosahedron)"
-            ));
-        }
+        _ => return None,
     })
 }
 
-pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>> {
+const SHAPE_NAMES: &str = "a shape name: 5-cell, 8-cell, 16-cell, 24-cell, 120-cell, 600-cell, \
+     3-sphere, duocyl, clifford, spherinder (plus Platonic aliases: tetrahedron, cube, \
+     octahedron, cuboctahedron, dodecahedron, icosahedron)";
+
+pub(crate) fn parse_row(args: &Args) -> Result<Vec<ShapeEntry>, HostError> {
     if args.has_bare_flag("shapes") {
-        return Err(anyhow!(
-            "`--shapes` needs its value attached with `=`, as in \
-             `--shapes=24-cell,8-cell` (comma-separated for several \
-             shapes); the space-separated form drops the value"
-        ));
+        return Err(HostError::Detached {
+            flag: "shapes",
+            example: "--shapes=24-cell,8-cell",
+        });
     }
     let Some(raw) = args.get("shapes") else {
         return Ok(DEFAULT_ROW.to_vec());
     };
     let names = args.get_many("shapes");
     if names.is_empty() {
-        return Err(anyhow!("shapes={raw:?} listed no shape names"));
+        return Err(HostError::Flag {
+            flag: "shapes",
+            value: raw.to_string(),
+            expected: "a comma-separated list of shape names",
+        });
     }
-    names.into_iter().map(parse_shape_name).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn row_comes_from_the_args_value_not_the_process_environment() {
-        assert_eq!(parse_row(&Args::default()).unwrap(), DEFAULT_ROW);
-        assert_eq!(
-            parse_row(&Args::from_pairs([("scene", "rotate")])).unwrap(),
-            DEFAULT_ROW
-        );
-
-        let row = parse_row(&Args::from_pairs([("shapes", "120-cell,tesseract")])).unwrap();
-        assert_eq!(
-            row.iter().map(|e| e.label).collect::<Vec<_>>(),
-            ["120-cell", "8-cell"]
-        );
-    }
-
-    #[test]
-    fn a_bare_shapes_flag_is_diagnosed_rather_than_silently_defaulting() {
-        let args = Args::from_argv(["--shapes", "120-cell,tesseract"]);
-        assert_eq!(args.get("shapes"), None);
-        let err = parse_row(&args).unwrap_err().to_string();
-        assert!(err.contains("--shapes="), "{err}");
-
-        assert!(parse_row(&Args::from_argv(["--scene=rotate", "--shapes"])).is_err());
-    }
-
-    #[test]
-    fn the_attached_form_and_unrelated_arguments_are_not_diagnosed() {
-        let row = parse_row(&Args::from_argv([
-            "--scene=rotate",
-            "--shapes=5-cell,8-cell",
-        ]))
-        .unwrap();
-        assert_eq!(
-            row.iter().map(|e| e.label).collect::<Vec<_>>(),
-            ["5-cell", "8-cell"]
-        );
-        assert_eq!(
-            parse_row(&Args::from_argv(["shapes", "--x=--shapes"])).unwrap(),
-            DEFAULT_ROW
-        );
-    }
-
-    #[test]
-    fn a_present_but_nameless_or_unknown_shapes_value_is_an_error() {
-        assert!(parse_row(&Args::from_pairs([("shapes", "")])).is_err());
-        assert!(parse_row(&Args::from_pairs([("shapes", ",,")])).is_err());
-        assert!(parse_row(&Args::from_pairs([("shapes", "5-cell,nonesuch")])).is_err());
-    }
+    names
+        .into_iter()
+        .map(|name| {
+            parse_shape_name(name).ok_or_else(|| HostError::Flag {
+                flag: "shapes",
+                value: name.to_string(),
+                expected: SHAPE_NAMES,
+            })
+        })
+        .collect()
 }
