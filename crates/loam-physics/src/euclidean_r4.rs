@@ -493,7 +493,7 @@ mod tests {
         }
         assert!(
             landing_spin > 1.0,
-            "the hull never rocked over, so a settle proves nothing: peak |ω| \
+            "the hull never rocked over, so a settle proves nothing: peak |omega| \
              was {landing_spin} rad/s"
         );
 
@@ -566,7 +566,7 @@ mod tests {
         let residual = (after - (before + omega_cross_r(omega, before) * dt)).length();
         assert!(
             residual < 1e-5,
-            "integrated orientation left the world-frame field ω⌋r: residual \
+            "integrated orientation left the world-frame field omega _| r: residual \
              {residual} over a step of {}",
             (after - before).length()
         );
@@ -579,7 +579,7 @@ mod tests {
         let n = iso.rotation.norm_squared();
         assert!(
             (n - 1.0).abs() < 1e-3,
-            "rotor drifted off the unit manifold: |R|² = {n}"
+            "rotor drifted off the unit manifold: |R|^2 = {n}"
         );
     }
 }

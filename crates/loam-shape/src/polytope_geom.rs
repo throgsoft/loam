@@ -121,7 +121,7 @@ pub fn cell600_vertices(r: f32) -> Vec<Vec4> {
     v
 }
 
-/// Vertex set at circumradius `2√2` before rescaling (Wikipedia "120-cell").
+/// Vertex set at circumradius `2*sqrt(2)` before rescaling (Wikipedia "120-cell").
 pub fn cell120_vertices(r: f32) -> Vec<Vec4> {
     let phi = (1.0 + 5.0_f32.sqrt()) * 0.5;
     let phi2 = phi * phi;

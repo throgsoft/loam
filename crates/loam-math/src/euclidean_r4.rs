@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::bivector::{Rotor, Rotor4};
 use crate::space::{IsometryGroup, Space};
 
-/// Rigid motion of R⁴; callers must keep the rotor unit length.
+/// Rigid motion of R4; callers must keep the rotor unit length.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4Flat {
     pub rotation: Rotor4,

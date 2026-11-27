@@ -9,7 +9,7 @@ const STEREOGRAPHIC_EDGE_SAMPLES: usize = 16;
 
 const STEREOGRAPHIC_CLIP_RADIUS: f32 = 10.0;
 
-// Pharr, Jakob, and Humphreys, Physically Based Rendering, 4th ed., §6.2.
+// Pharr, Jakob, and Humphreys, Physically Based Rendering, 4th ed., sec. 6.2.
 fn clip_crossing(inside: Vec3, outside: Vec3) -> f32 {
     let direction = outside - inside;
     let a = direction.length_squared();

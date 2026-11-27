@@ -1,4 +1,4 @@
-//! Poincaré-ball points satisfy `|p| < 1`; isometries act on the Lorentz embedding.
+//! Poincare-ball points satisfy `|p| < 1`; isometries act on the Lorentz embedding.
 
 use glam::{Mat4, Quat, Vec3, Vec4};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use crate::space::{IsometryGroup, Space};
 
 pub const POINCARE_R2_MAX: f32 = 1.0 - 1e-7;
 
-/// H³ hits at least `H3_DEPTH_SEPARATION` apart stay ordered within this hyperbolic distance of an eye at most `H3_EYE_CHART_REACH` from the chart origin, and `valid_point` refuses points farther than this from the origin.
+/// H3 hits at least `H3_DEPTH_SEPARATION` apart stay ordered within this hyperbolic distance of an eye at most `H3_EYE_CHART_REACH` from the chart origin, and `valid_point` refuses points farther than this from the origin.
 pub const H3_DEPTH_ENVELOPE: f32 = 6.0;
 pub const H3_DEPTH_SEPARATION: f32 = 0.05;
 pub const H3_EYE_CHART_REACH: f32 = 1.0;
@@ -23,7 +23,7 @@ fn clamp_to_ball(p: Vec3) -> Vec3 {
         return p;
     }
     #[cfg(debug_assertions)]
-    tracing::warn!("HyperbolicH3: point outside Poincaré ball clamped (|p|²={r2:.4})");
+    tracing::warn!("HyperbolicH3: point outside Poincare ball clamped (|p|^2={r2:.4})");
     let mut q = p * (POINCARE_R2_MAX.sqrt() / r2.sqrt());
     while q.length_squared() > POINCARE_R2_MAX {
         q *= 1.0 - f32::EPSILON;
@@ -31,7 +31,7 @@ fn clamp_to_ball(p: Vec3) -> Vec3 {
     q
 }
 
-/// SO⁺(3,1) acting on `(x, y, z, w)`, with `w` time-like.
+/// SO+(3,1) acting on `(x, y, z, w)`, with `w` time-like.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso3H {
     pub matrix: Mat4,
@@ -188,7 +188,7 @@ fn artanh(x: f32) -> f32 {
     0.5 * ((1.0 + x) / (1.0 - x)).ln()
 }
 
-// Ungar, From Möbius to Gyrogroups, 2008, §4, Def. 3.
+// Ungar, From Mobius to Gyrogroups, 2008, sec. 4, Def. 3.
 fn mobius_add(a: Vec3, b: Vec3) -> Vec3 {
     let ab = a.dot(b);
     let aa = a.length_squared();
@@ -202,7 +202,7 @@ fn mobius_add(a: Vec3, b: Vec3) -> Vec3 {
     }
 }
 
-// Ungar, From Möbius to Gyrogroups, 2008, §4, Def. 4.
+// Ungar, From Mobius to Gyrogroups, 2008, sec. 4, Def. 4.
 fn gyr_apply(a: Vec3, b: Vec3, v: Vec3) -> Vec3 {
     let scalar = 1.0 + a.dot(b);
     let axis = -a.cross(b);
@@ -210,7 +210,7 @@ fn gyr_apply(a: Vec3, b: Vec3, v: Vec3) -> Vec3 {
     v + (2.0 / norm2) * (scalar * axis.cross(v) + axis.cross(axis.cross(v)))
 }
 
-// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7: the Lorentz embedding of the ball.
+// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, sec. 7: the Lorentz embedding of the ball.
 pub fn poincare_to_hyperboloid(p: Vec3) -> Vec4 {
     let r2 = p.length_squared().min(POINCARE_R2_MAX);
     let den = 1.0 - r2;
@@ -227,7 +227,7 @@ pub fn hyperboloid_to_poincare(h: Vec4) -> Vec3 {
     Vec3::new(h.x / den, h.y / den, h.z / den)
 }
 
-// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, §7: Klein is the hyperboloid seen from the origin.
+// Cannon, Floyd, Kenyon, Parry, Hyperbolic Geometry, 1997, sec. 7: Klein is the hyperboloid seen from the origin.
 pub fn hyperboloid_to_klein(h: Vec4) -> Vec3 {
     Vec3::new(h.x, h.y, h.z) / h.w.max(1.0)
 }

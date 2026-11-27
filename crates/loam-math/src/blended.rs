@@ -2,12 +2,12 @@ use glam::{Mat3, Vec3};
 
 use crate::space::Space;
 
-/// `g_ij(p) = f(p)·δ_ij` in the chart `Space::Point` carries, not in some other chart.
+/// `g_ij(p) = f(p) * delta_ij` in the chart `Space::Point` carries, not in some other chart.
 pub trait ConformallyFlat: Space {
     /// May return `f32::INFINITY` at the chart boundary.
     fn conformal_factor(&self, p: Vec3) -> f32;
 
-    /// `R = −(4/f)·[∇²φ + |∇φ|²/2]`; the default is finite-difference.
+    /// `R = -(4/f) * [lap(phi) + |grad(phi)|^2 / 2]`; the default is finite-difference.
     fn scalar_curvature(&self, p: Vec3) -> f32 {
         const EPS: f32 = 5.0e-3;
         let phi_at = self.conformal_log_half(p);
@@ -92,7 +92,7 @@ impl ConformallyFlat for crate::HyperbolicH3 {
     }
 }
 
-/// Metric `g = (1 − α)·g_A + α·g_B`, with a spatially varying [`BlendingField`].
+/// Metric `g = (1 - alpha) * g_A + alpha * g_B`, with a spatially varying [`BlendingField`].
 pub struct BlendedSpace<A, B, F>
 where
     A: Space<Point = Vec3, Vector = Vec3>,
@@ -393,7 +393,7 @@ pub fn integrate_geodesic_frame_checked<S: ConformallyFlat<Point = Vec3, Vector 
     }
 }
 
-// Press et al., Numerical Recipes, 3rd ed., 2007, §18.1; Nocedal and Wright, Numerical Optimization, 2nd ed., 2006, ch. 10.
+// Press et al., Numerical Recipes, 3rd ed., 2007, sec. 18.1; Nocedal and Wright, Numerical Optimization, 2nd ed., 2006, ch. 10.
 fn gauss_newton_log_core<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
     from: Vec3,
@@ -564,12 +564,12 @@ fn transport_along_geodesic<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
 
 pub const LOG_MAX_ITERS: u32 = 12;
 
-/// Euclidean threshold on the residual `|to − exp_from(v)|`.
+/// Euclidean threshold on the residual `|to - exp_from(v)|`.
 pub const LOG_RESIDUAL_TOL: f32 = 1.0e-5;
 
 const LOG_JACOBIAN_EPS: f32 = 1.0e-3;
 
-/// Solves `exp_from(v) ≈ to`; failure returns the last finite iterate.
+/// Solves `exp_from(v) = to` approximately; failure returns the last finite iterate.
 pub fn gauss_newton_log<S: ConformallyFlat<Point = Vec3, Vector = Vec3>>(
     space: &S,
     from: Vec3,
@@ -659,7 +659,7 @@ where
     }
 }
 
-/// `weight` is 0 for pure A and 1 for pure B, and must be C¹: the integrator differentiates it.
+/// `weight` is 0 for pure A and 1 for pure B, and must be C1: the integrator differentiates it.
 pub trait BlendingField: Copy + Send + Sync + 'static {
     /// Implementations must clamp to `[0, 1]`.
     fn weight(&self, p: Vec3) -> f32;
@@ -674,7 +674,7 @@ pub trait BlendingField: Copy + Send + Sync + 'static {
 }
 
 // Perlin, Improving Noise, 2002.
-/// C² quintic smootherstep along x.
+/// C2 quintic smootherstep along x.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct LinearBlendX {
     start: f32,

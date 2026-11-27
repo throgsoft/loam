@@ -1,4 +1,4 @@
-//! Upper-hemisphere chart `(p, sqrt(1 - |p|²))` with Vec3 points.
+//! Upper-hemisphere chart `(p, sqrt(1 - |p|^2))` with Vec3 points.
 //! Crossing the equator loses the hemisphere sign; use SphericalS3Embedded for full coverage.
 
 use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
@@ -20,7 +20,7 @@ fn clamp_to_hemisphere(p: Vec3) -> Vec3 {
         p
     } else {
         #[cfg(debug_assertions)]
-        tracing::warn!("SphericalS3: point outside upper hemisphere clamped (|p|²={r2:.4})");
+        tracing::warn!("SphericalS3: point outside upper hemisphere clamped (|p|^2={r2:.4})");
         p * (SPHERE_R2_MAX.sqrt() / r2.sqrt())
     }
 }
@@ -42,7 +42,7 @@ fn from_sphere(q: Vec4) -> Vec3 {
     q.truncate()
 }
 
-/// SO(4) acting on the ambient embedding of S³.
+/// SO(4) acting on the ambient embedding of S3.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Iso4 {
     pub matrix: Mat4,

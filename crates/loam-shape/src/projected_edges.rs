@@ -66,7 +66,7 @@ pub fn sample_in_radius(projected: Vec3, radius: Option<f32>) -> bool {
     projected.is_finite() && radius.is_none_or(|r| projected.length_squared() <= r * r)
 }
 
-// do Carmo, Differential Geometry of Curves and Surfaces, 1976, §1.5.
+// do Carmo, Differential Geometry of Curves and Surfaces, 1976, sec. 1.5.
 fn radius_crossing_t(p_in: Vec3, p_out: Vec3, r: f32) -> f32 {
     let d = p_out - p_in;
     let a = d.length_squared();
@@ -132,7 +132,7 @@ fn push_clipped_subsegment(
 }
 
 /// Restores near-pole magnitude; the exact pole produces a non-finite sample for culling.
-// Coxeter, Introduction to Geometry, 1969, §6.9.
+// Coxeter, Introduction to Geometry, 1969, sec. 6.9.
 pub fn stereographic_view_point(p: Vec4, projection: &loam_math::Projection<4>) -> Vec3 {
     let proj =
         <loam_math::EuclideanR4 as loam_math::RasterizableSpace<4>>::project_point(p, projection)

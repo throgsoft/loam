@@ -1,5 +1,5 @@
 //! For a 1-Lipschitz field, the half-diagonal margin encloses its nonpositive set within the sampled domain.
-//! Hart, Sphere Tracing, 1996, §2.
+//! Hart, Sphere Tracing, 1996, sec. 2.
 
 use glam::{Vec3, Vec4};
 

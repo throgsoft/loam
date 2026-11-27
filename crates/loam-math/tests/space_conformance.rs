@@ -53,7 +53,7 @@ where
     fn isos(&self) -> Vec<Self::Iso>;
 }
 
-// Marsaglia, Xorshift RNGs, 2003, §3.
+// Marsaglia, Xorshift RNGs, 2003, sec. 3.
 struct Xorshift32(u32);
 
 impl Xorshift32 {
@@ -484,7 +484,7 @@ mod invariants {
         );
     }
 
-    // Pennec, Parallel Transport with Pole Ladder, 2018, §3; Helgason, Symmetric Spaces, 1978, ch. IV §3.
+    // Pennec, Parallel Transport with Pole Ladder, 2018, sec. 3; Helgason, Symmetric Spaces, 1978, ch. IV sec. 3.
     pub fn transport_from_geodesics<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let tol = f.tol();
@@ -514,7 +514,7 @@ mod invariants {
         );
     }
 
-    // do Carmo, Differential Geometry of Curves and Surfaces, 1976, §4.5.
+    // do Carmo, Differential Geometry of Curves and Surfaces, 1976, sec. 4.5.
     pub fn gauss_bonnet<F: SpaceFixture>(f: &F) {
         let s = f.space();
         let l = TRIANGLE_SIDE;
@@ -625,7 +625,7 @@ mod invariants {
         f.combine(v, s, v, 0.0)
     }
 
-    // do Carmo, Differential Geometry of Curves and Surfaces, 1976, §1.4.
+    // do Carmo, Differential Geometry of Curves and Surfaces, 1976, sec. 1.4.
     fn metric_orthonormal_pair<F: SpaceFixture>(f: &F, at: F::Point) -> (F::Vector, F::Vector) {
         let tangents = f.tangents(at);
         assert!(
@@ -1276,7 +1276,7 @@ impl IsometryFixture for SphericalS3EmbeddedFixture {
     }
 }
 
-// Press et al., Numerical Recipes, 3rd ed., 2007, §18.1.
+// Press et al., Numerical Recipes, 3rd ed., 2007, sec. 18.1.
 struct BlendedSpaceFixture;
 
 impl SpaceFixture for BlendedSpaceFixture {

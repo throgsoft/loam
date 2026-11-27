@@ -139,7 +139,7 @@ impl FieldCost {
     }
 }
 
-// Moore, Kearfott, and Cloud 2009, Introduction to Interval Analysis, §2.1.
+// Moore, Kearfott, and Cloud 2009, Introduction to Interval Analysis, sec. 2.1.
 #[derive(Clone, Copy)]
 struct FieldInterval {
     lo: f64,
@@ -493,7 +493,7 @@ impl Ball {
     }
 }
 
-// Horn and Johnson 2013, Matrix Analysis, §§5.6, 7.3.
+// Horn and Johnson 2013, Matrix Analysis, sec. 5.6 and 7.3.
 fn frame_bounds(frame: [[f32; 4]; 4]) -> Option<FrameBounds> {
     let mut delta = 0.0f64;
     for (left_index, left_column) in frame.iter().enumerate() {

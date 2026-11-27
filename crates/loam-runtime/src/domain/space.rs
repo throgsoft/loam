@@ -221,7 +221,7 @@ pub(super) fn homogeneous_walk<S: Homogeneous>(
 ) -> Result<Pose<S>, DomainError> {
     let step = space.exp(space.origin(), tangent * dt);
     space.check(step)?;
-    // Helgason, Differential Geometry, Lie Groups, and Symmetric Spaces, 1978, Ch. IV §3: the transvection along a geodesic is parallel transport along it.
+    // Helgason, Differential Geometry, Lie Groups, and Symmetric Spaces, 1978, Ch. IV sec. 3: the transvection along a geodesic is parallel transport along it.
     let next = space.pose_of(space.iso_compose(space.iso_of(pose), space.transvection(step)));
     space.check(next.point)?;
     Ok(next)

@@ -259,7 +259,7 @@ mod tests {
                         wrap_pi(ring.drag_angle(grab, cursor) - delta),
                         0.0,
                         1e-3,
-                        &format!("{plane:?} drag angle from θ={theta} by {delta}"),
+                        &format!("{plane:?} drag angle from theta={theta} by {delta}"),
                     );
                 }
             }

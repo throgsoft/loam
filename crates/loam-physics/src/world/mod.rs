@@ -1069,9 +1069,12 @@ mod tests {
 
             let body = &world.bodies[faller];
             let rebound = VectorOps::dot(body.velocity, up);
-            assert!(rebound > 0.0, "body did not rebound: v·up = {rebound}");
+            assert!(rebound > 0.0, "body did not rebound: v.up = {rebound}");
             let spin = angular_speed(body.angular_velocity);
-            assert!(spin < 1e-6, "central impact spun the body: |ω| = {spin}");
+            assert!(
+                spin < 1e-6,
+                "central impact spun the body: |omega| = {spin}"
+            );
 
             let energy_after = kinetic_energy(body, spin);
             let ratio = energy_after / energy_before;
@@ -1147,7 +1150,7 @@ mod tests {
             let along = VectorOps::dot(body.velocity, slide);
             assert!(
                 along < SLIDE_SPEED,
-                "friction did not brake the slide: v·slide = {along}"
+                "friction did not brake the slide: v.slide = {along}"
             );
 
             let contact = world.space.exp(body.position, up * -SPHERE_RADIUS);
