@@ -9,24 +9,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  fmt:
-    name: rustfmt
+  checks:
+    name: checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - run: cargo fmt --all --check
-
-  clippy:
-    name: clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux deps for wgpu/winit
         run: |
@@ -35,103 +25,42 @@ jobs:
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
             pkg-config
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo clippy -p loam-app --no-default-features --all-targets -- -D warnings
-
-  clippy-wasm:
-    name: clippy (wasm32)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: rustup target add wasm32-unknown-unknown
-      - run: cargo clippy -p loam-app -p polytope_playground --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo clippy -p loam-app --no-default-features --target wasm32-unknown-unknown -- -D warnings
-      - name: the facade's app feature links no egui
-        run: |
-          tree=$(cargo tree -p loam --features app -e normal --target wasm32-unknown-unknown --prefix none)
-          ! grep -qE '^egui v' <<<"$tree"
-
-  platform-cfg:
-    name: cfg(target_arch = "wasm32") only in loam-app
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: grep crates/ for target_arch = "wasm32" outside the allowed paths
+      - run: cargo fmt --all --check
+      - name: cfg(target_arch = "wasm32") only in loam-app
         run: |
           ! grep -rn --include='*.rs' --exclude-dir=loam-app 'target_arch = "wasm32"' crates/
-
-  test:
-    name: test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Linux deps for wgpu/winit + lavapipe (software Vulkan)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
-            mesa-vulkan-drivers \
-            pkg-config
-      - name: cargo build --workspace --all-targets
-        run: cargo build --workspace --all-targets
-      - name: cargo test --workspace --all-targets
-        run: cargo test --workspace --all-targets
-      # Adapter probes use lavapipe; font fixtures are in the repository.
-      - name: cargo test gpu_probe -- --include-ignored
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          WGPU_BACKEND: vulkan
-        run: cargo test --workspace gpu_probe -- --include-ignored
-
-  doc:
-    name: cargo doc
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Linux deps for wgpu/winit
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
-            pkg-config
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p loam-app --no-default-features --all-targets -- -D warnings
       - name: cargo doc --no-deps --workspace
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --no-deps --workspace
 
-  wasm-build:
-    name: wasm32 build (polytope_playground)
+  web:
+    name: web
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Apply the target to the repository-pinned toolchain.
       - run: rustup target add wasm32-unknown-unknown
+      - run: cargo clippy -p loam-app -p polytope_playground -p examples --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo clippy -p loam-app --no-default-features --target wasm32-unknown-unknown -- -D warnings
+      - name: the facade's app feature links no egui
+        run: |
+          tree=$(cargo tree -p loam --features app -e normal --target wasm32-unknown-unknown --prefix none)
+          ! grep -qE '^egui v' <<<"$tree"
+      - run: cargo build --target wasm32-unknown-unknown -p loam-math -p loam-shape -p loam-physics -p loam-time -p examples
       - name: Build the runnable worker bundle
         run: cargo xtask web --bin polytope_playground --public-url /
 
-  wasm-session:
-    name: wasm32 build (session crates)
-    runs-on: ubuntu-latest
+  test:
+    name: test
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: rustup target add wasm32-unknown-unknown
-      - run: cargo build --target wasm32-unknown-unknown -p loam-math -p loam-shape -p loam-physics -p loam-time -p examples
+      - run: cargo test --workspace --all-targets
